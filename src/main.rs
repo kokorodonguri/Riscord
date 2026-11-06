@@ -763,6 +763,8 @@ struct MediaCx<'a> {
     settings: &'a Settings,
     stickers: &'a HashMap<String, StickerState>,
     roles: &'a [Role],
+    /// <#id> をチャンネル名で出すため
+    channels: &'a HashMap<String, Vec<Channel>>,
     want: Vec<(String, u8)>,
     /// このフレームで表示した添付・埋め込み画像の URI（チャンネル破棄時に画像キャッシュを解放するため）
     images: Vec<String>,
@@ -1168,15 +1170,57 @@ fn link_label(ui: &mut egui::Ui, job: LayoutJob, links: &[(std::ops::Range<usize
     }
 }
 
-fn inline_content(ui: &mut egui::Ui, m: &Message, s: &Settings, prefix: LayoutJob, images: &mut Vec<String>) {
+/// 本文の <#id>・<@id>・<@!id>・<@&id> を本家と同じく「#チャンネル名」「@名前」「@ロール名」にする（ID のまま見せない）
+fn resolve_mentions<'a>(content: &'a str, m: &Message, channels: &HashMap<String, Vec<Channel>>, roles: &[Role]) -> std::borrow::Cow<'a, str> {
+    if !content.contains("<#") && !content.contains("<@") {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let end = tail.find('>');
+        let token = end.map(|e| &tail[1..e]);
+        let name = token.and_then(|t| {
+            let (kind, id) = if let Some(id) = t.strip_prefix("@&") { ('&', id) }
+                else if let Some(id) = t.strip_prefix("@!") { ('@', id) }
+                else if let Some(id) = t.strip_prefix('@') { ('@', id) }
+                else if let Some(id) = t.strip_prefix('#') { ('#', id) }
+                else { return None };
+            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some(match kind {
+                '#' => format!("#{}", channels.values().flatten().find(|c| c.id == id).and_then(|c| c.name.clone()).unwrap_or_else(|| "不明なチャンネル".into())),
+                '&' => format!("@{}", roles.iter().find(|r| r.id == id).map_or("不明なロール", |r| r.name.as_str())),
+                _ => format!("@{}", m.mentions.iter().find(|u| u.id == id).map_or("不明なユーザー", |u| u.display())),
+            })
+        });
+        match (name, end) {
+            (Some(name), Some(e)) => {
+                out.push_str(&name);
+                rest = &tail[e + 1..];
+            }
+            _ => {
+                out.push('<');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
+fn inline_content(ui: &mut egui::Ui, m: &Message, content: &str, s: &Settings, prefix: LayoutJob, images: &mut Vec<String>) {
     let body = TextFormat { font_id: FontId::proportional(s.font_size), color: TEXT(), ..Default::default() };
     let small = TextFormat { font_id: FontId::proportional(11.0), color: MUTED(), ..Default::default() };
-    let segs = split_emoji(&m.content);
+    let segs = split_emoji(content);
 
     if !segs.iter().any(|x| matches!(x, Seg::Emoji { .. })) {
         let mut job = prefix;
         let mut links = Vec::new();
-        append_linked(&mut job, &m.content, &body, &mut links);
+        append_linked(&mut job, content, &body, &mut links);
         if m.edited_timestamp.is_some() {
             job.append(" (編集済)", 0.0, small);
         }
@@ -1318,6 +1362,8 @@ impl MemberListCache {
             out.tops.push(out.height);
             match item {
                 Some(net::ListItem::Group(id, count)) => {
+                    // 一覧の中の見出しの行には人数が入っていないことがある。人数は一緒に届く groups のほうが正しい
+                    let count = list.groups.iter().find(|g| &g.0 == id).map_or(*count, |g| g.1);
                     let name = match id.as_str() {
                         "online" => "オンライン",
                         "offline" => "オフライン",
@@ -1488,7 +1534,7 @@ fn reply_preview(ui: &mut egui::Ui, m: &Message, avatar_x: f32, text_x: f32, cx:
     p.galley(pos2(nx, y - name.size().y / 2.0), name, name_color);
     // 押しても何も起きないので「クリック」とは書かない
     let body = if !r.content.is_empty() {
-        r.content.replace('\n', " ")
+        resolve_mentions(&r.content, r, cx.channels, cx.roles).replace('\n', " ")
     } else if !r.attachments.is_empty() {
         "添付ファイル".to_string()
     } else if !r.sticker_items.is_empty() {
@@ -1521,7 +1567,8 @@ fn message_row_compact(ui: &mut egui::Ui, m: &Message, cx: &mut MediaCx) {
             0.0,
             TextFormat { font_id: medium_font(ui.ctx(), s.font_size), color: m.member.as_ref().and_then(|member| member_role_color(member, cx.roles)).unwrap_or(WHITE()), ..Default::default() },
         );
-        inline_content(ui, m, s, job, &mut cx.images);
+        let content = resolve_mentions(&m.content, m, cx.channels, cx.roles);
+        inline_content(ui, m, &content, s, job, &mut cx.images);
     });
     if !m.attachments.is_empty() || !m.sticker_items.is_empty() || m.embeds.iter().any(|e| e.visible()) {
         ui.horizontal(|ui| {
@@ -1602,7 +1649,8 @@ fn message_row(ui: &mut egui::Ui, m: &Message, prev: Option<&Message>, cx: &mut 
                 });
             }
             if !m.content.is_empty() {
-                inline_content(ui, m, s, LayoutJob::default(), &mut cx.images);
+                let content = resolve_mentions(&m.content, m, cx.channels, cx.roles);
+                inline_content(ui, m, &content, s, LayoutJob::default(), &mut cx.images);
             }
             message_media(ui, m, cx);
         });
@@ -4087,7 +4135,7 @@ impl App {
                         }
                     }
                     let mut cx =
-                        MediaCx { settings: &self.settings, stickers: &self.stickers, roles: self.sel_guild.as_ref().and_then(|gid| self.roles.get(gid)).map(Vec::as_slice).unwrap_or(&[]), want: Vec::new(), images: Vec::new(), clicked_user: None,
+                        MediaCx { settings: &self.settings, stickers: &self.stickers, channels: &self.channels, roles: self.sel_guild.as_ref().and_then(|gid| self.roles.get(gid)).map(Vec::as_slice).unwrap_or(&[]), want: Vec::new(), images: Vec::new(), clicked_user: None,
                             me: self.me.as_ref().map(|u| u.id.as_str()),
                             highlight: self.editing.as_ref().or(self.reply_to.as_ref()).map(|m| m.id.as_str()),
                             tb_prev: self.toolbar.take(),
@@ -4510,19 +4558,26 @@ impl App {
                     ui.add_space(8.0);
                     ui.label(RichText::new("見つかりませんでした").size(14.0).color(MUTED()));
                 }
-                for (i, (_, h)) in hits.iter().enumerate() {
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-                    if i == sel || resp.hovered() {
-                        ui.painter().rect_filled(rect, 6.0, if i == sel { SELECTED() } else { HOVER() });
+                // 低いウィンドウでも見出し・入力欄・操作の説明が画面に収まるよう、候補だけをスクロールさせる
+                let list_h = (ctx.screen_rect().height() - 240.0).max(72.0);
+                egui::ScrollArea::vertical().id_salt("switcher_hits").max_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, (_, h)) in hits.iter().enumerate() {
+                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                        if i == sel || resp.hovered() {
+                            ui.painter().rect_filled(rect, 6.0, if i == sel { SELECTED() } else { HOVER() });
+                        }
+                        if i == sel && (up || down) {
+                            ui.scroll_to_rect(rect, None);
+                        }
+                        let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                        p.text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, h.prefix, FontId::proportional(18.0), FAINT());
+                        row_text(ui, &p, pos2(rect.left() + 32.0, rect.center().y), &h.label, medium_font(ui.ctx(), 15.0), if i == sel { WHITE() } else { TEXT() }, (rect.width() - 32.0 - 12.0 - 140.0).max(60.0));
+                        p.text(pos2(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, &h.sub, FontId::proportional(12.0), FAINT());
+                        if resp.clicked() {
+                            picked = Some(i);
+                        }
                     }
-                    let p = ui.painter().with_clip_rect(rect);
-                    p.text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, h.prefix, FontId::proportional(18.0), FAINT());
-                    p.text(pos2(rect.left() + 32.0, rect.center().y), Align2::LEFT_CENTER, &h.label, medium_font(ui.ctx(), 15.0), if i == sel { WHITE() } else { TEXT() });
-                    p.text(pos2(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, &h.sub, FontId::proportional(12.0), FAINT());
-                    if resp.clicked() {
-                        picked = Some(i);
-                    }
-                }
+                });
                 ui.add_space(10.0);
                 ui.label(RichText::new("↑↓ で選択 · Enter で移動 · Esc で閉じる").size(11.0).color(FAINT()));
             });
@@ -7156,6 +7211,20 @@ mod tests {
     }
 
     #[test]
+    fn mentions_are_shown_by_name() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1", "channel_id": "c", "author": { "id": "9", "username": "a" }, "timestamp": "2026-11-01T00:00:00+00:00",
+            "content": "", "mentions": [{ "id": "5", "username": "taro", "global_name": "太郎" }],
+        })).unwrap();
+        let mut channels = HashMap::new();
+        channels.insert("g".to_string(), vec![Channel { id: "77".into(), kind: Channel::TEXT, name: Some("雑談".into()), position: 0, parent_id: None, recipients: vec![], last_message_id: None, topic: None, icon: None, permission_overwrites: vec![] }]);
+        let roles = vec![Role { id: "3".into(), name: "管理者".into(), color: 0, position: 1, hoist: false, permissions: String::new() }];
+        let got = resolve_mentions("<#77> へ <@5> <@!5> <@&3> <#88> <:e:1> <a> 1 < 2", &m, &channels, &roles);
+        assert_eq!(got, "#雑談 へ @太郎 @太郎 @管理者 #不明なチャンネル <:e:1> <a> 1 < 2");
+        assert!(matches!(resolve_mentions("普通の文", &m, &channels, &roles), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
     fn finds_links_and_trims_punctuation() {
         let s = "見て https://example.com/a_(b). と <https://x.y/z> と(http://q.r/s) xhttps://no";
         let got: Vec<&str> = find_links(s).into_iter().map(|r| &s[r]).collect();
@@ -7165,6 +7234,17 @@ mod tests {
         append_linked(&mut job, "あ <https://x.y/z> い", &TextFormat::default(), &mut links);
         assert_eq!(job.text, "あ https://x.y/z い");
         assert_eq!(links, [(2..15, "https://x.y/z".to_string())]);
+    }
+
+    /// 見出しの行に人数が無くても、一緒に届いた groups の人数で「ロール名 — 人数」を出す
+    #[test]
+    fn server_member_list_headers_use_group_counts() {
+        let mut list = ServerMemberList { channel_id: "c".into(), ..Default::default() };
+        let items = vec![net::ListItem::Group("online".into(), 0), net::ListItem::Member("m0".into()), net::ListItem::Member("m1".into())];
+        assert!(list.apply("l", vec![("online".into(), 2)], vec![net::ListOp::Sync { range: [0, 99], items }]));
+        let members: Vec<Member> = (0..2).map(|i| Member { user: Some(User { id: format!("m{i}"), username: format!("u{i}"), global_name: None, avatar: None, premium_type: None }), nick: None, roles: vec![] }).collect();
+        let cache = MemberListCache::from_server("g", 1, &list, &members, &[]);
+        assert!(matches!(&cache.rows[0], MemberRow::Header(h) if h == "オンライン — 2"));
     }
 
     #[test]
@@ -8203,6 +8283,30 @@ mod tests {
         app.poll();
         let out = ctx.run(input(), |ctx| app.main_ui(ctx));
         assert!(texts_at(&out, empty).is_some());
+    }
+
+    /// 低いウィンドウでも、移動先の検索の見出しと操作の説明が画面内に出る
+    #[test]
+    fn quick_switcher_fits_a_short_window() {
+        let mut app = bench_app(1);
+        for i in 0..20 {
+            let mut c = app.dms[0].clone();
+            c.id = format!("d{i}");
+            app.dms.push(c);
+        }
+        app.switcher = Some((String::new(), 0));
+        let ctx = app.ctx.clone();
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 400.0))), ..Default::default() };
+        let mut out = None;
+        for _ in 0..4 { out = Some(ctx.run(input(), |ctx| app.main_ui(ctx))); }
+        let out = out.unwrap();
+        for label in ["どこに行きますか？", "↑↓ で選択 · Enter で移動 · Esc で閉じる"] {
+            let t = out.shapes.iter().find_map(|shape| match &shape.shape {
+                Shape::Text(t) if t.galley.text() == label => Some(t),
+                _ => None,
+            }).unwrap_or_else(|| panic!("{label} が描画されていません"));
+            assert!(t.pos.y >= 0.0 && t.pos.y + t.galley.size().y <= 400.0, "{label} が画面外です");
+        }
     }
 
     /// コピーしたら短く知らせ、しばらくすると消える

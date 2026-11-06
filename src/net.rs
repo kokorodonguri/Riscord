@@ -127,7 +127,9 @@ fn decode_frame_as<T: DeserializeOwned>(msg: &WsMsg, inflater: &mut Inflater) ->
 
 pub enum Cmd {
     LoadGuildChannels(String),
-    LoadMembers(String),
+    /// メンバー一覧のうち、見えている範囲だけを購読する（公式クライアントと同じ op 37）。
+    /// ranges は [先頭, 末尾] の組（例: [[0, 99], [100, 199]]）
+    SubscribeMembers { guild_id: String, channel_id: String, ranges: Vec<[u32; 2]> },
     LoadMessages(String),
     /// before より古いメッセージを読み足す（上へスクロールしたとき）
     LoadOlder { channel_id: String, before: String },
@@ -176,6 +178,10 @@ pub enum Event {
     GuildChannels(String, Vec<Channel>),
     GuildRoles(String, Vec<Role>),
     GuildMembers(String, Vec<Member>),
+    /// メンバー一覧の差分（GUILD_MEMBER_LIST_UPDATE）。メンバーの中身は GuildMembers で別に送る
+    MemberList { guild_id: String, list_id: String, groups: Vec<(String, u32)>, ops: Vec<ListOp> },
+    /// 一からつながった（READY）。購読などはやり直しになる
+    GatewayReady,
     Messages(String, Vec<Message>),
     /// このチャンネルを見る権限がない
     NoAccess(String),
@@ -224,6 +230,33 @@ impl Tx {
         let _ = self.tx.send(e);
         self.ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
+}
+
+/// メンバー一覧の1行
+#[derive(Clone, Debug, PartialEq)]
+pub enum ListItem {
+    /// グループの見出し（"online" / "offline" / ロールID, 人数）
+    Group(String, u32),
+    /// メンバー（ユーザーID）
+    Member(String),
+}
+
+/// メンバー一覧への変更（Discord が送ってくる順に当てる）
+#[derive(Clone, Debug, PartialEq)]
+pub enum ListOp {
+    Sync { range: [u32; 2], items: Vec<ListItem> },
+    Insert { index: usize, item: ListItem },
+    Update { index: usize, item: ListItem },
+    Delete { index: usize },
+    Invalidate { range: [u32; 2] },
+}
+
+fn member_subscription(guild_id: &str, channel_id: &str, ranges: &[[u32; 2]]) -> Value {
+    let mut channels = serde_json::Map::new();
+    channels.insert(channel_id.to_string(), json!(ranges));
+    let mut subs = serde_json::Map::new();
+    subs.insert(guild_id.to_string(), json!({ "typing": true, "activities": true, "threads": true, "channels": channels }));
+    json!({ "op": 37, "d": { "subscriptions": subs } })
 }
 
 /// 自分の見え方（ステータスと、アクティビティに Riscord を出すか）。接続するたびと変えたときに Discord へ送る
@@ -459,8 +492,8 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
             let _ = gw_tx.send(payload);
             continue;
         }
-        if let Cmd::LoadMembers(gid) = &cmd {
-            let _ = gw_tx.send(json!({"op": 8, "d": {"guild_id": gid, "query": "", "limit": 0, "presences": true}}));
+        if let Cmd::SubscribeMembers { guild_id, channel_id, ranges } = &cmd {
+            let _ = gw_tx.send(member_subscription(guild_id, channel_id, ranges));
             continue;
         }
         let vmsg = match &cmd {
@@ -540,7 +573,7 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                         _ => Ok(()),
                     }
                 }
-                Cmd::LoadMembers(_) | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
+                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
                 Cmd::Ack { channel_id, message_id } => {
                     api.post(&format!("/channels/{channel_id}/messages/{message_id}/ack"), &json!({ "token": null })).await
                 }
@@ -929,6 +962,7 @@ async fn gateway_once_at(
                                     session.resume_url = r.resume_gateway_url;
                                 }
                                 *ready = true;
+                                tx.send(Event::GatewayReady);
                             }
                             "RESUMED" => {
                                 *ready = true;
@@ -966,7 +1000,7 @@ fn split_payload(mut v: Value) -> (String, Value) {
 fn handles(t: &str) -> bool {
     matches!(
         t,
-        "READY" | "READY_SUPPLEMENTAL" | "GUILD_MEMBERS_CHUNK" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
+        "READY" | "READY_SUPPLEMENTAL" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
             | "CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "MESSAGE_CREATE" | "MESSAGE_UPDATE" | "MESSAGE_DELETE"
     )
 }
@@ -1073,6 +1107,52 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                     tx.send_lazy(Event::Presences(presences.iter().filter_map(parse_presence).collect()));
                 }
             }
+        }
+        "GUILD_MEMBER_LIST_UPDATE" => {
+            let Some(guild_id) = d["guild_id"].as_str().map(String::from) else { return };
+            let list_id = d["id"].as_str().unwrap_or("").to_string();
+            let groups = d["groups"].as_array().into_iter().flatten()
+                .filter_map(|g| Some((g["id"].as_str()?.to_string(), g["count"].as_u64().unwrap_or(0) as u32)))
+                .collect();
+            let mut members = Vec::new();
+            let mut presences = Vec::new();
+            let mut item = |v: &mut Value| -> Option<ListItem> {
+                if let Some(g) = v.get("group") {
+                    return Some(ListItem::Group(g["id"].as_str()?.to_string(), g["count"].as_u64().unwrap_or(0) as u32));
+                }
+                let m = v.get_mut("member")?;
+                if let Some(p) = m.get("presence").and_then(parse_presence) {
+                    presences.push(p);
+                }
+                let member: Member = serde_json::from_value(m.take()).ok()?;
+                let id = member.user.as_ref()?.id.clone();
+                members.push(member);
+                Some(ListItem::Member(id))
+            };
+            let range = |v: &Value| -> [u32; 2] { [v[0].as_u64().unwrap_or(0) as u32, v[1].as_u64().unwrap_or(0) as u32] };
+            let mut ops = Vec::new();
+            for op in d["ops"].as_array_mut().into_iter().flatten() {
+                let index = op["index"].as_u64().unwrap_or(0) as usize;
+                let parsed = match op["op"].as_str().unwrap_or("") {
+                    "SYNC" => Some(ListOp::Sync {
+                        range: range(&op["range"]),
+                        items: op["items"].as_array_mut().into_iter().flatten().filter_map(&mut item).collect(),
+                    }),
+                    "INSERT" => item(&mut op["item"]).map(|item| ListOp::Insert { index, item }),
+                    "UPDATE" => item(&mut op["item"]).map(|item| ListOp::Update { index, item }),
+                    "DELETE" => Some(ListOp::Delete { index }),
+                    "INVALIDATE" => Some(ListOp::Invalidate { range: range(&op["range"]) }),
+                    _ => None,
+                };
+                ops.extend(parsed);
+            }
+            if !members.is_empty() {
+                tx.send(Event::GuildMembers(guild_id.clone(), members));
+            }
+            if !presences.is_empty() {
+                tx.send_lazy(Event::Presences(presences));
+            }
+            tx.send(Event::MemberList { guild_id, list_id, groups, ops });
         }
         "PRESENCE_UPDATE" => {
             if let Some(p) = parse_presence(&d) {
@@ -1764,6 +1844,40 @@ mod tests {
     }
 
     /// 比べるために、dispatch が出すイベントと音声タスクへの転送を文字列にする
+    #[test]
+    fn member_list_subscribes_by_range_and_parses_updates() {
+        let sub = member_subscription("10", "20", &[[0, 99], [100, 199]]);
+        assert_eq!(sub["op"], 37, "全員を取る op 8 ではなく、範囲の購読");
+        assert_eq!(sub["d"]["subscriptions"]["10"]["channels"]["20"], json!([[0, 99], [100, 199]]));
+        let s = sink();
+        let d = json!({
+            "guild_id": "10", "id": "everyone", "member_count": 3, "online_count": 2,
+            "groups": [{ "id": "online", "count": 2 }, { "id": "offline", "count": 1 }],
+            "ops": [
+                { "op": "SYNC", "range": [0, 99], "items": [
+                    { "group": { "id": "online", "count": 2 } },
+                    { "member": { "user": { "id": "1", "username": "a" }, "roles": [], "presence": { "user": { "id": "1" }, "status": "online", "activities": [] } } },
+                    { "member": { "user": { "id": "2", "username": "b" }, "roles": [] } },
+                    { "group": { "id": "offline", "count": 1 } },
+                ] },
+                { "op": "DELETE", "index": 2 },
+                { "op": "INVALIDATE", "range": [100, 199] },
+            ]
+        });
+        dispatch("GUILD_MEMBER_LIST_UPDATE", d, &s.tx, &s.v_tx);
+        let events: Vec<Event> = s.rx.try_iter().collect();
+        assert!(events.iter().any(|e| matches!(e, Event::GuildMembers(g, m) if g == "10" && m.len() == 2)));
+        assert!(events.iter().any(|e| matches!(e, Event::Presences(p) if p.len() == 1)));
+        let Some(Event::MemberList { guild_id, list_id, groups, ops }) = events.into_iter().find(|e| matches!(e, Event::MemberList { .. })) else { panic!("一覧の差分") };
+        assert_eq!((guild_id.as_str(), list_id.as_str()), ("10", "everyone"));
+        assert_eq!(groups, vec![("online".to_string(), 2), ("offline".to_string(), 1)]);
+        assert_eq!(ops[0], ListOp::Sync { range: [0, 99], items: vec![
+            ListItem::Group("online".into(), 2), ListItem::Member("1".into()), ListItem::Member("2".into()), ListItem::Group("offline".into(), 1),
+        ] });
+        assert_eq!(ops[1], ListOp::Delete { index: 2 });
+        assert_eq!(ops[2], ListOp::Invalidate { range: [100, 199] });
+    }
+
     #[test]
     fn reconnect_backs_off_and_stops_on_fatal_codes() {
         // 1, 2, 4 … 秒と延び、60 秒で止まる（揺らぎは 1 秒未満）

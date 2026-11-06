@@ -1218,6 +1218,73 @@ const MEMBER_HEAD_H: f32 = 40.0;
 enum MemberRow {
     Header(String),
     Member(usize),
+    /// Discord からまだ届いていない行
+    Placeholder,
+}
+
+/// Discord が並べて送ってくるメンバー一覧（GUILD_MEMBER_LIST_UPDATE を当てたもの）
+#[derive(Default)]
+struct ServerMemberList {
+    /// どのチャンネルの一覧として購読したか
+    channel_id: String,
+    /// 一覧の ID（見える人が同じチャンネルは同じ一覧）。最初の SYNC で決まり、違う ID の差分は無視する
+    list_id: Option<String>,
+    groups: Vec<(String, u32)>,
+    /// 行ごとの中身。None はまだ届いていない
+    items: Vec<Option<net::ListItem>>,
+}
+
+impl ServerMemberList {
+    /// 差分を当てる。当てたら true
+    fn apply(&mut self, list_id: &str, groups: Vec<(String, u32)>, ops: Vec<net::ListOp>) -> bool {
+        match &self.list_id {
+            Some(id) if id != list_id => return false,
+            None if !ops.iter().any(|o| matches!(o, net::ListOp::Sync { .. })) => return false,
+            _ => {}
+        }
+        self.list_id = Some(list_id.to_string());
+        for op in ops {
+            match op {
+                net::ListOp::Sync { range, items } => {
+                    let start = range[0] as usize;
+                    if self.items.len() < start + items.len() {
+                        self.items.resize(start + items.len(), None);
+                    }
+                    for (k, item) in items.into_iter().enumerate() {
+                        self.items[start + k] = Some(item);
+                    }
+                }
+                net::ListOp::Insert { index, item } => {
+                    let i = index.min(self.items.len());
+                    self.items.insert(i, Some(item));
+                }
+                net::ListOp::Update { index, item } => {
+                    if index >= self.items.len() {
+                        self.items.resize(index + 1, None);
+                    }
+                    self.items[index] = Some(item);
+                }
+                net::ListOp::Delete { index } => {
+                    if index < self.items.len() {
+                        self.items.remove(index);
+                    }
+                }
+                net::ListOp::Invalidate { range } => {
+                    let end = (range[1] as usize + 1).min(self.items.len());
+                    for item in self.items.iter_mut().take(end).skip(range[0] as usize) {
+                        *item = None;
+                    }
+                }
+            }
+        }
+        // 全体の行数 = 各グループの見出し + 人数。まだ届いていない所は None のまま
+        if !groups.is_empty() {
+            let total: usize = groups.iter().filter(|g| g.1 > 0).map(|g| g.1 as usize + 1).sum();
+            self.items.resize(total, None);
+            self.groups = groups;
+        }
+        true
+    }
 }
 
 /// グループ分け・並べ替え済みのメンバーリスト（ver が変わるまで使い回す）
@@ -1232,6 +1299,36 @@ struct MemberListCache {
 }
 
 impl MemberListCache {
+    /// Discord が並べた一覧から作る（行の順番 = 一覧の順番。見えている行の番号をそのまま購読に使える）
+    fn from_server(gid: &str, ver: u64, list: &ServerMemberList, members: &[Member], roles: &[Role]) -> Self {
+        let index: HashMap<&str, usize> = members.iter().enumerate().filter_map(|(i, m)| m.user.as_ref().map(|u| (u.id.as_str(), i))).collect();
+        let mut out = MemberListCache { gid: gid.to_string(), ver, ..Default::default() };
+        for item in &list.items {
+            out.tops.push(out.height);
+            match item {
+                Some(net::ListItem::Group(id, count)) => {
+                    let name = match id.as_str() {
+                        "online" => "オンライン",
+                        "offline" => "オフライン",
+                        id => roles.iter().find(|r| r.id == id).map_or("メンバー", |r| r.name.as_str()),
+                    };
+                    out.height += MEMBER_HEAD_H;
+                    out.rows.push(MemberRow::Header(format!("{name} — {count}")));
+                }
+                Some(net::ListItem::Member(uid)) => {
+                    out.height += MEMBER_ROW_H;
+                    out.rows.push(index.get(uid.as_str()).map_or(MemberRow::Placeholder, |&i| MemberRow::Member(i)));
+                }
+                None => {
+                    out.height += MEMBER_ROW_H;
+                    out.rows.push(MemberRow::Placeholder);
+                }
+            }
+        }
+        out.height += 8.0;
+        out
+    }
+
     fn build(gid: &str, ver: u64, members: &[Member], roles: &[Role], presences: &HashMap<String, Presence>) -> Self {
         let mut hoisted: Vec<&Role> = roles.iter().filter(|r| r.hoist).collect();
         hoisted.sort_by_key(|r| std::cmp::Reverse(r.position));
@@ -1676,7 +1773,12 @@ struct App {
     roles: HashMap<String, Vec<Role>>,
     members: HashMap<String, Vec<Member>>,
     member_index: Option<RecentMemberIndex>,
-    members_requested: HashSet<String>,
+    /// サーバーごとのメンバー一覧（Discord が並べて送ってくるもの。購読中のチャンネルの分）
+    member_lists: HashMap<String, ServerMemberList>,
+    /// 最後に送った購読（サーバー, チャンネル, 範囲）
+    member_sub: Option<(String, String, Vec<[u32; 2]>)>,
+    /// メンバー一覧で見えている行（先頭, 末尾）。この範囲を購読する
+    member_view: (usize, usize),
     show_members: bool,
     show_members_narrow: bool,
     compact_sidebar_closed: bool,
@@ -2002,6 +2104,17 @@ impl App {
                 Event::GuildRoles(gid, roles) => {
                     self.roles.insert(gid, roles);
                     self.member_ver += 1;
+                }
+                Event::MemberList { guild_id, list_id, groups, ops } => {
+                    if let Some(list) = self.member_lists.get_mut(&guild_id) {
+                        if list.apply(&list_id, groups, ops) {
+                            self.member_ver += 1;
+                        }
+                    }
+                }
+                Event::GatewayReady => {
+                    // 一からつながったときは購読が消えているので、次の描画で送り直す
+                    self.member_sub = None;
                 }
                 Event::GuildMembers(gid, members) => {
                     last_member_guild = Some(gid.clone());
@@ -2544,6 +2657,34 @@ impl App {
     /// 未読チャンネルを持つサーバー（DM は None）。サーバーごとに未読全体をなめないよう1回で集める
     fn unread_guilds(&self) -> HashSet<Option<&str>> {
         self.unread.values().map(|g| g.as_deref()).collect()
+    }
+
+    /// 開いているテキストチャンネルのメンバー一覧を、見えている範囲だけ購読する（公式と同じく全員は取らない）。
+    /// 先頭の 100 人は常に、スクロールしたらその辺りの 100 人ずつを足す
+    fn subscribe_member_list(&mut self) {
+        let (Some(gid), Some(cid)) = (self.sel_guild.clone(), self.sel_channel.clone()) else { return };
+        if !self.current_channel().is_some_and(|c| c.is_text()) {
+            return;
+        }
+        let same_channel = self.member_sub.as_ref().is_some_and(|(g, c, _)| *g == gid && *c == cid);
+        let (first, last) = if same_channel { self.member_view } else { (0, 0) };
+        let mut ranges = vec![[0u32, 99]];
+        for chunk in [first / 100, last / 100] {
+            let r = [chunk as u32 * 100, chunk as u32 * 100 + 99];
+            if !ranges.contains(&r) {
+                ranges.push(r);
+            }
+        }
+        if self.member_sub.as_ref().is_some_and(|(g, c, r)| *g == gid && *c == cid && *r == ranges) {
+            return;
+        }
+        if !same_channel || !self.member_lists.get(&gid).is_some_and(|l| l.channel_id == cid) {
+            // 別のチャンネルの一覧は、新しい一覧が届くまで出さない
+            self.member_lists.insert(gid.clone(), ServerMemberList { channel_id: cid.clone(), ..Default::default() });
+            self.member_ver += 1;
+        }
+        self.send(Cmd::SubscribeMembers { guild_id: gid.clone(), channel_id: cid.clone(), ranges: ranges.clone() });
+        self.member_sub = Some((gid, cid, ranges));
     }
 
     // ---- ログイン画面 ----
@@ -3307,6 +3448,7 @@ impl App {
             self.last_title = title;
         }
 
+        self.subscribe_member_list();
         // 両側の固定パネルで会話欄が狭くなりすぎる幅では、一覧を初期状態で閉じる。
         let narrow_members = ctx.screen_rect().width() < 900.0;
         let members_shown = if narrow_members { self.show_members_narrow } else { self.show_members };
@@ -3319,20 +3461,35 @@ impl App {
                     let roles = self.roles.get(gid).map(Vec::as_slice).unwrap_or(&[]);
                     // グループ分けと並べ替えは、メンバー・ロール・オンライン状態が変わったときだけやり直す
                     if self.member_cache.gid != *gid || self.member_cache.ver != self.member_ver {
-                        self.member_cache = MemberListCache::build(gid, self.member_ver, members, roles, &self.presences);
+                        // Discord から一覧が届いていればその並びを使い、まだなら手元のメンバーで組み立てる
+                        let server = self.sel_channel.as_ref().and_then(|cid| self.member_lists.get(gid).filter(|l| &l.channel_id == cid && l.list_id.is_some()));
+                        self.member_cache = match server {
+                            Some(list) => MemberListCache::from_server(gid, self.member_ver, list, members, roles),
+                            None => MemberListCache::build(gid, self.member_ver, members, roles, &self.presences),
+                        };
                     }
                     let cache = &self.member_cache;
+                    let mut view = (0, 0);
                     egui::ScrollArea::vertical().id_salt("member_list").auto_shrink(false).show_viewport(ui, |ui, vp| {
                         // 全体の高さだけ確保し、見えている行だけ描く（仮想スクロール）
                         let w = ui.available_width();
                         let (content, _) = ui.allocate_exact_size(vec2(w, cache.height), Sense::hover());
                         let first = cache.tops.partition_point(|&t| t + MEMBER_ROW_H < vp.min.y);
+                        view = (first, first);
                         for (i, row) in cache.rows.iter().enumerate().skip(first) {
                             let top = cache.tops[i];
                             if top > vp.max.y {
                                 break;
                             }
+                            view.1 = i;
                             match row {
+                                MemberRow::Placeholder => {
+                                    // まだ届いていない行（スクロールして購読すると埋まる）
+                                    let rect = Rect::from_min_size(pos2(content.left(), content.top() + top), vec2(w, MEMBER_ROW_H)).shrink2(vec2(8.0, 1.0));
+                                    ui.painter().circle_filled(pos2(rect.left() + 24.0, rect.center().y), 16.0, HOVER());
+                                    let bar = Rect::from_min_size(pos2(rect.left() + 52.0, rect.center().y - 6.0), vec2((rect.width() - 90.0).max(20.0), 12.0));
+                                    ui.painter().rect_filled(bar, 6.0, HOVER());
+                                }
                                 MemberRow::Header(text) => {
                                     ui.painter().text(pos2(content.left() + 16.0, content.top() + top + 28.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), FAINT());
                                 }
@@ -3371,6 +3528,7 @@ impl App {
                             }
                         }
                     });
+                    self.member_view = view;
             };
             if narrow_members {
                 // 狭い画面ではチャット幅を縮めず、ヘッダーの下に一覧を重ねる。
@@ -3940,7 +4098,6 @@ impl App {
                 if !self.channels.contains_key(gid) || !self.roles.contains_key(gid) {
                     self.send(Cmd::LoadGuildChannels(gid.clone()));
                 }
-                if self.members_requested.insert(gid.clone()) { self.send(Cmd::LoadMembers(gid.clone())); }
             }
             if self.sel_guild != g {
                 self.sel_guild = g;
@@ -4027,8 +4184,7 @@ impl App {
                     if !self.channels.contains_key(gid) || !self.roles.contains_key(gid) {
                         self.send(Cmd::LoadGuildChannels(gid.clone()));
                     }
-                    if self.members_requested.insert(gid.clone()) { self.send(Cmd::LoadMembers(gid.clone())); }
-                }
+                    }
                 self.sel_guild = g.clone();
                 self.sel_channel = None;
             }
@@ -4325,9 +4481,6 @@ impl App {
         if let Some(gid) = &guild {
             if !self.channels.contains_key(gid) || !self.roles.contains_key(gid) {
                 self.send(Cmd::LoadGuildChannels(gid.clone()));
-            }
-            if self.members_requested.insert(gid.clone()) {
-                self.send(Cmd::LoadMembers(gid.clone()));
             }
         }
         self.sel_guild = guild;
@@ -6824,6 +6977,7 @@ mod tests {
                     }
                     prev = Some(n);
                 }
+                MemberRow::Placeholder => panic!("手元で組み立てた一覧に仮の行は無い"),
             }
         }
     }
@@ -7921,6 +8075,58 @@ mod tests {
         assert!(toggled, "スイッチで切り替わる");
         assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| matches!(c, Cmd::SetActivity(false))), "Discord に伝える");
         app.settings = Settings::default();
+    }
+
+    #[test]
+    fn member_list_is_subscribed_by_visible_range() {
+        let mut app = bench_app(1);
+        let (tx, ev) = std::sync::mpsc::channel();
+        let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.backend = Some(Backend { cmd, ev });
+        let channel: Channel = serde_json::from_value(serde_json::json!({ "id": "tc", "type": 0, "name": "general", "guild_id": "g" })).unwrap();
+        app.channels.insert("g".into(), vec![channel]);
+        app.sel_guild = Some("g".into());
+        app.sel_channel = Some("tc".into());
+        app.messages.insert("tc".into(), Vec::new());
+        app.show_members = true;
+        let ctx = app.ctx.clone();
+        let input = |events| egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 600.0))), events, ..Default::default() };
+        let subs = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| -> Vec<Vec<[u32; 2]>> {
+            std::iter::from_fn(|| rx.try_recv().ok()).filter_map(|c| match c { Cmd::SubscribeMembers { guild_id, channel_id, ranges } if guild_id == "g" && channel_id == "tc" => Some(ranges), _ => None }).collect()
+        };
+        let _ = ctx.run(input(vec![]), |ctx| app.main_ui(ctx));
+        assert_eq!(subs(&mut rx), vec![vec![[0, 99]]], "開いたら先頭の 100 人だけ購読する");
+        let _ = ctx.run(input(vec![]), |ctx| app.main_ui(ctx));
+        assert!(subs(&mut rx).is_empty(), "同じ購読は送り直さない");
+        // Discord が並べた一覧が届く（300 人のうち先頭だけ中身あり）
+        let user = |id: &str, name: &str| Member { user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None }), nick: None, roles: Vec::new() };
+        tx.send(Event::GuildMembers("g".into(), vec![user("u1", "zeta"), user("u2", "alpha")])).unwrap();
+        tx.send(Event::MemberList {
+            guild_id: "g".into(), list_id: "everyone".into(),
+            groups: vec![("online".into(), 2), ("offline".into(), 298)],
+            ops: vec![net::ListOp::Sync { range: [0, 99], items: vec![net::ListItem::Group("online".into(), 2), net::ListItem::Member("u1".into()), net::ListItem::Member("u2".into())] }],
+        }).unwrap();
+        // 別の一覧の差分は無視する
+        tx.send(Event::MemberList { guild_id: "g".into(), list_id: "other".into(), groups: vec![], ops: vec![net::ListOp::Delete { index: 1 }] }).unwrap();
+        app.poll();
+        let out = ctx.run(input(vec![]), |ctx| app.main_ui(ctx));
+        let texts: Vec<(String, f32)> = out.shapes.iter().filter_map(|c| match &c.shape { Shape::Text(t) => Some((t.galley.text().to_string(), t.pos.y)), _ => None }).collect();
+        let y = |s: &str| texts.iter().find(|t| t.0 == s).map(|t| t.1).unwrap_or_else(|| panic!("{s} が無い"));
+        assert!(y("オンライン — 2") < y("zeta") && y("zeta") < y("alpha"), "Discord の並び（名前順ではない）のまま出す");
+        assert_eq!(app.member_lists["g"].items.len(), 3 + 299, "見出し2つ + 300 人分の行がある");
+        // 下までスクロールすると、その辺りの範囲を足して購読する
+        for _ in 0..40 {
+            let _ = ctx.run(input(vec![egui::Event::PointerMoved(pos2(1300.0, 300.0)), egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -2000.0), modifiers: Default::default() }]), |ctx| app.main_ui(ctx));
+        }
+        let sent = subs(&mut rx);
+        let last = sent.last().expect("スクロールで購読を足す");
+        assert_eq!(last[0], [0, 99]);
+        assert!(last.iter().any(|r| r[0] >= 200), "下の方の範囲: {last:?}");
+        // 一からつながり直したら購読し直す
+        tx.send(Event::GatewayReady).unwrap();
+        app.poll();
+        let _ = ctx.run(input(vec![]), |ctx| app.main_ui(ctx));
+        assert!(!subs(&mut rx).is_empty());
     }
 
     #[test]

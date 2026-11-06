@@ -1,0 +1,33 @@
+# riscord のテーマの見本。~/.config/riscord/themes/ にコピーして、設定 → テーマ で選ぶ。
+# 保存するとすぐ反映される。書いた項目だけが既定（黒テーマ）から変わる。
+name = "見本（夕焼け）"
+author = "riscord"
+description = "夕焼けのようなオレンジの見本テーマ。"
+# font = "~/.local/share/fonts/MyFont.ttf"   # 文字のフォント（無い文字は日本語フォントで出る）
+
+[colors]
+# 色は #rrggbb か、透明度付きの #rrggbbaa
+bg = "#1b1410"          # 画面の地
+rail = "#251b15"        # サーバー一覧・カード
+sidebar = "#211813"     # ポップアップ・浮いた面
+chat = "#1b1410"        # チャット欄
+input = "#2a1f18"       # 入力欄
+accent = "#ff8a4c"      # アクセント（ボタン・選択）
+text = "#f0e0d6"        # 本文
+muted = "#b39a8a"       # 控えめな文字
+faint = "#85705f"       # 薄い文字（時刻など）
+strong = "#fff3ea"      # 強調する文字（名前など）
+hover = "#2a1f18"
+selected = "#3a2a20"
+msg_hover = "#221912"
+divider = "#2e221a"
+border = "#45332a"
+link = "#ffb07a"
+embed_bg = "#251b15"
+widget = "#3a2a20"
+widget_hover = "#4d382b"
+# 他に使えるキー: userbar danger warning success online idle dnd offline call_bg embed_bar reply_line
+
+[background]
+# image = "~/Pictures/wallpaper.png"   # チャット欄の背景（ファイルのパスか https:// の URL）
+opacity = 0.35                         # 画像の見え具合（0〜1）

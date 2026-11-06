@@ -28,6 +28,9 @@ pub struct User {
     pub global_name: Option<String>,
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Nitro の種類（0/なし = 無料、1 = Classic、2 = Nitro、3 = Basic）。自分の情報にだけ入る
+    #[serde(default)]
+    pub premium_type: Option<u8>,
 }
 
 impl User {

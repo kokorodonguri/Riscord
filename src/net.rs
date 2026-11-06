@@ -139,7 +139,11 @@ pub enum Cmd {
     LoadSticker { id: String, format: u8 },
     /// online / idle / dnd / invisible
     SetStatus(String),
+    /// アクティビティに「Riscord をプレイ中」を出すか
+    SetActivity(bool),
     LoadProfile { user_id: String, guild_id: Option<String> },
+    /// 自分のプロフィールを変える。None は変えない。空の文字列は消す。avatar は Some(None) で削除、Some(Some(data URI)) で変更
+    UpdateProfile { global_name: Option<String>, pronouns: Option<String>, bio: Option<String>, avatar: Option<Option<String>> },
     /// ボイスチャンネル / DM通話に入る。ring=true なら相手を呼び出す
     JoinVoice { guild_id: Option<String>, channel_id: String, ring: bool },
     LeaveVoice,
@@ -162,6 +166,11 @@ pub enum VoiceStatus {
 pub enum Event {
     Me(User),
     AuthFailed,
+    LoginFailed,
+    MessagesFailed(String),
+    ComposeResult { channel_id: String, result: Result<Option<Message>, ()> },
+    /// 送信・編集が Discord に断られた（確実に届いていない）。理由を添えて ComposeResult の直前に送る
+    ComposeRejected { channel_id: String, reason: String },
     Guilds(Vec<Guild>),
     Dms(Vec<Channel>),
     GuildChannels(String, Vec<Channel>),
@@ -180,6 +189,8 @@ pub enum Event {
     Sticker(String, Result<crate::sticker::Frames, String>),
     Presences(Vec<(String, Presence)>),
     Profile { key: String, result: Result<ProfileData, String> },
+    /// UpdateProfile の結果。失敗したら利用者向けの理由
+    ProfileSaved(Result<(), String>),
     VoiceStates(Vec<VoiceState>),
     Voice(VoiceStatus),
     /// DM通話の状態（呼び出し中のユーザー）
@@ -215,9 +226,16 @@ impl Tx {
     }
 }
 
+/// 自分の見え方（ステータスと、アクティビティに Riscord を出すか）。接続するたびと変えたときに Discord へ送る
+#[derive(Clone)]
+pub struct MyPresence {
+    pub status: String,
+    pub activity: bool,
+}
+
 pub fn spawn(
     token: String,
-    status: String,
+    status: MyPresence,
     ctx: eframe::egui::Context,
     ctl: Arc<VoiceCtl>,
 ) -> (UnboundedSender<Cmd>, std::sync::mpsc::Receiver<Event>) {
@@ -258,6 +276,18 @@ impl Api {
     }
 }
 
+// サーバー指定の待機時間が不正なら、パニックや無限待機を避けて操作を失敗として返す。
+fn retry_delay(value: &Value) -> Result<Duration> {
+    let seconds = match value.get("retry_after") {
+        None | Some(Value::Null) => 1.0,
+        Some(v) => v.as_f64().ok_or_else(|| anyhow::anyhow!("invalid retry_after"))?,
+    };
+    if !seconds.is_finite() || !(0.0..=86_400.0).contains(&seconds) {
+        bail!("invalid retry_after");
+    }
+    Ok(Duration::from_secs_f64(seconds.max(0.1)))
+}
+
 impl Api {
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<reqwest::Response> {
         self.request_with(method, path, |req| match body {
@@ -280,8 +310,7 @@ impl Api {
             match r.status() {
                 StatusCode::TOO_MANY_REQUESTS => {
                     let v: Value = r.json().await.unwrap_or_default();
-                    let secs = v["retry_after"].as_f64().unwrap_or(1.0);
-                    tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+                    tokio::time::sleep(retry_delay(&v)?).await;
                 }
                 StatusCode::UNAUTHORIZED => return Err(anyhow::Error::msg(UnauthorizedMarker)),
                 s if !s.is_success() => {
@@ -299,11 +328,6 @@ impl Api {
 
     async fn post(&self, path: &str, body: &Value) -> Result<()> {
         self.request(reqwest::Method::POST, path, Some(body)).await?;
-        Ok(())
-    }
-
-    async fn patch(&self, path: &str, body: &Value) -> Result<()> {
-        self.request(reqwest::Method::PATCH, path, Some(body)).await?;
         Ok(())
     }
 
@@ -334,6 +358,25 @@ impl std::fmt::Display for HttpError {
 }
 impl std::error::Error for HttpError {}
 
+/// 送信・編集の失敗が「Discord に断られた（届いていない）」ものなら、その理由を利用者向けの言葉で返す。
+/// 通信が途中で切れたなど、届いたか分からないときは None
+pub fn compose_reject_reason(e: &anyhow::Error) -> Option<String> {
+    let h = e.downcast_ref::<HttpError>()?;
+    let body: Value = h.text.find('{').and_then(|i| serde_json::from_str(&h.text[i..]).ok()).unwrap_or_default();
+    let code = body["code"].as_u64().unwrap_or(0);
+    let raw = body.to_string();
+    Some(match (h.status, code) {
+        (413, _) | (_, 40005) => "ファイルが大きすぎます".into(),
+        (_, 50035) if raw.contains("BASE_TYPE_MAX_LENGTH") || raw.contains("\"content\"") => "本文が長すぎます".into(),
+        (_, 50006) => "空のメッセージは送信できません".into(),
+        (_, 20016) => "低速モード中です。しばらく待ってから送ってください".into(),
+        (_, 50007) => "相手がDMを受け付けていません".into(),
+        (403, _) | (_, 50013) | (_, 50001) => "このチャンネルで送信する権限がありません".into(),
+        (s, _) if (400..500).contains(&s) && s != 429 => format!("Discord に拒否されました（{s}）"),
+        _ => return None,
+    })
+}
+
 fn is_forbidden(e: &anyhow::Error) -> bool {
     e.downcast_ref::<HttpError>().is_some_and(|h| h.status == 403)
 }
@@ -342,11 +385,17 @@ fn is_unauthorized(e: &anyhow::Error) -> bool {
     e.downcast_ref::<UnauthorizedMarker>().is_some()
 }
 
-async fn run(token: String, status: String, tx: Tx, mut cmd_rx: UnboundedReceiver<Cmd>, ctl: Arc<VoiceCtl>) {
-    let http = reqwest::Client::builder()
+fn api_client(connect_timeout: Duration, read_timeout: Duration) -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) riscord/0.1")
-        .build()
-        .expect("http client");
+        .connect_timeout(connect_timeout)
+        // 全体の時間ではなく受信の無通信時間を制限し、大きな添付の送信を妨げない。
+        .read_timeout(read_timeout)
+        .build()?)
+}
+
+async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedReceiver<Cmd>, ctl: Arc<VoiceCtl>) {
+    let http = api_client(Duration::from_secs(15), Duration::from_secs(30)).expect("http client");
     let api = Api { http, token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
 
     let me_id;
@@ -356,7 +405,10 @@ async fn run(token: String, status: String, tx: Tx, mut cmd_rx: UnboundedReceive
             tx.send(Event::Me(me))
         }
         Err(e) if is_unauthorized(&e) => return tx.send(Event::AuthFailed),
-        Err(e) => return tx.send(Event::Error(format!("ログイン失敗: {e:#}"))),
+        Err(e) => {
+            eprintln!("ログイン失敗: {e:#}");
+            return tx.send(Event::LoginFailed);
+        }
     }
 
     let status = Arc::new(Mutex::new(status));
@@ -389,9 +441,22 @@ async fn run(token: String, status: String, tx: Tx, mut cmd_rx: UnboundedReceive
     }
 
     while let Some(cmd) = cmd_rx.recv().await {
+        if let Cmd::SetActivity(on) = &cmd {
+            let payload = {
+                let mut p = status.lock().unwrap();
+                p.activity = *on;
+                presence_payload(&p)
+            };
+            let _ = gw_tx.send(payload);
+            continue;
+        }
         if let Cmd::SetStatus(s) = &cmd {
-            *status.lock().unwrap() = s.clone();
-            let _ = gw_tx.send(presence_payload(s));
+            let payload = {
+                let mut p = status.lock().unwrap();
+                p.status = s.clone();
+                presence_payload(&p)
+            };
+            let _ = gw_tx.send(payload);
             continue;
         }
         if let Cmd::LoadMembers(gid) = &cmd {
@@ -455,7 +520,11 @@ async fn run(token: String, status: String, tx: Tx, mut cmd_rx: UnboundedReceive
                         tx.send(Event::NoAccess(cid));
                         Ok(())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => {
+                        eprintln!("メッセージ取得失敗: {e:#}");
+                        tx.send(Event::MessagesFailed(cid));
+                        Ok(())
+                    }
                 },
                 Cmd::LoadOlder { channel_id, before } => {
                     let r = api.get::<Vec<Message>>(&format!("/channels/{channel_id}/messages?before={before}&limit={HISTORY_PAGE}")).await;
@@ -471,12 +540,17 @@ async fn run(token: String, status: String, tx: Tx, mut cmd_rx: UnboundedReceive
                         _ => Ok(()),
                     }
                 }
-                Cmd::LoadMembers(_) | Cmd::SetStatus(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
+                Cmd::LoadMembers(_) | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
                 Cmd::Ack { channel_id, message_id } => {
                     api.post(&format!("/channels/{channel_id}/messages/{message_id}/ack"), &json!({ "token": null })).await
                 }
                 Cmd::StopRinging(cid) => {
                     api.post(&format!("/channels/{cid}/call/stop-ringing"), &json!({ "recipients": null })).await
+                }
+                Cmd::UpdateProfile { global_name, pronouns, bio, avatar } => {
+                    let result = update_profile(&api, &tx, global_name, pronouns, bio, avatar).await;
+                    tx.send(Event::ProfileSaved(result));
+                    Ok(())
                 }
                 Cmd::LoadProfile { user_id, guild_id } => {
                     let key = profile_key(&user_id, guild_id.as_deref());
@@ -495,19 +569,36 @@ async fn run(token: String, status: String, tx: Tx, mut cmd_rx: UnboundedReceive
                         body["message_reference"] = json!({ "channel_id": channel_id, "message_id": id });
                     }
                     let path = format!("/channels/{channel_id}/messages");
-                    if files.is_empty() {
-                        api.post(&path, &body).await
+                    let response = if files.is_empty() {
+                        api.request(reqwest::Method::POST, &path, Some(&body)).await
                     } else {
-                        body["attachments"] =
-                            files.iter().enumerate().map(|(i, (name, _))| json!({ "id": i, "filename": name })).collect();
+                        body["attachments"] = files.iter().enumerate().map(|(i, (name, _))| json!({ "id": i, "filename": name })).collect();
                         let payload = body.to_string();
-                        api.request_with(reqwest::Method::POST, &path, |req| req.multipart(upload_form(&payload, &files)))
-                            .await
-                            .map(drop)
-                    }
+                        api.request_with(reqwest::Method::POST, &path, |req| req.multipart(upload_form(&payload, &files))).await
+                    };
+                    let result = match response {
+                        Ok(response) => Ok(response.json::<Message>().await.ok()),
+                        Err(e) => {
+                            eprintln!("メッセージ送信失敗: {e:#}");
+                            if let Some(reason) = compose_reject_reason(&e) { tx.send(Event::ComposeRejected { channel_id: channel_id.clone(), reason }); }
+                            Err(())
+                        }
+                    };
+                    tx.send(Event::ComposeResult { channel_id, result });
+                    Ok(())
                 }
                 Cmd::Edit { channel_id, id, content } => {
-                    api.patch(&format!("/channels/{channel_id}/messages/{id}"), &json!({ "content": content })).await
+                    let response = api.request(reqwest::Method::PATCH, &format!("/channels/{channel_id}/messages/{id}"), Some(&json!({ "content": content }))).await;
+                    let result = match response {
+                        Ok(response) => Ok(response.json::<Message>().await.ok()),
+                        Err(e) => {
+                            eprintln!("メッセージ編集失敗: {e:#}");
+                            if let Some(reason) = compose_reject_reason(&e) { tx.send(Event::ComposeRejected { channel_id: channel_id.clone(), reason }); }
+                            Err(())
+                        }
+                    };
+                    tx.send(Event::ComposeResult { channel_id, result });
+                    Ok(())
                 }
                 Cmd::Delete { channel_id, id } => api.delete(&format!("/channels/{channel_id}/messages/{id}")).await,
             };
@@ -566,6 +657,62 @@ async fn load_profile(api: &Api, user_id: &str, guild_id: Option<&str>) -> Resul
     Ok(p)
 }
 
+/// 表示名・アバターは /users/@me、代名詞・自己紹介は /users/@me/profile で変える。
+/// 表示名かアバターを変えたら、新しい自分の情報を Event::Me で送る
+async fn update_profile(
+    api: &Api,
+    tx: &Tx,
+    global_name: Option<String>,
+    pronouns: Option<String>,
+    bio: Option<String>,
+    avatar: Option<Option<String>>,
+) -> std::result::Result<(), String> {
+    let mut user = serde_json::Map::new();
+    if let Some(n) = global_name {
+        user.insert("global_name".into(), if n.is_empty() { Value::Null } else { Value::String(n) });
+    }
+    if let Some(a) = avatar {
+        user.insert("avatar".into(), a.map_or(Value::Null, Value::String));
+    }
+    if !user.is_empty() {
+        let r = api.request(reqwest::Method::PATCH, "/users/@me", Some(&Value::Object(user))).await.map_err(|e| profile_error_text(&e))?;
+        if let Ok(u) = r.json::<User>().await {
+            tx.send(Event::Me(u));
+        }
+    }
+    let mut profile = serde_json::Map::new();
+    if let Some(p) = pronouns {
+        profile.insert("pronouns".into(), Value::String(p));
+    }
+    if let Some(b) = bio {
+        profile.insert("bio".into(), Value::String(b));
+    }
+    if !profile.is_empty() {
+        api.request(reqwest::Method::PATCH, "/users/@me/profile", Some(&Value::Object(profile))).await.map_err(|e| profile_error_text(&e))?;
+    }
+    Ok(())
+}
+
+/// プロフィールの保存に失敗した理由（利用者向け）
+pub fn profile_error_text(e: &anyhow::Error) -> String {
+    eprintln!("プロフィール保存失敗: {e:#}");
+    let Some(h) = e.downcast_ref::<HttpError>() else {
+        return "保存できませんでした。通信状態を確認してください".into();
+    };
+    let t = &h.text;
+    if t.contains("captcha_key") {
+        "Discord が確認（CAPTCHA）を求めました。この変更は公式アプリで行ってください".into()
+    } else if t.contains("AVATAR_RATE_LIMIT") || t.contains("too fast") {
+        "アバターの変更が多すぎます。しばらく待ってから試してください".into()
+    } else if t.contains("PASSWORD") {
+        "パスワードの確認が必要な変更です。公式アプリで行ってください".into()
+    } else if t.contains("50035") {
+        "入力内容を受け付けてもらえませんでした。使えない言葉や長さを確認してください".into()
+    } else {
+        format!("保存できませんでした（{}）", h.status)
+    }
+}
+
 fn upload_form(payload: &str, files: &[(String, Vec<u8>)]) -> reqwest::multipart::Form {
     let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
     for (i, (name, data)) in files.iter().enumerate() {
@@ -580,15 +727,24 @@ fn nonce() -> String {
     ((ms - EPOCH) << 22).to_string()
 }
 
-fn presence_payload(status: &str) -> Value {
-    json!({ "op": 3, "d": { "status": status, "since": 0, "activities": [], "afk": false } })
+fn presence_payload(p: &MyPresence) -> Value {
+    json!({ "op": 3, "d": presence_data(p) })
+}
+
+/// 接続時（identify）と変更時（op 3）に送る自分の見え方
+fn presence_data(p: &MyPresence) -> Value {
+    // 経過時間が「〜分間プレイ中」と出るよう、起動した時刻を開始時刻にする（再接続しても数え直さない）
+    static STARTED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let start = *STARTED.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64);
+    let activities = if p.activity { json!([{ "name": "Riscord", "type": 0, "timestamps": { "start": start } }]) } else { json!([]) };
+    json!({ "status": p.status, "since": 0, "activities": activities, "afk": false })
 }
 
 async fn gateway_loop(
     token: String,
     tx: Tx,
     mut out: UnboundedReceiver<Value>,
-    status: Arc<Mutex<String>>,
+    status: Arc<Mutex<MyPresence>>,
     v_tx: UnboundedSender<VoiceMsg>,
 ) {
     loop {
@@ -606,7 +762,7 @@ async fn gateway_once(
     token: &str,
     tx: &Tx,
     out: &mut UnboundedReceiver<Value>,
-    status: &Mutex<String>,
+    status: &Mutex<MyPresence>,
     v_tx: &UnboundedSender<VoiceMsg>,
 ) -> Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(GATEWAY).await?;
@@ -631,7 +787,7 @@ async fn gateway_once(
         "d": {
             "token": token,
             "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
-            "presence": { "status": status.lock().unwrap().clone(), "since": 0, "activities": [], "afk": false },
+            "presence": presence_data(&status.lock().unwrap()),
             "compress": false
         }
     });
@@ -979,6 +1135,32 @@ async fn voice_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn api_read_timeout_releases_a_stalled_request() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release, done) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            let _ = done.recv_timeout(Duration::from_secs(5));
+        });
+        let client = api_client(Duration::from_secs(1), Duration::from_millis(100)).unwrap();
+        let result = client.get(format!("http://{addr}/")).send().await;
+        let _ = release.send(());
+        server.join().unwrap();
+        assert!(result.unwrap_err().is_timeout());
+    }
+
+    #[test]
+    fn rate_limit_delay_validates_untrusted_values() {
+        assert_eq!(retry_delay(&json!({})).unwrap(), Duration::from_secs(1));
+        assert_eq!(retry_delay(&json!({ "retry_after": 1.5 })).unwrap(), Duration::from_millis(1500));
+        assert_eq!(retry_delay(&json!({ "retry_after": 0 })).unwrap(), Duration::from_millis(100));
+        for invalid in [json!(-1), json!(1e100), json!("bad"), json!([])] {
+            assert!(retry_delay(&json!({ "retry_after": invalid })).is_err());
+        }
+    }
 
     /// 大きいサーバーの GUILD_MEMBERS_CHUNK（1000人＋オンライン状態）相当
     fn members_chunk() -> Value {
@@ -1465,6 +1647,39 @@ mod tests {
     }
 
     /// 比べるために、dispatch が出すイベントと音声タスクへの転送を文字列にする
+    #[test]
+    fn presence_shows_riscord_activity_only_when_enabled() {
+        let on = presence_payload(&MyPresence { status: "idle".into(), activity: true });
+        assert_eq!(on["op"], 3);
+        assert_eq!(on["d"]["status"], "idle");
+        assert_eq!(on["d"]["activities"][0]["name"], "Riscord");
+        assert_eq!(on["d"]["activities"][0]["type"], 0, "プレイ中");
+        assert!(on["d"]["activities"][0]["timestamps"]["start"].as_u64().unwrap() > 0);
+        let again = presence_payload(&MyPresence { status: "online".into(), activity: true });
+        assert_eq!(again["d"]["activities"][0]["timestamps"], on["d"]["activities"][0]["timestamps"], "開始時刻は変わらない");
+        let off = presence_payload(&MyPresence { status: "online".into(), activity: false });
+        assert_eq!(off["d"]["activities"], json!([]));
+    }
+
+    #[test]
+    fn profile_errors_are_explained() {
+        let err = |status: u16, body: &str| anyhow::Error::new(HttpError { status, text: format!("PATCH /users/@me: {status} {body}") });
+        assert!(profile_error_text(&err(400, r#"{"captcha_key": ["captcha-required"]}"#)).contains("CAPTCHA"));
+        assert!(profile_error_text(&err(400, r#"{"code": 50035, "errors": {"avatar": {"_errors": [{"code": "AVATAR_RATE_LIMIT"}]}}}"#)).contains("アバターの変更が多すぎます"));
+        assert!(profile_error_text(&err(400, r#"{"code": 50035, "errors": {"bio": {}}}"#)).contains("受け付けてもらえません"));
+        assert!(profile_error_text(&anyhow::anyhow!("timeout")).contains("通信状態"));
+    }
+
+    #[test]
+    fn compose_rejections_are_explained() {
+        let err = |status: u16, body: &str| anyhow::Error::new(HttpError { status, text: format!("POST /channels/1/messages: {status} {body}") });
+        assert_eq!(compose_reject_reason(&err(413, "")).as_deref(), Some("ファイルが大きすぎます"));
+        assert_eq!(compose_reject_reason(&err(400, r#"{"code": 50035, "errors": {"content": {"_errors": [{"code": "BASE_TYPE_MAX_LENGTH"}]}}}"#)).as_deref(), Some("本文が長すぎます"));
+        assert_eq!(compose_reject_reason(&err(403, r#"{"code": 50013}"#)).as_deref(), Some("このチャンネルで送信する権限がありません"));
+        assert!(compose_reject_reason(&err(500, "")).is_none(), "サーバー側の失敗は届いたか分からない");
+        assert!(compose_reject_reason(&anyhow::anyhow!("timeout")).is_none());
+    }
+
     fn describe(e: &Event) -> String {
         match e {
             Event::Status(s) => format!("Status({s})"),

@@ -33,6 +33,12 @@ flate2 = "1.1"
 arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }
 # ＋メニューの「ファイルをアップロード」のファイル選択ダイアログ。Linux は xdg-desktop-portal 経由（GTK を直接リンクしない）
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# QR コードでのログイン（src/login.rs）。Remote Auth の鍵は RSA-OAEP(SHA-256)、QR は自前で描くので画像出力は使わない
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+qrcode = { version = "0.14", default-features = false }
 
 [profile.release]
 lto = "thin"

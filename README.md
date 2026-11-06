@@ -21,7 +21,13 @@ cargo run --release
 
 ビルドのみ行う場合は `cargo build --release`、テストを実行する場合は `cargo test` を使います。Linux のファイル選択には xdg-desktop-portal を使用します。
 
-ログイン画面で Discord のトークンを入力します。環境変数 `DISCORD_TOKEN` でも指定でき、保存済みトークンより優先されます。ログイン画面で保存を選択した場合、トークンは OS の設定ディレクトリ内の `riscord/token` に保存されます（Linux の標準設定では `~/.config/riscord/token`）。
+ログイン画面では次のいずれかでログインします。
+
+- **QR コード**（おすすめ）: スマホの Discord アプリで読み取り、承認します。パスワードを Riscord に入力しません。
+- **メールアドレスとパスワード**: 認証アプリによる二段階認証に対応しています。Discord が CAPTCHA を求めた場合は Riscord では表示できないため、QR コードを使ってください。
+- **トークン**: 「トークンでログイン」から入力します。
+
+どの方法でも、Riscord が受け取るのは同じユーザートークンです。環境変数 `DISCORD_TOKEN` でも指定でき、保存済みトークンより優先されます。ログイン画面で保存を選択した場合、トークンは OS の設定ディレクトリ内の `riscord/token` に保存されます（Linux の標準設定では `~/.config/riscord/token`）。
 
 ## テーマ
 

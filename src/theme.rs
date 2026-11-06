@@ -10,9 +10,11 @@
 //! bg = "#0b1020"
 //! accent = "#7aa2f7"
 //!
-//! [background]      # チャット欄の背景画像（省略可）
+//! [background]      # 背景画像（省略可）
 //! image = "~/Pictures/wall.png"   # ファイルのパスか https:// の URL
 //! opacity = 0.35                  # 画像の見え具合 0〜1
+//! area = "window"                 # "chat"（チャット欄だけ・既定）か "window"（ウィンドウ全体。
+//!                                 #  各面の色を #rrggbbaa で透かすと壁紙が見える）
 //! ```
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
@@ -113,6 +115,18 @@ pub fn format_color(c: Color32) -> String {
 pub struct Background {
     pub image: Option<String>,
     pub opacity: Option<f32>,
+    /// "chat"（チャット欄だけ）/ "window"（ウィンドウ全体）
+    pub area: Option<String>,
+}
+
+/// 背景画像の敷き方
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackgroundImage {
+    pub uri: String,
+    /// 画像の見え具合 0〜1（残りを地の色で覆う）
+    pub opacity: f32,
+    /// ウィンドウ全体に敷く
+    pub window: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -120,6 +134,8 @@ pub struct Background {
 pub struct ThemeFile {
     pub name: Option<String>,
     pub author: Option<String>,
+    /// 設定画面のカードに出す説明
+    pub description: Option<String>,
     pub font: Option<String>,
     pub colors: BTreeMap<String, String>,
     pub background: Background,
@@ -130,7 +146,7 @@ pub struct ThemeFile {
 pub struct Resolved {
     pub colors: Vec<Color32>,
     /// 背景画像の URI（file は bytes:// で読み込む）と見え具合
-    pub background: Option<(String, f32)>,
+    pub background: Option<BackgroundImage>,
     pub font: Option<PathBuf>,
 }
 
@@ -170,6 +186,17 @@ pub const BUILTIN: &[(&str, &str, &[(&str, &str)])] = &[
         ],
     ),
 ];
+
+/// 組み込みテーマの説明（設定画面のカード用）
+pub fn builtin_description(key: &str) -> &'static str {
+    match key {
+        "black" => "真っ黒な地に白い文字。Vesktop の黒テーマに合わせた既定の配色。",
+        "dark" => "公式 Discord のダークテーマに近い灰色の配色。",
+        "midnight" => "夜空のような紺色に、青いアクセント。",
+        "sakura" => "暗いピンクの地に、桜色のアクセント。",
+        _ => "",
+    }
+}
 
 pub fn themes_dir(config_dir: &Path) -> PathBuf {
     config_dir.join("themes")
@@ -249,23 +276,40 @@ pub fn resolve(
     }
     let image = bg_override.image.clone().filter(|s| !s.trim().is_empty()).or(file.background.image.clone());
     let opacity = bg_override.opacity.or(file.background.opacity).unwrap_or(0.35).clamp(0.0, 1.0);
-    let background = image.filter(|s| !s.trim().is_empty()).map(|s| (image_uri(&s, dir), opacity));
+    let window = bg_override.area.as_deref().or(file.background.area.as_deref()) == Some("window");
+    let background = image.filter(|s| !s.trim().is_empty()).map(|s| BackgroundImage { uri: image_uri(&s, dir), opacity, window });
     let font = file.font.as_deref().map(expand_home).map(|p| if p.is_relative() { dir.join(p) } else { p });
     (Resolved { colors, background, font }, error)
 }
 
+/// TOML の文字列にする（" と \ と制御文字だけ \uXXXX などで書き、それ以外の文字はそのまま）
+fn toml_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// 今の配色をテーマファイルにする（自分のテーマを作る出発点）
 pub fn export(name: &str, colors: &[Color32], background: &Background) -> String {
-    let mut s = format!("name = {name:?}\n# font = \"/path/to/font.ttf\"\n\n[colors]\n");
+    let mut s = format!("name = {}\n# font = \"/path/to/font.ttf\"\n\n[colors]\n", toml_str(name));
     for ((key, label, _), c) in KEYS.iter().zip(colors) {
         s.push_str(&format!("{key} = \"{}\"   # {label}\n", format_color(*c)));
     }
     s.push_str("\n[background]\n");
     match &background.image {
-        Some(i) if !i.is_empty() => s.push_str(&format!("image = {i:?}\n")),
+        Some(i) if !i.is_empty() => s.push_str(&format!("image = {}\n", toml_str(i))),
         _ => s.push_str("# image = \"~/Pictures/wallpaper.png\"\n"),
     }
     s.push_str(&format!("opacity = {}\n", background.opacity.unwrap_or(0.35)));
+    s.push_str(&format!("area = {}   # \"chat\" か \"window\"\n", toml_str(background.area.as_deref().unwrap_or("chat"))));
     s
 }
 
@@ -298,15 +342,27 @@ mod tests {
         assert_eq!(at("bg"), Color32::from_rgb(0x11, 0x22, 0x33));
         assert_eq!(at("accent"), Color32::from_rgb(0xab, 0xcd, 0xef));
         assert_eq!(at("text"), KEYS[7].2, "書いていない色は既定のまま");
-        let (uri, op) = r.background.unwrap();
-        assert_eq!(uri, format!("file://{}", dir.join("wall.png").display()));
-        assert_eq!(op, 0.5);
+        let b = r.background.unwrap();
+        assert_eq!(b.uri, format!("file://{}", dir.join("wall.png").display()));
+        assert_eq!(b.opacity, 0.5);
+        assert!(!b.window, "既定はチャット欄だけ");
         // 壊れたファイルは既定に戻してエラーを返す
         std::fs::write(dir.join("bad.toml"), "[colors\n").unwrap();
         let (r, err) = resolve("bad.toml", &dir, &BTreeMap::new(), &Background::default());
         assert!(err.is_some());
         assert_eq!(r.colors[0], KEYS[0].2);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 濁点が分かれた名前（か + ゛）や " \ を含むパスも、読み直せる形で書き出す
+    #[test]
+    fn export_escapes_strings_for_toml() {
+        let path = "/home/u/Downloads/いつもありか\u{3099}とう \"x\" \\y.jpg";
+        let bg = Background { image: Some(path.into()), opacity: Some(0.3), area: None };
+        let text = export("名前\"", &current_colors(), &bg);
+        let f: ThemeFile = toml::from_str(&text).unwrap();
+        assert_eq!(f.background.image.as_deref(), Some(path));
+        assert_eq!(f.name.as_deref(), Some("名前\""));
     }
 
     #[test]

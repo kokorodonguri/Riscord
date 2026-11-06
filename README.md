@@ -1,3 +1,4 @@
+![preview](riscord.svg)
 # Riscord
 
 **A lightweight, unofficial Discord desktop client written in Rust (egui), with a Japanese UI.** Native (no Electron), with chat, voice, QR code login and themes. Runs on Linux and Windows.

@@ -747,25 +747,115 @@ async fn gateway_loop(
     status: Arc<Mutex<MyPresence>>,
     v_tx: UnboundedSender<VoiceMsg>,
 ) {
+    let mut session = GatewaySession::default();
+    let mut failures: u32 = 0;
     loop {
-        match gateway_once(&token, &tx, &mut out, &status, &v_tx).await {
-            Ok(()) => tx.send(Status("再接続中…".into())),
-            Err(e) => tx.send(Status(format!("ゲートウェイ切断: {e:#} — 5秒後に再接続"))),
+        let mut ready = false;
+        let end = gateway_once(&token, &tx, &mut out, &status, &v_tx, &mut session, &mut ready).await.unwrap_or_else(|e| {
+            eprintln!("ゲートウェイ切断: {e:#}");
+            GatewayEnd::Resume
+        });
+        // つながった（READY / RESUMED まで行った）なら、待ち時間を最初に戻す
+        if ready {
+            failures = 0;
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        let wait = match end {
+            GatewayEnd::Fatal(msg) => {
+                tx.send(Status(format!("エラー: {msg}")));
+                return;
+            }
+            // 再開できないと言われたら一からログインし直す。Discord の推奨どおり 1〜5 秒待つ
+            GatewayEnd::Reidentify => {
+                session = GatewaySession::default();
+                Duration::from_millis(1000 + rand::random::<u64>() % 4000)
+            }
+            GatewayEnd::Resume => reconnect_delay(failures),
+        };
+        failures = failures.saturating_add(1);
+        tx.send(Status(format!("接続が切れました。{}秒後に再接続します…", wait.as_secs().max(1))));
+        tokio::time::sleep(wait).await;
     }
+}
+
+/// 再開（RESUME）に使う、前の接続の情報
+#[derive(Default)]
+struct GatewaySession {
+    id: Option<String>,
+    seq: Option<i64>,
+    /// READY の resume_gateway_url（再開はここにつなぐ）
+    resume_url: Option<String>,
+}
+
+/// 1回の接続がどう終わったか
+#[derive(Debug, PartialEq)]
+enum GatewayEnd {
+    /// 通信が切れた・Discord から再接続を頼まれた: 途中から再開する
+    Resume,
+    /// 再開できない: 一からログインし直す
+    Reidentify,
+    /// つなぎ直しても無駄（トークン無効など）。理由（利用者向け）
+    Fatal(String),
+}
+
+/// 再接続までの待ち時間。1, 2, 4 … 秒と延ばして 60 秒で止め、同時に大勢がつなぎ直さないよう少しずらす
+fn reconnect_delay(failures: u32) -> Duration {
+    let secs = (1u64 << failures.min(6)).min(60);
+    Duration::from_millis(secs * 1000 + rand::random::<u64>() % 1000)
+}
+
+/// 切断コードごとの扱い（https://discord.com/developers/docs/topics/opcodes-and-status-codes）
+fn close_action(code: u16) -> GatewayEnd {
+    match code {
+        4004 => GatewayEnd::Fatal("トークンが無効です。ログインし直してください。".into()),
+        4010..=4014 => GatewayEnd::Fatal(format!("Discord に接続を断られました（{code}）。再接続を止めました。")),
+        // 連番が合わない・セッションの期限切れ: 再開はできない
+        4007 | 4009 => GatewayEnd::Reidentify,
+        _ => GatewayEnd::Resume,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ReadySession {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    resume_gateway_url: Option<String>,
 }
 
 use Event::Status;
 
+#[allow(clippy::too_many_arguments)]
 async fn gateway_once(
     token: &str,
     tx: &Tx,
     out: &mut UnboundedReceiver<Value>,
     status: &Mutex<MyPresence>,
     v_tx: &UnboundedSender<VoiceMsg>,
-) -> Result<()> {
-    let (ws, _) = tokio_tungstenite::connect_async(GATEWAY).await?;
+    session: &mut GatewaySession,
+    ready: &mut bool,
+) -> Result<GatewayEnd> {
+    gateway_once_at(GATEWAY, token, tx, out, status, v_tx, session, ready).await
+}
+
+/// gateway = 最初につなぐ所（テストでは手元のサーバー）
+#[allow(clippy::too_many_arguments)]
+async fn gateway_once_at(
+    gateway: &str,
+    token: &str,
+    tx: &Tx,
+    out: &mut UnboundedReceiver<Value>,
+    status: &Mutex<MyPresence>,
+    v_tx: &UnboundedSender<VoiceMsg>,
+    session: &mut GatewaySession,
+    ready: &mut bool,
+) -> Result<GatewayEnd> {
+    // 再開できるときは READY で教わった接続先へ（同じ接続の設定を付ける）
+    let resume = session.id.clone().zip(session.seq);
+    let url = match (&resume, &session.resume_url) {
+        (Some(_), Some(base)) => format!("{}/?{}", base.trim_end_matches('/'), gateway.split_once('?').map_or("", |q| q.1)),
+        _ => gateway.to_string(),
+    };
+    let (ws, _) = tokio_tungstenite::connect_async(url.as_str()).await?;
     let (mut write, mut read) = ws.split();
     let mut inflater = Inflater::new();
 
@@ -782,20 +872,23 @@ async fn gateway_once(
     };
     let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41_250);
 
-    let identify = json!({
-        "op": 2,
-        "d": {
-            "token": token,
-            "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
-            "presence": presence_data(&status.lock().unwrap()),
-            "compress": false
-        }
-    });
-    write.send(WsMsg::Text(identify.to_string().into())).await?;
+    let first = match &resume {
+        // 途中から再開する（切れていた間のイベントは Discord が送り直す）
+        Some((id, seq)) => json!({ "op": 6, "d": { "token": token, "session_id": id, "seq": seq } }),
+        None => json!({
+            "op": 2,
+            "d": {
+                "token": token,
+                "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
+                "presence": presence_data(&status.lock().unwrap()),
+                "compress": false
+            }
+        }),
+    };
+    write.send(WsMsg::Text(first.to_string().into())).await?;
 
     let period = Duration::from_millis(interval_ms);
     let mut hb = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-    let mut seq: Option<i64> = None;
     let mut acked = true;
 
     loop {
@@ -806,7 +899,7 @@ async fn gateway_once(
             _ = hb.tick() => {
                 if !acked { bail!("heartbeat ACKなし"); }
                 acked = false;
-                write.send(WsMsg::Text(json!({"op": 1, "d": seq}).to_string().into())).await?;
+                write.send(WsMsg::Text(json!({"op": 1, "d": session.seq}).to_string().into())).await?;
             }
             msg = read.next() => {
                 let m = match msg {
@@ -815,20 +908,44 @@ async fn gateway_once(
                         if let Some(f) = &f {
                             let code: u16 = f.code.into();
                             if code == 4004 { tx.send(Event::AuthFailed); }
-                            bail!("close {code} {}", f.reason);
+                            eprintln!("ゲートウェイが閉じられた: {code} {}", f.reason);
+                            return Ok(close_action(code));
                         }
-                        bail!("close");
+                        return Ok(GatewayEnd::Resume);
                     }
                     Some(Ok(_)) => continue,
                     Some(Err(e)) => return Err(e.into()),
                     None => bail!("切断"),
                 };
                 let Some(f) = decode_frame_as::<GatewayFrame>(&m, &mut inflater)? else { continue };
-                if let Some(s) = f.s.as_i64() { seq = Some(s); }
+                if let Some(s) = f.s.as_i64() { session.seq = Some(s); }
                 match f.op.as_u64() {
-                    Some(0) => dispatch_raw(f.t.as_str().unwrap_or(""), f.d.as_deref(), tx, v_tx),
-                    Some(1) => write.send(WsMsg::Text(json!({"op": 1, "d": seq}).to_string().into())).await?,
-                    Some(7) | Some(9) => return Ok(()),
+                    Some(0) => {
+                        let t = f.t.as_str().unwrap_or("");
+                        match t {
+                            "READY" => {
+                                if let Some(r) = f.d.as_deref().and_then(|raw| serde_json::from_str::<ReadySession>(raw.get()).ok()) {
+                                    session.id = r.session_id;
+                                    session.resume_url = r.resume_gateway_url;
+                                }
+                                *ready = true;
+                            }
+                            "RESUMED" => {
+                                *ready = true;
+                                tx.send(Status("接続済み".into()));
+                            }
+                            _ => {}
+                        }
+                        dispatch_raw(t, f.d.as_deref(), tx, v_tx);
+                    }
+                    Some(1) => write.send(WsMsg::Text(json!({"op": 1, "d": session.seq}).to_string().into())).await?,
+                    // 再接続を頼まれた: 再開する
+                    Some(7) => return Ok(GatewayEnd::Resume),
+                    // セッションが無効: d が true なら再開でき、false なら一からログインし直す
+                    Some(9) => {
+                        let resumable = f.d.as_deref().is_some_and(|d| d.get().trim() == "true");
+                        return Ok(if resumable { GatewayEnd::Resume } else { GatewayEnd::Reidentify });
+                    }
                     Some(11) => acked = true,
                     _ => {}
                 }
@@ -1647,6 +1764,74 @@ mod tests {
     }
 
     /// 比べるために、dispatch が出すイベントと音声タスクへの転送を文字列にする
+    #[test]
+    fn reconnect_backs_off_and_stops_on_fatal_codes() {
+        // 1, 2, 4 … 秒と延び、60 秒で止まる（揺らぎは 1 秒未満）
+        for (n, secs) in [(0, 1), (1, 2), (2, 4), (5, 32), (6, 60), (20, 60)] {
+            let d = reconnect_delay(n).as_millis() as u64;
+            assert!(d >= secs * 1000 && d < secs * 1000 + 1000, "{n} 回目: {d}ms");
+        }
+        assert!(matches!(close_action(4004), GatewayEnd::Fatal(_)), "トークン無効はやめる");
+        assert!(matches!(close_action(4014), GatewayEnd::Fatal(_)));
+        assert_eq!(close_action(4009), GatewayEnd::Reidentify, "セッション期限切れは一から");
+        assert_eq!(close_action(4007), GatewayEnd::Reidentify);
+        assert_eq!(close_action(4000), GatewayEnd::Resume, "その他は再開を試す");
+        assert_eq!(close_action(1006), GatewayEnd::Resume);
+    }
+
+    #[test]
+    fn gateway_resumes_session_and_handles_invalid_session() {
+        // 本物の代わりに手元で WebSocket サーバーを立て、READY → 切断 → RESUME の流れを確かめる
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("ws://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let mut firsts = Vec::new();
+                for step in 0..2 {
+                    let (sock, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+                    ws.send(WsMsg::Text(r#"{"op":10,"d":{"heartbeat_interval":45000}}"#.into())).await.unwrap();
+                    let first: Value = match ws.next().await.unwrap().unwrap() { WsMsg::Text(t) => serde_json::from_str(&t).unwrap(), m => panic!("{m:?}") };
+                    firsts.push(first);
+                    if step == 0 {
+                        let ready = json!({ "op": 0, "s": 5, "t": "READY", "d": { "session_id": "sess", "resume_gateway_url": "ws://unused", "guilds": [] } });
+                        ws.send(WsMsg::Text(ready.to_string().into())).await.unwrap();
+                        // Discord から再接続を頼む
+                        ws.send(WsMsg::Text(r#"{"op":7,"d":null}"#.into())).await.unwrap();
+                    } else {
+                        ws.send(WsMsg::Text(r#"{"op":0,"s":6,"t":"RESUMED","d":{}}"#.into())).await.unwrap();
+                        ws.send(WsMsg::Text(r#"{"op":9,"d":false}"#.into())).await.unwrap();
+                    }
+                    let _ = ws.next().await;
+                }
+                firsts
+            });
+            let s = sink();
+            let (_out_tx, mut out) = unbounded_channel();
+            let status = Mutex::new(MyPresence { status: "online".into(), activity: true });
+            let mut session = GatewaySession::default();
+            // 1回目: identify して READY を受け、op 7 で「再開」
+            let mut ready = false;
+            let end = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready).await.unwrap();
+            assert_eq!(end, GatewayEnd::Resume);
+            assert!(ready);
+            assert_eq!((session.id.as_deref(), session.seq), (Some("sess"), Some(5)));
+            // 2回目: RESUME を送り、op 9 (false) で「一から」
+            let mut ready = false;
+            session.resume_url = Some(base.clone());
+            let end = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready).await.unwrap();
+            assert_eq!(end, GatewayEnd::Reidentify);
+            assert!(ready, "RESUMED でつながった扱い");
+            let firsts = server.await.unwrap();
+            assert_eq!(firsts[0]["op"], 2, "最初は identify");
+            assert_eq!(firsts[0]["d"]["presence"]["activities"][0]["name"], "Riscord");
+            assert_eq!(firsts[1]["op"], 6, "再接続は RESUME");
+            assert_eq!(firsts[1]["d"]["session_id"], "sess");
+            assert_eq!(firsts[1]["d"]["seq"], 5);
+        });
+    }
+
     #[test]
     fn presence_shows_riscord_activity_only_when_enabled() {
         let on = presence_payload(&MyPresence { status: "idle".into(), activity: true });

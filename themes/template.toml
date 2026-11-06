@@ -1,0 +1,46 @@
+# このファイルを設定ディレクトリの riscord/themes/ にコピーし、設定 → テーマで選択。
+# Linux の標準パス: ~/.config/riscord/themes/
+# 不要な項目は削除できます。省略した色は黒テーマの既定色になります。
+name = "マイテーマ"
+author = ""
+description = "自分だけのテーマ"
+# font = "~/Fonts/MyFont.ttf" # 絶対パス、または themes/ からの相対パス
+
+# 色は文字列で #rrggbb または #rrggbbaa（最後の aa は透明度）を指定。
+[colors]
+bg = "#000000"           # 画面の地
+rail = "#18181b"         # サーバー一覧・カード
+sidebar = "#0e0e10"      # ポップアップ・浮いた面
+chat = "#000000"         # チャット欄
+input = "#101013"        # 入力欄
+userbar = "#000000"      # 左下のユーザー欄
+accent = "#5865f2"       # アクセント
+text = "#dbdbde"         # 本文
+muted = "#94959c"        # 控えめな文字
+faint = "#6e6f77"        # 薄い文字（時刻など）
+strong = "#f2f2f3"       # 強調する文字（名前など）
+hover = "#121214"        # マウスを乗せた項目
+selected = "#1d1d20"     # 選択中の項目
+msg_hover = "#0e0e10"    # マウスを乗せたメッセージ
+divider = "#1e1e20"      # 区切り線
+border = "#2a2a2e"       # 枠線
+link = "#00a8fc"         # リンク
+danger = "#da373c"       # 危険（削除・切断）
+warning = "#c27c0e"      # 注意
+success = "#23a55a"      # 成功・通話
+online = "#23a55a"       # オンライン
+idle = "#f0b232"         # 退席中
+dnd = "#f23f43"          # 取り込み中
+offline = "#80848e"      # オフライン
+call_bg = "#000000"      # 通話画面の地
+embed_bg = "#121215"     # 埋め込みの地
+embed_bar = "#2b2d31"    # 埋め込みの縦線（色指定なし）
+widget = "#242428"       # ボタン・スライダー
+widget_hover = "#303035" # ボタン（マウスを乗せたとき）
+reply_line = "#4e4f56"   # 返信の線
+
+[background]
+# image = "~/Pictures/wallpaper.png" # ローカルパス（themes/ からの相対パスも可）または HTTP(S) URL
+opacity = 0.35              # 画像の見え具合（0.0〜1.0）
+area = "chat"               # "chat" または "window"（全体に敷く）
+# window の場合、面の色を #rrggbbaa で透かすと背景画像が見えます。

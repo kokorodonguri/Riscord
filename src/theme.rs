@@ -380,6 +380,17 @@ mod tests {
     }
 
     #[test]
+    fn template_covers_default_palette() {
+        let f: ThemeFile = toml::from_str(include_str!("../themes/template.toml")).unwrap();
+        assert_eq!(f.colors.len(), KEYS.len());
+        for (key, _, default) in KEYS {
+            assert_eq!(f.colors.get(*key).and_then(|v| parse_color(v)), Some(*default), "{key}");
+        }
+        assert_eq!(f.background.opacity, Some(0.35));
+        assert_eq!(f.background.area.as_deref(), Some("chat"));
+    }
+
+    #[test]
     fn sample_theme_is_valid() {
         let f: ThemeFile = toml::from_str(include_str!("../themes/sample.toml")).unwrap();
         for (k, v) in &f.colors {

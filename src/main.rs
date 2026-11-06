@@ -538,6 +538,7 @@ fn rail_item(ui: &mut egui::Ui, selected: bool, unread: bool, name: &str, url: O
         let r = Rect::from_min_size(pos2(rect.left(), rect.center().y - pill_h / 2.0), vec2(4.0, pill_h));
         ui.painter().rect_filled(r, pill_radius(), WHITE());
     }
+    focus_ring(ui, &resp, icon.expand(2.0), 14.0);
     if name.is_empty() { resp.on_hover_text("ダイレクトメッセージ") } else { resp.on_hover_text(name) }
 }
 
@@ -568,6 +569,7 @@ fn row_frame(ui: &mut egui::Ui, height: f32, selected: bool, unread: bool) -> (e
         Color32::TRANSPARENT
     };
     ui.painter().rect_filled(r, 8.0, fill);
+    focus_ring(ui, &resp, r, 8.0);
     if unread && !selected {
         let p = Rect::from_min_size(pos2(rect.left(), rect.center().y - 4.0), vec2(4.0, 8.0));
         ui.painter().rect_filled(p, pill_radius(), WHITE());
@@ -582,6 +584,14 @@ fn row_frame(ui: &mut egui::Ui, height: f32, selected: bool, unread: bool) -> (e
     (resp, r, color)
 }
 
+/// 行の中の1行の文字（左端・縦の中心を指定）。幅に収まらなければ … で省略する（途中で切れたままにしない）
+fn row_text(ui: &egui::Ui, p: &egui::Painter, left_center: egui::Pos2, text: &str, font: FontId, color: Color32, max_w: f32) {
+    let mut job = LayoutJob::single_section(text.to_string(), TextFormat { font_id: font, color, ..Default::default() });
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(1.0));
+    let galley = ui.fonts(|f| f.layout_job(job));
+    p.galley(pos2(left_center.x, left_center.y - galley.size().y / 2.0), galley, color);
+}
+
 fn member_role_color(member: &Member, roles: &[Role]) -> Option<Color32> {
     let role = roles.iter().filter(|r| member.roles.contains(&r.id)).max_by_key(|r| r.position)?;
     (role.color != 0).then(|| Color32::from_rgb((role.color >> 16) as u8, (role.color >> 8) as u8, role.color as u8))
@@ -594,7 +604,7 @@ fn channel_row(ui: &mut egui::Ui, selected: bool, unread: bool, name: &str) -> e
     }
     let p = ui.painter().with_clip_rect(r);
     p.text(pos2(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, "#", FontId::proportional(20.0), FAINT());
-    p.text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, name, medium_font(ui.ctx(), 16.0), color);
+    row_text(ui, &p, pos2(r.left() + 30.0, r.center().y), name, medium_font(ui.ctx(), 16.0), color, r.right() - 8.0 - (r.left() + 30.0));
     resp
 }
 
@@ -621,13 +631,14 @@ fn dm_row(ui: &mut egui::Ui, selected: bool, unread: bool, c: &Channel, presence
     }
     let p = ui.painter().with_clip_rect(r);
     let x = av.right() + 12.0;
+    let max_w = r.right() - 8.0 - x;
     match presence.and_then(|p| p.activity.as_deref()).filter(|_| one_to_one) {
         Some(act) => {
-            p.text(pos2(x, r.center().y - 8.0), Align2::LEFT_CENTER, label, FontId::proportional(16.0), color);
-            p.text(pos2(x, r.center().y + 10.0), Align2::LEFT_CENTER, act, FontId::proportional(12.0), MUTED());
+            row_text(ui, &p, pos2(x, r.center().y - 8.0), &label, FontId::proportional(16.0), color, max_w);
+            row_text(ui, &p, pos2(x, r.center().y + 10.0), act, FontId::proportional(12.0), MUTED(), max_w);
         }
         None => {
-            p.text(pos2(x, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(16.0), color);
+            row_text(ui, &p, pos2(x, r.center().y), &label, FontId::proportional(16.0), color, max_w);
         }
     }
     if one_to_one {
@@ -1475,7 +1486,16 @@ fn reply_preview(ui: &mut egui::Ui, m: &Message, avatar_x: f32, text_x: f32, cx:
     let nx = av.right() + 4.0;
     let nw = name.size().x;
     p.galley(pos2(nx, y - name.size().y / 2.0), name, name_color);
-    let body = if r.content.is_empty() { "添付ファイルを見るにはクリック".to_string() } else { r.content.replace('\n', " ") };
+    // 押しても何も起きないので「クリック」とは書かない
+    let body = if !r.content.is_empty() {
+        r.content.replace('\n', " ")
+    } else if !r.attachments.is_empty() {
+        "添付ファイル".to_string()
+    } else if !r.sticker_items.is_empty() {
+        "スタンプ".to_string()
+    } else {
+        "埋め込み".to_string()
+    };
     let max = (rect.right() - (nx + nw + 6.0) - 16.0).max(0.0);
     let mut job = LayoutJob::single_section(body, TextFormat { font_id: FontId::proportional(13.0), color: MUTED(), ..Default::default() });
     job.wrap = egui::text::TextWrapping::truncate_at_width(max);
@@ -1565,13 +1585,20 @@ fn message_row(ui: &mut egui::Ui, m: &Message, prev: Option<&Message>, cx: &mut 
             if !grouped {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
+                    // 長い名前は省略して時刻を残す（はみ出すと列の幅が広がり、本文の折り返しまで画面外になる）
+                    let time = fmt_time(&m.timestamp);
+                    let time_w = ui.fonts(|f| f.layout_no_wrap(time.clone(), FontId::proportional(12.0), FAINT()).size().x);
+                    let name_max = (ui.available_width() - time_w - 8.0).max(40.0);
                     let name = ui
-                        .add(egui::Label::new(RichText::new(author_name(m)).font(medium_font(ui.ctx(), 16.0)).color(m.member.as_ref().and_then(|member| member_role_color(member, cx.roles)).unwrap_or(WHITE()))).sense(Sense::click()))
+                        .allocate_ui_with_layout(vec2(name_max, 20.0), Layout::left_to_right(Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(author_name(m)).font(medium_font(ui.ctx(), 16.0)).color(m.member.as_ref().and_then(|member| member_role_color(member, cx.roles)).unwrap_or(WHITE()))).truncate().sense(Sense::click()))
+                        })
+                        .inner
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if name.clicked() {
                         cx.clicked_user = Some((m.author.clone(), name.rect));
                     }
-                    ui.label(RichText::new(fmt_time(&m.timestamp)).size(12.0).color(FAINT()));
+                    ui.label(RichText::new(time).size(12.0).color(FAINT()));
                 });
             }
             if !m.content.is_empty() {
@@ -1818,6 +1845,10 @@ struct App {
     loaded_channels: std::collections::VecDeque<String>,
     /// DM のプロフィール欄を閉じたか
     hide_dm_profile: bool,
+    /// DM 一覧が一度でも届いたか（届く前は読み込み中、届いて 0 件なら空と出し分ける）
+    dms_loaded: bool,
+    /// 画面下に短く出す操作の結果（「コピーしました」など）
+    toast: Option<(String, std::time::Instant)>,
     /// メンバー・ロール・オンライン状態が変わるたびに増える（メンバーリストの作り直しの合図）
     member_ver: u64,
     member_cache: MemberListCache,
@@ -1848,6 +1879,8 @@ struct App {
     /// V キーが普通に押されているか（Ctrl+V の押下は egui に届かないので、離したときに判定する）
     v_down: bool,
     status: String,
+    /// ゲートウェイから届いた接続の状態（接続中・再接続待ちなど）。ステータス帯のお知らせを閉じるとこれに戻す
+    gateway_status: String,
 
     settings: Settings,
     stickers: HashMap<String, StickerState>,
@@ -1914,6 +1947,7 @@ impl App {
         );
         self.backend = Some(Backend { cmd, ev });
         self.status = "接続中…".into();
+        self.gateway_status = self.status.clone();
     }
 
     fn send(&self, c: Cmd) {
@@ -1995,7 +2029,8 @@ impl App {
                 Event::Me(u) => {
                     if self.remember && !self.token_input.is_empty() {
                         if let Err(e) = save_token(self.token_input.trim()) {
-                            self.status = format!("トークン保存失敗: {e}");
+                            eprintln!("トークン保存失敗: {e}");
+                            self.status = "エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。".into();
                         }
                     }
                     self.token_input.clear();
@@ -2003,7 +2038,7 @@ impl App {
                 }
                 Event::AuthFailed => {
                     self.reset();
-                    self.login_error = Some("トークンが無効です".into());
+                    self.login_error = Some("ログイン情報が無効です。もう一度ログインしてください。".into());
                     return;
                 }
                 Event::LoginFailed => {
@@ -2095,6 +2130,7 @@ impl App {
                 Event::Dms(mut d) => {
                     d.sort_by_cached_key(|c| std::cmp::Reverse(c.last_id()));
                     self.dms = d;
+                    self.dms_loaded = true;
                 }
                 Event::GuildChannels(gid, mut c) => {
                     // 表示順（テキスト→ボイス、position順）に一度だけ並べておく
@@ -2259,7 +2295,10 @@ impl App {
                         cache.h.remove(&id);
                     }
                 }
-                Event::Status(s) => self.status = s,
+                Event::Status(s) => {
+                    self.gateway_status = s.clone();
+                    self.status = s;
+                }
                 Event::Error(s) => {
                     eprintln!("操作失敗: {s}");
                     let action = if s.starts_with("サーバー一覧:") { "サーバー一覧を取得できませんでした。" }
@@ -2398,7 +2437,7 @@ impl App {
         if paste_key {
             match clip::clipboard_image(ctx) {
                 Some(Ok(u)) => self.add_uploads(vec![u], 0, Vec::new()),
-                Some(Err(e)) => self.status = format!("エラー: {e}"),
+                Some(Err(e)) => self.set_compose_notice(e),
                 None => {}
             }
         }
@@ -2406,7 +2445,7 @@ impl App {
         if self.picked_files.as_ref().is_some_and(|(channel_id, _)| self.sel_channel.as_ref() == Some(channel_id)) {
             if let Some((_, picked)) = self.picked_files.take() { paths.extend(picked); }
             if matches!(self.status.as_str(), "選択したファイルは元のチャンネルに戻ると添付されます。" | "先に開いたファイル選択を完了し、元のチャンネルで確認してください。") {
-                self.status.clear();
+                self.status = self.gateway_status.clone();
             }
         }
         // 上限を超える分は読み込まずに数だけ数える（大きいファイルを無駄に読まない）
@@ -2423,7 +2462,7 @@ impl App {
             }
             match clip::load_file(ctx, &p) {
                 Ok(u) => loaded.push(u),
-                Err(e) => self.status = format!("エラー: {e}"),
+                Err(e) => self.set_compose_notice(e),
             }
         }
         if !loaded.is_empty() || skipped > 0 || !too_big.is_empty() {
@@ -2482,6 +2521,12 @@ impl App {
             return;
         }
         self.compose_notice = Some((lines.join("\n"), std::time::Instant::now()));
+        self.ctx.request_repaint_after(COMPOSE_NOTICE_TTL);
+    }
+
+    /// 入力欄の上のお知らせを出す（しばらくすると消える）
+    fn set_compose_notice(&mut self, text: String) {
+        self.compose_notice = Some((text, std::time::Instant::now()));
         self.ctx.request_repaint_after(COMPOSE_NOTICE_TTL);
     }
 
@@ -2567,7 +2612,7 @@ impl App {
 
     fn clear_message_error_status(&mut self, channel_id: &str) {
         if self.message_status_channel.as_deref() == Some(channel_id) {
-            if self.status == MESSAGE_RELOAD_ERROR { self.status.clear(); }
+            if self.status == MESSAGE_RELOAD_ERROR { self.status = self.gateway_status.clone(); }
             self.message_status_channel = None;
         }
     }
@@ -2931,7 +2976,7 @@ impl App {
             let ended = qr.and_then(|q| q.ended.clone());
             match (scanned, ended) {
                 (_, Some(msg)) => {
-                    ui.label(RichText::new("QRコードでログイン").font(medium_font(ui.ctx(), 20.0)).color(WHITE()));
+                    ui.label(RichText::new("QR コードでログイン").font(medium_font(ui.ctx(), 20.0)).color(WHITE()));
                     ui.add_space(6.0);
                     ui.add(egui::Label::new(RichText::new(msg).size(14.0).color(MUTED())).wrap());
                     ui.add_space(10.0);
@@ -2945,7 +2990,7 @@ impl App {
                     restart = login_link(ui, "別のアカウントでログイン");
                 }
                 (None, None) => {
-                    ui.label(RichText::new("QRコードでログイン").font(medium_font(ui.ctx(), 20.0)).color(WHITE()));
+                    ui.label(RichText::new("QR コードでログイン").font(medium_font(ui.ctx(), 20.0)).color(WHITE()));
                     ui.add_space(6.0);
                     ui.add(egui::Label::new(RichText::new("Discord モバイルアプリでスキャンして、すぐにログインできます。パスワードの入力はいりません。").size(14.0).color(MUTED())).wrap());
                 }
@@ -3335,6 +3380,16 @@ impl App {
                                         if shown == 0 && !q.is_empty() {
                                             ui.add_space(12.0);
                                             ui.vertical_centered(|ui| ui.label(RichText::new("見つかりませんでした").size(13.0).color(FAINT())));
+                                        } else if self.dms.is_empty() {
+                                            // 一覧が届く前は読み込み中、届いて 0 件ならその旨を出す（何も無い画面にしない）
+                                            ui.add_space(12.0);
+                                            ui.vertical_centered(|ui| {
+                                                if self.dms_loaded {
+                                                    ui.label(RichText::new("ダイレクトメッセージはまだありません").size(13.0).color(FAINT()));
+                                                } else {
+                                                    ui.spinner();
+                                                }
+                                            });
                                         }
                                     }
                                     Some(gid) => match self.channels.get(gid) {
@@ -3347,7 +3402,7 @@ impl App {
                                                 if c.is_voice() {
                                                     let here = cur_voice.as_deref() == Some(&c.id);
                                                     let name = c.name.as_deref().unwrap_or("");
-                                                    if voice_channel_row(ui, here, name).on_hover_text("クリックで参加").clicked() && !here {
+                                                    if voice_channel_row(ui, here, name).on_hover_text(if here { "接続しています" } else { "クリックで参加" }).clicked() && !here {
                                                         act_join = Some((Some(gid.clone()), c.id.clone(), false));
                                                     }
                                                     for v in self.voice_members(&c.id) {
@@ -3376,6 +3431,10 @@ impl App {
                                                         Some(p) => by_parent.entry(p).or_default().push(c),
                                                     }
                                                 }
+                                            }
+                                            if top.is_empty() && by_parent.is_empty() {
+                                                ui.add_space(12.0);
+                                                ui.vertical_centered(|ui| ui.label(RichText::new("表示できるチャンネルがありません").size(13.0).color(FAINT())));
                                             }
                                             for c in top {
                                                 row(ui, c);
@@ -3421,12 +3480,35 @@ impl App {
         // ステータス帯（接続済みのときは出さない）
         if !self.status.is_empty() && self.status != "接続済み" {
             let color = if self.status.starts_with("エラー") { RED() } else { ORANGE() };
+            // 操作の結果のお知らせは閉じられる（閉じないと次の接続状態の変化まで出たままになる）。接続の状態そのものは閉じない
+            let dismissable = self.status != self.gateway_status;
+            let mut dismiss = false;
             egui::TopBottomPanel::top("status")
                 .show_separator_line(false)
                 .frame(Frame::new().fill(color).inner_margin(Margin::symmetric(12, 4)))
                 .show(ctx, |ui| {
-                    ui.add(egui::Label::new(RichText::new(&self.status).size(13.0).color(Color32::WHITE)).truncate());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if dismissable {
+                            let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(r, 4.0, Color32::from_black_alpha(50));
+                            }
+                            let (c, h) = (r.center(), 4.0);
+                            let st = Stroke::new(1.5_f32, Color32::WHITE);
+                            ui.painter().line_segment([c + vec2(-h, -h), c + vec2(h, h)], st);
+                            ui.painter().line_segment([c + vec2(-h, h), c + vec2(h, -h)], st);
+                            dismiss = resp.on_hover_text("閉じる").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                            ui.add_space(4.0);
+                        }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(&self.status).size(13.0).color(Color32::WHITE)).truncate());
+                        });
+                    });
                 });
+            if dismiss {
+                self.status = self.gateway_status.clone();
+                self.message_status_channel = None;
+            }
         }
 
         let cur = self.current_channel().cloned();
@@ -3514,11 +3596,12 @@ impl App {
                                         let color = member_role_color(member, roles).unwrap_or(TEXT());
                                         let p = ui.painter().with_clip_rect(rect);
                                         let x = av.right() + 12.0;
+                                        let max_w = rect.right() - 8.0 - x;
                                         if let Some(activity) = presence.and_then(|p| p.activity.as_deref()) {
-                                            p.text(pos2(x, rect.center().y - 8.0), Align2::LEFT_CENTER, member.display(), medium_font(ui.ctx(), 16.0), color);
-                                            p.text(pos2(x, rect.center().y + 10.0), Align2::LEFT_CENTER, activity, FontId::proportional(12.0), MUTED());
+                                            row_text(ui, &p, pos2(x, rect.center().y - 8.0), member.display(), medium_font(ui.ctx(), 16.0), color, max_w);
+                                            row_text(ui, &p, pos2(x, rect.center().y + 10.0), activity, FontId::proportional(12.0), MUTED(), max_w);
                                         } else {
-                                            p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, member.display(), medium_font(ui.ctx(), 16.0), color);
+                                            row_text(ui, &p, pos2(x, rect.center().y), member.display(), medium_font(ui.ctx(), 16.0), color, max_w);
                                         }
                                     });
                                     if resp.clicked() {
@@ -3601,7 +3684,11 @@ impl App {
                     // 右から: 一覧/プロフィール切替・再読込・ビデオ・通話（Vesktop の並び）
                     if self.sel_guild.is_some() {
                         if toggle_icon(ui, Icon::Members, members_shown).on_hover_text(if members_shown { "メンバーリストを非表示" } else { "メンバーリストを表示" }).clicked() {
-                            if narrow_members { self.show_members_narrow = !self.show_members_narrow; }
+                            if narrow_members {
+                                self.show_members_narrow = !self.show_members_narrow;
+                                // 狭い画面ではチャンネル一覧と重なるので、☰ と同じく片方だけ開く
+                                if compact && self.show_members_narrow { self.compact_sidebar_closed = true; }
+                            }
                             else { self.show_members = !self.show_members; }
                         }
                     } else if dm_user.is_some() {
@@ -3803,8 +3890,12 @@ impl App {
                                         let available = ui.available_width();
                                         let show_hint = available >= 300.0;
                                         let label_width = if show_hint { available * 0.55 } else { available };
-                                        ui.add_sized(vec2(label_width, 22.0), egui::Label::new(RichText::new(label).size(13.0).color(MUTED())).truncate())
-                                            .on_hover_text(format!("{label}\n{sub}"));
+                                        // add_sized だと文字が枠の中央に寄るので、左寄せの枠に入れる
+                                        ui.allocate_ui_with_layout(vec2(label_width, 22.0), Layout::left_to_right(Align::Center), |ui| {
+                                            ui.add(egui::Label::new(RichText::new(label).size(13.0).color(MUTED())).truncate())
+                                        })
+                                        .inner
+                                        .on_hover_text(format!("{label}\n{sub}"));
                                         if show_hint {
                                             ui.add(egui::Label::new(RichText::new(sub).size(12.0).color(FAINT())).truncate());
                                         }
@@ -3949,22 +4040,29 @@ impl App {
                 paint_background(ui.ctx(), ui.painter(), ui.max_rect(), bg, opaque(CHAT()));
             }
             let Some(cid) = &self.sel_channel else {
+                // 選べるものが無いのに「選んでください」と言わない
+                let hint = match &self.sel_guild {
+                    Some(g) if self.channels.get(g).is_some_and(|c| !c.iter().any(|c| c.is_text())) => "このサーバーには表示できるテキストチャンネルがありません",
+                    None if self.dms_loaded && self.dms.is_empty() => "ダイレクトメッセージはまだありません",
+                    _ => "左からチャンネルを選んでください",
+                };
                 ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("左からチャンネルを選んでください").size(16.0).color(MUTED()));
+                    ui.label(RichText::new(hint).size(16.0).color(MUTED()));
                 });
                 return;
             };
             let Some(msgs) = self.messages.get(cid) else {
-                ui.centered_and_justified(|ui| {
-                    if self.message_errors.contains(cid) {
-                        ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("メッセージを読み込めませんでした。通信状態を確認してください。").color(MUTED()));
-                            if ui.button("再読み込み").clicked() { reload = true; }
-                        });
-                    } else {
-                        ui.spinner();
-                    }
-                });
+                if self.message_errors.contains(cid) {
+                    // 読み込み中の印と同じく画面の真ん中に出す
+                    ui.vertical_centered(|ui| {
+                        ui.add_space((ui.available_height() / 2.0 - 40.0).max(16.0));
+                        ui.add(egui::Label::new(RichText::new("メッセージを読み込めませんでした。通信状態を確認してください。").color(MUTED())).wrap());
+                        ui.add_space(12.0);
+                        if settings_button(ui, "再読み込み", false).clicked() { reload = true; }
+                    });
+                } else {
+                    ui.centered_and_justified(|ui| ui.spinner());
+                }
                 return;
             };
             let hist = self.history.entry(cid.clone()).or_default();
@@ -4066,8 +4164,9 @@ impl App {
             Some(PlusAction::Upload) => self.pick_files(ctx),
             Some(PlusAction::PasteImage) => match clip::clipboard_image(ctx) {
                 Some(Ok(u)) => self.add_uploads(vec![u], 0, Vec::new()),
-                Some(Err(e)) => self.status = format!("エラー: {e}"),
-                None => self.status = "クリップボードに画像がありません".into(),
+                Some(Err(e)) => self.set_compose_notice(e),
+                // 添付についてのお知らせはすべて入力欄の上に出す
+                None => self.set_compose_notice("クリップボードに画像がありません。画像をコピーしてからもう一度お試しください。".into()),
             },
             None => {}
         }
@@ -4141,7 +4240,10 @@ impl App {
                 self.reply_to = None;
                 ctx.memory_mut(|mem| mem.request_focus(egui::Id::new(INPUT_ID)));
             }
-            Some(MsgAction::Copy(t)) => ctx.copy_text(t),
+            Some(MsgAction::Copy(t)) => {
+                ctx.copy_text(t);
+                self.show_toast("テキストをコピーしました");
+            }
             Some(MsgAction::Delete(m, true)) => self.send(Cmd::Delete { channel_id: m.channel_id, id: m.id }),
             Some(MsgAction::Delete(m, false)) => self.pending_delete = Some(m),
             None => {}
@@ -4192,6 +4294,9 @@ impl App {
                 self.open_channel(c);
             }
         }
+        // ポップアップの「メッセージを送る」による移動も戻る/進むの履歴に入るよう、履歴を記録する前に処理する
+        self.profile_popup_ui(ctx);
+        self.toast_ui(ctx);
         if let Some(back) = nav {
             let (from, to) = if back { (&mut self.nav_back, &mut self.nav_fwd) } else { (&mut self.nav_fwd, &mut self.nav_back) };
             if let Some((g, c)) = from.pop() {
@@ -4214,7 +4319,6 @@ impl App {
         if self.reply_to.as_ref().is_some_and(|m| Some(&m.channel_id) != here.as_ref()) {
             self.reply_to = None;
         }
-        self.profile_popup_ui(ctx);
     }
 
     /// サイドバーに並んでいる順のチャンネル（Alt+↑↓ 用。テキストのみ）
@@ -4716,6 +4820,38 @@ impl App {
     }
 
     // ---- プロフィールのポップアップ ----
+    /// 押した結果が画面に残らない操作（コピーなど）で、押せたことを知らせる
+    fn show_toast(&mut self, text: &str) {
+        self.toast = Some((text.to_string(), std::time::Instant::now()));
+        self.ctx.request_repaint();
+    }
+
+    /// 入力欄の少し上に 2 秒だけ出す（アニメーションはしない）
+    fn toast_ui(&mut self, ctx: &egui::Context) {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(2);
+        let Some((text, at)) = &self.toast else { return };
+        let Some(left) = TTL.checked_sub(at.elapsed()) else {
+            self.toast = None;
+            return;
+        };
+        ctx.request_repaint_after(left);
+        egui::Area::new(egui::Id::new("toast"))
+            .order(egui::Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -96.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                Frame::new()
+                    .fill(SIDEBAR())
+                    .stroke(Stroke::new(1.0_f32, BORDER()))
+                    .corner_radius(8)
+                    .inner_margin(Margin::symmetric(14, 8))
+                    .shadow(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(120) })
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(text.as_str()).size(14.0).color(TEXT()));
+                    });
+            });
+    }
+
     fn profile_popup_ui(&mut self, ctx: &egui::Context) {
         let Some(pp) = self.popup.clone() else { return };
         let width = (ctx.screen_rect().width() - 16.0).clamp(0.0, 300.0);
@@ -4796,7 +4932,7 @@ impl App {
                             ui.set_width((content_width - 32.0).max(0.0));
                             ui.spacing_mut().item_spacing.y = 4.0;
                             let name = data.and_then(|d| d.nick.as_deref()).unwrap_or(user.display());
-                            ui.add(egui::Label::new(RichText::new(name).size(20.0).color(WHITE())).truncate()).on_hover_text(name);
+                            ui.add(egui::Label::new(RichText::new(name).font(medium_font(ui.ctx(), 20.0)).color(WHITE())).truncate()).on_hover_text(name);
                             let mut sub = user.username.clone();
                             if let Some(pr) = data.and_then(|d| d.pronouns.as_deref()) {
                                 sub += &format!(" • {pr}");
@@ -4893,10 +5029,12 @@ impl App {
 
                             if let Some(cid) = &dm {
                                 ui.add_space(10.0);
-                                let btn = egui::Button::new(RichText::new("メッセージを送る").color(Color32::WHITE))
+                                let btn = egui::Button::new(RichText::new("メッセージを送る").size(14.0).color(Color32::WHITE))
                                     .fill(BLURPLE())
-                                    .min_size(vec2(ui.available_width(), 36.0));
-                                if ui.add(btn).clicked() {
+                                    .corner_radius(8)
+                                    .min_size(vec2(ui.available_width(), 38.0));
+                                // 他の横幅いっぱいのボタンと同じく文字を中央に置く
+                                if ui.with_layout(Layout::top_down(Align::Center), |ui| ui.add(btn)).inner.clicked() {
                                     open_dm = Some(cid.clone());
                                 }
                             }
@@ -4972,6 +5110,7 @@ impl App {
         }
         if copy_id {
             ctx.copy_text(pp.user.id.clone());
+            self.show_toast("ユーザーIDをコピーしました");
         }
         if retry_profile {
             let cmd = Cmd::LoadProfile { user_id: pp.user.id.clone(), guild_id: pp.guild_id.clone() };
@@ -5169,8 +5308,18 @@ impl App {
                                 ui.label(RichText::new(&me.username).size(15.0).color(WHITE()));
                             });
                             settings_row(ui, "ユーザーID", None, |ui| {
-                                if settings_button(ui, "コピー", false).clicked() {
+                                // 押したことが分かるよう、しばらく「コピーしました」にする
+                                let copied_id = egui::Id::new("settings_copied_user_id");
+                                let now = ui.input(|i| i.time);
+                                let since = ui.ctx().data(|d| d.get_temp::<f64>(copied_id)).map(|t| now - t).filter(|d| (0.0..2.0).contains(d));
+                                if let Some(d) = since {
+                                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(2.0 - d));
+                                }
+                                let done = "コピーしました";
+                                let min_w = ui.painter().layout_no_wrap(done.into(), FontId::proportional(15.0), WHITE()).size().x + 32.0;
+                                if settings_button_min(ui, if since.is_some() { done } else { "コピー" }, false, min_w).clicked() {
                                     ui.ctx().copy_text(me.id.clone());
+                                    ui.ctx().data_mut(|d| d.insert_temp(copied_id, now));
                                 }
                                 ui.add_space(16.0);
                                 ui.label(RichText::new(&me.id).size(15.0).color(WHITE()));
@@ -5285,7 +5434,7 @@ impl App {
                     ui.set_width((ctx.screen_rect().width() - 56.0).min(400.0).max(0.0));
                     ui.label(RichText::new("ログアウト").font(medium_font(ui.ctx(), 20.0)).color(WHITE()));
                     ui.add_space(8.0);
-                    ui.label(RichText::new("本当にログアウトしますか？ このPCに保存したトークンも削除されるため、次はトークンを入力し直す必要があります。").size(15.0).color(TEXT()));
+                    ui.label(RichText::new("本当にログアウトしますか？ このPCに保存したログイン情報も削除されるため、次回はもう一度ログインする必要があります。").size(15.0).color(TEXT()));
                     ui.add_space(20.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.add(egui::Button::new(RichText::new("ログアウト").size(14.0).color(Color32::WHITE)).fill(RED()).corner_radius(8).min_size(vec2(96.0, 38.0))).clicked() {
@@ -5473,9 +5622,13 @@ impl App {
         let sr = ui.interact(save, ui.id().with("profile_save"), Sense::click());
         let rr = ui.interact(reset, ui.id().with("profile_reset"), Sense::click());
         let p = ui.painter();
-        p.rect_filled(save, 6.0, if sr.hovered() { GREEN().lerp_to_gamma(Color32::BLACK, 0.15) } else { GREEN() });
+        p.rect_filled(save, 8.0, if sr.hovered() { GREEN().lerp_to_gamma(Color32::BLACK, 0.15) } else { GREEN() });
         p.text(save.center(), Align2::CENTER_CENTER, "変更を保存", FontId::proportional(14.0), Color32::WHITE);
         p.text(reset.center(), Align2::CENTER_CENTER, "リセット", FontId::proportional(14.0), if rr.hovered() { WHITE() } else { TEXT() });
+    focus_ring(ui, &sr, save, 8.0);
+    focus_ring(ui, &rr, reset, 8.0);
+    button_info(&sr, true, "変更を保存");
+    button_info(&rr, true, "リセット");
         if rr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             if let Some(d) = self.profile_draft.as_mut() {
                 d.fields = d.base.clone();
@@ -5496,9 +5649,14 @@ impl App {
             Some(AvatarEdit::Remove) => Some(None),
             None => None,
         };
-        self.send(Cmd::UpdateProfile { global_name: changed(0), pronouns: changed(1), bio: changed(2), avatar });
-        self.profile_saving = true;
-        self.profile_error = None;
+        let cmd = Cmd::UpdateProfile { global_name: changed(0), pronouns: changed(1), bio: changed(2), avatar };
+        // 送れなかったら「保存中…」のまま止まらないよう、すぐ失敗として出す
+        if self.backend.as_ref().is_some_and(|b| b.cmd.send(cmd).is_ok()) {
+            self.profile_saving = true;
+            self.profile_error = None;
+        } else {
+            self.profile_error = Some("接続できないため保存できませんでした。再接続してからお試しください。".into());
+        }
     }
 
     /// 設定 → テーマ。変えたら true（保存する）
@@ -5618,7 +5776,7 @@ impl App {
         settings_card(ui, None, |ui| {
             ui.horizontal(|ui| {
                 let mut img = self.settings.background.image.clone().unwrap_or_default();
-                let r = ui.add(egui::TextEdit::singleline(&mut img).desired_width(ui.available_width() - 90.0).hint_text("画像のパスか https:// の URL（空ならテーマの指定）"));
+                let r = ui.add(egui::TextEdit::singleline(&mut img).desired_width(ui.available_width() - 90.0).hint_text("画像のパスか URL"));
                 if r.changed() {
                     self.settings.background.image = Some(img).filter(|s| !s.is_empty());
                 }
@@ -5629,8 +5787,12 @@ impl App {
                     self.bg_pick = Some(spawn_file_dialog(ui.ctx(), "背景画像を選ぶ", false, Some(("画像", &["png", "jpg", "jpeg", "webp", "gif"]))));
                 }
             });
+            // 説明はヒントに入れない（1行のヒントは入力欄をその長さまで広げ、狭い画面で設定画面ごとはみ出す）
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new("画像ファイルのパスか https:// の URL を指定します。空欄ならテーマの指定を使います。").size(12.0).color(MUTED())).wrap());
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            // 狭い幅では折り返す（1行に並べると設定画面ごと横に広がり、左端が画面外に出る）
+            ui.horizontal_wrapped(|ui| {
                 let mut area = self.settings.background.area.clone();
                 changed |= ui.radio_value(&mut area, None, "テーマの指定").changed();
                 changed |= ui.radio_value(&mut area, Some("chat".into()), "チャット欄だけ").changed();
@@ -5638,6 +5800,8 @@ impl App {
                 self.settings.background.area = area;
             });
             let mut op = self.settings.background.opacity.unwrap_or(0.35);
+            // つまみの幅は欄に合わせる（既定の幅のままだと、狭い画面で「画像の見え具合」と並べたときに設定画面ごと広がる）
+            ui.spacing_mut().slider_width = (ui.available_width() - 170.0).clamp(60.0, 320.0);
             if ui.add(egui::Slider::new(&mut op, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)).text("画像の見え具合")).changed() {
                 self.settings.background.opacity = Some(op);
                 changed = true;
@@ -5655,6 +5819,8 @@ impl App {
         });
         settings_card(ui, None, |ui| {
             let current = theme::current_colors();
+            // 長い項目名は省略する（色ボタン・「戻す」と並べても欄に収める）
+            let label_max = (ui.available_width() - 130.0).max(60.0);
             egui::Grid::new("theme_colors").num_columns(3).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
                 for ((key, label, _), c) in theme::KEYS.iter().zip(current) {
                     let mut col = c;
@@ -5662,7 +5828,9 @@ impl App {
                         self.settings.color_overrides.insert(key.to_string(), theme::format_color(col));
                         changed = true;
                     }
-                    ui.label(RichText::new(*label).color(TEXT()));
+                    ui.allocate_ui_with_layout(vec2(label_max, 20.0), Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(RichText::new(*label).color(TEXT())).truncate());
+                    });
                     if self.settings.color_overrides.contains_key(*key) {
                         if ui.small_button("戻す").clicked() {
                             self.settings.color_overrides.remove(*key);
@@ -5843,11 +6011,25 @@ fn plus_menu(ui: &mut egui::Ui) -> Option<PlusAction> {
         let color = if hovered { WHITE() } else { TEXT() };
         paint_glyph(p, Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), vec2(22.0, 22.0)), icon, color);
         p.text(pos2(rect.left() + 44.0, rect.center().y), Align2::LEFT_CENTER, label, medium_font(ui.ctx(), 15.0), color);
+        focus_ring(ui, &resp, rect, 6.0);
+        button_info(&resp, true, label);
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             out = Some(action);
         }
     }
     out
+}
+
+/// キーボード（Tab）で選んでいる部品の枠。クリックではフォーカスが移らないので、キーボードで操作しているときだけ出る
+fn focus_ring(ui: &egui::Ui, resp: &egui::Response, rect: Rect, radius: f32) {
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect, radius, Stroke::new(2.0_f32, LINK()), egui::StrokeKind::Inside);
+    }
+}
+
+/// 文字付きのボタンとして読み上げ・フォーカスに名前を付ける
+fn button_info(resp: &egui::Response, enabled: bool, text: &str) {
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
 }
 
 /// フォントに無い記号を使わず、図形で描くアイコンボタン
@@ -5860,6 +6042,7 @@ fn icon_button(ui: &mut egui::Ui, size: f32, icon: Icon) -> egui::Response {
         p.rect_filled(rect, 8.0, SELECTED());
     }
     paint_glyph(p, rect.shrink(size * 0.12), icon, color);
+    focus_ring(ui, &resp, rect, 8.0);
     resp
 }
 
@@ -6089,6 +6272,7 @@ fn toggle_icon(ui: &mut egui::Ui, icon: Icon, on: bool) -> egui::Response {
         ui.painter().rect_filled(rect, 8.0, SELECTED());
     }
     paint_glyph(ui.painter(), rect.shrink(5.0), icon, if on || resp.hovered() { WHITE() } else { MUTED() });
+    focus_ring(ui, &resp, rect, 8.0);
     resp
 }
 
@@ -6117,6 +6301,8 @@ fn toggle_with_menu(ui: &mut egui::Ui, icon: Icon, off: bool) -> (egui::Response
         p.line_segment([g.left_top() + vec2(2.0, 0.0), g.right_bottom() - vec2(0.0, 2.0)], Stroke::new(2.0_f32, RED()));
     }
     paint_glyph(p, chev_r.shrink2(vec2(2.0, 9.0)), Icon::Chevron, if chev.hovered() { WHITE() } else { color });
+    focus_ring(ui, &main, main_r, 6.0);
+    focus_ring(ui, &chev, chev_r, 6.0);
     (main, chev)
 }
 
@@ -6132,6 +6318,7 @@ fn round_button(ui: &mut egui::Ui, size: f32, icon: Icon, bg: Color32, fg: Color
         p.line_segment([g.left_top(), g.right_bottom()], Stroke::new(3.5_f32, bg));
         p.line_segment([g.left_top() + vec2(1.0, -1.0), g.right_bottom() + vec2(1.0, -1.0)], Stroke::new(2.0_f32, fg));
     }
+    focus_ring(ui, &resp, rect, size / 2.0);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -6155,7 +6342,7 @@ fn voice_channel_row(ui: &mut egui::Ui, selected: bool, name: &str) -> egui::Res
     }
     let p = ui.painter().with_clip_rect(r);
     paint_glyph(&p, Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(20.0, 20.0)), Icon::Speaker, MUTED());
-    p.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, name, FontId::proportional(15.0), color);
+    row_text(ui, &p, pos2(r.left() + 34.0, r.center().y), name, FontId::proportional(15.0), color, r.right() - 8.0 - (r.left() + 34.0));
     resp
 }
 
@@ -6174,7 +6361,10 @@ fn voice_member_row(ui: &mut egui::Ui, u: Option<&User>, id: &str, speaking: boo
     speaking_avatar(ui, av, u, id, speaking, if resp.hovered() { HOVER() } else { BG() });
     let name = u.map(|u| u.display()).unwrap_or(id);
     let p = ui.painter().with_clip_rect(r);
-    p.text(pos2(av.right() + 8.0, r.center().y), Align2::LEFT_CENTER, name, FontId::proportional(14.0), if speaking { WHITE() } else { MUTED() });
+    // 右端のミュート表示と重ならない幅で省略する
+    let icons = [deaf, mute || deaf].iter().filter(|on| **on).count() as f32;
+    let max_w = r.right() - 10.0 - icons * 18.0 - (av.right() + 8.0);
+    row_text(ui, &p, pos2(av.right() + 8.0, r.center().y), name, FontId::proportional(14.0), if speaking { WHITE() } else { MUTED() }, max_w);
     let mut x = r.right() - 10.0;
     for (on, icon) in [(deaf, Icon::Headset), (mute || deaf, Icon::Mic)] {
         if on {
@@ -6206,10 +6396,12 @@ fn action_button(ui: &mut egui::Ui, width: f32, icon: Icon, text: &str) -> egui:
     let (r, resp) = ui.allocate_exact_size(vec2(width, 50.0), Sense::click());
     let hovered = resp.hovered();
     let p = ui.painter();
-    p.rect_filled(r, 6.0, if hovered { WIDGET_HOVER() } else { WIDGET() });
+    p.rect_filled(r, 8.0, if hovered { WIDGET_HOVER() } else { WIDGET() });
     let c = if hovered { WHITE() } else { TEXT() };
     paint_glyph(p, Rect::from_center_size(pos2(r.left() + 26.0, r.center().y), vec2(24.0, 24.0)), icon, c);
     p.text(pos2(r.left() + 50.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(16.0), c);
+    focus_ring(ui, &resp, r, 8.0);
+    button_info(&resp, true, text);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -6230,6 +6422,8 @@ fn toggle_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
         p.line_segment([knob + vec2(-4.0, -4.0), knob + vec2(4.0, 4.0)], st);
         p.line_segment([knob + vec2(-4.0, 4.0), knob + vec2(4.0, -4.0)], st);
     }
+    focus_ring(ui, &resp, r, 16.0);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, ""));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -6289,7 +6483,7 @@ fn login_input(ui: &mut egui::Ui, text: &mut String, password: bool, hint: &str,
     Frame::new()
         .fill(RAIL())
         .stroke(Stroke::new(1.0_f32, BORDER()))
-        .corner_radius(6)
+        .corner_radius(8)
         .show(ui, |ui| {
             ui.add_enabled(
                 !busy,
@@ -6310,8 +6504,10 @@ fn login_input(ui: &mut egui::Ui, text: &mut String, password: bool, hint: &str,
 fn login_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), if enabled { Sense::click() } else { Sense::hover() });
     let fill = if !enabled { BLURPLE().gamma_multiply(0.5) } else if resp.hovered() { BLURPLE().lerp_to_gamma(Color32::BLACK, 0.15) } else { BLURPLE() };
-    ui.painter().rect_filled(r, 6.0, fill);
+    ui.painter().rect_filled(r, 8.0, fill);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), if enabled { Color32::WHITE } else { Color32::from_white_alpha(140) });
+    focus_ring(ui, &resp, r, 8.0);
+    button_info(&resp, enabled, text);
     enabled && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
@@ -6358,6 +6554,8 @@ fn popup_menu_row(ui: &mut egui::Ui, mark: MenuMark, text: &str, chevron: bool) 
         p.line_segment([pos2(x - 3.0, r.center().y - 5.0), pos2(x + 2.0, r.center().y)], st);
         p.line_segment([pos2(x + 2.0, r.center().y), pos2(x - 3.0, r.center().y + 5.0)], st);
     }
+    focus_ring(ui, &resp, r, 6.0);
+    button_info(&resp, true, text);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -6453,7 +6651,10 @@ fn profile_preview(ui: &mut egui::Ui, me: &User, draft: &ProfileDraft, w: f32) {
 
 /// 画像ファイルを正方形に切り抜き、AVATAR_SIZE まで縮めた PNG の data URI にする
 fn make_avatar(ctx: &egui::Context, path: &std::path::Path) -> Result<AvatarEdit, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("画像を読めません: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        eprintln!("アバター画像の読み込み失敗: {e}");
+        "画像ファイルを読み込めませんでした。ファイルを確認して、もう一度選んでください。".to_string()
+    })?;
     let img = image::load_from_memory(&bytes).map_err(|_| "画像として読み込めませんでした（PNG・JPEG・GIF・WebP が使えます）".to_string())?;
     let s = img.width().min(img.height());
     if s == 0 {
@@ -6467,7 +6668,10 @@ fn make_avatar(ctx: &egui::Context, path: &std::path::Path) -> Result<AvatarEdit
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(rgba.clone())
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("画像を変換できませんでした: {e}"))?;
+        .map_err(|e| {
+            eprintln!("アバター画像の変換失敗: {e}");
+            "画像を変換できませんでした。別の画像を選んでください。".to_string()
+        })?;
     let ci = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
     let tex = ctx.load_texture("profile-avatar-draft", ci, egui::TextureOptions::LINEAR);
     Ok(AvatarEdit::Set { uri: format!("data:image/png;base64,{}", base64_encode(&png)), tex })
@@ -6544,9 +6748,14 @@ fn settings_row(ui: &mut egui::Ui, label: &str, desc: Option<&str>, right: impl 
 
 /// 設定の四角いボタン（本家の「Edit」と同じ形）。danger = 赤
 fn settings_button(ui: &mut egui::Ui, text: &str, danger: bool) -> egui::Response {
+    settings_button_min(ui, text, danger, 96.0)
+}
+
+/// settings_button の最小幅を指定する版（文字が変わっても幅を変えず、隣がずれないようにする）
+fn settings_button_min(ui: &mut egui::Ui, text: &str, danger: bool, min_w: f32) -> egui::Response {
     let font = FontId::proportional(15.0);
     let g = ui.painter().layout_no_wrap(text.to_string(), font, WHITE());
-    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 32.0).max(96.0), 40.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 32.0).max(min_w), 40.0), Sense::click());
     let h = resp.hovered();
     let fill = match (danger, h) {
         (true, false) => RED(),
@@ -6556,6 +6765,8 @@ fn settings_button(ui: &mut egui::Ui, text: &str, danger: bool) -> egui::Respons
     };
     ui.painter().rect_filled(r, 8.0, fill);
     ui.painter().galley(r.center() - g.size() / 2.0, g, WHITE());
+    focus_ring(ui, &resp, r, 8.0);
+    button_info(&resp, true, text);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -6602,6 +6813,8 @@ fn settings_radio(ui: &mut egui::Ui, selected: bool, title: &str, desc: Option<&
     } else {
         p.text(pos2(x, r.center().y), Align2::LEFT_CENTER, title, medium_font(ui.ctx(), 16.0), WHITE());
     }
+    focus_ring(ui, &resp, r, 8.0);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, title));
     ui.add_space(8.0);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -6668,6 +6881,8 @@ fn settings_nav_item(ui: &mut egui::Ui, selected: bool, icon: Icon, text: &str, 
     let c = color.unwrap_or(if selected || hovered { WHITE() } else { TEXT() });
     paint_glyph(p, Rect::from_center_size(pos2(r.left() + 20.0, r.center().y), vec2(20.0, 20.0)), icon, c);
     p.text(pos2(r.left() + 42.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(16.0), c);
+    focus_ring(ui, &resp, r, 8.0);
+    button_info(&resp, true, text);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -6685,6 +6900,8 @@ fn settings_nav_sub(ui: &mut egui::Ui, on: bool, text: &str) -> egui::Response {
     }
     let c = if on { WHITE() } else if hovered { TEXT() } else { MUTED() };
     p.text(pos2(r.left() + 42.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(15.0), c);
+    focus_ring(ui, &resp, r, 6.0);
+    button_info(&resp, true, text);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -7761,6 +7978,249 @@ mod tests {
         }
     }
 
+    /// どのページも、狭い画面でモーダルの左端が画面外に押し出されない
+    #[test]
+    fn every_settings_page_stays_inside_a_narrow_window() {
+        for tab in 0..5 {
+            let mut app = bench_app(1);
+            app.settings_open = true;
+            app.settings_tab = tab;
+            let key = net::profile_key(&app.me.as_ref().unwrap().id, None);
+            app.profiles.insert(key, ProfileState::Ready(Default::default()));
+            let ctx = app.ctx.clone();
+            let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 568.0))), ..Default::default() };
+            let mut result = None;
+            for _ in 0..4 { result = Some(ctx.run(input(), |ctx| app.update_ui(ctx))); }
+            let out = result.unwrap();
+            let title = SETTINGS_TABS[tab].0;
+            let text = out.shapes.iter().find_map(|shape| match &shape.shape {
+                Shape::Text(t) if t.galley.text() == title && t.pos.y < 60.0 => Some(t),
+                _ => None,
+            }).unwrap_or_else(|| panic!("{title} のページ名が見えません"));
+            assert!(text.pos.x >= 0.0, "{title} のページが左にはみ出しています（x = {}）", text.pos.x);
+        }
+    }
+
+    /// 長い名前でも本文の折り返しは会話欄の幅に収まり、時刻も見える
+    #[test]
+    fn long_author_name_does_not_push_message_body_off_screen() {
+        let mut app = bench_app(1);
+        let list = app.messages.get_mut("c").unwrap();
+        list[0].author.username = "とても長いユーザー名".repeat(10);
+        list[0].content = "本文 ".repeat(60);
+        app.compact_sidebar_closed = true;
+        let ctx = app.ctx.clone();
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 700.0))), ..Default::default() };
+        let mut result = None;
+        for _ in 0..4 { result = Some(ctx.run(input(), |ctx| app.main_ui(ctx))); }
+        let out = result.unwrap();
+        let body = out.shapes.iter().find_map(|shape| match &shape.shape {
+            Shape::Text(t) if t.galley.text().starts_with("本文 本文") => Some(t),
+            _ => None,
+        }).expect("本文が描画されていません");
+        assert!(body.pos.x + body.galley.size().x <= 390.0, "本文が画面の外まで伸びています");
+        assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, Shape::Text(t) if t.galley.text().starts_with("2026/") && t.pos.x + t.galley.size().x <= 390.0)), "時刻が画面内に出ていません");
+    }
+
+    fn click_at(ctx: &egui::Context, app: &mut App, size: egui::Vec2, pos: egui::Pos2) {
+        for events in [
+            vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+            vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }],
+        ] {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)), events, ..Default::default() };
+            let _ = ctx.run(input, |ctx| app.main_ui(ctx));
+        }
+    }
+
+    #[test]
+    fn opening_dm_from_profile_popup_can_go_back() {
+        let mut app = bench_app(1);
+        app.sel_guild = Some("g".into());
+        app.sel_channel = Some("ch0_0".into());
+        app.messages.insert("ch0_0".into(), Vec::new());
+        let user = app.dms[0].recipients[0].clone();
+        app.popup = Some(ProfilePopup { user, guild_id: Some("g".into()), anchor: Rect::from_min_size(pos2(400.0, 100.0), vec2(40.0, 40.0)), above: false, opened: 0 });
+        let ctx = app.ctx.clone();
+        let size = vec2(1200.0, 760.0);
+        let mut out = None;
+        for _ in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)), ..Default::default() };
+            out = Some(ctx.run(input, |ctx| app.main_ui(ctx)));
+        }
+        let pos = out.unwrap().shapes.iter().find_map(|shape| match &shape.shape {
+            Shape::Text(t) if t.galley.text() == "メッセージを送る" => Some(t.pos + vec2(4.0, 4.0)),
+            _ => None,
+        }).expect("メッセージを送るボタンが見えません");
+        click_at(&ctx, &mut app, size, pos);
+        assert_eq!((app.sel_guild.as_deref(), app.sel_channel.as_deref()), (None, Some("c")));
+        assert_eq!(app.nav_back.last(), Some(&(Some("g".to_string()), Some("ch0_0".to_string()))), "戻る履歴に元のチャンネルが入っていません");
+    }
+
+    #[test]
+    fn status_notice_can_be_dismissed_but_connection_state_stays() {
+        let mut app = bench_app(1);
+        let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, ev) = std::sync::mpsc::channel();
+        app.backend = Some(Backend { cmd, ev });
+        let reconnect = "接続が切れました。3秒後に再接続します…";
+        tx.send(Event::Status(reconnect.into())).unwrap();
+        tx.send(Event::Error("x".into())).unwrap();
+        app.poll();
+        assert!(app.status.starts_with("エラー"));
+        let ctx = app.ctx.clone();
+        let size = vec2(1200.0, 760.0);
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)), ..Default::default() };
+            let _ = ctx.run(input, |ctx| app.main_ui(ctx));
+        }
+        // 帯の右端の ×（帯はタイトルバー 36px の下、左右の余白 12px）
+        let pos = pos2(size.x - 12.0 - 9.0, 36.0 + 4.0 + 9.0);
+        click_at(&ctx, &mut app, size, pos);
+        assert_eq!(app.status, reconnect, "閉じたら接続の状態に戻る");
+        // 接続の状態そのものは閉じられない
+        click_at(&ctx, &mut app, size, pos);
+        assert_eq!(app.status, reconnect);
+    }
+
+    #[test]
+    fn compact_member_list_and_sidebar_do_not_overlap() {
+        let mut app = bench_app(1);
+        app.sel_guild = Some("g".into());
+        app.sel_channel = Some("ch0_0".into());
+        app.messages.insert("ch0_0".into(), Vec::new());
+        app.compact_sidebar_closed = false;
+        let ctx = app.ctx.clone();
+        let size = vec2(390.0, 700.0);
+        for _ in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)), ..Default::default() };
+            let _ = ctx.run(input, |ctx| app.main_ui(ctx));
+        }
+        // ヘッダー右端のメンバーリスト切替（チャンネル一覧の外に見えている）
+        click_at(&ctx, &mut app, size, pos2(size.x - 16.0 - 16.0, 36.0 + 24.0));
+        assert!(app.show_members_narrow, "メンバーリストを開けません");
+        assert!(app.compact_sidebar_closed, "チャンネル一覧と重なって開いています");
+    }
+
+    fn texts_at(out: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|shape| match &shape.shape {
+            Shape::Text(t) if t.galley.text() == label => Some(t.pos + vec2(4.0, 4.0)),
+            _ => None,
+        })
+    }
+
+    fn press_release(pos: egui::Pos2) -> [Vec<egui::Event>; 2] {
+        [
+            vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+            vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }],
+        ]
+    }
+
+    /// 削除ボタンを素早く2回押しても、削除の要求は1回だけ
+    #[test]
+    fn double_click_on_delete_sends_one_request() {
+        let mut app = bench_app(1);
+        let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_tx, ev) = std::sync::mpsc::channel();
+        app.backend = Some(Backend { cmd, ev });
+        app.pending_delete = Some(app.messages["c"][0].clone());
+        let ctx = app.ctx.clone();
+        let input = |events| egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 760.0))), events, ..Default::default() };
+        let mut out = None;
+        for _ in 0..3 { out = Some(ctx.run(input(vec![]), |ctx| app.update_ui(ctx))); }
+        let pos = texts_at(&out.unwrap(), "削除").expect("削除ボタンが見えません");
+        for _ in 0..2 {
+            for events in press_release(pos) { let _ = ctx.run(input(events), |ctx| app.update_ui(ctx)); }
+        }
+        let deletes = std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, Cmd::Delete { .. })).count();
+        assert_eq!(deletes, 1);
+        assert!(app.pending_delete.is_none());
+    }
+
+    /// 保存ボタンを連打しても送るのは1回で、その間は「保存中…」と出る
+    #[test]
+    fn double_click_on_profile_save_sends_once_and_shows_saving() {
+        let mut app = bench_app(1);
+        let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_tx, ev) = std::sync::mpsc::channel();
+        app.backend = Some(Backend { cmd, ev });
+        let me = app.me.clone().unwrap();
+        app.profiles.insert(net::profile_key(&me.id, None), ProfileState::Ready(Default::default()));
+        app.settings_open = true;
+        app.settings_tab = 4;
+        let ctx = app.ctx.clone();
+        let input = |events| egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))), events, ..Default::default() };
+        for _ in 0..2 { let _ = ctx.run(input(vec![]), |ctx| app.update_ui(ctx)); }
+        app.profile_draft.as_mut().unwrap().fields[2] = "こんにちは".into();
+        let out = ctx.run(input(vec![]), |ctx| app.update_ui(ctx));
+        let pos = texts_at(&out, "変更を保存").expect("保存ボタンが見えません");
+        let mut last = None;
+        for _ in 0..2 {
+            for events in press_release(pos) { last = Some(ctx.run(input(events), |ctx| app.update_ui(ctx))); }
+        }
+        let saves = std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, Cmd::UpdateProfile { .. })).count();
+        assert_eq!(saves, 1);
+        assert!(texts_at(&last.unwrap(), "保存中…").is_some(), "保存中であることが分からない");
+    }
+
+    /// 送信中に続けて Enter を押しても二重に送らず、打ちかけの文字は消えない
+    #[test]
+    fn rapid_enter_while_sending_keeps_next_draft() {
+        let mut app = bench_app(1);
+        let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_tx, ev) = std::sync::mpsc::channel();
+        app.backend = Some(Backend { cmd, ev });
+        app.compact_sidebar_closed = true;
+        let ctx = app.ctx.clone();
+        let input = |events| egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 760.0))), events, ..Default::default() };
+        let enter = || egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        for _ in 0..2 { let _ = ctx.run(input(vec![]), |ctx| app.main_ui(ctx)); }
+        for text in ["一通目", "二通目"] {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new(INPUT_ID)));
+            let _ = ctx.run(input(vec![egui::Event::Text(text.into())]), |ctx| app.main_ui(ctx));
+            let _ = ctx.run(input(vec![enter()]), |ctx| app.main_ui(ctx));
+            let _ = ctx.run(input(vec![enter()]), |ctx| app.main_ui(ctx));
+        }
+        let sends = std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, Cmd::Send { .. })).count();
+        assert_eq!(sends, 1, "送信中は次を送らない");
+        assert_eq!(app.input, "二通目", "送れなかった文字は入力欄に残る");
+    }
+
+    /// DM 一覧は届く前は読み込み中、0 件ならその旨を出す
+    #[test]
+    fn empty_dm_list_says_so_only_after_loading() {
+        let mut app = bench_app(1);
+        app.dms.clear();
+        app.sel_channel = None;
+        let ctx = app.ctx.clone();
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 760.0))), ..Default::default() };
+        let empty = "ダイレクトメッセージはまだありません";
+        let out = ctx.run(input(), |ctx| app.main_ui(ctx));
+        assert!(texts_at(&out, empty).is_none(), "届く前に 0 件と言わない");
+        let (_cmd, _rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+        let (tx, ev) = std::sync::mpsc::channel();
+        app.backend = Some(Backend { cmd: _cmd, ev });
+        tx.send(Event::Dms(Vec::new())).unwrap();
+        app.poll();
+        let out = ctx.run(input(), |ctx| app.main_ui(ctx));
+        assert!(texts_at(&out, empty).is_some());
+    }
+
+    /// コピーしたら短く知らせ、しばらくすると消える
+    #[test]
+    fn copy_shows_a_short_notice() {
+        let mut app = bench_app(1);
+        let ctx = app.ctx.clone();
+        let input = || egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 760.0))), ..Default::default() };
+        app.show_toast("テキストをコピーしました");
+        // 浮いている面は最初のフレームで大きさを測るので、2フレーム目で見える
+        let _ = ctx.run(input(), |ctx| app.main_ui(ctx));
+        let out = ctx.run(input(), |ctx| app.main_ui(ctx));
+        assert!(texts_at(&out, "テキストをコピーしました").is_some());
+        app.toast.as_mut().unwrap().1 -= std::time::Duration::from_secs(3);
+        let out = ctx.run(input(), |ctx| app.main_ui(ctx));
+        assert!(texts_at(&out, "テキストをコピーしました").is_none() && app.toast.is_none());
+    }
+
     /// 設定はモーダル。テーマのカードとスイッチが出て、押すと切り替わる。打った文字は後ろの入力欄に入らない
     #[test]
     fn settings_search_jumps_to_section_and_logout_asks_first() {
@@ -8011,7 +8471,7 @@ mod tests {
         let mut out = ctx.run(input(1200.0), |ctx| app.login_ui(ctx));
         for _ in 0..2 { out = ctx.run(input(1200.0), |ctx| app.login_ui(ctx)); }
         let t = texts(&out);
-        for s in ["おかえりなさい！", "メールアドレスまたは電話番号", "パスワード", "QRコードでログイン", "トークンでログイン"] {
+        for s in ["おかえりなさい！", "メールアドレスまたは電話番号", "パスワード", "QR コードでログイン", "トークンでログイン"] {
             assert!(t.iter().any(|x| x == s), "{s} が無い: {t:?}");
         }
         // 二段階認証が要ると、コードの入力に変わる

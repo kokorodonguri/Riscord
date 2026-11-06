@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riscord — Rust 製の軽量な非公式 Discord クライアント</title>
+<meta name="description" content="Riscord は Rust と egui で作られた、軽量で日本語対応の非公式 Discord デスクトップクライアントです。チャット、ボイス通話、QR コードログイン、テーマのカスタマイズに対応。Linux と Windows で動作します。">
+<meta name="keywords" content="Riscord, Discord クライアント, 非公式 Discord クライアント, Rust, egui, 軽量, Linux, Windows, Discord client, unofficial Discord client">
+<link rel="canonical" href="https://kokorodonguri.github.io/Riscord/">
+<link rel="alternate" hreflang="ja" href="https://kokorodonguri.github.io/Riscord/">
+<meta name="theme-color" content="#0b0b0d">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Riscord">
+<meta property="og:title" content="Riscord — Rust 製の軽量な非公式 Discord クライアント">
+<meta property="og:description" content="Rust と egui で作られた、軽量で日本語対応の非公式 Discord デスクトップクライアント。">
+<meta property="og:url" content="https://kokorodonguri.github.io/Riscord/">
+<meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Riscord",
+  "alternateName": "riscord",
+  "description": "Rust と egui で作られた、軽量で日本語対応の非公式 Discord デスクトップクライアント。",
+  "applicationCategory": "CommunicationApplication",
+  "operatingSystem": "Linux, Windows",
+  "programmingLanguage": "Rust",
+  "inLanguage": "ja",
+  "url": "https://kokorodonguri.github.io/Riscord/",
+  "codeRepository": "https://github.com/kokorodonguri/Riscord",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "JPY" }
+}
+</script>
+<style>
+  :root {
+    --bg: #f6f6f8; --surface: #ffffff; --text: #1d1d22; --muted: #5d5e68;
+    --border: #e1e1e6; --accent: #4f5bd5; --accent-text: #ffffff; --warn-bg: #fff6e6; --warn-border: #f0c36d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0b0d; --surface: #141417; --text: #ececf0; --muted: #a0a1ab;
+      --border: #26262c; --accent: #7480ff; --accent-text: #0b0b0d; --warn-bg: #2a2214; --warn-border: #7a5a1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
+    line-height: 1.7; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 72px 0 40px; }
+  h1 { font-size: clamp(2.2rem, 6vw, 3.4rem); line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
+  .lead { font-size: 1.15rem; color: var(--muted); margin: 0 0 28px; max-width: 640px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    display: inline-block; padding: 12px 20px; border-radius: 10px; text-decoration: none; font-weight: 600;
+    border: 1px solid var(--border); color: var(--text); background: var(--surface);
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  section { padding: 28px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 1.4rem; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  pre {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    overflow-x: auto; font-size: 0.92rem;
+  }
+  .note { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 12px; padding: 16px 18px; }
+  .note p { margin: 0; }
+  dt { font-weight: 600; margin-top: 14px; }
+  dd { margin: 4px 0 0; color: var(--muted); }
+  footer { padding: 32px 0 56px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--border); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Riscord</h1>
+    <p class="lead">Rust と egui で作られた、軽量で日本語対応の<strong>非公式</strong> Discord デスクトップクライアントです。Electron を使わないネイティブアプリなので、起動が速く、メモリも少なく動きます。</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/kokorodonguri/Riscord">GitHub でソースを見る</a>
+      <a class="btn" href="#build">ビルド方法</a>
+    </div>
+  </header>
+
+  <section aria-labelledby="features">
+    <h2 id="features">主な機能</h2>
+    <div class="grid">
+      <div class="card"><h3>チャット</h3><p>サーバー・チャンネル・DM でのメッセージの送受信、返信・編集・削除。画像や GIF、スタンプ、埋め込みも表示します。</p></div>
+      <div class="card"><h3>ボイス通話</h3><p>ボイスチャンネルや DM 通話に参加。マイク・出力デバイス、プッシュトゥトーク、入力感度を設定できます。</p></div>
+      <div class="card"><h3>QR コードでログイン</h3><p>スマホの Discord アプリで読み取るだけ。メールアドレスとパスワード（二段階認証対応）でもログインできます。</p></div>
+      <div class="card"><h3>テーマ</h3><p>配色・背景画像・フォントを TOML ファイルで自由に変更。保存するとすぐ反映されます。</p></div>
+      <div class="card"><h3>プロフィール編集</h3><p>表示名・代名詞・アバター・自己紹介をアプリ内で変更できます。</p></div>
+      <div class="card"><h3>日本語 UI</h3><p>画面もエラーメッセージも日本語。Linux と Windows に対応しています。</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="build">
+    <h2 id="build">ビルドと実行</h2>
+    <p>Rust と Cargo が必要です。Linux では音声用に ALSA の開発ライブラリなども必要です。</p>
+<pre><code>git clone https://github.com/kokorodonguri/Riscord.git
+cd Riscord
+cargo run --release</code></pre>
+    <p>詳しくは <a href="https://github.com/kokorodonguri/Riscord#readme">README</a> をご覧ください。</p>
+  </section>
+
+  <section aria-labelledby="faq">
+    <h2 id="faq">よくある質問</h2>
+    <dl>
+      <dt>Discord の公式アプリですか？</dt>
+      <dd>いいえ。Riscord は Discord Inc. とは関係のない、個人が開発している非公式クライアントです。</dd>
+      <dt>安全に使えますか？</dt>
+      <dd>ユーザーアカウントで非公式クライアントを使うことは、Discord の利用規約に抵触する可能性があり、アカウントが制限されるおそれがあります。利用は自己責任でお願いします。ログイン情報は Discord 以外には送信しません。</dd>
+      <dt>無料ですか？</dt>
+      <dd>はい。ソースコードは GitHub で公開しています。</dd>
+    </dl>
+  </section>
+
+  <section aria-labelledby="disclaimer">
+    <div class="note">
+      <p>Riscord は非公式のクライアントです。Discord は Discord Inc. の商標であり、本プロジェクトは Discord Inc. によって承認・提携されたものではありません。</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>Riscord — <a href="https://github.com/kokorodonguri/Riscord">github.com/kokorodonguri/Riscord</a></p>
+  </footer>
+</div>
+</body>
+</html>

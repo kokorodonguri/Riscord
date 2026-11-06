@@ -1,5 +1,9 @@
 # Riscord
 
+**A lightweight, unofficial Discord desktop client written in Rust (egui), with a Japanese UI.** Native (no Electron), with chat, voice, QR code login and themes. Runs on Linux and Windows.
+
+紹介ページ: https://kokorodonguri.github.io/Riscord/
+
 Riscord は、Rust と egui で作られた非公式の Discord デスクトップクライアントです。日本語のインターフェースで、チャットやボイス通話、テーマによる外観のカスタマイズを利用できます。
 
 > Discord の公式アプリではありません。ユーザートークンを使う非公式クライアントの利用は、Discord の利用規約に抵触する可能性があります。利用前に適用される規約を確認してください。トークンはパスワードと同様に扱い、他人に共有しないでください。
@@ -10,6 +14,7 @@ Riscord は、Rust と egui で作られた非公式の Discord デスクトッ�
 - 画像や GIF、スタンプ、埋め込みコンテンツの表示とファイルのアップロード
 - ボイスチャンネルへの接続、マイクと音声出力の設定
 - ステータスの変更と、配色・背景画像・フォントのカスタマイズ
+- QR コード・メールアドレス・トークンでのログイン、プロフィールの編集
 
 ## ビルドと実行
 

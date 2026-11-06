@@ -1212,6 +1212,33 @@ fn resolve_mentions<'a>(content: &'a str, m: &Message, channels: &HashMap<String
     std::borrow::Cow::Owned(out)
 }
 
+/// 本文の太字（埋め込みと同じく **…** を太く白くする）
+fn bold_fmt(ctx: &egui::Context, body: &TextFormat) -> TextFormat {
+    // 太字用のフォントは本文用より上の余白が大きく、そのままだと文字が数 px 下がり行も高くなる。
+    // 文字は行の下端に揃えて置かれるので、太字の行の高さを「本文の行の高さ＋基準線の差」にすると、
+    // 本文が同じだけ下がって基準線が揃う（行が高くなるのはその差の分だけ）
+    let font = medium_font(ctx, body.font_id.size);
+    let (row_h, diff) = ctx.fonts(|f| {
+        let base = |id: &FontId| f.layout_no_wrap("あ".into(), id.clone(), Color32::WHITE).rows.first().and_then(|r| r.glyphs.first()).map_or(0.0, |g| g.pos.y);
+        (f.row_height(&body.font_id), (base(&font) - base(&body.font_id)).max(0.0))
+    });
+    TextFormat { font_id: font, color: WHITE(), line_height: Some(row_h + diff), valign: Align::BOTTOM, ..body.clone() }
+}
+
+/// **…** を太字にして足す。対になっていない ** は記号のまま残す
+fn append_bold(job: &mut LayoutJob, text: &str, body: &TextFormat, bold: &TextFormat, links: &mut Vec<(std::ops::Range<usize>, String)>) {
+    let parts: Vec<&str> = text.split("**").collect();
+    // 使える区切りは偶数個まで。余った最後の ** はそのまま出す
+    let paired = (parts.len() - 1) / 2 * 2;
+    for (i, part) in parts.iter().enumerate() {
+        if i > paired {
+            append_linked(job, "**", body, links);
+        }
+        let fmt = if i % 2 == 1 && i <= paired { bold } else { body };
+        append_linked(job, part, fmt, links);
+    }
+}
+
 fn inline_content(ui: &mut egui::Ui, m: &Message, content: &str, s: &Settings, prefix: LayoutJob, images: &mut Vec<String>) {
     let body = TextFormat { font_id: FontId::proportional(s.font_size), color: TEXT(), ..Default::default() };
     let small = TextFormat { font_id: FontId::proportional(11.0), color: MUTED(), ..Default::default() };
@@ -1220,7 +1247,7 @@ fn inline_content(ui: &mut egui::Ui, m: &Message, content: &str, s: &Settings, p
     if !segs.iter().any(|x| matches!(x, Seg::Emoji { .. })) {
         let mut job = prefix;
         let mut links = Vec::new();
-        append_linked(&mut job, content, &body, &mut links);
+        append_bold(&mut job, content, &body, &bold_fmt(ui.ctx(), &body), &mut links);
         if m.edited_timestamp.is_some() {
             job.append(" (編集済)", 0.0, small);
         }
@@ -1245,7 +1272,7 @@ fn inline_content(ui: &mut egui::Ui, m: &Message, content: &str, s: &Settings, p
                 Seg::Text(t) => {
                     if !(only_emoji && t.trim().is_empty()) {
                         let (mut job, mut links) = (LayoutJob::default(), Vec::new());
-                        append_linked(&mut job, t, &body, &mut links);
+                        append_bold(&mut job, t, &body, &bold_fmt(ui.ctx(), &body), &mut links);
                         link_label(ui, job, &links);
                     }
                 }
@@ -7214,6 +7241,23 @@ mod tests {
             let _ = ctx.run(input(), |ctx| app.main_ui(ctx));
         }
         t.elapsed().as_secs_f64() * 1000.0 / frames as f64
+    }
+
+    #[test]
+    fn bold_markers_pair_and_leave_unpaired_as_text() {
+        let body = TextFormat::default();
+        let bold = TextFormat { color: Color32::RED, ..Default::default() };
+        let render = |t: &str| {
+            let mut job = LayoutJob::default();
+            append_bold(&mut job, t, &body, &bold, &mut Vec::new());
+            let bolded: String = job.sections.iter().filter(|s| s.format.color == Color32::RED).map(|s| &job.text[s.byte_range.clone()]).collect();
+            (job.text.clone(), bolded)
+        };
+        assert_eq!(render("a **b** c"), ("a b c".to_string(), "b".to_string()));
+        assert_eq!(render("**x** と **y**"), ("x と y".to_string(), "xy".to_string()));
+        assert_eq!(render("2 ** 3"), ("2 ** 3".to_string(), String::new()));
+        assert_eq!(render("**a** **b"), ("a **b".to_string(), "a".to_string()));
+        assert_eq!(render("普通"), ("普通".to_string(), String::new()));
     }
 
     #[test]

@@ -1,0 +1,39 @@
+[package]
+name = "riscord"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "multipart"] }
+serde = { version = "1", features = ["derive"] }
+# raw_value: ゲートウェイの d を使う種類のときだけ解析する（src/net.rs の GatewayFrame）
+serde_json = { version = "1", features = ["raw_value"] }
+anyhow = "1"
+# テーマファイル（src/theme.rs）
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+dirs = "6"
+chrono = "0.4"
+# http(s) の画像は src/http_loader.rs（reqwest）で取るので "http"（ehttp）は使わない
+egui_extras = { version = "0.31", features = ["image", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+velato = { version = "0.12", default-features = false }
+vello_cpu = "0.3"
+songbird = { version = "0.6", default-features = false, features = ["driver", "gateway", "receive", "rustls", "tungstenite"] }
+cpal = "0.18.2"
+ringbuf = "0.4"
+async-trait = "0.1.92"
+symphonia-core = "0.5"
+# ゲートウェイの zlib-stream 展開（png 経由で既に依存ツリーにある版を使う）
+flate2 = "1.1"
+# 画像の貼り付け（egui は文字しか貼り付けられない）。Wayland ネイティブのクリップボードにも対応させる
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }
+# ＋メニューの「ファイルをアップロード」のファイル選択ダイアログ。Linux は xdg-desktop-portal 経由（GTK を直接リンクしない）
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
+[profile.release]
+lto = "thin"
+strip = true

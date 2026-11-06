@@ -4566,6 +4566,11 @@ impl App {
                         if i == sel || resp.hovered() {
                             ui.painter().rect_filled(rect, 6.0, if i == sel { SELECTED() } else { HOVER() });
                         }
+                        if i == sel {
+                            // 地の色が近いテーマでも選択中と分かるよう、色の差だけに頼らず左端に印を付ける
+                            let bar = Rect::from_min_size(pos2(rect.left(), rect.center().y - 10.0), vec2(3.0, 20.0));
+                            ui.painter().rect_filled(bar, 2.0, BLURPLE());
+                        }
                         if i == sel && (up || down) {
                             ui.scroll_to_rect(rect, None);
                         }
@@ -5672,8 +5677,8 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             return;
         }
-        let save = Rect::from_min_size(pos2(r.right() - 12.0 - 120.0, r.center().y - 17.0), vec2(120.0, 34.0));
-        let reset = Rect::from_min_size(pos2(save.left() - 8.0 - 80.0, save.top()), vec2(80.0, 34.0));
+        let save = Rect::from_min_size(pos2(r.right() - 12.0 - 120.0, r.center().y - 19.0), vec2(120.0, 38.0));
+        let reset = Rect::from_min_size(pos2(save.left() - 8.0 - 80.0, save.top()), vec2(80.0, 38.0));
         let sr = ui.interact(save, ui.id().with("profile_save"), Sense::click());
         let rr = ui.interact(reset, ui.id().with("profile_reset"), Sense::click());
         let p = ui.painter();
@@ -6810,7 +6815,8 @@ fn settings_button(ui: &mut egui::Ui, text: &str, danger: bool) -> egui::Respons
 fn settings_button_min(ui: &mut egui::Ui, text: &str, danger: bool, min_w: f32) -> egui::Response {
     let font = FontId::proportional(15.0);
     let g = ui.painter().layout_no_wrap(text.to_string(), font, WHITE());
-    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 32.0).max(min_w), 40.0), Sense::click());
+    // 高さはモーダル・ポップアップ・保存バーのボタンと同じ 38px（ログイン画面の大きなボタンだけ 44px）
+    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 32.0).max(min_w), 38.0), Sense::click());
     let h = resp.hovered();
     let fill = match (danger, h) {
         (true, false) => RED(),

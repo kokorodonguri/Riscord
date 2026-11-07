@@ -3436,22 +3436,33 @@ impl App {
                     egui::CentralPanel::default()
                         .frame(Frame::new().inner_margin(Margin { left: 1, top: 8, ..Default::default() }))
                         .show_inside(ui, |ui| {
-                            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                            egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 match &self.sel_guild {
                                     None => {
                                         let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
                                         ui.painter().text(pos2(hr.left() + 16.0, hr.center().y), Align2::LEFT_CENTER, "ダイレクトメッセージ", FontId::proportional(13.0), FAINT());
                                         let q = self.dm_filter.trim().to_lowercase();
-                                        let mut shown = 0;
-                                        for c in self.dms.iter().filter(|c| q.is_empty() || c.dm_label().to_lowercase().contains(&q)) {
-                                            shown += 1;
+                                        // DM rows have a fixed height, so only create widgets near the viewport.
+                                        let filtered: Option<Vec<&Channel>> = (!q.is_empty()).then(||
+                                            self.dms.iter().filter(|c| c.dm_label().to_lowercase().contains(&q)).collect());
+                                        let shown = filtered.as_ref().map_or(self.dms.len(), Vec::len);
+                                        let row_height = 42.0 + ui.spacing().item_spacing.y;
+                                        let start_y = ui.cursor().top() - ui.max_rect().top();
+                                        let first = (((viewport.min.y - start_y) / row_height).floor() as usize).min(shown);
+                                        let end = (((viewport.max.y - start_y) / row_height).ceil() as usize + 1).min(shown);
+                                        ui.add_space(first as f32 * row_height);
+                                        ui.skip_ahead_auto_ids(first);
+                                        for i in first..end {
+                                            let c = filtered.as_ref().map_or_else(|| &self.dms[i], |list| list[i]);
                                             let sel = self.sel_channel.as_deref() == Some(&c.id);
                                             let pres = c.recipients.first().and_then(|u| self.presences.get(&u.id));
                                             if dm_row(ui, sel, self.unread.contains_key(&c.id), c, pres).clicked() {
                                                 open = Some(c.id.clone());
                                             }
                                         }
+                                        ui.add_space((shown - end) as f32 * row_height);
+                                        ui.skip_ahead_auto_ids(shown - end);
                                         if shown == 0 && !q.is_empty() {
                                             ui.add_space(12.0);
                                             ui.vertical_centered(|ui| ui.label(RichText::new("見つかりませんでした").size(13.0).color(FAINT())));
@@ -9315,6 +9326,49 @@ mod tests {
             let d = moved[0];
             assert!((d - 5.0).abs() < 0.6, "5pt 回して {d}pt 動いた（{total}pt 目）");
         }
+    }
+
+    #[test]
+    fn virtual_dm_list_scrolls_and_selects_last_row() {
+        let mut app = bench_app(0);
+        app.dms.clear();
+        for i in 0..100 {
+            app.dms.push(Channel {
+                id: format!("dm{i}"), kind: 1, name: None, position: 0, parent_id: None,
+                recipients: vec![User { id: format!("u{i}"), username: format!("person{i:03}"), global_name: None, avatar: None, premium_type: None }],
+                last_message_id: None, topic: None, icon: None, permission_overwrites: vec![],
+            });
+        }
+        let ctx = app.ctx.clone();
+        let mut time = 0.0;
+        let mut frame = |app: &mut App, events| {
+            time += 1.0 / 60.0;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 760.0))), time: Some(time), events, ..Default::default() };
+            ctx.run(input, |ctx| app.main_ui(ctx))
+        };
+        for _ in 0..3 { let _ = frame(&mut app, vec![]); }
+        for _ in 0..15 {
+            let _ = frame(&mut app, vec![egui::Event::PointerMoved(pos2(200.0, 300.0)),
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -1000.0), modifiers: Default::default() }]);
+        }
+        let output = frame(&mut app, vec![]);
+        let last = output.shapes.iter().find_map(|shape| match &shape.shape {
+            Shape::Text(text) if text.galley.text() == "person099" && shape.clip_rect.contains(text.pos) => Some(text.pos + vec2(5.0, 5.0)),
+            _ => None,
+        }).expect("last DM must be visible after scrolling");
+        let click = |pressed| vec![egui::Event::PointerMoved(last), egui::Event::PointerButton {
+            pos: last, button: egui::PointerButton::Primary, pressed, modifiers: Default::default(),
+        }];
+        let _ = frame(&mut app, click(true));
+        let _ = frame(&mut app, click(false));
+        assert_eq!(app.sel_channel.as_deref(), Some("dm99"));
+        app.dm_search = true;
+        app.dm_filter = "person050".into();
+        for _ in 0..3 { let _ = frame(&mut app, vec![]); }
+        let output = frame(&mut app, vec![]);
+        let found = output.shapes.iter().any(|shape| matches!(&shape.shape,
+            Shape::Text(text) if text.galley.text() == "person050" && shape.clip_rect.contains(text.pos)));
+        assert!(found, "filtered DM must remain visible after scrolling");
     }
 
     /// DM・サーバーが多いアカウントでのサイドバー描画

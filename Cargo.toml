@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.31"
+# UI（gpui と gpui-component 一式。gpui-kit が組み合わせの合う版を固定している）
+gpui = { package = "gpui-kit", version = "=0.9.0" }
+# 別スレッドから UI へ「描き直して」を届ける（src/wake.rs）
+futures-channel = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
@@ -17,8 +20,6 @@ anyhow = "1"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 dirs = "6"
 chrono = "0.4"
-# http(s) の画像は src/http_loader.rs（reqwest）で取るので "http"（ehttp）は使わない
-egui_extras = { version = "0.31", features = ["image", "gif", "webp"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 velato = { version = "0.12", default-features = false }
 vello_cpu = "0.3"
@@ -29,7 +30,7 @@ async-trait = "0.1.92"
 symphonia-core = "0.5"
 # ゲートウェイの zlib-stream 展開（png 経由で既に依存ツリーにある版を使う）
 flate2 = "1.1"
-# 画像の貼り付け（egui は文字しか貼り付けられない）。Wayland ネイティブのクリップボードにも対応させる
+# 画像の貼り付け。Wayland ネイティブのクリップボードにも対応させる
 arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }
 # ＋メニューの「ファイルをアップロード」のファイル選択ダイアログ。Linux は xdg-desktop-portal 経由（GTK を直接リンクしない）
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
@@ -43,3 +44,8 @@ qrcode = { version = "0.14", default-features = false }
 [profile.release]
 lto = "thin"
 strip = true
+
+# gpui の wgpu 描画を、draw の first_instance に頼らない形に直したもの（Adreno などで文字や画像が消えるため）。
+# 中身は gpui-pre-wgpu 0.3.11 と同じで、src/wgpu_renderer.rs の record_frame だけ変えてある
+[patch.crates-io]
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }

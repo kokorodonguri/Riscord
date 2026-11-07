@@ -20,7 +20,7 @@ pub struct ProfileData {
     pub roles: Vec<(String, u32)>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -56,7 +56,7 @@ pub struct Role {
 }
 
 /// サーバーメンバー
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct Member {
     #[serde(default)]
     pub user: Option<User>,
@@ -207,7 +207,7 @@ impl Channel {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct Attachment {
     pub filename: String,
     pub url: String,
@@ -231,7 +231,7 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct StickerItem {
     pub id: String,
     pub name: String,
@@ -239,7 +239,7 @@ pub struct StickerItem {
     pub format_type: u8,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct EmbedMedia {
     pub url: String,
     #[serde(default)]
@@ -251,7 +251,7 @@ pub struct EmbedMedia {
 }
 
 /// 埋め込みの作者・提供元（名前とリンク、作者はアイコンも）
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Hash)]
 pub struct EmbedName {
     #[serde(default)]
     pub name: Option<String>,
@@ -263,7 +263,7 @@ pub struct EmbedName {
     pub proxy_icon_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct EmbedFooter {
     #[serde(default)]
     pub text: String,
@@ -273,7 +273,7 @@ pub struct EmbedFooter {
     pub proxy_icon_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct EmbedField {
     #[serde(default)]
     pub name: String,
@@ -283,7 +283,7 @@ pub struct EmbedField {
     pub inline: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct Embed {
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
@@ -380,7 +380,7 @@ fn gif_url(url: &str) -> Option<String> {
     None
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Hash)]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -553,5 +553,37 @@ mod permission_tests {
         let role = |id: &str, p: u64| Role { id: id.into(), name: String::new(), color: 0, position: 0, hoist: false, permissions: p.to_string() };
         let roles = vec![role(G, VIEW_CHANNEL), role("r1", 1 << 11), role("r2", ADMINISTRATOR)];
         assert_eq!(base_permissions(G, &roles, &["r1".into()]), VIEW_CHANNEL | 1 << 11);
+    }
+}
+
+#[cfg(test)]
+mod layout_hash_tests {
+    use super::*;
+    use std::hash::{Hash, Hasher};
+
+    fn hash(message: &Message) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        message.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn message_hash_changes_for_embed_text_and_media_dimensions() {
+        let message: Message = serde_json::from_value(serde_json::json!({
+            "id": "1", "channel_id": "c", "timestamp": "2026-11-01T10:00:00Z",
+            "author": {"id": "u", "username": "name"},
+            "embeds": [{"fields": [{"name": "title", "value": "short"}],
+                        "image": {"url": "https://example.com/image", "width": 100, "height": 100}}]
+        })).unwrap();
+        let original = hash(&message);
+        let mut updated = message.clone();
+        updated.embeds[0].fields[0].value = "a much longer field".into();
+        assert_ne!(hash(&updated), original);
+        let mut updated = message.clone();
+        updated.embeds[0].image.as_mut().unwrap().height = Some(400);
+        assert_ne!(hash(&updated), original);
+        let mut updated = message.clone();
+        updated.author.username = "another author".into();
+        assert_ne!(hash(&updated), original);
     }
 }

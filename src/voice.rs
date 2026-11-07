@@ -53,7 +53,7 @@ pub struct VoiceCtl {
     pub restart: AtomicBool,
     /// 自分以外の話している人 (user_id)
     pub speaking: Mutex<HashSet<String>>,
-    repaint: Mutex<Option<eframe::egui::Context>>,
+    repaint: Mutex<Option<crate::wake::Waker>>,
 }
 
 impl Default for VoiceCtl {
@@ -79,7 +79,7 @@ impl Default for VoiceCtl {
 }
 
 impl VoiceCtl {
-    pub fn set_ctx(&self, ctx: eframe::egui::Context) {
+    pub fn set_ctx(&self, ctx: crate::wake::Waker) {
         *self.repaint.lock().unwrap() = Some(ctx);
     }
     pub fn set_vad_threshold(&self, v: f32) {
@@ -107,7 +107,7 @@ impl VoiceCtl {
     }
     fn repaint(&self) {
         if let Some(c) = &*self.repaint.lock().unwrap() {
-            c.request_repaint();
+            c.wake();
         }
     }
 }

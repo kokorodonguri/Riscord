@@ -16,19 +16,18 @@
 //! area = "window"                 # "chat"（チャット欄だけ・既定）か "window"（ウィンドウ全体。
 //!                                 #  各面の色を #rrggbbaa で透かすと壁紙が見える）
 //! ```
-use eframe::egui::Color32;
+use crate::color::Color32;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 fn pack(c: Color32) -> u32 {
-    u32::from_le_bytes(c.to_array())
+    u32::from_le_bytes(c.rgba)
 }
 
 fn unpack(v: u32) -> Color32 {
-    let [r, g, b, a] = v.to_le_bytes();
-    Color32::from_rgba_premultiplied(r, g, b, a)
+    Color32 { rgba: v.to_le_bytes() }
 }
 
 macro_rules! palette {

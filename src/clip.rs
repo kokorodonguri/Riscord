@@ -1,24 +1,32 @@
 //! 貼り付け・ドロップされた画像やファイルを送信用の添付にする
 //!
-//! egui は文字しか貼り付けられない（画像だけのクリップボードだと Ctrl+V のイベント自体が来ない）ので、
-//! 画像は arboard で直接クリップボードから読む。
+//! 画像は arboard で直接クリップボードから読む（Wayland のデータコントロールにも対応させるため）。
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui;
+use std::sync::Arc;
 
 /// 送信待ちの添付ファイル
 pub struct Upload {
     pub name: String,
     pub data: Vec<u8>,
     /// 画像ならサムネイル
-    pub thumb: Option<egui::TextureHandle>,
+    pub thumb: Option<Arc<gpui::RenderImage>>,
+}
+
+// GPUI の画像は GPU 側のキャッシュも明示的に解放する。
+impl Drop for Upload {
+    fn drop(&mut self) {
+        if let Some(image) = self.thumb.take() {
+            crate::images::release(image);
+        }
+    }
 }
 
 const THUMB: u32 = 160;
 
 /// クリップボードの画像を PNG にして返す。画像がなければ None
-pub fn clipboard_image(ctx: &egui::Context) -> Option<Result<Upload, String>> {
+pub fn clipboard_image() -> Option<Result<Upload, String>> {
     let mut cb = arboard::Clipboard::new().ok()?;
     let img = cb.get_image().ok()?;
     let (w, h) = (img.width as u32, img.height as u32);
@@ -29,24 +37,25 @@ pub fn clipboard_image(ctx: &egui::Context) -> Option<Result<Upload, String>> {
         return Some(Err("クリップボードの画像を読み込めませんでした。".into()));
     }
     let name = format!("image-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-    Some(Ok(Upload { thumb: Some(thumb_texture(ctx, &name, &rgba)), name, data: png }))
+    Some(Ok(Upload { thumb: Some(thumb_texture(&rgba)), name, data: png }))
 }
 
 /// ファイルを読み込む。画像ならサムネイルも作る
-pub fn load_file(ctx: &egui::Context, path: &Path) -> Result<Upload, String> {
+pub fn load_file(path: &Path) -> Result<Upload, String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
     let data = std::fs::read(path).map_err(|e| {
         eprintln!("{} を読めません: {e}", path.display());
         format!("「{name}」を読み込めませんでした。ファイルを確認して、もう一度お試しください。")
     })?;
-    let thumb = image::load_from_memory(&data).ok().map(|img| thumb_texture(ctx, &name, &img.to_rgba8()));
+    let thumb = image::load_from_memory(&data).ok().map(|img| thumb_texture(&img.to_rgba8()));
     Ok(Upload { name, data, thumb })
 }
 
-fn thumb_texture(ctx: &egui::Context, name: &str, img: &image::RgbaImage) -> egui::TextureHandle {
-    let small = image::imageops::thumbnail(img, THUMB.min(img.width()), THUMB.min(img.height()));
-    let ci = egui::ColorImage::from_rgba_unmultiplied([small.width() as usize, small.height() as usize], small.as_raw());
-    ctx.load_texture(format!("upload:{name}"), ci, egui::TextureOptions::LINEAR)
+fn thumb_texture(img: &image::RgbaImage) -> Arc<gpui::RenderImage> {
+    // 縦横比を保って THUMB に収める
+    let k = (THUMB as f32 / img.width().max(1) as f32).min(THUMB as f32 / img.height().max(1) as f32).min(1.0);
+    let (w, h) = (((img.width() as f32 * k) as u32).max(1), ((img.height() as f32 * k) as u32).max(1));
+    crate::images::render_image(image::imageops::thumbnail(img, w, h))
 }
 
 /// ファイルマネージャーでコピーしたファイルは「file:///…」や絶対パスの文字として貼り付けられる。
@@ -86,6 +95,14 @@ fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_upload_releases_its_thumbnail() {
+        let thumbnail = crate::images::render_image(image::RgbaImage::new(1, 1));
+        let upload = Upload { name: "test.png".into(), data: vec![], thumb: Some(thumbnail.clone()) };
+        drop(upload);
+        assert!(crate::images::release_queued(&thumbnail));
+    }
 
     #[test]
     fn decodes_percent_escapes() {

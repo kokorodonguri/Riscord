@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use eframe::egui;
+use crate::wake::Waker;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -43,18 +43,18 @@ pub enum LoginEvent {
 #[derive(Clone)]
 struct Tx {
     tx: Sender<LoginEvent>,
-    ctx: egui::Context,
+    ctx: Waker,
 }
 
 impl Tx {
     fn send(&self, e: LoginEvent) -> bool {
         let ok = self.tx.send(e).is_ok();
-        self.ctx.request_repaint();
+        self.ctx.wake();
         ok
     }
 }
 
-fn spawn<F>(ctx: &egui::Context, f: impl FnOnce(Tx) -> F + Send + 'static) -> Receiver<LoginEvent>
+fn spawn<F>(ctx: &Waker, f: impl FnOnce(Tx) -> F + Send + 'static) -> Receiver<LoginEvent>
 where
     F: std::future::Future<Output = ()>,
 {
@@ -74,7 +74,7 @@ fn http() -> reqwest::Client {
 // ---- QR コード ----
 
 /// QR コードでのログインを始める。cancel を true にすると止まる（画面を離れたとき・ログインできたとき）
-pub fn start_qr(ctx: &egui::Context) -> (Receiver<LoginEvent>, Arc<AtomicBool>) {
+pub fn start_qr(ctx: &Waker) -> (Receiver<LoginEvent>, Arc<AtomicBool>) {
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
     let rx = spawn(ctx, move |tx| async move {
@@ -183,7 +183,7 @@ pub fn qr_modules(url: &str) -> Option<(usize, Vec<bool>)> {
 
 // ---- メールアドレスとパスワード ----
 
-pub fn password(ctx: &egui::Context, login: String, password: String) -> Receiver<LoginEvent> {
+pub fn password(ctx: &Waker, login: String, password: String) -> Receiver<LoginEvent> {
     spawn(ctx, move |tx| async move {
         let body = json!({ "login": login, "password": password, "undelete": false, "login_source": null, "gift_code_sku_id": null });
         tx.send(match post(&format!("{API}/auth/login"), &body).await {
@@ -204,7 +204,7 @@ pub fn password(ctx: &egui::Context, login: String, password: String) -> Receive
 }
 
 /// 二段階認証のコード（認証アプリの6桁、またはバックアップコード）を送る
-pub fn mfa(ctx: &egui::Context, ticket: String, code: String) -> Receiver<LoginEvent> {
+pub fn mfa(ctx: &Waker, ticket: String, code: String) -> Receiver<LoginEvent> {
     spawn(ctx, move |tx| async move {
         let code: String = code.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
         let body = json!({ "code": code, "ticket": ticket, "login_source": null, "gift_code_sku_id": null });

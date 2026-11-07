@@ -170,6 +170,8 @@ pub enum Event {
     AuthFailed,
     LoginFailed,
     MessagesFailed(String),
+    /// 既読通知が Discord に届かなかった。古い失敗が新しい通知を消さないよう ID を含める。
+    AckFailed { channel_id: String, message_id: String },
     ComposeResult { channel_id: String, result: Result<Option<Message>, ()> },
     /// 送信・編集が Discord に断られた（確実に届いていない）。理由を添えて ComposeResult の直前に送る
     ComposeRejected { channel_id: String, reason: String },
@@ -215,20 +217,20 @@ enum VoiceMsg {
 #[derive(Clone)]
 struct Tx {
     tx: std::sync::mpsc::Sender<Event>,
-    ctx: eframe::egui::Context,
+    ctx: crate::wake::Waker,
 }
 
 impl Tx {
     fn send(&self, e: Event) {
         let _ = self.tx.send(e);
-        self.ctx.request_repaint();
+        self.ctx.wake();
     }
 
     /// 急がない更新（オンライン状態など）。大きいサーバーでは毎秒大量に届くので、
     /// 1件ごとに描き直さず 250ms 以内にまとめて1回にする
     fn send_lazy(&self, e: Event) {
         let _ = self.tx.send(e);
-        self.ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        self.ctx.wake_after(std::time::Duration::from_millis(250));
     }
 }
 
@@ -269,7 +271,7 @@ pub struct MyPresence {
 pub fn spawn(
     token: String,
     status: MyPresence,
-    ctx: eframe::egui::Context,
+    ctx: crate::wake::Waker,
     ctl: Arc<VoiceCtl>,
 ) -> (UnboundedSender<Cmd>, std::sync::mpsc::Receiver<Event>) {
     let (cmd_tx, cmd_rx) = unbounded_channel();
@@ -284,6 +286,8 @@ pub fn spawn(
 
 #[derive(Clone)]
 struct Api {
+    #[cfg(test)]
+    base_url: Option<String>,
     http: reqwest::Client,
     token: String,
     /// サーバーごとのロール一覧と取得時刻。プロフィールを開くたびの再取得（1往復 約180ms）を省く。
@@ -338,7 +342,11 @@ impl Api {
         build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
         loop {
-            let req = build(self.http.request(method.clone(), format!("{API}{path}")).header(AUTHORIZATION, &self.token));
+            #[cfg(test)]
+            let base = self.base_url.as_deref().unwrap_or(API);
+            #[cfg(not(test))]
+            let base = API;
+            let req = build(self.http.request(method.clone(), format!("{base}{path}")).header(AUTHORIZATION, &self.token));
             let r = req.send().await?;
             match r.status() {
                 StatusCode::TOO_MANY_REQUESTS => {
@@ -429,7 +437,7 @@ fn api_client(connect_timeout: Duration, read_timeout: Duration) -> Result<reqwe
 
 async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedReceiver<Cmd>, ctl: Arc<VoiceCtl>) {
     let http = api_client(Duration::from_secs(15), Duration::from_secs(30)).expect("http client");
-    let api = Api { http, token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
+    let api = Api { #[cfg(test)] base_url: None, http, token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
 
     let me_id;
     match api.get::<User>("/users/@me").await {
@@ -575,7 +583,7 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                 }
                 Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
                 Cmd::Ack { channel_id, message_id } => {
-                    api.post(&format!("/channels/{channel_id}/messages/{message_id}/ack"), &json!({ "token": null })).await
+                    send_ack(&api, &tx, channel_id, message_id).await
                 }
                 Cmd::StopRinging(cid) => {
                     api.post(&format!("/channels/{cid}/call/stop-ringing"), &json!({ "recipients": null })).await
@@ -640,6 +648,14 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
             }
         });
     }
+}
+
+async fn send_ack(api: &Api, tx: &Tx, channel_id: String, message_id: String) -> Result<()> {
+    let result = api.post(&format!("/channels/{channel_id}/messages/{message_id}/ack"), &json!({ "token": null })).await;
+    if result.is_err() {
+        tx.send(Event::AckFailed { channel_id, message_id });
+    }
+    result
 }
 
 async fn load_sticker(http: &reqwest::Client, id: &str, format: u8) -> Result<crate::sticker::Frames> {
@@ -1334,6 +1350,35 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn ack_http_error_notifies_backend_and_success_does_not() {
+        use std::io::{Read, Write};
+        for (status, fails) in [("500 Internal Server Error", true), ("204 No Content", false)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = [0; 2048];
+                let n = socket.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..n]);
+                assert!(request.starts_with("POST /channels/c/messages/m/ack HTTP/1.1\r\n"), "{request}");
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let api = Api { base_url: Some(format!("http://{addr}")), http: reqwest::Client::builder().no_proxy().build().unwrap(), token: "test".into(), roles: Default::default(), guild_perms: Default::default() };
+            let (sender, events) = std::sync::mpsc::channel();
+            let tx = Tx { tx: sender, ctx: crate::wake::Waker::default() };
+            let result = send_ack(&api, &tx, "c".into(), "m".into()).await;
+            server.join().unwrap();
+            assert_eq!(result.is_err(), fails);
+            if fails {
+                assert!(matches!(events.try_recv(), Ok(Event::AckFailed { channel_id, message_id }) if channel_id == "c" && message_id == "m"));
+            } else {
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn api_read_timeout_releases_a_stalled_request() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1379,7 +1424,7 @@ mod tests {
     fn sink() -> Sink {
         let (tx, rx) = std::sync::mpsc::channel();
         let (v_tx, _) = unbounded_channel();
-        Sink { tx: Tx { tx, ctx: eframe::egui::Context::default() }, rx, v_tx }
+        Sink { tx: Tx { tx, ctx: crate::wake::Waker::default() }, rx, v_tx }
     }
 
     /// Discord と同じく、1接続で1つの圧縮文脈から Sync フラッシュで区切って送る
@@ -1664,8 +1709,8 @@ mod tests {
     fn live_rest_bench() {
         let token = std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token")).unwrap().trim().to_string();
         let ua = "Mozilla/5.0 (X11; Linux x86_64) riscord/0.1";
-        let plain = Api { http: reqwest::Client::builder().user_agent(ua).no_gzip().build().unwrap(), token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
-        let gzip = Api { http: reqwest::Client::builder().user_agent(ua).build().unwrap(), token, roles: Default::default(), guild_perms: Default::default() };
+        let plain = Api { base_url: None, http: reqwest::Client::builder().user_agent(ua).no_gzip().build().unwrap(), token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
+        let gzip = Api { base_url: None, http: reqwest::Client::builder().user_agent(ua).build().unwrap(), token, roles: Default::default(), guild_perms: Default::default() };
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let guilds: Vec<Guild> = gzip.get("/users/@me/guilds").await.unwrap();
@@ -1755,7 +1800,7 @@ mod tests {
 
     #[test]
     fn role_cache_expires() {
-        let api = Api { http: reqwest::Client::new(), token: String::new(), roles: Default::default(), guild_perms: Default::default() };
+        let api = Api { base_url: None, http: reqwest::Client::new(), token: String::new(), roles: Default::default(), guild_perms: Default::default() };
         let role = Role { id: "1".into(), name: "mod".into(), color: 0xff0000, position: 3, hoist: false, permissions: String::new() };
         assert!(api.cached_roles("g").is_none());
         api.store_roles("g", std::slice::from_ref(&role));
@@ -1767,7 +1812,7 @@ mod tests {
 
     #[test]
     fn role_cache_keeps_guilds_separate_and_replaces_entries() {
-        let api = Api { http: reqwest::Client::new(), token: String::new(), roles: Default::default(), guild_perms: Default::default() };
+        let api = Api { base_url: None, http: reqwest::Client::new(), token: String::new(), roles: Default::default(), guild_perms: Default::default() };
         let role = |name: &str| Role { id: "1".into(), name: name.into(), color: 0, position: 0, hoist: false, permissions: String::new() };
         api.store_roles("a", &[role("old")]);
         api.store_roles("b", &[role("other")]);
@@ -2000,7 +2045,7 @@ mod tests {
         let run = |raw: bool| {
             let (tx, rx) = std::sync::mpsc::channel();
             let (v_tx, mut v_rx) = unbounded_channel();
-            let tx = Tx { tx, ctx: eframe::egui::Context::default() };
+            let tx = Tx { tx, ctx: crate::wake::Waker::default() };
             let (seq, op) = if raw {
                 let f: GatewayFrame = serde_json::from_str(text).unwrap();
                 if f.op.as_u64() == Some(0) { dispatch_raw(f.t.as_str().unwrap_or(""), f.d.as_deref(), &tx, &v_tx); }

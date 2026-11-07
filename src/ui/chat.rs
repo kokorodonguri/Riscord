@@ -1,0 +1,668 @@
+//! メイン画面の並べ方と、右側（チャットのヘッダー・通話・メッセージ一覧・入力欄）
+use std::hash::{Hash, Hasher};
+
+use gpui::assets::IconName;
+use gpui::component::input::Textarea;
+use gpui::prelude::*;
+use gpui::*;
+
+use super::sidebar::speaking_avatar;
+use super::*;
+use crate::app::{author_name, dm_icon_url, ProfileState, MAX_HISTORY, HISTORY_TRIGGER_ROWS};
+use crate::color::Color32;
+use crate::model::{Message, User};
+use crate::net::{self, Cmd};
+
+/// 行の中身の目印（変わったら測り直す）
+fn row_key(m: &Message, prev: Option<&Message>, compact: bool) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    m.hash(&mut h);
+    super::message::row_layout(m, prev, compact).hash(&mut h);
+    h.finish()
+}
+
+/// 前の行の目印と比べて、変わった所だけ list に知らせる（先頭に読み足しても見ている行は動かない）
+fn sync_list(l: &mut MsgList, keys: Vec<u64>) {
+    let old = &l.keys;
+    let p = old.iter().zip(&keys).take_while(|(a, b)| a == b).count();
+    let max_s = old.len().min(keys.len()) - p;
+    let s = old.iter().rev().zip(keys.iter().rev()).take(max_s).take_while(|(a, b)| a == b).count();
+    if p + s != old.len() || p + s != keys.len() {
+        l.state.splice(p..old.len() - s, keys.len() - p - s);
+    }
+    l.keys = keys;
+}
+
+impl Root {
+    pub fn main_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = self.app.screen_w < 700.0;
+        self.app.subscribe_member_list();
+        let narrow_members = self.app.screen_w < 900.0;
+        let members_shown = if narrow_members { self.app.show_members_narrow } else { self.app.show_members };
+        let cur = self.app.current_channel().cloned();
+        let dm_user = match (&self.app.sel_guild, &cur) {
+            (None, Some(c)) if c.recipients.len() == 1 => Some(c.recipients[0].clone()),
+            _ => None,
+        };
+
+        // 右側（ステータス帯・チャット・メンバー一覧／DM のプロフィール）
+        let mut right = div().flex_1().min_w_0().h_full().flex().flex_col().relative();
+        if !self.app.status.is_empty() && self.app.status != "接続済み" {
+            let color = if self.app.status.starts_with("エラー") { RED() } else { ORANGE() };
+            // 操作の結果のお知らせは閉じられる（閉じないと次の接続状態の変化まで出たままになる）。接続の状態そのものは閉じない
+            let dismissable = self.app.status != self.app.gateway_status;
+            right = right.child(
+                div()
+                    .flex_none()
+                    .bg(color)
+                    .px(z(12.0))
+                    .py(z(4.0))
+                    .flex()
+                    .items_center()
+                    .gap(z(8.0))
+                    .child(line(self.app.status.clone(), 13.0, Color32::WHITE).flex_1().min_w_0())
+                    .when(dismissable, |d| {
+                        d.child(
+                            div()
+                                .id("status_dismiss")
+                                .size(z(18.0))
+                                .flex_none()
+                                .rounded(z(4.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(Color32::from_black_alpha(50)))
+                                .tooltip(tip("閉じる"))
+                                .child(icon(IconName::Close, 12.0, Color32::WHITE))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.app.status = this.app.gateway_status.clone();
+                                    this.app.message_status_channel = None;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            );
+        }
+        let mut body = div().flex_1().min_h_0().flex().flex_row().relative();
+        body = body.child(self.chat_column(members_shown, narrow_members, dm_user.as_ref(), window, cx));
+        if self.app.sel_guild.is_some() && members_shown && !narrow_members {
+            body = body.child(self.members_panel(cx).w(z(240.0)).flex_none());
+        }
+        if let Some(u) = dm_user.as_ref().filter(|_| !self.app.hide_dm_profile && self.app.screen_w > 980.0) {
+            let key = net::profile_key(&u.id, None);
+            if !self.app.profiles.contains_key(&key) {
+                self.app.profiles.insert(key.clone(), ProfileState::Loading);
+                self.app.send(Cmd::LoadProfile { user_id: u.id.clone(), guild_id: None });
+            }
+            body = body.child(self.dm_profile_panel(u, cx));
+        }
+        right = right.child(body);
+        // 狭い画面ではチャット幅を縮めず、ヘッダーの下に一覧を重ねる。
+        if self.app.sel_guild.is_some() && members_shown && narrow_members {
+            right = right.child(self.members_panel(cx).absolute().right_0().top(z(48.0)).bottom_0().w(z(240.0)).bg(opaque(BG())).border_l_1().border_color(DIVIDER()));
+        }
+
+        let mut row = div().flex_1().min_h_0().flex().flex_row().relative();
+        if !compact {
+            row = row.child(self.sidebar(window, cx));
+        }
+        row = row.child(right);
+        if compact && !self.app.compact_sidebar_closed {
+            let w = self.app.screen_w.min(312.0);
+            row = row.child(div().absolute().left_0().top_0().bottom_0().w(z(w)).bg(opaque(BG())).border_r_1().border_color(DIVIDER()).occlude().child(self.sidebar(window, cx).w_full()));
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.titlebar(compact, cx))
+            .child(row)
+            .children(self.toast_layer())
+            .children(self.overlays(window, cx))
+    }
+
+    /// 画面下に短く出すお知らせ（「コピーしました」など）。時間が来たら消す
+    fn toast_layer(&mut self) -> Option<AnyElement> {
+        if self.app.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= crate::app::TOAST_TTL) {
+            self.app.toast = None;
+        }
+        let (t, _) = self.app.toast.as_ref()?;
+        Some(
+            div()
+                .absolute()
+                .bottom(z(80.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(div().bg(opaque(SIDEBAR())).border_1().border_color(BORDER()).rounded(z(8.0)).px(z(14.0)).py(z(8.0)).shadow_lg().child(text(t.clone(), 14.0, WHITE())))
+                .into_any_element(),
+        )
+    }
+
+    /// 上に重ねるもの（メニュー・ポップアップ・ダイアログ・設定）
+    fn overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut v = Vec::new();
+        v.extend(self.menu_layer(window, cx));
+        v.extend(self.profile_popup(window, cx));
+        v.extend(self.incoming_call(cx));
+        v.extend(self.switcher_dialog(cx));
+        v.extend(self.delete_dialog(cx));
+        if self.app.settings_open {
+            v.push(self.settings_modal(window, cx).into_any_element());
+        }
+        v
+    }
+
+    fn chat_column(&mut self, members_shown: bool, narrow_members: bool, dm_user: Option<&User>, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let cur = self.app.current_channel().cloned();
+        let (prefix, cname) = match &cur {
+            Some(c) if self.app.sel_guild.is_none() => ("@", c.dm_label()),
+            Some(c) => ("#", c.name.clone().unwrap_or_default()),
+            None => ("", String::new()),
+        };
+        let mut col = div().flex_1().min_w_0().h_full().flex().flex_col().bg(CHAT()).relative();
+        col = col.child(self.chat_head(members_shown, narrow_members, dm_user.is_some(), prefix, &cname, cx));
+        if let (None, Some(c)) = (&self.app.sel_guild, &cur) {
+            col = col.children(self.call_area(&c.id, cx));
+        }
+        // チャット欄だけに敷く背景画像
+        let bg = self.app.theme_applied.as_ref().and_then(|t| t.background.clone()).filter(|b| !b.window);
+        let mut msgs = div().flex_1().min_h_0().relative().flex().flex_col();
+        if let Some(bg) = &bg {
+            msgs = msgs.child(background(bg, opaque(CHAT())));
+        }
+        msgs = msgs.child(self.messages_view(prefix, &cname, cx));
+        col = col.child(msgs);
+        if cur.is_some() {
+            col = col.child(self.compose(prefix, &cname, window, cx));
+        }
+        col
+    }
+
+    fn chat_head(&mut self, members_shown: bool, narrow_members: bool, has_dm_user: bool, prefix: &'static str, cname: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let a = &self.app;
+        let head = div().h(z(48.0)).flex_none().px(z(16.0)).flex().items_center().gap(z(6.0)).border_t_1().border_b_1().border_color(DIVIDER()).bg(CHAT());
+        let Some(c) = a.current_channel().cloned() else { return head };
+        // 左: アイコン（DM は相手）＋名前＋トピック
+        let mut left = div().flex_1().min_w_0().flex().items_center().gap(z(6.0));
+        if a.sel_guild.is_none() {
+            let av = avatar(dm_icon_url(&c).as_deref(), 24.0, cname, 12.0, BLURPLE());
+            left = left.child(if c.recipients.len() == 1 {
+                let stt = a.presences.get(&c.recipients[0].id).map_or("offline", |p| p.status.as_str());
+                with_status(av, 24.0, stt, CHAT())
+            } else {
+                av
+            });
+        } else {
+            left = left.child(text(prefix, 22.0, FAINT()));
+        }
+        left = left.child(line(cname.to_string(), 16.0, WHITE()).font_weight(FontWeight::MEDIUM).flex_none().max_w(z(360.0)));
+        if let Some(topic) = c.topic.as_deref().filter(|t| !t.is_empty()) {
+            left = left.child(div().w(px(1.0)).h(z(24.0)).mx(z(6.0)).bg(DIVIDER()).flex_none()).child(line(topic.replace('\n', " "), 14.0, MUTED()).flex_1());
+        }
+        // 右から: 通話・ビデオ・再読込・一覧/プロフィール切替（Vesktop の並び）
+        let mut right = div().flex().items_center().gap(z(6.0)).flex_none();
+        if a.sel_guild.is_none() {
+            let cid = c.id.clone();
+            right = right
+                .child(icon_button("call_start", IconName::Phone, 32.0).tooltip(tip("音声通話を開始")).on_click(cx.listener(move |this, _, _, cx| {
+                    let a = &mut this.app;
+                    let active = a.calls.contains_key(&cid) || a.voice_members(&cid).next().is_some();
+                    if a.voice_channel().map(|(_, id, _)| id) != Some(&cid) {
+                        a.join_voice(None, cid.clone(), !active);
+                    }
+                    cx.notify();
+                })))
+                .child(div().id("video").size(z(32.0)).flex().items_center().justify_center().tooltip(tip("ビデオ通話（未対応）")).child(icon(IconName::Video, 20.0, FAINT().gamma_multiply(0.5))));
+        }
+        let loading = a.sel_channel.as_ref().is_some_and(|id| a.pending_message_loads.contains_key(id));
+        right = right.child(if loading {
+            div().id("reload").size(z(32.0)).flex().items_center().justify_center().tooltip(tip("メッセージを読み込み中")).child(spinner(18.0))
+        } else {
+            icon_button("reload", IconName::RotateCw, 32.0).tooltip(tip("再読み込み")).on_click(cx.listener(|this, _, _, cx| {
+                if let Some(c) = this.app.sel_channel.clone() {
+                    this.app.load_messages(c);
+                }
+                cx.notify();
+            }))
+        });
+        if a.sel_guild.is_some() {
+            right = right.child(
+                toggle_icon("members_toggle", IconName::Users, members_shown)
+                    .tooltip(tip(if members_shown { "メンバーリストを非表示" } else { "メンバーリストを表示" }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if narrow_members {
+                            this.app.show_members_narrow = !this.app.show_members_narrow;
+                            // 狭い画面ではチャンネル一覧と重なるので、☰ と同じく片方だけ開く
+                            if this.app.screen_w < 700.0 && this.app.show_members_narrow {
+                                this.app.compact_sidebar_closed = true;
+                            }
+                        } else {
+                            this.app.show_members = !this.app.show_members;
+                        }
+                        cx.notify();
+                    })),
+            );
+        } else if has_dm_user {
+            let shown = !a.hide_dm_profile;
+            right = right.child(
+                toggle_icon("profile_toggle", IconName::PanelRight, shown)
+                    .tooltip(tip(if shown { "ユーザープロフィールを非表示" } else { "ユーザープロフィールを表示" }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.hide_dm_profile = shown;
+                        cx.notify();
+                    })),
+            );
+        }
+        head.child(left).child(right)
+    }
+
+    /// DM通話エリア（参加者・呼び出し中の人と、操作ボタン）
+    fn call_area(&mut self, cid: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let a = &self.app;
+        let members: Vec<(String, Option<User>, bool, bool)> = a
+            .voice_members(cid)
+            .map(|v| (v.user_id.clone(), v.user.clone().or_else(|| a.find_user(&v.user_id)), v.self_mute || v.self_deaf, false))
+            .chain(
+                a.calls
+                    .get(cid)
+                    .into_iter()
+                    .flatten()
+                    .filter(|id| !a.voice_states.get(*id).is_some_and(|v| v.channel_id.as_deref() == Some(cid)))
+                    .map(|id| (id.clone(), a.find_user(id), false, true)),
+            )
+            .collect();
+        let in_call = a.voice_channel().map(|(_, id, _)| id.as_str()) == Some(cid);
+        if members.is_empty() && !in_call && !a.calls.contains_key(cid) {
+            return None;
+        }
+        let mut faces = div().flex().gap(z(20.0)).justify_center();
+        let mut ringing_any = false;
+        for (id, u, muted, ringing) in &members {
+            ringing_any |= *ringing;
+            let mut face = div().relative().flex().flex_col().items_center().gap(z(6.0)).child(
+                div()
+                    .relative()
+                    .child(speaking_avatar(u.as_ref(), id, 80.0, !ringing && a.is_speaking(id)))
+                    .when(*ringing, |d| {
+                        // 呼び出し中は暗くして脈打たせる
+                        d.child(div().absolute().inset_0().rounded_full().bg(Color32::from_black_alpha(140)).with_animation(
+                            SharedString::from(format!("ring{id}")),
+                            Animation::new(std::time::Duration::from_millis(1400)).repeat(),
+                            |d, t| d.opacity(0.4 + 0.6 * (t * std::f32::consts::TAU).sin().abs()),
+                        ))
+                    })
+                    .when(*muted, |d| {
+                        d.child(div().absolute().right_0().bottom_0().size(z(24.0)).rounded_full().bg(RED()).flex().items_center().justify_center().child(icon(IconName::MicOff, 14.0, WHITE())))
+                    }),
+            );
+            if let Some(u) = u {
+                face = face.child(text(u.display().to_string(), 12.0, MUTED()));
+            }
+            faces = faces.child(face);
+        }
+        let _ = ringing_any;
+        let cid_s = cid.to_string();
+        let buttons = if in_call {
+            let off = a.mic_off();
+            let deaf = a.settings.self_deaf;
+            let dark = SELECTED();
+            div()
+                .flex()
+                .gap(z(16.0))
+                .child(round_button("call_mic", if off { IconName::MicOff } else { IconName::Mic }, if off { WHITE() } else { dark }, if off { RED() } else { WHITE() }).tooltip(tip(if off { "ミュート解除" } else { "ミュート" })).on_click(cx.listener(|this, _, _, cx| {
+                    this.app.toggle_mute();
+                    cx.notify();
+                })))
+                .child(round_button("call_deaf", if deaf { IconName::HeadphoneOff } else { IconName::Headphones }, if deaf { WHITE() } else { dark }, if deaf { RED() } else { WHITE() }).tooltip(tip("スピーカーミュート")).on_click(cx.listener(|this, _, _, cx| {
+                    this.app.toggle_deaf();
+                    cx.notify();
+                })))
+                .child(round_button("call_leave", IconName::PhoneOff, RED(), WHITE()).tooltip(tip("切断")).on_click(cx.listener(|this, _, _, cx| {
+                    this.app.leave_voice();
+                    cx.notify();
+                })))
+        } else {
+            div().child(round_button("call_join", IconName::Phone, GREEN(), WHITE()).tooltip(tip("通話に参加")).on_click(cx.listener(move |this, _, _, cx| {
+                this.app.join_voice(None, cid_s.clone(), false);
+                cx.notify();
+            })))
+        };
+        Some(div().h(z(230.0)).flex_none().bg(CALL_BG()).flex().flex_col().items_center().pt(z(36.0)).gap(z(28.0)).child(faces).child(buttons).into_any_element())
+    }
+
+    /// メッセージ一覧（仮想スクロール。見えている行だけ描く）
+    fn messages_view(&mut self, prefix: &'static str, cname: &str, cx: &mut Context<Self>) -> AnyElement {
+        let Some(cid) = self.app.sel_channel.clone() else {
+            // 選べるものが無いのに「選んでください」と言わない
+            let hint = match &self.app.sel_guild {
+                Some(g) if self.app.channels.get(g).is_some_and(|c| !c.iter().any(|c| c.is_text())) => "このサーバーには表示できるテキストチャンネルがありません",
+                None if self.app.dms_loaded && self.app.dms.is_empty() => "ダイレクトメッセージはまだありません",
+                _ => "左からチャンネルを選んでください",
+            };
+            return div().size_full().flex().items_center().justify_center().child(text(hint, 16.0, MUTED())).into_any_element();
+        };
+        if !self.app.messages.contains_key(&cid) {
+            let err = self.app.message_errors.contains(&cid);
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(z(8.0))
+                .when(err, |d| {
+                    d.child(text("メッセージを読み込めませんでした。通信状態を確認してください。", 16.0, MUTED())).child(small_button("reload_msgs", "再読み込み").on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(c) = this.app.sel_channel.clone() {
+                            this.app.load_messages(c);
+                        }
+                        cx.notify();
+                    })))
+                })
+                .when(!err, |d| d.child(spinner(28.0)))
+                .into_any_element();
+        }
+        let compact = self.app.settings.compact;
+        let msgs = &self.app.messages[&cid];
+        let no_access = self.app.no_access.contains(&cid);
+        let hist_end = self.app.history.get(&cid).is_some_and(|h| h.end);
+        let mut keys = Vec::with_capacity(msgs.len() + 2);
+        {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (no_access, hist_end, prefix, cname).hash(&mut h);
+            keys.push(h.finish());
+        }
+        for (i, m) in msgs.iter().enumerate() {
+            keys.push(row_key(m, i.checked_sub(1).map(|j| &msgs[j]), compact));
+        }
+        keys.push(1);
+        let n = keys.len();
+        let l = self.lists.entry(cid.clone()).or_insert_with(|| {
+            let state = ListState::new(n, ListAlignment::Bottom, px(600.0));
+            state.set_follow_mode(FollowMode::Tail);
+            MsgList { state, keys: keys.clone() }
+        });
+        sync_list(l, keys);
+        let state = l.state.clone();
+        // 上端に近づいたら古いメッセージを読み足す
+        let near_top = state.logical_scroll_top().item_ix < HISTORY_TRIGGER_ROWS;
+        let first = msgs.first().map(|m| m.id.clone());
+        let len = msgs.len();
+        let hist = self.app.history.entry(cid.clone()).or_default();
+        let retry_ok = hist.retry_at.is_none_or(|t| std::time::Instant::now() >= t);
+        if near_top && !hist.end && hist.pending.is_none() && retry_ok && len < MAX_HISTORY {
+            if let Some(first) = first {
+                hist.pending = Some(first.clone());
+                hist.retry_at = None;
+                self.app.send(Cmd::LoadOlder { channel_id: cid.clone(), before: first });
+            }
+        } else if hist.retry_at.is_some() {
+            self.app.repaint_after(std::time::Duration::from_secs(1));
+        }
+        let this = self.this.clone();
+        let (prefix, cname) = (prefix.to_string(), cname.to_string());
+        div()
+            .id("messages")
+            .size_full()
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.hover_msg.is_some() {
+                    this.hover_msg = None;
+                    cx.notify();
+                }
+            }))
+            .child(
+                list(state, move |ix, window, cx| {
+                    let Some(e) = this.upgrade() else { return div().into_any_element() };
+                    e.update(cx, |r, cx| r.list_item(&cid, ix, n, &prefix, &cname, window, cx))
+                })
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
+    fn list_item(&mut self, cid: &str, ix: usize, n: usize, prefix: &str, cname: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if ix == 0 {
+            // 先頭: 始まりまで読んだらその旨、まだなら読み込み中の印
+            let no_access = self.app.no_access.contains(cid);
+            let end = self.app.history.get(cid).is_some_and(|h| h.end);
+            let d = div().h(z(st::HISTORY_HEAD_H)).px(z(16.0)).pb(z(12.0)).flex().items_end();
+            return if no_access {
+                d.child(text("このチャンネルを見る権限がありません", 20.0, MUTED()))
+            } else if end {
+                d.child(text(format!("{prefix}{cname} の始まりです"), 20.0, WHITE()))
+            } else {
+                d.justify_center().items_center().pb_0().child(spinner(24.0))
+            }
+            .into_any_element();
+        }
+        if ix + 1 == n {
+            return div().h(z(16.0)).into_any_element();
+        }
+        let Some(msgs) = self.app.messages.get(cid) else { return div().into_any_element() };
+        let i = ix - 1;
+        let Some(m) = msgs.get(i).cloned() else { return div().into_any_element() };
+        let prev = i.checked_sub(1).and_then(|j| msgs.get(j)).cloned();
+        self.message_row(&m, prev.as_ref(), window, cx).into_any_element()
+    }
+
+    /// 入力欄（返信・編集の帯、送信中の表示、添付、＋メニュー）
+    fn compose(&mut self, prefix: &str, cname: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let a = &self.app;
+        let mut col = div().flex_none().bg(CHAT()).px(z(10.0)).pt(z(2.0)).pb(z(10.0)).flex().flex_col();
+        let no_access = a.sel_channel.as_ref().is_some_and(|id| a.no_access.contains(id));
+        if no_access {
+            return col.child(card(INPUT(), DIVIDER(), 8.0).p(z(12.0)).child(text("このチャンネルを見る権限がないため、メッセージを送信できません。", 16.0, MUTED())));
+        }
+        if let Some((cid, sub)) = a.sel_channel.as_ref().and_then(|cid| a.compose_submissions.get(cid).map(|s| (cid.clone(), s))) {
+            let mut b = div().bg(SIDEBAR()).rounded(z(8.0)).px(z(12.0)).py(z(8.0)).mb(z(4.0)).flex().flex_col().gap(z(6.0));
+            if sub.failed {
+                let action = if sub.editing.is_some() { "編集" } else { "送信" };
+                let msg = match &sub.rejected {
+                    // 断られたなら届いていないので、履歴の確認はいらない
+                    Some(reason) => format!("{action}できませんでした：{reason}。内容は保持しています。入力内容を戻して直してください。"),
+                    None => format!("{action}結果を確認できませんでした。履歴を確認してから、入力内容を戻して再試行してください。"),
+                };
+                let can_restore = a.input.is_empty() && a.uploads.is_empty() && a.editing.is_none() && a.reply_to.is_none();
+                b = b.child(text(msg, 16.0, RED()));
+                if can_restore {
+                    b = b.child(div().flex().child(small_button("restore", "入力内容を戻す").on_click(cx.listener(move |this, _, _, cx| {
+                        if this.app.restore_compose(&cid) {
+                            this.app.focus_input = true;
+                        }
+                        cx.notify();
+                    }))));
+                } else {
+                    b = b.child(text("現在の入力や添付を片付けると、保持した内容を戻せます。", 12.0, MUTED()));
+                }
+            } else {
+                b = b.child(div().flex().items_center().gap(z(8.0)).child(spinner(16.0)).child(text(if sub.editing.is_some() { "保存中…" } else { "送信中…" }, 16.0, MUTED())));
+            }
+            col = col.child(b);
+        }
+        // 返信中・編集中の帯（入力欄の上にくっつく）
+        let bar = match (&a.editing, &a.reply_to) {
+            (Some(_), _) => Some(("メッセージを編集中".to_string(), "Esc でキャンセル・Enter で保存".to_string())),
+            (None, Some(m)) => Some((format!("返信: {}", author_name(m)), "Esc でキャンセル".to_string())),
+            _ => None,
+        };
+        if let Some((label, sub)) = &bar {
+            col = col.child(
+                div()
+                    .bg(SIDEBAR())
+                    .border_1()
+                    .border_color(DIVIDER())
+                    .rounded_t(z(8.0))
+                    .pl(z(14.0))
+                    .pr(z(8.0))
+                    .py(z(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(z(8.0))
+                    .child(line(label.clone(), 13.0, MUTED()))
+                    .when(a.screen_w >= 600.0, |d| d.child(line(sub.clone(), 12.0, FAINT()).flex_1()))
+                    .when(a.screen_w < 600.0, |d| d.child(div().flex_1()))
+                    .child(icon_button("cancel_compose", IconName::CircleX, 22.0).tooltip(tip("キャンセル")).on_click(cx.listener(|this, _, _, cx| {
+                        this.cancel_compose();
+                        cx.notify();
+                    }))),
+            );
+        }
+        let mut boxed = div().bg(INPUT()).border_1().border_color(DIVIDER()).pl(z(12.0)).pr(z(16.0)).py(z(10.0)).flex().flex_col();
+        boxed = if bar.is_some() { boxed.rounded_b(z(8.0)).border_t_0() } else { boxed.rounded(z(8.0)) };
+        // 添付の上限を超えて除いたファイルのお知らせ（しばらくするか × で消える）
+        if a.compose_notice.as_ref().is_some_and(|(_, at)| at.elapsed() >= st::COMPOSE_NOTICE_TTL) {
+            self.app.compose_notice = None;
+        }
+        let a = &self.app;
+        if let Some((t, _)) = &a.compose_notice {
+            boxed = boxed.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(z(6.0))
+                    .mb(z(8.0))
+                    .child(div().size(z(18.0)).flex_none().rounded_full().bg(ORANGE()).flex().items_center().justify_center().text_size(z(12.0)).text_color(Color32::WHITE).child("!"))
+                    .child(text(t.clone(), 14.0, TEXT()).flex_1())
+                    .child(icon_button("dismiss_notice", IconName::CircleX, 22.0).tooltip(tip("閉じる")).on_click(cx.listener(|this, _, _, cx| {
+                        this.app.compose_notice = None;
+                        cx.notify();
+                    }))),
+            );
+        }
+        // 送信待ちの添付
+        if !a.uploads.is_empty() {
+            let mut row = div().id("uploads").flex().gap(z(8.0)).overflow_x_scroll().mb(z(10.0));
+            for (i, u) in a.uploads.iter().enumerate() {
+                let thumb = match &u.thumb {
+                    Some(t) => div().size_full().flex().items_center().justify_center().child(img(t.clone()).max_w_full().max_h_full().rounded(z(4.0)).object_fit(ObjectFit::Contain)),
+                    None => div().size_full().flex().items_center().justify_center().child(icon(IconName::File, 32.0, MUTED())),
+                };
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .bg(SIDEBAR())
+                        .rounded(z(6.0))
+                        .p(z(6.0))
+                        .w(z(132.0))
+                        .flex()
+                        .flex_col()
+                        .gap(z(4.0))
+                        .child(
+                            div().relative().w(z(120.0)).h(z(90.0)).child(thumb).child(
+                                div()
+                                    .id(("rm_upload", i))
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .size(z(22.0))
+                                    .rounded(z(4.0))
+                                    .bg(WIDGET())
+                                    .hover(|s| s.bg(RED()))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .tooltip(tip("添付を外す"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if i < this.app.uploads.len() {
+                                            this.app.uploads.remove(i);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(icon(IconName::X, 12.0, WHITE())),
+                            ),
+                        )
+                        .child(line(u.name.clone(), 12.0, MUTED())),
+                );
+            }
+            boxed = boxed.child(row);
+        }
+        let plus_open = self.menu.is_some_and(|m| m.0 == PopMenu::Plus);
+        let hint = format!("{prefix}{cname} へメッセージを送信");
+        if self.compose_hint != hint {
+            self.compose_hint = hint.clone();
+            self.inp.compose.update(cx, |s, cx| s.set_placeholder(hint, _window, cx));
+        }
+        let this = self.this.clone();
+        let input = Textarea::new(&self.inp.compose).appearance(false).on_paste(move |item, _, cx| {
+            let Some(e) = this.upgrade() else { return false };
+            e.update(cx, |r, cx| {
+                let a = &r.app;
+                if a.editing.is_some() {
+                    return false;
+                }
+                let handled = match item.text() {
+                    Some(t) if !t.is_empty() => r.app.paste_text(&t),
+                    // 画像だけのクリップボードは文字が無い
+                    _ => r.app.paste_image(),
+                };
+                cx.notify();
+                handled
+            })
+        });
+        // 上限の近くで残りの文字数を右下に出す（超えたら赤でマイナス表示。本家と同じ）
+        let limit = st::message_text_limit(a.me.as_ref().and_then(|u| u.premium_type));
+        let left = limit as i64 - st::message_text_len(&a.input) as i64;
+        let entry = div()
+            .flex()
+            .items_start()
+            .gap(z(10.0))
+            .child(
+                div()
+                    .id("plus")
+                    .group("plus")
+                    .mt(z(2.0))
+                    .size(z(24.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu = if this.menu.is_some_and(|m| m.0 == PopMenu::Plus) { None } else { Some((PopMenu::Plus, window.mouse_position())) };
+                        cx.notify();
+                    }))
+                    .child(icon(IconName::CirclePlus, 22.0, if plus_open { WHITE() } else { MUTED() }).group_hover("plus", |s| s.text_color(WHITE()))),
+            )
+            .child(div().flex_1().min_w_0().text_size(z(16.0)).child(input));
+        boxed = boxed.child(entry);
+        if left < 200 {
+            boxed = boxed.child(div().flex().justify_end().child(text(left.to_string(), 12.0, if left < 0 { RED() } else { MUTED() })));
+        }
+        col.child(boxed)
+    }
+}
+
+/// ヘッダーの表示切替アイコン（オンのときは白）
+fn toggle_icon(id: &'static str, name: IconName, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .group("ti")
+        .size(z(32.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(z(8.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(SELECTED()))
+        .child(icon(name, 20.0, if on { WHITE() } else { MUTED() }).group_hover("ti", |s| s.text_color(WHITE())))
+}
+
+/// 通話画面の丸いボタン
+fn round_button(id: &'static str, name: IconName, bg: Color32, fg: Color32) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size(z(56.0))
+        .rounded_full()
+        .bg(bg)
+        .hover(move |s| s.bg(bg.lerp_to_gamma(Color32::WHITE, 0.12)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .child(icon(name, 24.0, fg))
+}

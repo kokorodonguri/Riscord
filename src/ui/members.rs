@@ -68,16 +68,16 @@ impl Root {
         match row {
             MemberRow::Placeholder => {
                 // まだ届いていない行（スクロールして購読すると埋まる）
-                div()
-                    .h(z(MEMBER_ROW_H))
-                    .mx(z(8.0))
-                    .px(z(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(z(12.0))
-                    .child(div().size(z(32.0)).rounded_full().bg(HOVER()))
-                    .child(div().flex_1().h(z(12.0)).mr(z(30.0)).rounded(z(6.0)).bg(HOVER()))
-                    .into_any_element()
+                fit_row(
+                    div()
+                        .h(z(MEMBER_ROW_H))
+                        .px(z(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(z(12.0))
+                        .child(div().size(z(32.0)).rounded_full().bg(HOVER()))
+                        .child(div().flex_1().h(z(12.0)).mr(z(30.0)).rounded(z(6.0)).bg(HOVER())),
+                )
             }
             MemberRow::Header(t) => div().h(z(MEMBER_HEAD_H)).pl(z(16.0)).pb(z(4.0)).flex().items_end().child(line(t.clone(), 12.0, FAINT())).into_any_element(),
             MemberRow::Member(mi) => {
@@ -94,10 +94,9 @@ impl Root {
                     Some(act) => div().flex_1().min_w_0().flex().flex_col().child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM)).child(line(act, 12.0, MUTED())),
                     None => div().flex_1().min_w_0().child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM)),
                 };
-                div()
+                let row = div()
                     .id(("member", *mi))
                     .h(z(MEMBER_ROW_H))
-                    .mx(z(8.0))
                     .px(z(8.0))
                     .rounded(z(8.0))
                     .flex()
@@ -110,8 +109,8 @@ impl Root {
                         this.app.open_profile(user.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                         cx.notify();
                     }))
-                    .child(div().flex().items_center().gap(z(12.0)).flex_1().min_w_0().when(offline, |d| d.opacity(0.3)).child(av).child(names))
-                    .into_any_element()
+                    .child(div().flex().items_center().gap(z(12.0)).flex_1().min_w_0().when(offline, |d| d.opacity(0.3)).child(av).child(names));
+                fit_row(row)
             }
         }
     }
@@ -198,4 +197,10 @@ impl Root {
         }
         row
     }
+}
+
+/// 一覧の行をパネル幅に収める（左右 8px あけ、長い名前は … で切る）。
+/// list の行は幅を指定しないと中身の幅まで広がり、右端からはみ出す
+fn fit_row(row: impl IntoElement + Styled) -> AnyElement {
+    div().w_full().px(z(8.0)).child(row.w_full()).into_any_element()
 }

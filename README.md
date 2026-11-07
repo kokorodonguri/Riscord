@@ -52,7 +52,7 @@ image = "~/Pictures/wall.png" # ローカルパスまたは HTTP(S) URL
 opacity = 0.35
 ```
 
-テーマの設定項目と既定色は `src/theme.rs` を参照してください。
+すべての色と既定値を記載した [テーマのテンプレート](themes/template.toml) をコピーして編集できます。[配色の見本](themes/sample.toml) もあります。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると背景が見えます。
 
 ## Windows ビルド
 

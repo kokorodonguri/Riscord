@@ -25,7 +25,8 @@ pub fn clipboard_image(ctx: &egui::Context) -> Option<Result<Upload, String>> {
     let rgba = image::RgbaImage::from_raw(w, h, img.bytes.into_owned())?;
     let mut png = Vec::new();
     if let Err(e) = rgba.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png) {
-        return Some(Err(format!("画像の変換に失敗しました: {e}")));
+        eprintln!("貼り付け画像の変換失敗: {e}");
+        return Some(Err("クリップボードの画像を読み込めませんでした。".into()));
     }
     let name = format!("image-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
     Some(Ok(Upload { thumb: Some(thumb_texture(ctx, &name, &rgba)), name, data: png }))
@@ -34,7 +35,10 @@ pub fn clipboard_image(ctx: &egui::Context) -> Option<Result<Upload, String>> {
 /// ファイルを読み込む。画像ならサムネイルも作る
 pub fn load_file(ctx: &egui::Context, path: &Path) -> Result<Upload, String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    let data = std::fs::read(path).map_err(|e| format!("{name} を読めません: {e}"))?;
+    let data = std::fs::read(path).map_err(|e| {
+        eprintln!("{} を読めません: {e}", path.display());
+        format!("「{name}」を読み込めませんでした。ファイルを確認して、もう一度お試しください。")
+    })?;
     let thumb = image::load_from_memory(&data).ok().map(|img| thumb_texture(ctx, &name, &img.to_rgba8()));
     Ok(Upload { name, data, thumb })
 }

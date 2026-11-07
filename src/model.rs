@@ -391,6 +391,9 @@ pub struct Message {
     pub member: Option<Member>,
     #[serde(default)]
     pub content: String,
+    /// 本文で @ されたユーザー（<@id> を名前で出すため）
+    #[serde(default)]
+    pub mentions: Vec<User>,
     pub timestamp: String,
     #[serde(default)]
     pub edited_timestamp: Option<String>,

@@ -4,7 +4,7 @@
 //! 終わるまでは読み込み中として扱う。大きすぎるものは縮小・フレームの間引きをしてメモリも抑える
 use eframe::egui::{
     self, decode_animated_image_uri, has_gif_magic_header, has_webp_header,
-    load::{BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint},
+    load::{Bytes, BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint},
     mutex::Mutex,
     ColorImage, FrameDurations, Id,
 };
@@ -23,7 +23,7 @@ struct Anim {
 }
 
 enum Entry {
-    Pending,
+    Pending(Arc<()>),
     Ready(Arc<Anim>),
     Failed(String),
 }
@@ -32,7 +32,8 @@ type Cache = Arc<Mutex<HashMap<String, Entry>>>;
 
 struct Job {
     uri: String,
-    bytes: Arc<[u8]>,
+    bytes: Bytes,
+    token: Arc<()>,
     gif: bool,
     ctx: egui::Context,
     cache: Cache,
@@ -72,12 +73,12 @@ impl AnimLoader {
 
 fn run(job: Job) {
     // 待っている間に捨てられた（チャンネルを閉じた等）ならデコードしない
-    if !matches!(job.cache.lock().get(&job.uri), Some(Entry::Pending)) {
+    if !matches!(job.cache.lock().get(&job.uri), Some(Entry::Pending(token)) if Arc::ptr_eq(token, &job.token)) {
         return;
     }
     let result = decode(&job.bytes, job.gif);
     let mut cache = job.cache.lock();
-    if !matches!(cache.get(&job.uri), Some(Entry::Pending)) {
+    if !matches!(cache.get(&job.uri), Some(Entry::Pending(token)) if Arc::ptr_eq(token, &job.token)) {
         return;
     }
     match result {
@@ -177,7 +178,7 @@ impl ImageLoader for AnimLoader {
         if let Some(e) = self.cache.lock().get(uri) {
             return match e {
                 Entry::Ready(a) => Ok(ImagePoll::Ready { image: a.frames[index % a.frames.len()].clone() }),
-                Entry::Pending => Ok(ImagePoll::Pending { size: None }),
+                Entry::Pending(_) => Ok(ImagePoll::Pending { size: None }),
                 Entry::Failed(err) => Err(LoadError::Loading(err.clone())),
             };
         }
@@ -188,9 +189,20 @@ impl ImageLoader for AnimLoader {
                     // 拡張子だけ .gif / .webp で中身が別形式なら、他のローダーに任せる
                     return Err(LoadError::NotSupported);
                 }
-                self.cache.lock().insert(uri.to_string(), Entry::Pending);
-                let bytes: Arc<[u8]> = Arc::from(&bytes[..]);
-                self.submit(Job { uri: uri.to_string(), bytes, gif, ctx: ctx.clone(), cache: self.cache.clone() });
+                let token = Arc::new(());
+                {
+                    let mut cache = self.cache.lock();
+                    // Another caller may have started or completed decoding while bytes loaded.
+                    if let Some(entry) = cache.get(uri) {
+                        return match entry {
+                            Entry::Ready(a) => Ok(ImagePoll::Ready { image: a.frames[index % a.frames.len()].clone() }),
+                            Entry::Pending(_) => Ok(ImagePoll::Pending { size: None }),
+                            Entry::Failed(err) => Err(LoadError::Loading(err.clone())),
+                        };
+                    }
+                    cache.insert(uri.to_string(), Entry::Pending(token.clone()));
+                }
+                self.submit(Job { uri: uri.to_string(), bytes, token, gif, ctx: ctx.clone(), cache: self.cache.clone() });
                 Ok(ImagePoll::Pending { size: None })
             }
             Ok(BytesPoll::Pending { size }) => Ok(ImagePoll::Pending { size }),
@@ -216,5 +228,27 @@ impl ImageLoader for AnimLoader {
                 _ => 0,
             })
             .sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn obsolete_decode_does_not_replace_new_pending_entry() {
+        let cache: Cache = Default::default();
+        let old = Arc::new(());
+        let current = Arc::new(());
+        cache.lock().insert("image".into(), Entry::Pending(current.clone()));
+        run(Job {
+            uri: "image".into(),
+            bytes: Bytes::Static(b"invalid"),
+            token: old,
+            gif: true,
+            ctx: egui::Context::default(),
+            cache: cache.clone(),
+        });
+        assert!(matches!(cache.lock().get("image"), Some(Entry::Pending(token)) if Arc::ptr_eq(token, &current)));
     }
 }

@@ -974,7 +974,6 @@ impl App {
             app.voice.set_ctx(app.waker.clone());
             let (cmd, ev) = crate::demo::spawn(app.waker.clone());
             app.backend = Some(Backend { cmd, ev });
-            app.status = "接続中…".into();
             // RISCORD_DEMO=guild なら最初からサーバーのチャンネルを開いておく（画面確認用）
             if std::env::var("RISCORD_DEMO").as_deref() == Ok("guild") {
                 app.select(Some("100".into()), Some("10011".into()));
@@ -1139,8 +1138,9 @@ impl App {
             self.voice.clone(),
         );
         self.backend = Some(Backend { cmd, ev });
-        self.status = "接続中…".into();
-        self.gateway_status = self.status.clone();
+        // ログイン中は「接続中」を出さない（ホーム画面をそのまま使ってもらう）。切断・エラーはゲートウェイから届く
+        self.status.clear();
+        self.gateway_status.clear();
     }
 
     /// ホーム画面を出すか（ログイン済み、またはつなぎ始めている）。つないでいる間も「ログイン中」画面は出さない

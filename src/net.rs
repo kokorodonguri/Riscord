@@ -196,6 +196,8 @@ pub enum Event {
     Error(String),
     Sticker(String, Result<crate::sticker::Frames, String>),
     Presences(Vec<(String, Presence)>),
+    /// 自分の見え方（Discord が全セッションをまとめたもの。アクティビティを含む）
+    OwnPresence(Presence),
     Profile { key: String, result: Result<ProfileData, String> },
     /// UpdateProfile の結果。失敗したら利用者向けの理由
     ProfileSaved(Result<(), String>),
@@ -1016,7 +1018,7 @@ fn split_payload(mut v: Value) -> (String, Value) {
 fn handles(t: &str) -> bool {
     matches!(
         t,
-        "READY" | "READY_SUPPLEMENTAL" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
+        "READY" | "READY_SUPPLEMENTAL" | "SESSIONS_REPLACE" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
             | "CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "MESSAGE_CREATE" | "MESSAGE_UPDATE" | "MESSAGE_DELETE"
     )
 }
@@ -1090,6 +1092,14 @@ fn activity_text(acts: &Value) -> Option<String> {
 
 fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
     match t {
+        // 自分のセッション一覧。"all" が Discord がまとめた自分の見え方（ほかの人に見えている状態とアクティビティ）
+        "SESSIONS_REPLACE" => {
+            let list = d.as_array().map(Vec::as_slice).unwrap_or_default();
+            if let Some(s) = list.iter().find(|s| s["session_id"] == "all").or(list.first()) {
+                let status = s["status"].as_str().unwrap_or("online").to_string();
+                tx.send(Event::OwnPresence(Presence { status, activity: activity_text(&s["activities"]) }));
+            }
+        }
         "READY" => {
             tx.send(Status("接続済み".into()));
             let mut vs = Vec::new();
@@ -1419,6 +1429,19 @@ mod tests {
         tx: Tx,
         rx: std::sync::mpsc::Receiver<Event>,
         v_tx: UnboundedSender<VoiceMsg>,
+    }
+
+    /// 自分のセッション一覧からは、Discord がまとめた "all" の見え方を使う
+    #[test]
+    fn sessions_replace_reports_merged_own_presence() {
+        let s = sink();
+        let d = json!([
+            { "session_id": "abcd", "status": "idle", "activities": [] },
+            { "session_id": "all", "status": "online", "activities": [{ "type": 0, "name": "Riscord" }] },
+        ]);
+        dispatch("SESSIONS_REPLACE", d, &s.tx, &s.v_tx);
+        let events: Vec<Event> = s.rx.try_iter().collect();
+        assert!(matches!(&events[..], [Event::OwnPresence(p)] if p.status == "online" && p.activity.as_deref() == Some("プレイ中: Riscord")));
     }
 
     fn sink() -> Sink {

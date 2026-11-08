@@ -167,13 +167,46 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
     if !(uri.starts_with("http://") || uri.starts_with("https://")) {
         return Err("対応していない URI".into());
     }
+    let disk = disk_path(uri);
+    if let Some(p) = &disk {
+        if let Ok(b) = tokio::fs::read(p).await {
+            return Ok(b);
+        }
+    }
     let resp = http.get(uri).send().await.map_err(|e| e.to_string())?;
     let status = resp.status();
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     if status.as_u16() >= 400 {
         return Err(format!("{}", status.as_u16()));
     }
+    if let Some(p) = disk {
+        let b = bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            let tmp = p.with_extension("tmp");
+            if crate::cache::write_private(&tmp, &b).is_ok() {
+                let _ = std::fs::rename(&tmp, &p);
+            }
+        });
+    }
     Ok(bytes.to_vec())
+}
+
+/// アイコン（ユーザー・サーバー・グループ DM）はディスクにも控え、次の起動ですぐ出す。
+/// URL にハッシュが入っていて中身が変わらないので、期限なしで使ってよい
+fn disk_path(uri: &str) -> Option<std::path::PathBuf> {
+    const KEPT: [&str; 4] = [
+        "https://cdn.discordapp.com/avatars/",
+        "https://cdn.discordapp.com/embed/avatars/",
+        "https://cdn.discordapp.com/icons/",
+        "https://cdn.discordapp.com/channel-icons/",
+    ];
+    if !KEPT.iter().any(|k| uri.starts_with(k)) {
+        return None;
+    }
+    use sha2::Digest as _;
+    let name = crate::cache::hex(&sha2::Sha256::digest(uri.as_bytes()));
+    Some(crate::cache::image_dir().join(name))
 }
 
 /// ブラウザと同じく、極端に短い表示時間（0〜10ms）は 100ms とみなす

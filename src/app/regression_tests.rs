@@ -604,3 +604,103 @@ fn status_notice_keeps_gateway_state_and_dms_loaded_is_tracked() {
     app.show_toast("コピーしました");
     assert_eq!(app.toast.as_ref().map(|t| t.0.as_str()), Some("コピーしました"));
 }
+
+/// 前回の控え：50件まで残し、次の起動ではログイン前から出す。開いたら読み直し、読み直すまで既読は送らない
+#[test]
+fn snapshot_restores_recent_conversation_and_refreshes_it() {
+    let mut app = bench_app(80);
+    app.token_owner = Some("1".into());
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    let s = app.build_snapshot().expect("snapshot");
+    assert_eq!(s.messages.len(), 1);
+    assert_eq!(s.messages[0].1.len(), cache::MESSAGES_PER_CHANNEL);
+    assert_eq!(s.messages[0].1.last().unwrap().id, "100079", "keeps the newest messages");
+    let bytes = serde_json::to_vec(&s).unwrap();
+    let s: cache::Snapshot = serde_json::from_slice(&bytes).unwrap();
+
+    let mut next = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    next.backend = Some(Backend { cmd, ev });
+    next.restore_snapshot(s);
+    assert!(next.me.is_some(), "main view is shown before login finishes");
+    assert_eq!(next.sel_channel.as_deref(), Some("c"));
+    assert_eq!(next.messages["c"].len(), cache::MESSAGES_PER_CHANNEL);
+    assert!(matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "c"), "cached channel is reloaded");
+    next.sync_read_state(true);
+    assert!(rx.try_recv().is_err(), "no ack for a cached (maybe old) list");
+
+    let fresh = (0..3).map(|i| serde_json::from_value(serde_json::json!({
+        "id": format!("{}", 200000 + i), "channel_id": "c",
+        "author": { "id": "2", "username": "o" }, "content": "new", "timestamp": "2026-11-02T10:00:00+00:00"
+    })).unwrap()).collect();
+    tx.send(Event::Messages("c".into(), fresh)).unwrap();
+    next.poll();
+    assert!(next.stale_channels.is_empty());
+    assert_eq!(next.messages["c"].len(), 3);
+    next.sync_read_state(true);
+    assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { message_id, .. }) if message_id == "200002"));
+}
+
+/// 控えを出したまま接続に失敗しても画面は残し、送信待ちは失敗扱いにしてつなぎ直しを予約する
+#[test]
+fn login_failure_with_snapshot_keeps_view_and_retries() {
+    let mut app = bench_app(3);
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.submit_compose("c".into(), "hello".into());
+    tx.send(Event::LoginFailed).unwrap();
+    app.poll();
+    assert!(app.me.is_some());
+    assert!(app.login_error.is_none());
+    assert!(app.login_retry_at.is_some());
+    assert!(app.compose_submissions["c"].failed, "queued send is returned to the input");
+    assert!(app.restore_compose("c"));
+    assert_eq!(app.input, "hello");
+}
+
+/// 控えは持ち主のアカウントに結び付く：同じ人なら入り直して変わったトークンでも使い、別の人・読めないトークンでは使わない
+#[test]
+fn snapshot_is_tied_to_account() {
+    use base64::Engine as _;
+    let tok = |id: &str, rest: &str| format!("{}.{rest}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(id));
+    assert_eq!(cache::token_owner(&tok("123456789012345678", "a.b")).as_deref(), Some("123456789012345678"));
+    assert_eq!(cache::token_owner("not a token"), None);
+    let mut app = bench_app(2);
+    app.me = Some(User { id: "123456789012345678".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    app.token_owner = cache::token_owner(&tok("123456789012345678", "old.sig"));
+    let bytes = serde_json::to_vec(&app.build_snapshot().unwrap()).unwrap();
+    cache::write(&bytes).unwrap();
+    assert!(cache::load(&tok("123456789012345678", "new.sig")).is_some(), "same account, new token");
+    assert!(cache::load(&tok("999", "x.y")).is_none(), "other account");
+    assert!(cache::load("garbage").is_none());
+    cache::remove();
+    assert!(cache::load(&tok("123456789012345678", "new.sig")).is_none());
+}
+
+/// つなぎ始めたら「ログイン中」画面ではなくホーム画面を出す
+#[test]
+fn home_is_shown_while_connecting() {
+    let mut app = App::default();
+    assert!(!app.in_home());
+    let (_tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    assert!(app.me.is_none());
+    assert!(app.in_home());
+}
+
+/// 自分のアクティビティ（「Riscord をプレイ中」など）は SESSIONS_REPLACE のまとめから自分の欄に入る
+#[test]
+fn own_presence_is_stored_under_my_id() {
+    let mut app = App::default();
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    tx.send(Event::OwnPresence(Presence { status: "online".into(), activity: Some("プレイ中: Riscord".into()) })).unwrap();
+    app.poll();
+    assert_eq!(app.presences["1"].activity.as_deref(), Some("プレイ中: Riscord"));
+}

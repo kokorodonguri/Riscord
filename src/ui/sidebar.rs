@@ -396,9 +396,7 @@ impl Root {
                                             let a = &mut this.app;
                                             if gid != a.sel_guild {
                                                 if let Some(g) = &gid {
-                                                    if !a.channels.contains_key(g) || !a.roles.contains_key(g) {
-                                                        a.send(crate::net::Cmd::LoadGuildChannels(g.clone()));
-                                                    }
+                                                    a.ensure_guild_channels(g);
                                                 }
                                                 a.sel_guild = gid.clone();
                                                 a.sel_channel = None;
@@ -452,6 +450,9 @@ impl Root {
                     .child(with_status(avatar(Some(&user_avatar_url(me)), 32.0, me.display(), 16.0, BLURPLE()), 32.0, &cur, USERBAR()))
                     .child(div().flex_1().min_w_0().flex().flex_col().child(line(me.display().to_string(), 14.0, WHITE()).font_weight(FontWeight::MEDIUM)).child(line(status_label(&cur), 12.0, MUTED()))),
             );
+        } else {
+            // ログインが終わるまで（自分の情報が届くまで）
+            row = row.child(div().flex_1().min_w_0().flex().items_center().gap(z(8.0)).px(z(4.0)).child(spinner(20.0)).child(line("接続中…", 12.0, MUTED())));
         }
         let mic_off = a.mic_off();
         let deaf = a.settings.self_deaf;

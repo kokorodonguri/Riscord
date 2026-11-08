@@ -312,7 +312,10 @@ impl Root {
             }
         }));
         // ウィンドウを閉じたら終わる（通信・音声のスレッドも止まる）
-        window.on_window_should_close(cx, |_, cx| {
+        // 次の起動ですぐ出せるよう、閉じる前に控えを書いておく
+        let root = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = root.update(cx, |this, _| this.app.save_snapshot(true));
             cx.quit();
             true
         });
@@ -426,7 +429,8 @@ impl Root {
         }
         self.app.poll();
         self.app.poll_file_pick();
-        if self.app.me.is_none() {
+        self.app.save_snapshot(false);
+        if !self.app.in_home() {
             self.app.poll_login();
             // QR コードは画面を開いたら用意しておく（期限切れ・取り消しのあとは押されるまで作り直さない）
             if self.app.backend.is_none() && self.app.login.qr.is_none() {
@@ -599,12 +603,11 @@ impl Root {
         let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
         let a = &mut self.app;
         if let Some(gid) = &g {
-            if !a.channels.contains_key(gid) || !a.roles.contains_key(gid) {
-                a.send(crate::net::Cmd::LoadGuildChannels(gid.clone()));
-            }
+            a.ensure_guild_channels(gid);
         }
         if a.sel_guild != g {
             a.sel_guild = g;
+            a.cache_dirty = true;
             a.sel_channel = None;
         }
         self.after_move(before);
@@ -631,7 +634,7 @@ impl Root {
             return;
         }
         self.ptt(&k.key, true);
-        if self.app.me.is_none() {
+        if !self.app.in_home() {
             return;
         }
         let m = &k.modifiers;
@@ -721,7 +724,7 @@ impl Root {
     /// どこにもフォーカスが無いときに文字を打ったら入力欄へ（その文字ごと渡す）
     fn on_key_bubble(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let a = &self.app;
-        if a.me.is_none() || a.settings_open || a.switcher.is_some() || a.pending_delete.is_some() {
+        if !a.in_home() || a.settings_open || a.switcher.is_some() || a.pending_delete.is_some() {
             return;
         }
         if !self.focus.is_focused(window) || !a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) {
@@ -774,7 +777,7 @@ pub fn background(bg: &crate::theme::BackgroundImage, dim: Color32) -> Div {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.before_render(window, cx);
-        let content = if self.app.me.is_none() { self.login_view(window, cx).into_any_element() } else { self.main_view(window, cx).into_any_element() };
+        let content = if !self.app.in_home() { self.login_view(window, cx).into_any_element() } else { self.main_view(window, cx).into_any_element() };
         div()
             .id("root")
             .track_focus(&self.focus)
@@ -789,20 +792,20 @@ impl Render for Root {
             .on_key_down(cx.listener(Self::on_key_bubble))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, _| this.ptt(&ev.keystroke.key, false)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, _, cx| {
-                if this.app.me.is_some() && !this.app.settings_open {
+                if this.app.in_home() && !this.app.settings_open {
                     this.navigate(true);
                     cx.notify();
                 }
             }))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, _, cx| {
-                if this.app.me.is_some() && !this.app.settings_open {
+                if this.app.in_home() && !this.app.settings_open {
                     this.navigate(false);
                     cx.notify();
                 }
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let a = &this.app;
-                if a.me.is_some() && a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) && a.editing.is_none() {
+                if a.in_home() && a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) && a.editing.is_none() {
                     this.app.attach_paths(paths.paths().to_vec());
                     cx.notify();
                 }

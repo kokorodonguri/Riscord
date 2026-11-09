@@ -51,16 +51,8 @@ impl Root {
 
     pub fn login_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let wide = self.app.screen_w >= 760.0;
-        let card = if self.app.backend.is_some() {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(z(16.0))
-                .child(medium("ログイン中", 24.0, WHITE()))
-                .child(spinner(28.0))
-                .child(text(self.app.status.clone(), 16.0, MUTED()))
-        } else if wide {
+        // つなぎ始めたら（backend あり）ホーム画面を出すので、ここに来るのは未ログインのときだけ
+        let card = if wide {
             div()
                 .flex()
                 .flex_row()

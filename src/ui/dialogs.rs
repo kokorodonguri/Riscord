@@ -182,6 +182,42 @@ impl Root {
         Some(modal("delete_modal", content, close, 170).into_any_element())
     }
 
+    /// サーバーから脱退する前の確認
+    pub fn leave_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let gid = self.app.confirm_leave.clone()?;
+        let name = self.app.guilds.iter().find(|g| g.id == gid).map(|g| g.name.clone()).unwrap_or_default();
+        let w = (self.app.screen_w - 56.0).clamp(0.0, 440.0);
+        let content = card(SIDEBAR(), BORDER(), 8.0)
+            .p(z(20.0))
+            .w(z(w))
+            .flex()
+            .flex_col()
+            .child(medium(format!("「{name}」から脱退"), 20.0, WHITE()))
+            .child(text("本当に脱退しますか？ 招待されない限り、再び参加することはできません。", 15.0, TEXT()).mt(z(8.0)))
+            .child(
+                div()
+                    .mt(z(20.0))
+                    .flex()
+                    .justify_end()
+                    .gap(z(8.0))
+                    .child(text_button("leave_cancel", "キャンセル").min_w(z(96.0)).on_click(cx.listener(|this, _, _, cx| {
+                        this.app.confirm_leave = None;
+                        cx.notify();
+                    })))
+                    .child(fill_button("leave_ok", "サーバーから脱退", RED(), Color32::WHITE, true).min_w(z(96.0)).on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(gid) = this.app.confirm_leave.take() {
+                            this.app.api(crate::net::ApiCall::LeaveGuild(gid));
+                        }
+                        cx.notify();
+                    }))),
+            );
+        let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.app.confirm_leave = None;
+            cx.notify();
+        });
+        Some(modal("leave_modal", content, close, 170).into_any_element())
+    }
+
     /// 着信（DM 通話で呼ばれている）
     pub fn incoming_call(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let a = &self.app;

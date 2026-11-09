@@ -40,6 +40,7 @@ sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 qrcode = { version = "0.14", default-features = false }
+notify-rust = "4"
 
 [profile.release]
 lto = "thin"

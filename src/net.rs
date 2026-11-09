@@ -13,6 +13,13 @@ use crate::voice::{VoiceCtl, VoiceSession};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod rest;
+pub use rest::ApiCall;
+#[allow(unused_imports)]
+pub use rest::encode;
+#[allow(unused_imports)]
+pub use rest::{call_connect, request_guild_members, stream_create, stream_delete, stream_set_paused, stream_watch};
+
 const API: &str = "https://discord.com/api/v10";
 /// zlib-stream: READY などの大きいペイロードを圧縮して受け取る（展開は Inflater）
 const GATEWAY: &str = "wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream";
@@ -155,6 +162,10 @@ pub enum Cmd {
     StopRinging(String),
     /// message_id までを既読にする（公式クライアントなど他の端末にも反映される）
     Ack { channel_id: String, message_id: String },
+    /// REST API をどれでも呼ぶ（src/net/rest.rs）。結果は Event::Api { id, .. } で返る
+    Api { id: u64, call: ApiCall },
+    /// ゲートウェイにそのまま送る（{"op": …, "d": …}。rest.rs の request_guild_members などで作る）
+    Gateway(Value),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,6 +207,8 @@ pub enum Event {
     Error(String),
     Sticker(String, Result<crate::sticker::Frames, String>),
     Presences(Vec<(String, Presence)>),
+    /// 自分の見え方（Discord が全セッションをまとめたもの。アクティビティを含む）
+    OwnPresence(Presence),
     Profile { key: String, result: Result<ProfileData, String> },
     /// UpdateProfile の結果。失敗したら利用者向けの理由
     ProfileSaved(Result<(), String>),
@@ -204,6 +217,12 @@ pub enum Event {
     /// DM通話の状態（呼び出し中のユーザー）
     Call { channel_id: String, ringing: Vec<String> },
     CallEnded(String),
+    /// Cmd::Api の結果。失敗したら理由
+    Api { id: u64, call: ApiCall, result: Result<Value, String> },
+    /// 個別に扱っていないゲートウェイのイベント（rest::FORWARDED_EVENTS）。t は種類、d は中身
+    Gateway { t: String, d: Value },
+    /// READY のうち、自分の設定まわり（user_guild_settings / read_state / relationships / user_settings_proto）
+    ReadyExtra(Value),
 }
 
 enum VoiceMsg {
@@ -500,6 +519,10 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
             let _ = gw_tx.send(payload);
             continue;
         }
+        if let Cmd::Gateway(v) = &cmd {
+            let _ = gw_tx.send(v.clone());
+            continue;
+        }
         if let Cmd::SubscribeMembers { guild_id, channel_id, ranges } = &cmd {
             let _ = gw_tx.send(member_subscription(guild_id, channel_id, ranges));
             continue;
@@ -581,7 +604,12 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                         _ => Ok(()),
                     }
                 }
-                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
+                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags | Cmd::Gateway(_) => Ok(()),
+                Cmd::Api { id, call } => {
+                    let result = api.call(&call).await.map_err(|e| format!("{e:#}"));
+                    tx.send(Event::Api { id, call, result });
+                    Ok(())
+                }
                 Cmd::Ack { channel_id, message_id } => {
                     send_ack(&api, &tx, channel_id, message_id).await
                 }
@@ -1016,9 +1044,9 @@ fn split_payload(mut v: Value) -> (String, Value) {
 fn handles(t: &str) -> bool {
     matches!(
         t,
-        "READY" | "READY_SUPPLEMENTAL" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
+        "READY" | "READY_SUPPLEMENTAL" | "SESSIONS_REPLACE" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
             | "CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "MESSAGE_CREATE" | "MESSAGE_UPDATE" | "MESSAGE_DELETE"
-    )
+    ) || rest::FORWARDED_EVENTS.contains(&t)
 }
 
 /// READY のうち dispatch が読む所（サーバーの id・voice_states と presences）。残りは読み飛ばす
@@ -1028,6 +1056,37 @@ struct ReadyGuild {
     id: Value,
     #[serde(default)]
     voice_states: Value,
+    /// チャンネル・スレッドの ID だけ（read_state のチャンネルがどのサーバーのものか知るため）
+    #[serde(default)]
+    channels: Vec<IdOnly>,
+    #[serde(default)]
+    threads: Vec<IdOnly>,
+    /// 古い形の READY では、自分のメンバー情報がここに入る
+    #[serde(default)]
+    members: Vec<ReadyMember>,
+}
+
+#[derive(serde::Deserialize)]
+struct IdOnly {
+    #[serde(default)]
+    id: Value,
+}
+
+/// 自分のメンバー情報（ロールでのメンションを見分けるため）
+#[derive(serde::Deserialize)]
+struct ReadyMember {
+    #[serde(default)]
+    user_id: Value,
+    #[serde(default)]
+    user: Option<IdOnly>,
+    #[serde(default)]
+    roles: Vec<Value>,
+}
+
+impl ReadyMember {
+    fn is(&self, me: &Value) -> bool {
+        !me.is_null() && (&self.user_id == me || self.user.as_ref().is_some_and(|u| &u.id == me))
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1036,6 +1095,19 @@ struct Ready {
     guilds: Vec<ReadyGuild>,
     #[serde(default)]
     presences: Value,
+    #[serde(default)]
+    user_guild_settings: Value,
+    #[serde(default)]
+    read_state: Value,
+    #[serde(default)]
+    relationships: Value,
+    #[serde(default)]
+    user_settings_proto: Value,
+    #[serde(default)]
+    user: Option<IdOnly>,
+    /// guilds と同じ順に、そのサーバーでの自分のメンバー情報
+    #[serde(default)]
+    merged_members: Vec<Vec<ReadyMember>>,
 }
 
 /// 文字列のままの d を、使う種類のときだけ解析して dispatch に渡す
@@ -1048,8 +1120,34 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
         // READY はサーバーのチャンネル・ロールなどで大きいので、使う所だけの小さい形にしてから渡す。
         // 想定外の形なら従来どおり全体を解析する
         if let Ok(r) = serde_json::from_str::<Ready>(raw.get()) {
-            let guilds = r.guilds.into_iter().map(|g| json!({ "id": g.id, "voice_states": g.voice_states })).collect::<Vec<_>>();
-            return dispatch(t, json!({ "guilds": guilds, "presences": r.presences }), tx, v_tx);
+            let me = r.user.map(|u| u.id).unwrap_or_default();
+            // 自分のメンバー情報だけ残す（dispatch がロールを読む）
+            let member = |m: &ReadyMember| json!({ "user_id": me, "roles": m.roles });
+            let merged: Vec<Value> = r.merged_members.iter().map(|ms| Value::Array(ms.iter().filter(|m| m.is(&me)).map(member).collect())).collect();
+            let ids = |v: &[IdOnly]| v.iter().map(|c| json!({ "id": c.id })).collect::<Vec<_>>();
+            let guilds = r
+                .guilds
+                .into_iter()
+                .map(|g| {
+                    let members: Vec<Value> = g.members.iter().filter(|m| m.is(&me)).map(member).collect();
+                    json!({ "id": g.id, "voice_states": g.voice_states, "channels": ids(&g.channels), "threads": ids(&g.threads), "members": members })
+                })
+                .collect::<Vec<_>>();
+            return dispatch(
+                t,
+                json!({
+                    "guilds": guilds,
+                    "presences": r.presences,
+                    "user_guild_settings": r.user_guild_settings,
+                    "read_state": r.read_state,
+                    "relationships": r.relationships,
+                    "user_settings_proto": r.user_settings_proto,
+                    "user": { "id": me },
+                    "merged_members": merged,
+                }),
+                tx,
+                v_tx,
+            );
         }
     }
     if let Ok(d) = serde_json::from_str::<Value>(raw.get()) {
@@ -1090,6 +1188,14 @@ fn activity_text(acts: &Value) -> Option<String> {
 
 fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
     match t {
+        // 自分のセッション一覧。"all" が Discord がまとめた自分の見え方（ほかの人に見えている状態とアクティビティ）
+        "SESSIONS_REPLACE" => {
+            let list = d.as_array().map(Vec::as_slice).unwrap_or_default();
+            if let Some(s) = list.iter().find(|s| s["session_id"] == "all").or(list.first()) {
+                let status = s["status"].as_str().unwrap_or("online").to_string();
+                tx.send(Event::OwnPresence(Presence { status, activity: activity_text(&s["activities"]) }));
+            }
+        }
         "READY" => {
             tx.send(Status("接続済み".into()));
             let mut vs = Vec::new();
@@ -1103,6 +1209,36 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             let list: Vec<_> = d["presences"].as_array().into_iter().flatten().filter_map(parse_presence).collect();
             if !list.is_empty() {
                 tx.send(Event::Presences(list));
+            }
+            let mut extra = serde_json::Map::new();
+            let me = &d["user"]["id"];
+            let is_me = |m: &Value| !me.is_null() && (&m["user_id"] == me || &m["user"]["id"] == me);
+            let (mut my_roles, mut channel_guild) = (serde_json::Map::new(), serde_json::Map::new());
+            for (i, g) in d["guilds"].as_array().into_iter().flatten().enumerate() {
+                let Some(gid) = g["id"].as_str() else { continue };
+                let merged = d["merged_members"][i].as_array().into_iter().flatten();
+                if let Some(m) = merged.chain(g["members"].as_array().into_iter().flatten()).find(|m| is_me(m)) {
+                    my_roles.insert(gid.into(), m["roles"].clone());
+                }
+                for c in g["channels"].as_array().into_iter().flatten().chain(g["threads"].as_array().into_iter().flatten()) {
+                    if let Some(cid) = c["id"].as_str() {
+                        channel_guild.insert(cid.into(), gid.into());
+                    }
+                }
+            }
+            if !my_roles.is_empty() {
+                extra.insert("my_roles".into(), Value::Object(my_roles));
+            }
+            if !channel_guild.is_empty() {
+                extra.insert("channel_guild".into(), Value::Object(channel_guild));
+            }
+            for k in ["user_guild_settings", "read_state", "relationships", "user_settings_proto"] {
+                if let Some(v) = d.get_mut(k).map(Value::take).filter(|v| !v.is_null()) {
+                    extra.insert(k.into(), v);
+                }
+            }
+            if !extra.is_empty() {
+                tx.send(Event::ReadyExtra(Value::Object(extra)));
             }
         }
         "READY_SUPPLEMENTAL" => {
@@ -1216,6 +1352,10 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             }
         }
         // ここに種類を足したら handles() にも足す（足さないと dispatch_raw が解析せずに捨てる）
+        t if rest::FORWARDED_EVENTS.contains(&t) => {
+            // 画面ではまだ使っていないものも多いので、急がず届ける
+            tx.send_lazy(Event::Gateway { t: t.to_string(), d });
+        }
         _ => {}
     }
 }
@@ -1419,6 +1559,19 @@ mod tests {
         tx: Tx,
         rx: std::sync::mpsc::Receiver<Event>,
         v_tx: UnboundedSender<VoiceMsg>,
+    }
+
+    /// 自分のセッション一覧からは、Discord がまとめた "all" の見え方を使う
+    #[test]
+    fn sessions_replace_reports_merged_own_presence() {
+        let s = sink();
+        let d = json!([
+            { "session_id": "abcd", "status": "idle", "activities": [] },
+            { "session_id": "all", "status": "online", "activities": [{ "type": 0, "name": "Riscord" }] },
+        ]);
+        dispatch("SESSIONS_REPLACE", d, &s.tx, &s.v_tx);
+        let events: Vec<Event> = s.rx.try_iter().collect();
+        assert!(matches!(&events[..], [Event::OwnPresence(p)] if p.status == "online" && p.activity.as_deref() == Some("プレイ中: Riscord")));
     }
 
     fn sink() -> Sink {
@@ -2041,6 +2194,28 @@ mod tests {
     }
 
     /// 1件のフレーム文字列を、従来（全体を Value にして dispatch）と dispatch_raw の両方で処理した結果
+    #[test]
+    fn ready_extracts_my_roles_and_channel_guilds() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (v_tx, _v_rx) = unbounded_channel();
+        let tx = Tx { tx, ctx: crate::wake::Waker::default() };
+        let ready = json!({
+            "user": { "id": "me" },
+            "guilds": [
+                { "id": "g1", "channels": [{ "id": "c1", "name": "x" }], "threads": [{ "id": "t1" }] },
+                { "id": "g2", "channels": [], "members": [{ "user": { "id": "me" }, "roles": ["r2"] }] },
+            ],
+            "merged_members": [[{ "user_id": "me", "roles": ["r1"] }], []],
+            "read_state": { "entries": [{ "id": "c1", "mention_count": 1 }] },
+        });
+        let raw = serde_json::value::RawValue::from_string(ready.to_string()).unwrap();
+        dispatch_raw("READY", Some(&raw), &tx, &v_tx);
+        let extra = rx.try_iter().find_map(|e| match e { Event::ReadyExtra(v) => Some(v), _ => None }).unwrap();
+        assert_eq!(extra["my_roles"], json!({ "g1": ["r1"], "g2": ["r2"] }));
+        assert_eq!(extra["channel_guild"], json!({ "c1": "g1", "t1": "g1" }));
+        assert_eq!(extra["read_state"]["entries"][0]["mention_count"], 1);
+    }
+
     fn both_paths(text: &str) -> [(Option<i64>, Option<u64>, Vec<String>, Vec<String>); 2] {
         let run = |raw: bool| {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -2113,7 +2288,8 @@ mod tests {
         }
         // 確認用: READY から実際にイベントが出ている
         let [old, _] = both_paths(&json!({ "op": 0, "s": 1, "t": "READY", "d": { "guilds": [guild(json!("10"), Some(json!([vs])))], "presences": [presence] } }).to_string());
-        assert_eq!(old.2.len(), 3, "{:?}", old.2);
+        // Status・VoiceStates・Presences と、チャンネル→サーバーの対応（ReadyExtra）
+        assert_eq!(old.2.len(), 4, "{:?}", old.2);
     }
 
     /// 大きい READY（多数のサーバー・チャンネル・ロール・絵文字）と、使わない種類の処理時間

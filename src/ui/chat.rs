@@ -10,14 +10,15 @@ use super::sidebar::speaking_avatar;
 use super::*;
 use crate::app::{author_name, dm_icon_url, ProfileState, MAX_HISTORY, HISTORY_TRIGGER_ROWS};
 use crate::color::Color32;
+use chrono::{DateTime, Local};
 use crate::model::{Message, User};
 use crate::net::{self, Cmd};
 
-/// 行の中身の目印（変わったら測り直す）
-fn row_key(m: &Message, prev: Option<&Message>, compact: bool) -> u64 {
+/// 行の中身の目印（変わったら測り直す）。t / pt はこの行と前の行の時刻（読み終えたもの）
+fn row_key(m: &Message, prev: Option<&Message>, t: Option<DateTime<Local>>, pt: Option<DateTime<Local>>, compact: bool) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     m.hash(&mut h);
-    super::message::row_layout(m, prev, compact).hash(&mut h);
+    super::message::row_layout_at(m, prev, t, pt, compact).hash(&mut h);
     h.finish()
 }
 
@@ -150,6 +151,7 @@ impl Root {
         v.extend(self.incoming_call(cx));
         v.extend(self.switcher_dialog(cx));
         v.extend(self.delete_dialog(cx));
+        v.extend(self.leave_dialog(cx));
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
         }
@@ -369,23 +371,42 @@ impl Root {
         let msgs = &self.app.messages[&cid];
         let no_access = self.app.no_access.contains(&cid);
         let hist_end = self.app.history.get(&cid).is_some_and(|h| h.end);
-        let mut keys = Vec::with_capacity(msgs.len() + 2);
-        {
+        // 一覧が変わっていなければ、前に作った行の目印をそのまま使う（全件のハッシュと時刻の読み取りを毎フレームしない）
+        let stamp = {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (no_access, hist_end, prefix, cname).hash(&mut h);
-            keys.push(h.finish());
-        }
-        for (i, m) in msgs.iter().enumerate() {
-            keys.push(row_key(m, i.checked_sub(1).map(|j| &msgs[j]), compact));
-        }
-        keys.push(1);
-        let n = keys.len();
-        let l = self.lists.entry(cid.clone()).or_insert_with(|| {
-            let state = ListState::new(n, ListAlignment::Bottom, px(600.0));
-            state.set_follow_mode(FollowMode::Tail);
-            MsgList { state, keys: keys.clone() }
-        });
-        sync_list(l, keys);
+            (self.app.msg_rev, compact, no_access, hist_end, prefix, cname).hash(&mut h);
+            h.finish()
+        };
+        let fresh = self.lists.get(&cid).is_some_and(|l| l.stamp == stamp);
+        let n = if fresh {
+            self.lists[&cid].keys.len()
+        } else {
+            let mut keys = Vec::with_capacity(msgs.len() + 2);
+            {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (no_access, hist_end, prefix, cname).hash(&mut h);
+                keys.push(h.finish());
+            }
+            let mut pt = None;
+            for (i, m) in msgs.iter().enumerate() {
+                let t = crate::app::local_dt(&m.timestamp);
+                keys.push(row_key(m, i.checked_sub(1).map(|j| &msgs[j]), t, pt, compact));
+                pt = t;
+            }
+            keys.push(1);
+            let n = keys.len();
+            match self.lists.get_mut(&cid) {
+                Some(l) => sync_list(l, keys),
+                None => {
+                    let state = ListState::new(n, ListAlignment::Bottom, px(600.0));
+                    state.set_follow_mode(FollowMode::Tail);
+                    self.lists.insert(cid.clone(), MsgList { state, keys, stamp: 0 });
+                }
+            }
+            self.lists.get_mut(&cid).unwrap().stamp = stamp;
+            n
+        };
+        let l = &self.lists[&cid];
         let state = l.state.clone();
         // 上端に近づいたら古いメッセージを読み足す
         let near_top = state.logical_scroll_top().item_ix < HISTORY_TRIGGER_ROWS;
@@ -441,11 +462,17 @@ impl Root {
         if ix + 1 == n {
             return div().h(z(16.0)).into_any_element();
         }
-        let Some(msgs) = self.app.messages.get(cid) else { return div().into_any_element() };
+        // 行を描く間だけ一覧を借り出す（見えている行ごとに Message を丸ごと複製しない）。message_row は messages を見ない
+        let Some(msgs) = self.app.messages.get_mut(cid).map(std::mem::take) else { return div().into_any_element() };
         let i = ix - 1;
-        let Some(m) = msgs.get(i).cloned() else { return div().into_any_element() };
-        let prev = i.checked_sub(1).and_then(|j| msgs.get(j)).cloned();
-        self.message_row(&m, prev.as_ref(), window, cx).into_any_element()
+        let el = match msgs.get(i) {
+            Some(m) => self.message_row(m, i.checked_sub(1).and_then(|j| msgs.get(j)), window, cx).into_any_element(),
+            None => div().into_any_element(),
+        };
+        if let Some(slot) = self.app.messages.get_mut(cid) {
+            *slot = msgs;
+        }
+        el
     }
 
     /// 入力欄（返信・編集の帯、送信中の表示、添付、＋メニュー）
@@ -614,7 +641,7 @@ impl Root {
                 div()
                     .id("plus")
                     .group("plus")
-                    .mt(z(2.0))
+                    .mt(z(6.0))
                     .size(z(24.0))
                     .flex_none()
                     .flex()

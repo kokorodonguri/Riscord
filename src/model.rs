@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// オンライン状態と、表示用のアクティビティ文（「プレイ中: 〜」やカスタムステータス）
 #[derive(Clone, Debug, Default)]
@@ -20,7 +20,7 @@ pub struct ProfileData {
     pub roles: Vec<(String, u32)>,
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -40,7 +40,7 @@ impl User {
 }
 
 /// サーバーのロール
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Role {
     pub id: String,
     pub name: String,
@@ -56,7 +56,7 @@ pub struct Role {
 }
 
 /// サーバーメンバー
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct Member {
     #[serde(default)]
     pub user: Option<User>,
@@ -72,7 +72,7 @@ impl Member {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Guild {
     pub id: String,
     pub name: String,
@@ -81,10 +81,13 @@ pub struct Guild {
     /// /users/@me/guilds が返す、このサーバーでの自分の権限（ロール・オーナーを反映済み。10進の文字列）
     #[serde(default)]
     pub permissions: Option<String>,
+    /// 自分がオーナーか（オーナーは脱退できない）
+    #[serde(default)]
+    pub owner: bool,
 }
 
 /// チャンネルごとの権限の上書き
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Overwrite {
     pub id: String,
     /// 0 / "role" = ロール、1 / "member" = メンバー
@@ -157,7 +160,7 @@ pub fn visible_channels(channels: Vec<Channel>, guild_id: &str, base: u64, my_ro
     channels.into_iter().zip(keep).filter_map(|(c, k)| k.then_some(c)).collect()
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Channel {
     pub id: String,
     #[serde(rename = "type")]
@@ -207,7 +210,7 @@ impl Channel {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct Attachment {
     pub filename: String,
     pub url: String,
@@ -231,7 +234,7 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct StickerItem {
     pub id: String,
     pub name: String,
@@ -239,7 +242,7 @@ pub struct StickerItem {
     pub format_type: u8,
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct EmbedMedia {
     pub url: String,
     #[serde(default)]
@@ -251,7 +254,7 @@ pub struct EmbedMedia {
 }
 
 /// 埋め込みの作者・提供元（名前とリンク、作者はアイコンも）
-#[derive(Clone, Debug, Default, Deserialize, Hash)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
 pub struct EmbedName {
     #[serde(default)]
     pub name: Option<String>,
@@ -263,7 +266,7 @@ pub struct EmbedName {
     pub proxy_icon_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct EmbedFooter {
     #[serde(default)]
     pub text: String,
@@ -273,7 +276,7 @@ pub struct EmbedFooter {
     pub proxy_icon_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct EmbedField {
     #[serde(default)]
     pub name: String,
@@ -283,7 +286,7 @@ pub struct EmbedField {
     pub inline: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct Embed {
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
@@ -380,7 +383,7 @@ fn gif_url(url: &str) -> Option<String> {
     None
 }
 
-#[derive(Clone, Debug, Deserialize, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -394,6 +397,12 @@ pub struct Message {
     /// 本文で @ されたユーザー（<@id> を名前で出すため）
     #[serde(default)]
     pub mentions: Vec<User>,
+    /// @everyone / @here
+    #[serde(default)]
+    pub mention_everyone: bool,
+    /// @ されたロールの ID
+    #[serde(default)]
+    pub mention_roles: Vec<String>,
     pub timestamp: String,
     #[serde(default)]
     pub edited_timestamp: Option<String>,

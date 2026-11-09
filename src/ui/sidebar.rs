@@ -127,7 +127,7 @@ impl Root {
             .child(self.userbar(cx))
     }
 
-    fn rail_item(&self, id: impl Into<ElementId>, selected: bool, unread: bool, name: &str, url: Option<&str>) -> Stateful<Div> {
+    fn rail_item(&self, id: impl Into<ElementId>, selected: bool, unread: bool, mentions: u32, name: &str, url: Option<&str>) -> Stateful<Div> {
         let bg = if selected { BLURPLE() } else { HOVER() };
         let face = if name.is_empty() {
             div()
@@ -172,6 +172,7 @@ impl Root {
             .tooltip(tip(tip_text))
             .child(pill)
             .child(face)
+            .when(mentions > 0, |d| d.child(mention_badge(mentions)))
     }
 
     /// サーバーレール
@@ -179,7 +180,7 @@ impl Root {
         let a = &self.app;
         let unread = a.unread_guilds();
         let mut col = div().id("rail").w(z(72.0)).h_full().flex_none().overflow_y_scroll().flex().flex_col().gap(z(4.0)).pt(z(2.0)).pb(z(8.0));
-        col = col.child(self.rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), "", None).on_click(cx.listener(|this, _, _, cx| {
+        col = col.child(self.rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), a.mention_count(None), "", None).on_click(cx.listener(|this, _, _, cx| {
             this.pick_guild(None);
             cx.notify();
         })));
@@ -188,10 +189,18 @@ impl Root {
             let sel = a.sel_guild.as_deref() == Some(&g.id);
             let url = guild_icon_url(g);
             let gid = g.id.clone();
+            let gid2 = gid.clone();
             col = col.child(
-                self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), &g.name, url.as_deref())
+                self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), a.mention_count(Some(&g.id)), &g.name, url.as_deref())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.pick_guild(Some(gid.clone()));
+                        cx.notify();
+                    }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                        this.menu = Some((PopMenu::Guild, ev.position));
+                        this.menu_guild = Some(gid2.clone());
+                        this.app.ensure_guild_channels(&gid2);
+                        cx.stop_propagation();
                         cx.notify();
                     })),
             );
@@ -232,23 +241,41 @@ impl Root {
         };
         let head = div().h(z(48.0)).flex_none().flex().items_center().pl(z(9.0)).pr(z(8.0)).border_b_1().border_color(DIVIDER()).child(head);
 
-        let mut list = div().id("channels").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.0)).pt(z(8.0)).pb(z(8.0));
+        let mut list = div().id("channels").flex_1().min_h_0().flex().flex_col().gap(px(1.0)).pt(z(8.0)).pb(z(8.0));
         match &a.sel_guild {
             None => {
                 list = list.child(div().h(z(28.0)).flex_none().flex().items_center().pl(z(16.0)).child(text("ダイレクトメッセージ", 13.0, FAINT())));
                 let q = a.dm_filter.trim().to_lowercase();
-                let mut shown = 0;
-                for c in a.dms.iter().filter(|c| q.is_empty() || c.dm_label().to_lowercase().contains(&q)) {
-                    shown += 1;
-                    let sel = a.sel_channel.as_deref() == Some(&c.id);
-                    let pres = c.recipients.first().and_then(|u| a.presences.get(&u.id));
-                    let id = c.id.clone();
-                    list = list.child(dm_row(c, sel, a.unread.contains_key(&c.id), pres).on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_channel(id.clone());
-                        cx.notify();
-                    })));
-                }
-                if shown == 0 && !q.is_empty() {
+                let shown: Vec<usize> = a.dms.iter().enumerate().filter(|(_, c)| q.is_empty() || c.dm_label().to_lowercase().contains(&q)).map(|(i, _)| i).collect();
+                if !shown.is_empty() {
+                    // DM は数百件になるので、見えている行だけ作る（行の高さは全部同じ）
+                    list = list.child(
+                        uniform_list(
+                            "dm_list",
+                            shown.len(),
+                            cx.processor(move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                                let a = &this.app;
+                                range
+                                    .filter_map(|k| a.dms.get(*shown.get(k)?))
+                                    .map(|c| {
+                                        let sel = a.sel_channel.as_deref() == Some(&c.id);
+                                        let pres = c.recipients.first().and_then(|u| a.presences.get(&u.id));
+                                        let id = c.id.clone();
+                                        div()
+                                            .pb(px(1.0))
+                                            .child(dm_row(c, sel, a.unread.contains_key(&c.id), pres).on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_channel(id.clone());
+                                                cx.notify();
+                                            })))
+                                            .into_any_element()
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .flex_1()
+                        .min_h_0(),
+                    );
+                } else if !q.is_empty() {
                     list = list.child(div().mt(z(12.0)).flex().justify_center().child(text("見つかりませんでした", 13.0, FAINT())));
                 } else if a.dms.is_empty() {
                     // 一覧が届く前は読み込み中、届いて 0 件ならその旨を出す（何も無い画面にしない）
@@ -304,7 +331,7 @@ impl Root {
                             self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
                         }
                     }
-                    list = list.children(rows);
+                    list = list.overflow_y_scroll().children(rows);
                 }
             },
         }
@@ -396,9 +423,7 @@ impl Root {
                                             let a = &mut this.app;
                                             if gid != a.sel_guild {
                                                 if let Some(g) = &gid {
-                                                    if !a.channels.contains_key(g) || !a.roles.contains_key(g) {
-                                                        a.send(crate::net::Cmd::LoadGuildChannels(g.clone()));
-                                                    }
+                                                    a.ensure_guild_channels(g);
                                                 }
                                                 a.sel_guild = gid.clone();
                                                 a.sel_channel = None;
@@ -452,6 +477,9 @@ impl Root {
                     .child(with_status(avatar(Some(&user_avatar_url(me)), 32.0, me.display(), 16.0, BLURPLE()), 32.0, &cur, USERBAR()))
                     .child(div().flex_1().min_w_0().flex().flex_col().child(line(me.display().to_string(), 14.0, WHITE()).font_weight(FontWeight::MEDIUM)).child(line(status_label(&cur), 12.0, MUTED()))),
             );
+        } else {
+            // ログインが終わるまで（自分の情報が届くまで）
+            row = row.child(div().flex_1().min_w_0().flex().items_center().gap(z(8.0)).px(z(4.0)).child(spinner(20.0)).child(line("接続中…", 12.0, MUTED())));
         }
         let mic_off = a.mic_off();
         let deaf = a.settings.self_deaf;
@@ -591,4 +619,38 @@ fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf
         .child(speaking_avatar(u, id, 22.0, speaking))
         .child(line(name, 14.0, if speaking { WHITE() } else { MUTED() }).flex_1())
         .child(right)
+}
+
+/// サーバーアイコンの右下の、未読メンション数の赤い印（レールの地の色で 2px 縁取って、アイコンから切り抜いたように見せる）
+fn mention_badge(n: u32) -> Div {
+    let label = if n > 99 { "99+".to_string() } else { n.to_string() };
+    div()
+        .absolute()
+        .bottom(z(2.0))
+        .right(z(12.0))
+        .min_w(z(20.0))
+        .h(z(20.0))
+        .px(z(2.0))
+        .rounded_full()
+        .bg(opaque(BG()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .min_w(z(16.0))
+                .h(z(16.0))
+                .px(z(4.0))
+                .rounded_full()
+                .bg(RED())
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(z(12.0))
+                .font_weight(FontWeight::BOLD)
+                .line_height(z(16.0))
+                .text_color(Color32::WHITE)
+                // 日本語フォントは数字が行の中で下に寄るので、赤丸の中心に合うよう 1px 上げる
+                .child(div().relative().top(z(-1.0)).child(label)),
+        )
 }

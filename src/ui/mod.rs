@@ -33,7 +33,7 @@ gpui::assets::icon_assets!(
         ArrowLeft, ArrowRight, AtSign, ChevronDown, ChevronRight, CirclePlus, CircleX, ClipboardPaste, Copy, FileUp, Folder,
         Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, Palette, PanelRight, Pencil, Phone, PhoneOff, Play, Plus, RefreshCw,
         Reply, RotateCw, Search, Settings, Signal, Trash, Upload, User, UserRound, Users, Video, Volume2, X, Check, IdCard,
-        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File
+        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck
     ]
 );
 
@@ -79,6 +79,8 @@ pub struct MsgList {
     pub state: ListState,
     /// 前に渡した行の中身の目印（変わった行だけ測り直す）
     pub keys: Vec<u64>,
+    /// keys を作ったときの一覧の状態（AppState::msg_rev など）。同じなら keys は作り直さない
+    pub stamp: u64,
 }
 
 /// 入力欄（gpui-component）。中身は AppState の文字列と同期する
@@ -103,6 +105,8 @@ pub enum PopMenu {
     Plus,
     Mic,
     Headset,
+    /// サーバーアイコンの右クリック（対象は Root::menu_guild）
+    Guild,
 }
 
 pub struct Root {
@@ -118,6 +122,8 @@ pub struct Root {
     /// マウスが乗っているメッセージ（ツールバーを出す）
     pub hover_msg: Option<String>,
     pub menu: Option<(PopMenu, Point<Pixels>)>,
+    /// PopMenu::Guild の対象のサーバー
+    pub menu_guild: Option<String>,
     /// プロフィールのポップアップで「ステータス」のサブメニューを開いている
     pub status_sub: bool,
     pub sliders: HashMap<&'static str, Entity<SliderState>>,
@@ -166,6 +172,12 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
 
 /// 文字列が（ロジック側で）変わっていたら入力欄に写す
 fn sync<M: gpui::component::input::InputModeKind + 'static>(e: &Entity<gpui::base::input::InputBaseState<M>>, s: &str, window: &mut Window, cx: &mut App) {
+    // IME で変換中の文字は value() に入るのに Change が出ないので、ここで食い違って見える。
+    // そのまま set_value すると変換中の文字が消え、複数行の欄ではカーソルが先頭に戻ってしまう
+    use gpui::EntityInputHandler as _;
+    if e.update(cx, |st, cx| st.marked_text_range(window, cx).is_some()) {
+        return;
+    }
     if e.read(cx).value().as_ref() != s {
         let s = s.to_string();
         e.update(cx, |st, cx| st.set_value(s, window, cx));
@@ -312,7 +324,10 @@ impl Root {
             }
         }));
         // ウィンドウを閉じたら終わる（通信・音声のスレッドも止まる）
-        window.on_window_should_close(cx, |_, cx| {
+        // 次の起動ですぐ出せるよう、閉じる前に控えを書いておく
+        let root = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = root.update(cx, |this, _| this.app.save_snapshot(true));
             cx.quit();
             true
         });
@@ -332,6 +347,7 @@ impl Root {
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
             menu: None,
+            menu_guild: None,
             status_sub: false,
             sliders: HashMap::new(),
             color_inputs: HashMap::new(),
@@ -424,9 +440,22 @@ impl Root {
         if self.app.theme_watch.as_ref().is_some_and(|rx| rx.try_iter().count() > 0) {
             self.app.apply_theme(true);
         }
+        self.app.window_focused = window.is_window_active();
         self.app.poll();
+        let clicked = self.app.notify_clicked.lock().unwrap().take();
+        if let Some((gid, cid)) = clicked {
+            // 押された通知のチャンネルを開いて、ウィンドウを前に出す
+            self.app.settings_open = false;
+            self.pick_guild(gid);
+            self.open_channel(cid);
+            window.activate_window();
+        }
         self.app.poll_file_pick();
-        if self.app.me.is_none() {
+        if let Some(t) = self.app.clipboard_out.take() {
+            cx.write_to_clipboard(ClipboardItem::new_string(t));
+        }
+        self.app.save_snapshot(false);
+        if !self.app.in_home() {
             self.app.poll_login();
             // QR コードは画面を開いたら用意しておく（期限切れ・取り消しのあとは押されるまで作り直さない）
             if self.app.backend.is_none() && self.app.login.qr.is_none() {
@@ -599,12 +628,11 @@ impl Root {
         let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
         let a = &mut self.app;
         if let Some(gid) = &g {
-            if !a.channels.contains_key(gid) || !a.roles.contains_key(gid) {
-                a.send(crate::net::Cmd::LoadGuildChannels(gid.clone()));
-            }
+            a.ensure_guild_channels(gid);
         }
         if a.sel_guild != g {
             a.sel_guild = g;
+            a.cache_dirty = true;
             a.sel_channel = None;
         }
         self.after_move(before);
@@ -631,7 +659,7 @@ impl Root {
             return;
         }
         self.ptt(&k.key, true);
-        if self.app.me.is_none() {
+        if !self.app.in_home() {
             return;
         }
         let m = &k.modifiers;
@@ -657,6 +685,19 @@ impl Root {
                 cx.stop_propagation();
                 cx.notify();
             }
+            return;
+        }
+        if let Some(gid) = self.app.confirm_leave.clone() {
+            match k.key.as_str() {
+                "enter" => {
+                    self.app.confirm_leave = None;
+                    self.app.api(crate::net::ApiCall::LeaveGuild(gid));
+                }
+                "escape" => self.app.confirm_leave = None,
+                _ => return,
+            }
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         if self.app.pending_delete.is_some() {
@@ -721,7 +762,7 @@ impl Root {
     /// どこにもフォーカスが無いときに文字を打ったら入力欄へ（その文字ごと渡す）
     fn on_key_bubble(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let a = &self.app;
-        if a.me.is_none() || a.settings_open || a.switcher.is_some() || a.pending_delete.is_some() {
+        if !a.in_home() || a.settings_open || a.switcher.is_some() || a.pending_delete.is_some() {
             return;
         }
         if !self.focus.is_focused(window) || !a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) {
@@ -774,7 +815,7 @@ pub fn background(bg: &crate::theme::BackgroundImage, dim: Color32) -> Div {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.before_render(window, cx);
-        let content = if self.app.me.is_none() { self.login_view(window, cx).into_any_element() } else { self.main_view(window, cx).into_any_element() };
+        let content = if !self.app.in_home() { self.login_view(window, cx).into_any_element() } else { self.main_view(window, cx).into_any_element() };
         div()
             .id("root")
             .track_focus(&self.focus)
@@ -789,20 +830,20 @@ impl Render for Root {
             .on_key_down(cx.listener(Self::on_key_bubble))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, _| this.ptt(&ev.keystroke.key, false)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, _, cx| {
-                if this.app.me.is_some() && !this.app.settings_open {
+                if this.app.in_home() && !this.app.settings_open {
                     this.navigate(true);
                     cx.notify();
                 }
             }))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, _, cx| {
-                if this.app.me.is_some() && !this.app.settings_open {
+                if this.app.in_home() && !this.app.settings_open {
                     this.navigate(false);
                     cx.notify();
                 }
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let a = &this.app;
-                if a.me.is_some() && a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) && a.editing.is_none() {
+                if a.in_home() && a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) && a.editing.is_none() {
                     this.app.attach_paths(paths.paths().to_vec());
                     cx.notify();
                 }

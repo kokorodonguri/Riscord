@@ -1,44 +1,69 @@
 # Riscord
 
-**A lightweight, unofficial Discord desktop client written in Rust (GPUI), with a Japanese UI.** Native (no Electron), with chat, voice, QR code login and themes. Runs on Linux and Windows.
+Rust と GPUI で作られた、日本語 UI の非公式 Discord デスクトップクライアントです。Electron を使わず、チャット、ボイス通話、テーマのカスタマイズを利用できます。
 
-紹介ページ: https://kokorodonguri.github.io/Riscord/
+**[紹介ページ](https://kokorodonguri.github.io/Riscord/)**
 
-Riscord は、Rust と GPUI で作られた非公式の Discord デスクトップクライアントです。日本語のインターフェースで、チャットやボイス通話、テーマによる外観のカスタマイズを利用できます。
-
-> Discord の公式アプリではありません。ユーザートークンを使う非公式クライアントの利用は、Discord の利用規約に抵触する可能性があります。利用前に適用される規約を確認してください。トークンはパスワードと同様に扱い、他人に共有しないでください。
+> [!WARNING]
+> Riscord は Discord の公式アプリではありません。ユーザートークンを使う非公式クライアントの利用は、Discord の利用規約に抵触する可能性があります。利用前に適用される規約を確認してください。トークンはパスワードと同様に扱い、他人に共有しないでください。
 
 ## 主な機能
 
 - サーバー、チャンネル、DM の表示とメッセージの送受信
-- 画像や GIF、スタンプ、埋め込みコンテンツの表示とファイルのアップロード
+- 画像、GIF、スタンプ、埋め込みコンテンツの表示とファイルのアップロード
 - ボイスチャンネルへの接続、マイクと音声出力の設定
-- ステータスの変更と、配色・背景画像・フォントのカスタマイズ
-- QR コード・メールアドレス・トークンでのログイン、プロフィールの編集
+- QR コード、メールアドレス、トークンによるログイン
+- ステータスとプロフィールの編集、配色・背景画像・フォントのカスタマイズ
 
-## ビルドと実行
+## はじめに
 
-Rust と Cargo、および使用するプラットフォームのネイティブなビルド環境が必要です。Linux では音声用の ALSA 開発ライブラリなどが必要です。
+### 必要な環境
+
+- Rust と Cargo（CI では stable を使用）
+- Linux または Windows のネイティブビルド環境
+- Linux では ALSA などの開発ライブラリと、ファイル選択用の xdg-desktop-portal
+
+Ubuntu 24.04 では、CI と同じビルド依存パッケージを次のようにインストールできます。
 
 ```sh
-cargo run --release
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  pkg-config cmake libasound2-dev libfontconfig-dev libfreetype-dev \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+  libx11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev
 ```
 
-`RISCORD_DEMO=1 cargo run` で起動すると、Discord に接続せず手元のデモデータで画面を確認できます（`RISCORD_DEMO=guild` ならサーバーのチャンネルを開いた状態で始まります）。デモでは保存済みのトークンや設定を読み書きしません。
+### ビルドと起動
 
-ビルドのみ行う場合は `cargo build --release`、テストを実行する場合は `cargo test` を使います。Linux のファイル選択には xdg-desktop-portal を使用します。
+```sh
+git clone https://github.com/kokorodonguri/Riscord.git
+cd Riscord
+cargo run --release --locked
+```
 
-ログイン画面では次のいずれかでログインします。
+ビルドのみ行う場合は `cargo build --release --locked`、テストを実行する場合は `cargo test --locked` を使います。CI では Linux と Windows の x64・arm64 向けビルドを行っています。
 
-- **QR コード**（おすすめ）: スマホの Discord アプリで読み取り、承認します。パスワードを Riscord に入力しません。
-- **メールアドレスとパスワード**: 認証アプリによる二段階認証に対応しています。Discord が CAPTCHA を求めた場合は Riscord では表示できないため、QR コードを使ってください。
+Discord に接続せず、デモデータで画面を確認することもできます。
+
+```sh
+RISCORD_DEMO=1 cargo run --release --locked
+```
+
+`RISCORD_DEMO=guild` を指定すると、サーバーのチャンネルを開いた状態で始まります。デモでは通常の保存済みトークンや設定を読み書きしません。
+
+### ログイン
+
+ログイン画面から、次のいずれかの方法を選べます。
+
+- **QR コード**: スマートフォンの Discord アプリで読み取って承認します。パスワードを Riscord に入力せずにログインできます。
+- **メールアドレスとパスワード**: 認証アプリによる二段階認証に対応しています。Discord が CAPTCHA を要求した場合は Riscord では表示できないため、QR コードを使ってください。
 - **トークン**: 「トークンでログイン」から入力します。
 
-どの方法でも、Riscord が受け取るのは同じユーザートークンです。環境変数 `DISCORD_TOKEN` でも指定でき、保存済みトークンより優先されます。ログイン画面で保存を選択した場合、トークンは OS の設定ディレクトリ内の `riscord/token` に保存されます（Linux の標準設定では `~/.config/riscord/token`）。
+どの方法でも Riscord はユーザートークンを受け取ります。環境変数 `DISCORD_TOKEN` でも指定でき、保存済みトークンより優先されます。ログイン画面で保存を選択した場合、トークンは OS の設定ディレクトリ内の `riscord/token` に保存されます（Linux の標準設定では `~/.config/riscord/token`）。
 
 ## テーマ
 
-設定ディレクトリ内の `riscord/themes/` に TOML ファイルを置いてテーマを追加できます。Linux の標準設定では `~/.config/riscord/themes/` です。配色は指定した項目だけ上書きされます。
+設定ディレクトリ内の `riscord/themes/` に TOML ファイルを置き、設定画面で選択します。Linux の標準設定では `~/.config/riscord/themes/` です。指定した項目だけが既定のテーマから上書きされます。
 
 ```toml
 name = "夜空"
@@ -54,8 +79,8 @@ image = "~/Pictures/wall.png" # ローカルパスまたは HTTP(S) URL
 opacity = 0.35
 ```
 
-すべての色と既定値を記載した [テーマのテンプレート](themes/template.toml) をコピーして編集できます。[配色の見本](themes/sample.toml) もあります。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると背景が見えます。
+すべての色と既定値を記載した [テンプレート](themes/template.toml) と [配色の見本](themes/sample.toml) を用意しています。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると背景が見えます。
 
 ## Windows ビルド
 
-Windows 向けのビルドには対応する Rust ツールチェーンとビルド環境が必要です。`build-windows.sh` は特定のリモートホストと `cargo-xwin` を前提とした個人用スクリプトのため、使用する場合は環境に合わせて変更してください。
+Windows では対応する Rust ツールチェーンとビルド環境を用意し、上記の Cargo コマンドを実行してください。`build-windows.sh` は特定のリモートホストと `cargo-xwin` を前提とした個人用スクリプトです。使用する場合は環境に合わせて変更してください。

@@ -17,39 +17,76 @@ Rust と GPUI で作られた、日本語 UI の非公式 Discord デスクト�
 
 ## はじめに
 
-### 必要な環境
+以下はソースコードからビルドして起動する手順です。CI では Linux と Windows の x64・arm64 向けビルドを行っています。
 
-- Rust と Cargo（CI では stable を使用）
-- Linux または Windows のネイティブビルド環境
-- Linux では ALSA などの開発ライブラリと、ファイル選択用の xdg-desktop-portal
+### Windows
 
-Ubuntu 24.04 では、CI と同じビルド依存パッケージを次のようにインストールできます。
+[Git for Windows](https://git-scm.com/install/windows)、[Rust（rustup）](https://rust-lang.org/tools/install/)、Visual Studio の C++ ビルドツールをインストールしてください。Rust のインストール時に C++ ビルドツールの導入を案内された場合は、画面の指示に従ってください。
 
-```sh
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends \
-  pkg-config cmake libasound2-dev libfontconfig-dev libfreetype-dev \
-  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-  libx11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev
-```
+インストール後、PowerShell を開き直して実行します。
 
-### ビルドと起動
-
-```sh
+```powershell
 git clone https://github.com/kokorodonguri/Riscord.git
 cd Riscord
 cargo run --release --locked
 ```
 
-ビルドのみ行う場合は `cargo build --release --locked`、テストを実行する場合は `cargo test --locked` を使います。CI では Linux と Windows の x64・arm64 向けビルドを行っています。
+`build-windows.sh` は特定のリモートホストと `cargo-xwin` を前提とした個人用スクリプトです。使用する場合は環境に合わせて変更してください。
 
-Discord に接続せず、デモデータで画面を確認することもできます。
+### Arch Linux
+
+ターミナルで依存パッケージと Rust の stable ツールチェーンを用意し、起動します。
+
+```sh
+sudo pacman -Syu --needed base-devel git cmake rustup alsa-lib fontconfig freetype2 \
+  wayland libxkbcommon libxkbcommon-x11 libx11 libxcb vulkan-headers vulkan-icd-loader \
+  xdg-desktop-portal
+rustup default stable
+git clone https://github.com/kokorodonguri/Riscord.git
+cd Riscord
+cargo run --release --locked
+```
+
+### Ubuntu
+
+Ubuntu 24.04 では、ターミナルで依存パッケージと Rust の stable ツールチェーンを用意し、起動します。
+
+```sh
+sudo apt-get update
+sudo apt-get install -y build-essential git curl pkg-config cmake \
+  libasound2-dev libfontconfig-dev libfreetype-dev \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+  libx11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev xdg-desktop-portal
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+git clone https://github.com/kokorodonguri/Riscord.git
+cd Riscord
+cargo run --release --locked
+```
+
+Rust のインストーラーでは、画面の指示に従って stable ツールチェーンをインストールしてください。
+
+Linux でファイル選択を使うには、`xdg-desktop-portal` に加えてデスクトップ環境に対応したポータルのバックエンドが必要です。Vulkan を利用できるグラフィックドライバーも用意してください。
+
+### ビルド・テスト・デモ
+
+ビルドのみ行う場合は `cargo build --release --locked`、テストを実行する場合は `cargo test --locked` を使います。
+
+Discord に接続せず、デモデータで画面を確認するには、Linux では次のコマンドを使います。
 
 ```sh
 RISCORD_DEMO=1 cargo run --release --locked
 ```
 
-`RISCORD_DEMO=guild` を指定すると、サーバーのチャンネルを開いた状態で始まります。デモでは通常の保存済みトークンや設定を読み書きしません。
+Windows の PowerShell では次のように実行します。
+
+```powershell
+$env:RISCORD_DEMO = "1"
+cargo run --release --locked
+Remove-Item Env:RISCORD_DEMO
+```
+
+`RISCORD_DEMO` に `guild` を指定すると、サーバーのチャンネルを開いた状態で始まります。デモでは通常の保存済みトークンや設定を読み書きしません。
 
 ### ログイン
 
@@ -79,7 +116,3 @@ opacity = 0.35
 ```
 
 すべての色と既定値を記載した [テンプレート](themes/template.toml) と [配色の見本](themes/sample.toml) を用意しています。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると背景が見えます。
-
-## Windows ビルド
-
-Windows では対応する Rust ツールチェーンとビルド環境を用意し、上記の Cargo コマンドを実行してください。`build-windows.sh` は特定のリモートホストと `cargo-xwin` を前提とした個人用スクリプトです。使用する場合は環境に合わせて変更してください。

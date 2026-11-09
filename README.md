@@ -33,7 +33,20 @@ cargo run --release --locked
 
 `build-windows.sh` は特定のリモートホストと `cargo-xwin` を前提とした個人用スクリプトです。使用する場合は環境に合わせて変更してください。
 
-`libopus_sys` のビルドで `Could not create named generator Visual Studio 18 2026` と表示された場合は、CMake を 4.2 以降に更新してください。新しいターミナルで `cmake --version` と `where.exe cmake` を実行し、古い CMake が PATH で優先されていないことを確認してから、再度 `cargo run --release --locked` を実行します。
+`libopus_sys` のビルドで `Could not create named generator Visual Studio 18 2026` と表示された場合は、CMake を 4.2 以降に更新してください。新しいターミナルで `cmake --version` と `where.exe cmake` を実行し、古い CMake が PATH で優先されていないことを確認してから、失敗時のビルドキャッシュを消して再度実行します。
+
+```powershell
+cargo clean -p libopus_sys --release
+cargo run --release --locked
+```
+
+CMake を更新できない場合は、スタートメニューの「x64 Native Tools Command Prompt for VS」を開き、CMake のジェネレーターを指定してビルドします（Ninja がインストール済みなら `NMake Makefiles` の代わりに `Ninja` も使えます）。
+
+```bat
+set CMAKE_GENERATOR=NMake Makefiles
+cargo clean -p libopus_sys --release
+cargo run --release --locked
+```
 
 ### Arch Linux
 

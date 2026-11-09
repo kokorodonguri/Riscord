@@ -775,3 +775,42 @@ fn mentions_are_counted_per_server() {
     app.mark_guild_read("g");
     assert_eq!(app.mention_count(Some("g")), 0);
 }
+
+fn guild(id: &str) -> Guild {
+    serde_json::from_value(serde_json::json!({ "id": id, "name": id })).unwrap()
+}
+
+fn guild_ids(app: &App) -> Vec<&str> {
+    app.guilds.iter().map(|g| g.id.as_str()).collect()
+}
+
+/// ドラッグで下へ動かすと相手の後ろ、上へ動かすと相手の前に入り、並びが settings に残る
+#[test]
+fn move_guild_reorders_and_records_order() {
+    let mut app = App::default();
+    app.guilds = ["a", "b", "c", "d"].map(guild).to_vec();
+    assert!(app.move_guild("a", "c"));
+    assert_eq!(guild_ids(&app), ["b", "c", "a", "d"]);
+    assert!(app.move_guild("d", "b"));
+    assert_eq!(guild_ids(&app), ["d", "b", "c", "a"]);
+    assert_eq!(app.settings.guild_order, ["d", "b", "c", "a"]);
+    // 自分自身や、ないサーバーへは動かさない
+    assert!(!app.move_guild("b", "b"));
+    assert!(!app.move_guild("x", "b"));
+    assert_eq!(guild_ids(&app), ["d", "b", "c", "a"]);
+}
+
+/// 届いた一覧を保存した並びに並べ直す。知らないサーバーは後ろに元の順で、今は一覧にないサーバーの位置も忘れない
+#[test]
+fn guild_order_is_applied_to_new_lists() {
+    let mut app = App::default();
+    app.settings.guild_order = vec!["c".into(), "gone".into(), "a".into()];
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    tx.send(Event::Guilds(["a", "new1", "b", "c", "new2"].map(guild).to_vec())).unwrap();
+    app.poll();
+    assert_eq!(guild_ids(&app), ["c", "a", "new1", "b", "new2"]);
+    app.move_guild("b", "c");
+    assert_eq!(app.settings.guild_order, ["b", "c", "a", "new1", "new2", "gone"]);
+}

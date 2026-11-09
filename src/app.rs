@@ -115,6 +115,9 @@ pub struct Settings {
     pub out_gain: f32,
     pub self_mute: bool,
     pub self_deaf: bool,
+    /// サーバーレールの並び（ドラッグで並べ替えたもの）。ここにないサーバーは後ろに元の順で並ぶ。
+    /// Riscord の中だけの並びで、Discord の設定には書かない
+    pub guild_order: Vec<String>,
 }
 
 impl Default for Settings {
@@ -140,6 +143,7 @@ impl Default for Settings {
             out_gain: 1.0,
             self_mute: false,
             self_deaf: false,
+            guild_order: Vec::new(),
         }
     }
 }
@@ -1020,6 +1024,7 @@ impl App {
     pub fn restore_snapshot(&mut self, s: cache::Snapshot) {
         self.me = s.me;
         self.guilds = s.guilds;
+        self.apply_guild_order();
         self.dms = s.dms;
         self.dms_loaded = true;
         for (gid, chans) in s.channels {
@@ -1429,7 +1434,10 @@ impl App {
                         }
                     }
                 }
-                Event::Guilds(g) => self.guilds = g,
+                Event::Guilds(g) => {
+                    self.guilds = g;
+                    self.apply_guild_order();
+                }
                 Event::Dms(mut d) => {
                     d.sort_by_cached_key(|c| std::cmp::Reverse(c.last_id()));
                     self.dms = d;
@@ -1913,6 +1921,31 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// 保存してある並び（settings.guild_order）にサーバーを並べる
+    pub fn apply_guild_order(&mut self) {
+        let pos: HashMap<&str, usize> = self.settings.guild_order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let mut keyed: Vec<(usize, Guild)> = std::mem::take(&mut self.guilds).into_iter().map(|g| (pos.get(g.id.as_str()).copied().unwrap_or(usize::MAX), g)).collect();
+        keyed.sort_by_key(|(k, _)| *k);
+        self.guilds = keyed.into_iter().map(|(_, g)| g).collect();
+    }
+
+    /// サーバー from を to の位置へ動かす（下へ動かしたら to の後ろ、上へなら前）。
+    /// 並びを settings に写すので、呼んだ側で save_settings する。動いたら true
+    pub fn move_guild(&mut self, from: &str, to: &str) -> bool {
+        let (Some(fi), Some(ti)) = (self.guilds.iter().position(|g| g.id == from), self.guilds.iter().position(|g| g.id == to)) else { return false };
+        if fi == ti {
+            return false;
+        }
+        let g = self.guilds.remove(fi);
+        self.guilds.insert(ti, g);
+        // 抜けたサーバーの分も含めて覚えておく（一時的に一覧にないだけかもしれないので）
+        let shown: std::collections::HashSet<&str> = self.guilds.iter().map(|g| g.id.as_str()).collect();
+        let mut order: Vec<String> = self.guilds.iter().map(|g| g.id.clone()).collect();
+        order.extend(self.settings.guild_order.iter().filter(|id| !shown.contains(id.as_str())).cloned());
+        self.settings.guild_order = order;
+        true
     }
 
     /// 抜けた・消えたサーバーを一覧から外す

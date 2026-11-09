@@ -9,6 +9,20 @@ use crate::app::{dm_icon_url, guild_icon_url, status_label, user_avatar_url};
 use crate::color::Color32;
 use crate::model::{Channel, Presence, User};
 
+/// ドラッグ中のサーバー。指の下にはアイコンだけを出す
+#[derive(Clone)]
+struct GuildDrag {
+    id: String,
+    name: String,
+    url: Option<String>,
+}
+
+impl Render for GuildDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        avatar(self.url.as_deref(), 40.0, &self.name, 12.0, HOVER()).opacity(0.8)
+    }
+}
+
 /// 行の枠（選択中・マウスを乗せたときの背景、未読の白い印）。文字色は group "row" のホバーで変える
 fn row_frame(id: impl Into<ElementId>, height: f32, selected: bool, _unread: bool) -> Stateful<Div> {
     let mut d = div()
@@ -190,8 +204,19 @@ impl Root {
             let url = guild_icon_url(g);
             let gid = g.id.clone();
             let gid2 = gid.clone();
+            let gid3 = gid.clone();
+            let drag = GuildDrag { id: gid.clone(), name: g.name.clone(), url: url.clone() };
             col = col.child(
                 self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), a.mention_count(Some(&g.id)), &g.name, url.as_deref())
+                    // ドラッグして別のサーバーの上で離すと、そこへ動かす（並びは settings.json に残す）
+                    .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
+                    .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))
+                    .on_drop(cx.listener(move |this, d: &GuildDrag, _, cx| {
+                        if this.app.move_guild(&d.id, &gid3) {
+                            st::save_settings(&this.app.settings);
+                        }
+                        cx.notify();
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.pick_guild(Some(gid.clone()));
                         cx.notify();

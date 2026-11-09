@@ -13,6 +13,7 @@ mod notify;
 mod sticker;
 mod theme;
 mod ui;
+mod update;
 mod voice;
 mod wake;
 

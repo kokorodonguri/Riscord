@@ -18,7 +18,7 @@ const SETTINGS_TABS: [(&str, IconName); 5] =
 const SETTINGS_ORDER: [usize; 5] = [0, 4, 1, 2, 3];
 /// 各ページの見出し。左の一覧で選んだページの下に並び、押すとそこへ移る（本家と同じ）
 const SETTINGS_SECTIONS: [&[&str]; 5] = [
-    &["アカウント情報", "アクティビティ", "トークン"],
+    &["アカウント情報", "アクティビティ", "トークン", "バージョン"],
     &["表示サイズ", "メッセージ表示"],
     &["デバイス", "音量", "入力モード", "入力感度"],
     &["テーマ", "背景画像", "色の調整"],
@@ -605,6 +605,15 @@ impl Root {
                 ))
                 .into_any_element(),
         );
+        let state = match crate::update::status() {
+            crate::update::Status::Off => "自動アップデートは無効です（開発中のビルド・対応していない環境など）".to_string(),
+            crate::update::Status::Checking => "新しい版を確認しています…".into(),
+            crate::update::Status::Latest => "最新の版です".into(),
+            crate::update::Status::Downloading(v) => format!("{v} をダウンロードしています…"),
+            crate::update::Status::Ready(v) => format!("{v} に更新しました。次に起動したときから使われます"),
+            crate::update::Status::Failed(e) => format!("更新できませんでした: {e}"),
+        };
+        pages.push(section(3, "バージョン").child(row(format!("Riscord v{}", crate::update::current_version()), Some(state), div())).into_any_element());
         pages
     }
 

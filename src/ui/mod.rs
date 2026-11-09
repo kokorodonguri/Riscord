@@ -218,6 +218,7 @@ impl Root {
             let _ = tx.unbounded_send(d);
         });
         crate::images::set_waker(waker.clone());
+        crate::update::start(&waker);
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         cx.spawn(async move |this: WeakEntity<Root>, cx: &mut AsyncApp| {
             while let Some(d) = rx.next().await {

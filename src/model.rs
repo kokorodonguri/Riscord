@@ -81,6 +81,9 @@ pub struct Guild {
     /// /users/@me/guilds が返す、このサーバーでの自分の権限（ロール・オーナーを反映済み。10進の文字列）
     #[serde(default)]
     pub permissions: Option<String>,
+    /// 自分がオーナーか（オーナーは脱退できない）
+    #[serde(default)]
+    pub owner: bool,
 }
 
 /// チャンネルごとの権限の上書き

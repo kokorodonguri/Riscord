@@ -914,6 +914,14 @@ pub struct App {
     pub dms_loaded: bool,
     /// 画面下に短く出す操作の結果（「コピーしました」など）
     pub toast: Option<(String, std::time::Instant)>,
+    /// 次の描画でクリップボードに書くもの（gpui の cx が要るので画面側で書く）
+    pub clipboard_out: Option<String>,
+    /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
+    pub guild_settings: HashMap<String, GuildSettings>,
+    /// Cmd::Api に付ける番号
+    pub next_api_id: u64,
+    /// 脱退の確認を出しているサーバー
+    pub confirm_leave: Option<String>,
 
     pub settings: Settings,
     pub stickers: HashMap<String, StickerState>,
@@ -1263,6 +1271,17 @@ impl App {
                 self.bump_msgs();
             }
             match e {
+                Event::Api { id: _, call, result } => self.on_api_result(call, result),
+                Event::Gateway { t, d } => self.on_gateway_event(&t, d),
+                Event::ReadyExtra(d) => {
+                    let ugs = &d["user_guild_settings"];
+                    let entries = ugs["entries"].as_array().or(ugs.as_array());
+                    for e in entries.into_iter().flatten() {
+                        if let Some((gid, s)) = GuildSettings::parse(e) {
+                            self.guild_settings.insert(gid, s);
+                        }
+                    }
+                }
                 Event::AckFailed { channel_id, message_id } => {
                     // より新しい ACK を既に出していれば古い失敗は無視する。
                     if self.acked.get(&channel_id) == Some(&message_id) {
@@ -1774,6 +1793,120 @@ impl App {
     pub fn set_compose_notice(&mut self, text: String) {
         self.compose_notice = Some((text, std::time::Instant::now()));
         self.repaint_after(COMPOSE_NOTICE_TTL);
+    }
+
+    /// REST API をどれでも呼ぶ。結果は on_api_result に届く。返り値はこの呼び出しの番号
+    pub fn api(&mut self, call: net::ApiCall) -> u64 {
+        self.next_api_id += 1;
+        let id = self.next_api_id;
+        self.send(Cmd::Api { id, call });
+        id
+    }
+
+    fn on_api_result(&mut self, call: net::ApiCall, result: Result<serde_json::Value, String>) {
+        use net::ApiCall as A;
+        let v = match result {
+            Ok(v) => v,
+            Err(e) => {
+                let what = match &call {
+                    A::CreateInvite { .. } => "招待リンクを作れませんでした",
+                    A::LeaveGuild(_) => "サーバーから脱退できませんでした",
+                    A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => "通知設定を変えられませんでした",
+                    A::AckGuild(_) | A::AckBulk(_) => "既読にできませんでした",
+                    _ => "Discord への操作に失敗しました",
+                };
+                eprintln!("{what}: {call:?}: {e}");
+                self.show_toast(what);
+                return;
+            }
+        };
+        match call {
+            A::CreateInvite { .. } => {
+                if let Some(code) = v["code"].as_str() {
+                    self.clipboard_out = Some(format!("https://discord.gg/{code}"));
+                    self.show_toast("招待リンクをコピーしました");
+                }
+            }
+            A::LeaveGuild(gid) => self.remove_guild(&gid),
+            A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => {
+                if let Some((gid, s)) = GuildSettings::parse(&v) {
+                    self.guild_settings.insert(gid, s);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_gateway_event(&mut self, t: &str, d: serde_json::Value) {
+        match t {
+            "USER_GUILD_SETTINGS_UPDATE" => {
+                if let Some((gid, s)) = GuildSettings::parse(&d) {
+                    self.guild_settings.insert(gid, s);
+                }
+            }
+            // unavailable のときは障害で一時的に見えないだけなので残す
+            "GUILD_DELETE" if d["unavailable"] != true => {
+                if let Some(gid) = d["id"].as_str() {
+                    self.remove_guild(gid);
+                }
+            }
+            // 公式クライアントなど別の端末で既読にした
+            "MESSAGE_ACK" => {
+                if let Some(cid) = d["channel_id"].as_str() {
+                    if d["manual"] != true {
+                        self.unread.remove(cid);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 抜けた・消えたサーバーを一覧から外す
+    pub fn remove_guild(&mut self, gid: &str) {
+        self.guilds.retain(|g| g.id != gid);
+        self.channels.remove(gid);
+        self.unread.retain(|_, g| g.as_deref() != Some(gid));
+        self.guild_settings.remove(gid);
+        if self.sel_guild.as_deref() == Some(gid) {
+            self.sel_guild = None;
+            self.sel_channel = None;
+        }
+        self.cache_dirty = true;
+    }
+
+    /// サーバーのチャンネルをすべて既読にする
+    pub fn mark_guild_read(&mut self, gid: &str) {
+        self.unread.retain(|_, g| g.as_deref() != Some(gid));
+        self.api(net::ApiCall::AckGuild(gid.to_string()));
+    }
+
+    /// サーバーの通知設定を変える（先に画面へ反映し、結果で上書きする）
+    pub fn set_guild_settings(&mut self, gid: &str, muted: Option<bool>, notifications: Option<u8>) {
+        let s = self.guild_settings.entry(gid.to_string()).or_default();
+        let mut body = serde_json::Map::new();
+        if let Some(m) = muted {
+            s.muted = m;
+            body.insert("muted".into(), m.into());
+            if m {
+                body.insert("mute_config".into(), serde_json::json!({ "selected_time_window": -1, "end_time": null }));
+            }
+        }
+        if let Some(n) = notifications {
+            s.notifications = n;
+            body.insert("message_notifications".into(), n.into());
+        }
+        self.api(net::ApiCall::ModifyGuildSettings { guild_id: gid.to_string(), settings: serde_json::Value::Object(body) });
+    }
+
+    /// サーバーの招待リンクを作ってコピーする（見えている最初のテキストチャンネルで作る）
+    pub fn create_guild_invite(&mut self, gid: &str) {
+        let Some(cid) = self.channels.get(gid).and_then(|cs| cs.iter().find(|c| c.is_text()).map(|c| c.id.clone())) else {
+            self.ensure_guild_channels(gid);
+            self.show_toast("チャンネルを読み込み中です。少し待ってからもう一度お試しください");
+            return;
+        };
+        self.api(net::ApiCall::CreateInvite { channel_id: cid, body: serde_json::json!({ "max_age": 604800, "max_uses": 0, "temporary": false }) });
     }
 
     /// 画面下に短いお知らせを出す（「コピーしました」など）
@@ -2357,3 +2490,27 @@ pub fn base64_encode(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod regression_tests;
+
+/// サーバーごとの自分の通知設定
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GuildSettings {
+    pub muted: bool,
+    /// 0 = すべてのメッセージ、1 = @メンションのみ、2 = なし、3 = サーバーの既定
+    pub notifications: u8,
+}
+
+impl GuildSettings {
+    /// user_guild_settings の1件から（サーバーID, 設定）。DM の分（guild_id が null）は除く
+    pub fn parse(v: &serde_json::Value) -> Option<(String, GuildSettings)> {
+        let gid = v["guild_id"].as_str()?.to_string();
+        let mut muted = v["muted"].as_bool().unwrap_or(false);
+        // 期限つきのミュートは、期限を過ぎていれば解けている
+        if let Some(end) = v["mute_config"]["end_time"].as_str().and_then(|t| DateTime::parse_from_rfc3339(t).ok()) {
+            if end < chrono::Utc::now() {
+                muted = false;
+            }
+        }
+        let notifications = v["message_notifications"].as_u64().unwrap_or(3).min(3) as u8;
+        Some((gid, GuildSettings { muted, notifications }))
+    }
+}

@@ -33,7 +33,7 @@ gpui::assets::icon_assets!(
         ArrowLeft, ArrowRight, AtSign, ChevronDown, ChevronRight, CirclePlus, CircleX, ClipboardPaste, Copy, FileUp, Folder,
         Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, Palette, PanelRight, Pencil, Phone, PhoneOff, Play, Plus, RefreshCw,
         Reply, RotateCw, Search, Settings, Signal, Trash, Upload, User, UserRound, Users, Video, Volume2, X, Check, IdCard,
-        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File
+        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck
     ]
 );
 
@@ -105,6 +105,8 @@ pub enum PopMenu {
     Plus,
     Mic,
     Headset,
+    /// サーバーアイコンの右クリック（対象は Root::menu_guild）
+    Guild,
 }
 
 pub struct Root {
@@ -120,6 +122,8 @@ pub struct Root {
     /// マウスが乗っているメッセージ（ツールバーを出す）
     pub hover_msg: Option<String>,
     pub menu: Option<(PopMenu, Point<Pixels>)>,
+    /// PopMenu::Guild の対象のサーバー
+    pub menu_guild: Option<String>,
     /// プロフィールのポップアップで「ステータス」のサブメニューを開いている
     pub status_sub: bool,
     pub sliders: HashMap<&'static str, Entity<SliderState>>,
@@ -168,6 +172,12 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
 
 /// 文字列が（ロジック側で）変わっていたら入力欄に写す
 fn sync<M: gpui::component::input::InputModeKind + 'static>(e: &Entity<gpui::base::input::InputBaseState<M>>, s: &str, window: &mut Window, cx: &mut App) {
+    // IME で変換中の文字は value() に入るのに Change が出ないので、ここで食い違って見える。
+    // そのまま set_value すると変換中の文字が消え、複数行の欄ではカーソルが先頭に戻ってしまう
+    use gpui::EntityInputHandler as _;
+    if e.update(cx, |st, cx| st.marked_text_range(window, cx).is_some()) {
+        return;
+    }
     if e.read(cx).value().as_ref() != s {
         let s = s.to_string();
         e.update(cx, |st, cx| st.set_value(s, window, cx));
@@ -337,6 +347,7 @@ impl Root {
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
             menu: None,
+            menu_guild: None,
             status_sub: false,
             sliders: HashMap::new(),
             color_inputs: HashMap::new(),
@@ -431,6 +442,9 @@ impl Root {
         }
         self.app.poll();
         self.app.poll_file_pick();
+        if let Some(t) = self.app.clipboard_out.take() {
+            cx.write_to_clipboard(ClipboardItem::new_string(t));
+        }
         self.app.save_snapshot(false);
         if !self.app.in_home() {
             self.app.poll_login();
@@ -662,6 +676,19 @@ impl Root {
                 cx.stop_propagation();
                 cx.notify();
             }
+            return;
+        }
+        if let Some(gid) = self.app.confirm_leave.clone() {
+            match k.key.as_str() {
+                "enter" => {
+                    self.app.confirm_leave = None;
+                    self.app.api(crate::net::ApiCall::LeaveGuild(gid));
+                }
+                "escape" => self.app.confirm_leave = None,
+                _ => return,
+            }
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         if self.app.pending_delete.is_some() {

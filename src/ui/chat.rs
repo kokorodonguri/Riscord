@@ -151,6 +151,7 @@ impl Root {
         v.extend(self.incoming_call(cx));
         v.extend(self.switcher_dialog(cx));
         v.extend(self.delete_dialog(cx));
+        v.extend(self.leave_dialog(cx));
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
         }

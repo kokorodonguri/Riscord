@@ -13,6 +13,13 @@ use crate::voice::{VoiceCtl, VoiceSession};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod rest;
+pub use rest::ApiCall;
+#[allow(unused_imports)]
+pub use rest::encode;
+#[allow(unused_imports)]
+pub use rest::{call_connect, request_guild_members, stream_create, stream_delete, stream_set_paused, stream_watch};
+
 const API: &str = "https://discord.com/api/v10";
 /// zlib-stream: READY などの大きいペイロードを圧縮して受け取る（展開は Inflater）
 const GATEWAY: &str = "wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream";
@@ -155,6 +162,10 @@ pub enum Cmd {
     StopRinging(String),
     /// message_id までを既読にする（公式クライアントなど他の端末にも反映される）
     Ack { channel_id: String, message_id: String },
+    /// REST API をどれでも呼ぶ（src/net/rest.rs）。結果は Event::Api { id, .. } で返る
+    Api { id: u64, call: ApiCall },
+    /// ゲートウェイにそのまま送る（{"op": …, "d": …}。rest.rs の request_guild_members などで作る）
+    Gateway(Value),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,6 +217,12 @@ pub enum Event {
     /// DM通話の状態（呼び出し中のユーザー）
     Call { channel_id: String, ringing: Vec<String> },
     CallEnded(String),
+    /// Cmd::Api の結果。失敗したら理由
+    Api { id: u64, call: ApiCall, result: Result<Value, String> },
+    /// 個別に扱っていないゲートウェイのイベント（rest::FORWARDED_EVENTS）。t は種類、d は中身
+    Gateway { t: String, d: Value },
+    /// READY のうち、自分の設定まわり（user_guild_settings / read_state / relationships / user_settings_proto）
+    ReadyExtra(Value),
 }
 
 enum VoiceMsg {
@@ -502,6 +519,10 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
             let _ = gw_tx.send(payload);
             continue;
         }
+        if let Cmd::Gateway(v) = &cmd {
+            let _ = gw_tx.send(v.clone());
+            continue;
+        }
         if let Cmd::SubscribeMembers { guild_id, channel_id, ranges } = &cmd {
             let _ = gw_tx.send(member_subscription(guild_id, channel_id, ranges));
             continue;
@@ -583,7 +604,12 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                         _ => Ok(()),
                     }
                 }
-                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags => Ok(()),
+                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags | Cmd::Gateway(_) => Ok(()),
+                Cmd::Api { id, call } => {
+                    let result = api.call(&call).await.map_err(|e| format!("{e:#}"));
+                    tx.send(Event::Api { id, call, result });
+                    Ok(())
+                }
                 Cmd::Ack { channel_id, message_id } => {
                     send_ack(&api, &tx, channel_id, message_id).await
                 }
@@ -1020,7 +1046,7 @@ fn handles(t: &str) -> bool {
         t,
         "READY" | "READY_SUPPLEMENTAL" | "SESSIONS_REPLACE" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
             | "CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "MESSAGE_CREATE" | "MESSAGE_UPDATE" | "MESSAGE_DELETE"
-    )
+    ) || rest::FORWARDED_EVENTS.contains(&t)
 }
 
 /// READY のうち dispatch が読む所（サーバーの id・voice_states と presences）。残りは読み飛ばす
@@ -1038,6 +1064,14 @@ struct Ready {
     guilds: Vec<ReadyGuild>,
     #[serde(default)]
     presences: Value,
+    #[serde(default)]
+    user_guild_settings: Value,
+    #[serde(default)]
+    read_state: Value,
+    #[serde(default)]
+    relationships: Value,
+    #[serde(default)]
+    user_settings_proto: Value,
 }
 
 /// 文字列のままの d を、使う種類のときだけ解析して dispatch に渡す
@@ -1051,7 +1085,19 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
         // 想定外の形なら従来どおり全体を解析する
         if let Ok(r) = serde_json::from_str::<Ready>(raw.get()) {
             let guilds = r.guilds.into_iter().map(|g| json!({ "id": g.id, "voice_states": g.voice_states })).collect::<Vec<_>>();
-            return dispatch(t, json!({ "guilds": guilds, "presences": r.presences }), tx, v_tx);
+            return dispatch(
+                t,
+                json!({
+                    "guilds": guilds,
+                    "presences": r.presences,
+                    "user_guild_settings": r.user_guild_settings,
+                    "read_state": r.read_state,
+                    "relationships": r.relationships,
+                    "user_settings_proto": r.user_settings_proto,
+                }),
+                tx,
+                v_tx,
+            );
         }
     }
     if let Ok(d) = serde_json::from_str::<Value>(raw.get()) {
@@ -1113,6 +1159,15 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             let list: Vec<_> = d["presences"].as_array().into_iter().flatten().filter_map(parse_presence).collect();
             if !list.is_empty() {
                 tx.send(Event::Presences(list));
+            }
+            let mut extra = serde_json::Map::new();
+            for k in ["user_guild_settings", "read_state", "relationships", "user_settings_proto"] {
+                if let Some(v) = d.get_mut(k).map(Value::take).filter(|v| !v.is_null()) {
+                    extra.insert(k.into(), v);
+                }
+            }
+            if !extra.is_empty() {
+                tx.send(Event::ReadyExtra(Value::Object(extra)));
             }
         }
         "READY_SUPPLEMENTAL" => {
@@ -1226,6 +1281,10 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             }
         }
         // ここに種類を足したら handles() にも足す（足さないと dispatch_raw が解析せずに捨てる）
+        t if rest::FORWARDED_EVENTS.contains(&t) => {
+            // 画面ではまだ使っていないものも多いので、急がず届ける
+            tx.send_lazy(Event::Gateway { t: t.to_string(), d });
+        }
         _ => {}
     }
 }

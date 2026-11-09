@@ -188,10 +188,18 @@ impl Root {
             let sel = a.sel_guild.as_deref() == Some(&g.id);
             let url = guild_icon_url(g);
             let gid = g.id.clone();
+            let gid2 = gid.clone();
             col = col.child(
                 self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), &g.name, url.as_deref())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.pick_guild(Some(gid.clone()));
+                        cx.notify();
+                    }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                        this.menu = Some((PopMenu::Guild, ev.position));
+                        this.menu_guild = Some(gid2.clone());
+                        this.app.ensure_guild_channels(&gid2);
+                        cx.stop_propagation();
                         cx.notify();
                     })),
             );

@@ -73,12 +73,101 @@ impl Root {
                 col.into_any_element()
             }
             PopMenu::Mic | PopMenu::Headset => self.audio_menu(menu == PopMenu::Mic, window, cx).into_any_element(),
+            PopMenu::Guild => self.guild_menu(cx)?.into_any_element(),
         };
+        // 右クリックのメニューはカーソルの右下に、ボタンのメニューはボタンの上に出す
+        let (at, anchor) = if menu == PopMenu::Guild { (pos + point(z(4.0), z(0.0)), Anchor::TopLeft) } else { (pos - point(z(0.0), z(8.0)), Anchor::BottomLeft) };
         Some(
-            deferred(anchored().position(pos - point(z(0.0), z(8.0))).anchor(Anchor::BottomLeft).snap_to_window_with_margin(z(8.0)).child(div().occlude().on_mouse_down_out(close).child(content)))
+            deferred(anchored().position(at).anchor(anchor).snap_to_window_with_margin(z(8.0)).child(div().occlude().on_mouse_down_out(close).child(content)))
                 .with_priority(1)
                 .into_any_element(),
         )
+    }
+
+    /// サーバーアイコンの右クリックメニュー
+    fn guild_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let gid = self.menu_guild.clone()?;
+        let g = self.app.guilds.iter().find(|g| g.id == gid)?;
+        let owner = g.owner;
+        let unread = self.app.unread.values().any(|x| x.as_deref() == Some(gid.as_str()));
+        let set = self.app.guild_settings.get(&gid).cloned().unwrap_or_default();
+        let close = |this: &mut Root| {
+            this.menu = None;
+            this.menu_guild = None;
+        };
+        let mut col = popup_box().p(z(6.0)).w(z(240.0)).flex().flex_col().gap(z(2.0));
+
+        let g1 = gid.clone();
+        col = col.child(
+            menu_row("gm_read", icon(IconName::CheckCheck, 18.0, TEXT()).into_any_element(), "既読にする", false)
+                .when(!unread, |d| d.opacity(0.5))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.mark_guild_read(&g1);
+                    cx.notify();
+                })),
+        );
+        let g1 = gid.clone();
+        col = col.child(menu_row("gm_invite", icon(IconName::UserPlus, 18.0, TEXT()).into_any_element(), "サーバーに招待", false).on_click(cx.listener(move |this, _, _, cx| {
+            close(this);
+            this.app.create_guild_invite(&g1);
+            cx.notify();
+        })));
+        col = col.child(menu_divider());
+
+        let g1 = gid.clone();
+        let (mute_icon, mute_label) = if set.muted { (IconName::Bell, "サーバーのミュートを解除") } else { (IconName::BellOff, "サーバーをミュート") };
+        col = col.child(menu_row("gm_mute", icon(mute_icon, 18.0, TEXT()).into_any_element(), mute_label, false).on_click(cx.listener(move |this, _, _, cx| {
+            let muted = this.app.guild_settings.get(&g1).is_some_and(|s| s.muted);
+            this.app.set_guild_settings(&g1, Some(!muted), None);
+            cx.notify();
+        })));
+        col = col.child(div().px(z(10.0)).pt(z(6.0)).pb(z(2.0)).child(text("通知設定", 12.0, MUTED())));
+        for (n, label) in [(3u8, "サーバーの既定"), (0, "すべてのメッセージ"), (1, "@メンションのみ"), (2, "なし")] {
+            let g1 = gid.clone();
+            col = col.child(
+                div()
+                    .id(("gm_notify", n as usize))
+                    .h(z(32.0))
+                    .px(z(10.0))
+                    .rounded(z(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(z(10.0))
+                    .cursor_pointer()
+                    .text_color(TEXT())
+                    .hover(|s| s.bg(HOVER()).text_color(WHITE()))
+                    .child(div().w(z(20.0)).flex().justify_center().child(radio(set.notifications == n)))
+                    .child(div().flex_1().text_size(z(14.0)).child(label))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.set_guild_settings(&g1, None, Some(n));
+                        cx.notify();
+                    })),
+            );
+        }
+        if !owner {
+            col = col.child(menu_divider());
+            let g1 = gid.clone();
+            col = col.child(
+                menu_row("gm_leave", icon(IconName::LogOut, 18.0, RED()).into_any_element(), "サーバーから脱退", false)
+                    .text_color(RED())
+                    .hover(|s| s.bg(RED()).text_color(WHITE()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        close(this);
+                        this.app.confirm_leave = Some(g1.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        col = col.child(menu_divider());
+        let g1 = gid.clone();
+        col = col.child(menu_row("gm_id", icon(IconName::IdCard, 18.0, TEXT()).into_any_element(), "サーバーIDをコピー", false).on_click(cx.listener(move |this, _, _, cx| {
+            close(this);
+            cx.write_to_clipboard(ClipboardItem::new_string(g1.clone()));
+            this.app.show_toast("サーバーIDをコピーしました");
+            cx.notify();
+        })));
+        Some(col)
     }
 
     /// 左下のマイク／ヘッドホン横の ⌄ メニュー

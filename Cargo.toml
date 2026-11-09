@@ -52,3 +52,5 @@ strip = true
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 # Rust 1.93 より前でもビルドできるよう、slice::as_array を使わない版。
 gpui-pre-util = { path = "vendor/gpui-pre-util" }
+# Rust 1.95 より前でもビルドできるよう、cold_path のヒントを除いた版。
+gpui-pre = { path = "vendor/gpui-pre" }

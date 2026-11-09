@@ -1,5 +1,5 @@
-# v* のタグを push すると、Windows / Linux（x64）の実行ファイルをビルドして GitHub Releases に載せる。
-# アプリの自動アップデート（src/update.rs）は、ここで付ける名前（riscord-windows-x64.exe / riscord-linux-x64）を探す
+# v* のタグを push すると、Windows / Linux（x64・arm64）の実行ファイルをビルドして GitHub Releases に載せる。
+# アプリの自動アップデート（src/update.rs の asset_name）は、ここで付ける名前を探す
 name: release
 
 on:
@@ -21,11 +21,19 @@ jobs:
             target: x86_64-pc-windows-msvc
             bin: riscord.exe
             asset: riscord-windows-x64.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bin: riscord.exe
+            asset: riscord-windows-arm64.exe
           # glibc が古めの環境でビルドして、新しすぎて動かないディストリを減らす
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bin: riscord
             asset: riscord-linux-x64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bin: riscord
+            asset: riscord-linux-arm64
     steps:
       - uses: actions/checkout@v4
 

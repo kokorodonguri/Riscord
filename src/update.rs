@@ -51,7 +51,9 @@ fn set(s: Status, waker: &Waker) {
 fn asset_name() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => Some("riscord-windows-x64.exe"),
+        ("windows", "aarch64") => Some("riscord-windows-arm64.exe"),
         ("linux", "x86_64") => Some("riscord-linux-x64"),
+        ("linux", "aarch64") => Some("riscord-linux-arm64"),
         _ => None,
     }
 }

@@ -79,6 +79,8 @@ pub struct MsgList {
     pub state: ListState,
     /// 前に渡した行の中身の目印（変わった行だけ測り直す）
     pub keys: Vec<u64>,
+    /// keys を作ったときの一覧の状態（AppState::msg_rev など）。同じなら keys は作り直さない
+    pub stamp: u64,
 }
 
 /// 入力欄（gpui-component）。中身は AppState の文字列と同期する

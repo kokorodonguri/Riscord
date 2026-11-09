@@ -20,8 +20,17 @@ const EMBED_THUMB: f32 = 80.0;
 
 /// 行の並べ方（日付の区切り・前の行とまとめるか・返信か）。これが変わると高さが変わる
 pub fn row_layout(m: &Message, prev: Option<&Message>, compact: bool) -> (bool, bool, bool, bool) {
-    let t = local_dt(&m.timestamp);
-    let pt = prev.and_then(|p| local_dt(&p.timestamp));
+    row_layout_at(m, prev, local_dt(&m.timestamp), prev.and_then(|p| local_dt(&p.timestamp)), compact)
+}
+
+/// row_layout の、時刻を読み終えたものを受け取る版（一覧全体を回すとき、1件の時刻を2回読まないため）
+pub fn row_layout_at(
+    m: &Message,
+    prev: Option<&Message>,
+    t: Option<chrono::DateTime<chrono::Local>>,
+    pt: Option<chrono::DateTime<chrono::Local>>,
+    compact: bool,
+) -> (bool, bool, bool, bool) {
     let new_day = match (t, pt) {
         (Some(a), Some(b)) => a.date_naive() != b.date_naive(),
         (Some(_), None) => true,
@@ -153,29 +162,37 @@ fn image_box(id: impl Into<ElementId>, src: &str, open: &str, size: (f32, f32)) 
     let open = open.to_string();
     let d = div().id(id).w(z(size.0)).h(z(size.1)).max_w_full().rounded(z(8.0)).overflow_hidden().cursor_pointer().on_click(move |_, _, cx| cx.open_url(&open));
     match imgs::get(src) {
-        Img::Ready(i) => d.child(img(i).size_full().rounded(z(8.0)).object_fit(ObjectFit::Contain)),
+        Img::Ready(i) => d.child(img(i).id("img").size_full().rounded(z(8.0)).object_fit(ObjectFit::Contain)),
         Img::Pending => d.bg(EMBED_BG()).flex().items_center().justify_center().child(spinner(20.0)),
         Img::Failed => d.bg(EMBED_BG()).flex().items_center().justify_center().child(icon(IconName::TriangleAlert, 20.0, FAINT())),
     }
 }
 
 impl Root {
+    /// 開いているサーバーのロール（DM なら空）
+    fn guild_roles(&self) -> &[Role] {
+        self.app.sel_guild.as_ref().and_then(|g| self.app.roles.get(g)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     /// 画像を出したことを覚える（チャンネルを捨てるときに画像のキャッシュも解放するため）
     fn note_image(&mut self, uri: &str) {
-        if let Some(cid) = &self.app.sel_channel {
-            let set = self.app.channel_images.entry(cid.clone()).or_default();
+        let Some(cid) = &self.app.sel_channel else { return };
+        // 毎フレーム見えている画像の数だけ呼ばれるので、覚え済みならキーも作らない
+        if let Some(set) = self.app.channel_images.get_mut(cid) {
             if !set.contains(uri) {
                 set.insert(uri.to_string());
             }
+        } else {
+            self.app.channel_images.entry(cid.clone()).or_default().insert(uri.to_string());
         }
     }
 
     pub fn message_row(&mut self, m: &Message, prev: Option<&Message>, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let (new_day, grouped, reply, compact) = row_layout(m, prev, self.app.settings.compact);
-        let roles: Vec<Role> = self.app.sel_guild.as_ref().and_then(|g| self.app.roles.get(g)).cloned().unwrap_or_default();
         let hovered = self.hover_msg.as_deref() == Some(m.id.as_str());
         let highlight = self.app.editing.as_ref().or(self.app.reply_to.as_ref()).is_some_and(|x| x.id == m.id);
-        let name_col = m.member.as_ref().and_then(|member| member_role_color(member, &roles)).unwrap_or(WHITE());
+        // ロールは行ごとに複製せず、色を決める間だけ借りる（ロールの多いサーバーで見えている行の数だけ Vec を作っていた）
+        let name_col = m.member.as_ref().and_then(|member| member_role_color(member, self.guild_roles())).unwrap_or(WHITE());
         let mut outer = div().flex().flex_col().w_full();
         if new_day {
             if let Some(t) = local_dt(&m.timestamp) {
@@ -216,7 +233,7 @@ impl Root {
             outer = outer.when(new_day, |d| d.pt(z(6.0)));
             row = row.mt(z(2.0)).py(px(1.0));
             if reply {
-                row = row.child(self.reply_preview(m, 30.0, 56.0, &roles, cx));
+                row = row.child(self.reply_preview(m, 30.0, 56.0, cx));
             }
             let time = local_dt(&m.timestamp).map(|t| t.format("%H:%M ").to_string()).unwrap_or_default();
             let mut line_row = div().pl(z(16.0)).pr(z(16.0)).flex().flex_wrap().items_baseline().gap_x(z(4.0));
@@ -244,7 +261,7 @@ impl Root {
             outer = outer.when(!grouped, |d| d.pt(z(13.0)));
             row = row.pt(z(if grouped { 1.0 } else { 4.0 })).pb(z(2.0));
             if reply {
-                row = row.child(self.reply_preview(m, 36.0, 72.0, &roles, cx).mb(z(2.0)));
+                row = row.child(self.reply_preview(m, 36.0, 72.0, cx).mb(z(2.0)));
             }
             let left: AnyElement = if grouped {
                 // まとめた行はアバターの代わりに、マウスを乗せたとき時刻を出す
@@ -361,7 +378,8 @@ impl Root {
     }
 
     /// 返信の上に出る「╭ @相手 本文」の一行。avatar_x = 本文側アバターの中心
-    fn reply_preview(&mut self, m: &Message, avatar_x: f32, text_x: f32, roles: &[Role], cx: &mut Context<Self>) -> Div {
+    fn reply_preview(&mut self, m: &Message, avatar_x: f32, text_x: f32, cx: &mut Context<Self>) -> Div {
+        let roles = self.guild_roles();
         // 左の曲がった線（上と左の枠を角丸にした箱の一部）
         let curve = div().absolute().left(z(avatar_x)).top(z(10.0)).w(z(text_x - avatar_x - 6.0)).h(z(12.0)).border_l_2().border_t_2().border_color(REPLY_LINE()).rounded_tl(z(6.0));
         let row = div().relative().h(z(20.0)).w_full().flex().items_center().pl(z(text_x)).pr(z(16.0)).gap(z(4.0)).child(curve);
@@ -403,7 +421,7 @@ impl Root {
     fn inline_content(&mut self, m: &Message) -> AnyElement {
         let fs = self.app.settings.font_size;
         let edited = HighlightStyle { color: Some(MUTED().into()), ..Default::default() };
-        let roles = self.app.sel_guild.as_ref().and_then(|g| self.app.roles.get(g)).map(Vec::as_slice).unwrap_or(&[]);
+        let roles = self.guild_roles();
         let content = resolve_mentions(&m.content, m, &self.app.channels, roles).into_owned();
         let segs = split_emoji(&content);
         if !segs.iter().any(|x| matches!(x, Seg::Emoji { .. })) {
@@ -435,7 +453,7 @@ impl Root {
                 Seg::Emoji { name, id, animated } => {
                     let url = emoji_url(id, animated);
                     let face = match imgs::get(&url) {
-                        Img::Ready(img_) => div().size(z(size)).child(img(img_).size_full().object_fit(ObjectFit::Contain)),
+                        Img::Ready(img_) => div().size(z(size)).child(img(img_).id("img").size_full().object_fit(ObjectFit::Contain)),
                         _ => div().size(z(size)),
                     };
                     row = row.child(face.id(SharedString::from(format!("e{}_{i}", m.id))).tooltip(tip(format!(":{name}:"))).when(only_emoji, |d| d.mr(z(4.0))));
@@ -492,7 +510,7 @@ impl Root {
                 .id(SharedString::from(format!("st{}", st.id)))
                 .size(z(BOX))
                 .tooltip(tip(st.name.clone()))
-                .child(img(i.clone()).size_full().object_fit(ObjectFit::Contain))
+                .child(img(i.clone()).id("img").size_full().object_fit(ObjectFit::Contain))
                 .into_any_element(),
             Some(StickerState::Failed) => text(format!("[スタンプ: {}]", st.name), 16.0, MUTED()).into_any_element(),
             state => {

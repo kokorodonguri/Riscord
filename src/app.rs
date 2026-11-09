@@ -848,6 +848,8 @@ pub struct App {
     pub show_members_narrow: bool,
     pub compact_sidebar_closed: bool,
     pub messages: HashMap<String, Vec<Message>>,
+    /// messages のどこかが変わるたびに進む番号（描画側はこれが同じなら行の目印を作り直さない）
+    pub msg_rev: u64,
     /// チャンネルごとの過去ログ読み足しの状態
     pub history: HashMap<String, History>,
     /// 見る権限がなかったチャンネル（開くと 403）
@@ -964,7 +966,15 @@ pub const CACHE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// 控えを出したまま接続できなかったとき、つなぎ直すまでの時間
 pub const LOGIN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// msg_rev の元。ログアウトで App を作り直しても前の値に戻らないよう、プロセスで1つ
+static MSG_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl App {
+    /// messages を変えたら呼ぶ
+    pub fn bump_msgs(&mut self) {
+        self.msg_rev = MSG_REV.fetch_add(1, Relaxed) + 1;
+    }
+
     pub fn new(waker: Waker) -> Self {
         let settings = load_settings();
         let mut app = App { waker, screen_w: 1200.0, remember: true, settings, show_members: true, ..Default::default() };
@@ -1008,6 +1018,7 @@ impl App {
             self.loaded_channels.push_back(cid.clone());
             self.messages.insert(cid, list);
         }
+        self.bump_msgs();
         let guild_ok = s.sel_guild.as_ref().is_none_or(|g| self.guilds.iter().any(|x| &x.id == g));
         if guild_ok {
             let channel = s.sel_channel.filter(|c| self.messages.contains_key(c));
@@ -1239,6 +1250,18 @@ impl App {
             }
         }
         for e in events {
+            if matches!(
+                e,
+                Event::ComposeResult { .. }
+                    | Event::Messages(..)
+                    | Event::NoAccess(..)
+                    | Event::OlderMessages { .. }
+                    | Event::MessageCreate(..)
+                    | Event::MessageUpdate { .. }
+                    | Event::MessageDelete { .. }
+            ) {
+                self.bump_msgs();
+            }
             match e {
                 Event::AckFailed { channel_id, message_id } => {
                     // より新しい ACK を既に出していれば古い失敗は無視する。
@@ -1902,6 +1925,7 @@ impl App {
         while self.loaded_channels.len() > MAX_CHANNELS {
             let Some(old) = self.loaded_channels.pop_front() else { break };
             self.messages.remove(&old);
+            self.bump_msgs();
             self.history.remove(&old);
             self.stale_channels.remove(&old);
             self.no_access.remove(&old);

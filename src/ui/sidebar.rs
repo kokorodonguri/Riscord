@@ -232,23 +232,41 @@ impl Root {
         };
         let head = div().h(z(48.0)).flex_none().flex().items_center().pl(z(9.0)).pr(z(8.0)).border_b_1().border_color(DIVIDER()).child(head);
 
-        let mut list = div().id("channels").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.0)).pt(z(8.0)).pb(z(8.0));
+        let mut list = div().id("channels").flex_1().min_h_0().flex().flex_col().gap(px(1.0)).pt(z(8.0)).pb(z(8.0));
         match &a.sel_guild {
             None => {
                 list = list.child(div().h(z(28.0)).flex_none().flex().items_center().pl(z(16.0)).child(text("ダイレクトメッセージ", 13.0, FAINT())));
                 let q = a.dm_filter.trim().to_lowercase();
-                let mut shown = 0;
-                for c in a.dms.iter().filter(|c| q.is_empty() || c.dm_label().to_lowercase().contains(&q)) {
-                    shown += 1;
-                    let sel = a.sel_channel.as_deref() == Some(&c.id);
-                    let pres = c.recipients.first().and_then(|u| a.presences.get(&u.id));
-                    let id = c.id.clone();
-                    list = list.child(dm_row(c, sel, a.unread.contains_key(&c.id), pres).on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_channel(id.clone());
-                        cx.notify();
-                    })));
-                }
-                if shown == 0 && !q.is_empty() {
+                let shown: Vec<usize> = a.dms.iter().enumerate().filter(|(_, c)| q.is_empty() || c.dm_label().to_lowercase().contains(&q)).map(|(i, _)| i).collect();
+                if !shown.is_empty() {
+                    // DM は数百件になるので、見えている行だけ作る（行の高さは全部同じ）
+                    list = list.child(
+                        uniform_list(
+                            "dm_list",
+                            shown.len(),
+                            cx.processor(move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                                let a = &this.app;
+                                range
+                                    .filter_map(|k| a.dms.get(*shown.get(k)?))
+                                    .map(|c| {
+                                        let sel = a.sel_channel.as_deref() == Some(&c.id);
+                                        let pres = c.recipients.first().and_then(|u| a.presences.get(&u.id));
+                                        let id = c.id.clone();
+                                        div()
+                                            .pb(px(1.0))
+                                            .child(dm_row(c, sel, a.unread.contains_key(&c.id), pres).on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_channel(id.clone());
+                                                cx.notify();
+                                            })))
+                                            .into_any_element()
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .flex_1()
+                        .min_h_0(),
+                    );
+                } else if !q.is_empty() {
                     list = list.child(div().mt(z(12.0)).flex().justify_center().child(text("見つかりませんでした", 13.0, FAINT())));
                 } else if a.dms.is_empty() {
                     // 一覧が届く前は読み込み中、届いて 0 件ならその旨を出す（何も無い画面にしない）
@@ -304,7 +322,7 @@ impl Root {
                             self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
                         }
                     }
-                    list = list.children(rows);
+                    list = list.overflow_y_scroll().children(rows);
                 }
             },
         }

@@ -188,7 +188,7 @@ impl Root {
                 Seg::Emoji { name, id, animated } => {
                     let url = emoji_url(id, animated);
                     let face = match loaded(&url) {
-                        Some(im) => div().size(z(size + 4.0)).child(img(im).size_full().object_fit(ObjectFit::Contain)),
+                        Some(im) => div().size(z(size + 4.0)).child(img(im).id("img").size_full().object_fit(ObjectFit::Contain)),
                         None => div().size(z(size + 4.0)),
                     };
                     row = row.child(face.id(SharedString::from(format!("bioe{i}"))).tooltip(tip(format!(":{name}:"))));

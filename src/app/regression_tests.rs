@@ -704,3 +704,27 @@ fn own_presence_is_stored_under_my_id() {
     app.poll();
     assert_eq!(app.presences["1"].activity.as_deref(), Some("プレイ中: Riscord"));
 }
+
+/// 描画側は msg_rev が同じなら行の目印を作り直さない。メッセージが変わる通知では必ず進み、関係ない通知では進まないこと
+#[test]
+fn message_revision_advances_only_on_message_changes() {
+    let mut app = bench_app(3);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let r0 = app.msg_rev;
+    tx.send(Event::Status("接続済み".into())).unwrap();
+    app.poll();
+    assert_eq!(app.msg_rev, r0, "unrelated events must keep the cached row keys");
+    tx.send(Event::MessageUpdate { channel_id: "c".into(), id: "100001".into(), content: Some("edited".into()), embeds: None }).unwrap();
+    app.poll();
+    let r1 = app.msg_rev;
+    assert_ne!(r1, r0);
+    tx.send(Event::MessageDelete { channel_id: "c".into(), id: "100002".into() }).unwrap();
+    app.poll();
+    assert_ne!(app.msg_rev, r1);
+    // 作り直した App でも前の番号に戻らない（ウィンドウ側のキャッシュが古い目印を使わないように）
+    let mut fresh = App::default();
+    fresh.bump_msgs();
+    assert!(fresh.msg_rev > app.msg_rev);
+}

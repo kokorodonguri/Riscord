@@ -281,14 +281,18 @@ impl Root {
         let (sw, sh) = (f32::from(vp.width) / zoom(), f32::from(vp.height) / zoom());
         let compact = sw < 700.0;
         let (w, h) = if compact { ((sw - 16.0).max(0.0), (sh - 16.0).max(0.0)) } else { ((sw - 128.0).max(560.0), (sh - 90.0).max(360.0)) };
-        // 壁紙を透かすテーマでも、モーダルは不透明な地にして読みやすくする
-        let surface = if CHAT().a() < 255 { Color32::BLACK } else { CHAT() };
+        let wallpaper = self.app.theme_applied.as_ref().and_then(|t| t.background.as_ref()).filter(|b| b.window);
+        let surface = if wallpaper.is_some() { SETTINGS_BG() } else { opaque(SETTINGS_BG()) };
+        let nav_surface = if wallpaper.is_some() { SETTINGS_NAV() } else { opaque(SETTINGS_NAV()) };
         let nav_w = if compact { 0.0 } else { (w * 0.3).clamp(200.0, 260.0) };
         let tab = self.app.settings_tab;
 
-        let mut boxed = div().w(z(w)).h(z(h)).bg(surface).border_1().border_color(BORDER()).rounded(z(12.0)).flex().flex_row().overflow_hidden();
+        let mut boxed = div().w(z(w)).h(z(h)).relative().border_1().border_color(BORDER()).rounded(z(12.0)).flex().flex_row().overflow_hidden();
+        if let Some(bg) = wallpaper {
+            boxed = boxed.child(background(bg, opaque(BG())));
+        }
         if !compact {
-            boxed = boxed.child(self.settings_nav(nav_w, cx));
+            boxed = boxed.child(div().bg(nav_surface).child(self.settings_nav(nav_w, cx)));
         }
         // 右: 見出しの帯と内容
         let title: AnyElement = if compact {
@@ -377,7 +381,7 @@ impl Root {
             .flex_col()
             .items_center()
             .child(content);
-        let mut right = div().flex_1().min_w_0().h_full().flex().flex_col().relative().child(bar).child(scroll);
+        let mut right = div().flex_1().min_w_0().h_full().bg(surface).flex().flex_col().relative().child(bar).child(scroll);
         if tab == 4 {
             right = right.children(self.profile_save_bar(col_w, cx));
         }

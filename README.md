@@ -130,4 +130,4 @@ image = "~/Pictures/wall.png" # ローカルパスまたは HTTP(S) URL
 opacity = 0.35
 ```
 
-すべての色と既定値を記載した [テンプレート](themes/template.toml) と [配色の見本](themes/sample.toml) を用意しています。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると背景が見えます。
+すべての色と既定値を記載した [テンプレート](themes/template.toml) と [配色の見本](themes/sample.toml) を用意しています。設定画面の地とメニューは `settings_bg` と `settings_nav` で個別に変更できます。省略するとチャット欄の色を引き継ぎます。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると設定画面にも背景が見えます。

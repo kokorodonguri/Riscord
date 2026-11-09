@@ -155,6 +155,22 @@ impl Root {
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
         }
+        if let Some(uri) = self.image_preview.clone() {
+            let vp = window.viewport_size();
+            let w = (f32::from(vp.width) / zoom() - 80.0).max(100.0);
+            let h = (f32::from(vp.height) / zoom() - 140.0).max(100.0);
+            let picture = match crate::images::get(&uri) {
+                crate::images::Img::Ready(image) => div().w(z(w)).h(z(h)).child(img(image).size_full().object_fit(ObjectFit::Contain)),
+                crate::images::Img::Pending => div().w(z(w)).h(z(h)).flex().items_center().justify_center().child(spinner(32.0)),
+                crate::images::Img::Failed => div().w(z(w)).h(z(h)).flex().items_center().justify_center().child(text("画像を読み込めませんでした", 16.0, WHITE())),
+            };
+            let content = div().flex().flex_col().items_center().gap(z(12.0)).child(picture).child(
+                div().flex().gap(z(24.0))
+                    .child(text("ブラウザで開く", 14.0, WHITE()).id("preview_browser").cursor_pointer().on_click(move |_, _, cx| cx.open_url(&uri)))
+                    .child(text("閉じる", 14.0, WHITE()).id("preview_close").cursor_pointer().on_click(cx.listener(|this, _, _, cx| { this.image_preview = None; cx.notify(); }))),
+            );
+            v.push(modal("image_preview", content, cx.listener(|this, _, _, cx| { this.image_preview = None; cx.notify(); }), 220).into_any_element());
+        }
         v
     }
 

@@ -38,6 +38,8 @@ embed_bar = "#2b2d31"    # 埋め込みの縦線（色指定なし）
 widget = "#242428"       # ボタン・スライダー
 widget_hover = "#303035" # ボタン（マウスを乗せたとき）
 reply_line = "#4e4f56"   # 返信の線
+settings_bg = "#000000"  # 設定画面の地
+settings_nav = "#000000" # 設定画面のメニュー
 
 [background]
 # image = "~/Pictures/wallpaper.png" # ローカルパス（themes/ からの相対パスも可）または HTTP(S) URL

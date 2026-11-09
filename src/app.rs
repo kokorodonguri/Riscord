@@ -2182,6 +2182,7 @@ impl App {
         }
         self.touch_channel(&id);
         self.sel_channel = Some(id);
+        self.focus_input = true;
         self.cache_dirty = true;
         if self.screen_w < 700.0 {
             self.compact_sidebar_closed = true;

@@ -77,6 +77,8 @@ palette! {
     27 WIDGET "widget" "ボタン・スライダー" [0x24, 0x24, 0x28];
     28 WIDGET_HOVER "widget_hover" "ボタン（マウスを乗せたとき）" [0x30, 0x30, 0x35];
     29 REPLY_LINE "reply_line" "返信の線" [0x4e, 0x4f, 0x56];
+    30 SETTINGS_BG "settings_bg" "設定画面の地" [0x00, 0x00, 0x00];
+    31 SETTINGS_NAV "settings_nav" "設定画面のメニュー" [0x00, 0x00, 0x00];
 }
 
 pub fn set_colors(colors: &[Color32]) {
@@ -273,6 +275,14 @@ pub fn resolve(
     for (k, v) in overrides {
         set(k, v);
     }
+    // 旧テーマでは設定画面の色をチャット欄から引き継ぐ。
+    let specified = |key: &str| [overrides.get(key), file.colors.get(key)].into_iter().flatten().any(|v| parse_color(v).is_some());
+    if !specified("settings_bg") {
+        colors[30] = colors[3];
+    }
+    if !specified("settings_nav") {
+        colors[31] = colors[30];
+    }
     let image = bg_override.image.clone().filter(|s| !s.trim().is_empty()).or(file.background.image.clone());
     let opacity = bg_override.opacity.or(file.background.opacity).unwrap_or(0.35).clamp(0.0, 1.0);
     let window = bg_override.area.as_deref().or(file.background.area.as_deref()) == Some("window");
@@ -322,6 +332,22 @@ mod tests {
         assert_eq!(parse_color("ff000080").map(|c| c.to_srgba_unmultiplied()[3]), Some(0x80));
         assert_eq!(parse_color("#12"), None);
         assert_eq!(format_color(Color32::from_rgb(1, 2, 3)), "#010203");
+    }
+
+    #[test]
+    fn settings_colors_inherit_and_can_be_overridden() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("chat".into(), "#123456".into());
+        let resolve_colors = |overrides: &BTreeMap<String, String>| resolve("builtin:black", Path::new("/nonexistent"), overrides, &Background::default()).0.colors;
+        let colors = resolve_colors(&overrides);
+        assert_eq!(colors[30], colors[3]);
+        assert_eq!(colors[31], colors[3]);
+        overrides.insert("settings_bg".into(), "#abcdef80".into());
+        let colors = resolve_colors(&overrides);
+        assert_eq!(colors[30], parse_color("#abcdef80").unwrap());
+        assert_eq!(colors[31], colors[30]);
+        overrides.insert("settings_nav".into(), "#112233".into());
+        assert_eq!(resolve_colors(&overrides)[31], parse_color("#112233").unwrap());
     }
 
     #[test]

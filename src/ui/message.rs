@@ -157,10 +157,12 @@ fn embed_line(id: impl Into<ElementId>, s: impl Into<SharedString>, size: f32, c
     }
 }
 
-/// 画像（読み込み中は同じ大きさの箱を出して、行の高さが変わらないようにする）。押すとブラウザで開く
-fn image_box(id: impl Into<ElementId>, src: &str, open: &str, size: (f32, f32)) -> Stateful<Div> {
+/// 画像（読み込み中は同じ大きさの箱を出して、行の高さが変わらないようにする）
+fn image_box(id: impl Into<ElementId>, src: &str, open: &str, size: (f32, f32), video: bool, cx: &mut Context<Root>) -> Stateful<Div> {
     let open = open.to_string();
-    let d = div().id(id).w(z(size.0)).h(z(size.1)).max_w_full().rounded(z(8.0)).overflow_hidden().cursor_pointer().on_click(move |_, _, cx| cx.open_url(&open));
+    let d = div().id(id).w(z(size.0)).h(z(size.1)).max_w_full().rounded(z(8.0)).overflow_hidden().cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+        if video { cx.open_url(&open); } else { this.image_preview = Some(open.clone()); cx.notify(); }
+    }));
     match imgs::get(src) {
         Img::Ready(i) => d.child(img(i).id("img").size_full().rounded(z(8.0)).object_fit(ObjectFit::Contain)),
         Img::Pending => d.bg(EMBED_BG()).flex().items_center().justify_center().child(spinner(20.0)),
@@ -479,7 +481,8 @@ impl Root {
                 let size = fit_size(a.width, a.height, max);
                 let src = resized(a.proxy_url.as_deref(), &a.url, size.unwrap_or(max));
                 self.note_image(&src);
-                col = col.child(image_box(SharedString::from(format!("at{}_{i}", m.id)), &src, &a.url, size.unwrap_or(max)));
+                self.note_image(&a.url);
+                col = col.child(image_box(SharedString::from(format!("at{}_{i}", m.id)), &src, &a.url, size.unwrap_or(max), false, cx));
             } else {
                 col = col.child(embed_line(SharedString::from(format!("af{}_{i}", m.id)), format!("📎 {}", a.filename), 16.0, LINK(), Some(&a.url)));
             }
@@ -493,9 +496,10 @@ impl Root {
                 // GIF リンクは .gif 版を取って動かす。取れなかったら静止画に戻す
                 let gif = e.animated_url().filter(|g| !matches!(imgs::get(g), Img::Failed));
                 let src = gif.unwrap_or_else(|| resized(md.proxy_url.as_deref(), &md.url, size));
-                let open = e.url.clone().unwrap_or_else(|| md.url.clone());
+                let open = e.animated_url().unwrap_or_else(|| md.url.clone());
                 self.note_image(&src);
-                col = col.child(image_box(SharedString::from(format!("em{}_{i}", m.id)), &src, &open, size));
+                self.note_image(&open);
+                col = col.child(image_box(SharedString::from(format!("em{}_{i}", m.id)), &src, &open, size, false, cx));
             } else if e.is_rich() {
                 col = col.child(self.embed_card(e, &format!("{}_{i}", m.id), cx));
             }
@@ -530,7 +534,7 @@ impl Root {
     }
 
     /// タイトル・説明・フィールドなどを持つ埋め込み（リンクのプレビューや bot の埋め込み）
-    fn embed_card(&mut self, e: &Embed, key: &str, _cx: &mut Context<Self>) -> Div {
+    fn embed_card(&mut self, e: &Embed, key: &str, cx: &mut Context<Self>) -> Div {
         let bar = e.color.filter(|&c| c != 0).map(rgb).unwrap_or(EMBED_BAR());
         let big = embed_big_media(e);
         let small_thumb = if big.is_none() { e.thumbnail.as_ref() } else { None };
@@ -586,16 +590,18 @@ impl Root {
             let size = fit_size(t.width, t.height, (EMBED_THUMB, EMBED_THUMB)).unwrap_or((EMBED_THUMB, EMBED_THUMB));
             let src = resized(t.proxy_url.as_deref(), &t.url, size);
             self.note_image(&src);
-            top = top.child(div().mt(z(4.0)).child(image_box(SharedString::from(format!("eth{key}")), &src, e.url.as_deref().unwrap_or(&t.url), size)));
+            self.note_image(&t.url);
+            top = top.child(div().mt(z(4.0)).child(image_box(SharedString::from(format!("eth{key}")), &src, &t.url, size, false, cx)));
         }
         let mut col = div().flex().flex_col().child(top);
         if let Some(md) = big {
             let size = fit_size(md.width, md.height, (inner, 300.0)).unwrap_or((inner, 300.0));
             let src = resized(md.proxy_url.as_deref(), &md.url, size);
             self.note_image(&src);
-            let open = e.url.clone().unwrap_or_else(|| md.url.clone());
             let video = e.video.is_some() || e.kind.as_deref() == Some("video");
-            let mut b = div().relative().mt(z(8.0)).child(image_box(SharedString::from(format!("eb{key}")), &src, &open, size));
+            let open = if video { e.url.clone().unwrap_or_else(|| md.url.clone()) } else { md.url.clone() };
+            if !video { self.note_image(&open); }
+            let mut b = div().relative().mt(z(8.0)).child(image_box(SharedString::from(format!("eb{key}")), &src, &open, size, video, cx));
             if video {
                 // 動画はアプリ内で再生できないので、再生マークを重ねてブラウザで開く
                 b = b.child(

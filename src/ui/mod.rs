@@ -135,6 +135,7 @@ pub struct Root {
     pub last_title: String,
     /// 入力欄の薄い案内文（チャンネルが変わったら変える）
     pub compose_hint: String,
+    pub image_preview: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -358,6 +359,7 @@ impl Root {
             theme_font: None,
             last_title: String::new(),
             compose_hint: String::new(),
+            image_preview: None,
             _subs: subs,
         };
         root.apply_fonts(cx);
@@ -514,7 +516,17 @@ impl Root {
         }
         if self.app.focus_input {
             self.app.focus_input = false;
-            self.inp.compose.update(cx, |s, cx| s.focus(window, cx));
+            if self.app.in_home()
+                && self.app.sel_channel.as_ref().is_some_and(|id| !self.app.no_access.contains(id))
+                && !self.app.settings_open
+                && self.app.switcher.is_none()
+                && self.app.pending_delete.is_none()
+                && self.app.confirm_leave.is_none()
+                && self.app.popup.is_none()
+                && self.image_preview.is_none()
+            {
+                self.inp.compose.update(cx, |s, cx| s.focus(window, cx));
+            }
         }
         // ウィンドウのタイトル
         let title = self.window_title();
@@ -661,6 +673,14 @@ impl Root {
         }
         self.ptt(&k.key, true);
         if !self.app.in_home() {
+            return;
+        }
+        if self.image_preview.is_some() {
+            if k.key == "escape" {
+                self.image_preview = None;
+                cx.notify();
+            }
+            cx.stop_propagation();
             return;
         }
         let m = &k.modifiers;

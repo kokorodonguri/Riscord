@@ -65,6 +65,15 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
             ("2".into(), Presence { status: "idle".into(), activity: Some("プレイ中: パズル".into()) }),
             ("3".into(), Presence { status: "dnd".into(), activity: None }),
         ]));
+        // サーバーアイコンのメンション数の印を見るための未読メンション
+        send(Event::ReadyExtra(serde_json::json!({
+            "channel_guild": { "10011": "100", "10111": "101" },
+            "read_state": { "entries": [
+                { "id": "10011", "mention_count": 3 },
+                { "id": "10111", "mention_count": 12 },
+                { "id": "900", "mention_count": 1 },
+            ] },
+        })));
         send(Event::GatewayReady);
         send(Event::Status("接続済み".into()));
         let mut next = 2000u64;

@@ -650,6 +650,7 @@ fn mention_badge(n: u32) -> Div {
                 .font_weight(FontWeight::BOLD)
                 .line_height(z(16.0))
                 .text_color(Color32::WHITE)
-                .child(label),
+                // 日本語フォントは数字が行の中で下に寄るので、赤丸の中心に合うよう 1px 上げる
+                .child(div().relative().top(z(-1.0)).child(label)),
         )
 }

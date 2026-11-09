@@ -211,7 +211,7 @@ pub fn small_button(id: impl Into<ElementId>, label: impl Into<SharedString>) ->
         .child(label.into())
 }
 
-/// 青い文字のリンク（「トークンでログイン」など）
+/// 青い文字のリンク
 pub fn link_text(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     div().id(id).text_size(z(14.0)).text_color(LINK()).cursor_pointer().hover(|s| s.underline()).child(label.into())
 }

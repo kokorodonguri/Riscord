@@ -1,10 +1,10 @@
-//! ログイン画面（QR コード・メールアドレスとパスワード・二段階認証・トークン）
+//! ログイン画面（QR コード・メールアドレスとパスワード・二段階認証）
 use gpui::component::input::Input;
 use gpui::prelude::*;
 use gpui::*;
 
 use super::*;
-use crate::app::{LoginMode, QrSession};
+use crate::app::QrSession;
 use crate::color::Color32;
 use crate::login;
 
@@ -36,14 +36,9 @@ impl Root {
             if !a.login.mfa_code.trim().is_empty() {
                 a.login.busy = Some(login::mfa(&a.waker, ticket, a.login.mfa_code.trim().to_string()));
             }
-        } else if a.login.mode == LoginMode::Password {
+        } else {
             if !a.login.email.trim().is_empty() && !a.login.password.is_empty() {
                 a.login.busy = Some(login::password(&a.waker, a.login.email.trim().to_string(), a.login.password.clone()));
-            }
-        } else {
-            let token = a.token_input.trim().to_string();
-            if !token.is_empty() {
-                a.finish_login(token);
             }
         }
         cx.notify();
@@ -89,14 +84,14 @@ impl Root {
         )
     }
 
-    /// 左側: メールアドレスとパスワード（二段階認証のコード・トークン）
+    /// 左側: メールアドレスとパスワード（二段階認証のコード）
     fn login_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let a = &self.app;
         let busy = a.login.busy.is_some();
-        let (title, sub) = match (&a.login.mfa_ticket, a.login.mode) {
-            (Some(_), _) => ("二段階認証", "認証アプリに表示されている6桁のコード、またはバックアップコードを入力してください。"),
-            (None, LoginMode::Token) => ("トークンでログイン", "Discord のトークンを入力してください。"),
-            (None, LoginMode::Password) => ("おかえりなさい！", "Discord のアカウントでログインします。"),
+        let (title, sub) = if a.login.mfa_ticket.is_some() {
+            ("二段階認証", "認証アプリに表示されている6桁のコード、またはバックアップコードを入力してください。")
+        } else {
+            ("おかえりなさい！", "Discord のアカウントでログインします。")
         };
         let mut col = div()
             .flex()
@@ -147,7 +142,7 @@ impl Root {
                     a.login_error = None;
                     cx.notify();
                 }))));
-        } else if a.login.mode == LoginMode::Password {
+        } else {
             let ready = !busy && !a.login.email.trim().is_empty() && !a.login.password.is_empty();
             col = col
                 .child(label("メールアドレスまたは電話番号"))
@@ -156,25 +151,9 @@ impl Root {
                 .child(label("パスワード"))
                 .child(login_input(&self.inp.password, busy))
                 .child(remember("このPCにログイン情報を保存する", a.remember, cx))
-                .child(div().mt(z(16.0)).child(button(if busy { "ログイン中…" } else { "ログイン" }, ready, cx)))
-                .child(div().mt(z(8.0)).child(link_text("to_token", "トークンでログイン").on_click(cx.listener(|this, _, _, cx| {
-                    this.app.login.mode = LoginMode::Token;
-                    this.app.login_error = None;
-                    cx.notify();
-                }))));
-        } else {
-            let ready = !a.token_input.trim().is_empty();
-            col = col
-                .child(label("トークン"))
-                .child(login_input(&self.inp.token, busy))
-                .child(remember("このPCに保存する", a.remember, cx))
-                .child(div().mt(z(16.0)).child(button("ログイン", ready, cx)))
-                .child(div().mt(z(8.0)).child(link_text("to_password", "メールアドレスでログイン").on_click(cx.listener(|this, _, _, cx| {
-                    this.app.login.mode = LoginMode::Password;
-                    this.app.login_error = None;
-                    cx.notify();
-                }))));
+                .child(div().mt(z(16.0)).child(button(if busy { "ログイン中…" } else { "ログイン" }, ready, cx)));
         }
+
         if let Some(e) = &a.login_error {
             col = col.child(text(e.clone(), 14.0, RED()).mt(z(10.0)));
         }

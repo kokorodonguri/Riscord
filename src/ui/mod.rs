@@ -90,7 +90,6 @@ pub struct Inputs {
     pub switcher: Entity<InputState>,
     pub email: Entity<InputState>,
     pub password: Entity<InputState>,
-    pub token: Entity<InputState>,
     pub mfa: Entity<InputState>,
     pub settings_query: Entity<InputState>,
     pub name: Entity<InputState>,
@@ -258,7 +257,6 @@ impl Root {
             switcher: new_input(window, cx, "会話・チャンネル・サーバーを検索", false),
             email: new_input(window, cx, "", false),
             password: new_input(window, cx, "", true),
-            token: new_input(window, cx, "", true),
             mfa: new_input(window, cx, "123456", false),
             settings_query: new_input(window, cx, "検索", false),
             name: new_input(window, cx, "", false),
@@ -271,7 +269,6 @@ impl Root {
             bind(cx, window, &inp.switcher, None, |a| a.switcher.as_mut().map(|s| &mut s.0)),
             bind(cx, window, &inp.email, None, |a| Some(&mut a.login.email)),
             bind(cx, window, &inp.password, None, |a| Some(&mut a.login.password)),
-            bind(cx, window, &inp.token, None, |a| Some(&mut a.token_input)),
             bind(cx, window, &inp.mfa, None, |a| Some(&mut a.login.mfa_code)),
             bind(cx, window, &inp.settings_query, None, |a| Some(&mut a.settings_query)),
             bind(cx, window, &inp.name, Some(st::PROFILE_NAME_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[0])),
@@ -304,7 +301,7 @@ impl Root {
             _ => {}
         }));
         // ログイン画面の Enter
-        for e in [&inp.email, &inp.password, &inp.token, &inp.mfa] {
+        for e in [&inp.email, &inp.password, &inp.mfa] {
             subs.push(cx.subscribe_in(e, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
                     this.login_submit(cx);
@@ -499,7 +496,6 @@ impl Root {
         }
         // 入力欄（ロジック側で中身を変えたとき）
         sync(&self.inp.compose, &self.app.input, window, cx);
-        sync(&self.inp.token, &self.app.token_input, window, cx);
         sync(&self.inp.email, &self.app.login.email, window, cx);
         sync(&self.inp.password, &self.app.login.password, window, cx);
         sync(&self.inp.mfa, &self.app.login.mfa_code, window, cx);

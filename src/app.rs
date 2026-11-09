@@ -62,11 +62,6 @@ pub fn cache_root() -> PathBuf {
 }
 
 pub fn load_token() -> Option<String> {
-    if let Ok(t) = std::env::var("DISCORD_TOKEN") {
-        if !t.trim().is_empty() {
-            return Some(t.trim().to_string());
-        }
-    }
     std::fs::read_to_string(token_path()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
@@ -2519,17 +2514,9 @@ impl App {
 }
 
 // ---- ログイン画面の部品 ----
-#[derive(Default, Clone, Copy, PartialEq)]
-pub enum LoginMode {
-    #[default]
-    Password,
-    Token,
-}
-
 /// ログイン画面の状態（QR コード・メールアドレス・二段階認証）
 #[derive(Default)]
 pub struct LoginState {
-    pub mode: LoginMode,
     pub email: String,
     pub password: String,
     /// 二段階認証のコードを待っている（/auth/login が返した ticket）

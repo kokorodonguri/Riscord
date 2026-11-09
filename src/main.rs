@@ -9,6 +9,7 @@ mod images;
 mod login;
 mod model;
 mod net;
+mod notify;
 mod sticker;
 mod theme;
 mod ui;

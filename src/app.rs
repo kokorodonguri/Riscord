@@ -918,6 +918,14 @@ pub struct App {
     pub clipboard_out: Option<String>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
     pub guild_settings: HashMap<String, GuildSettings>,
+    /// 未読のメンション数（チャンネル → (サーバー, 件数)。DM はサーバーが None で、メッセージごとに数える）
+    pub mention_counts: HashMap<String, (Option<String>, u32)>,
+    /// サーバーごとの自分のロール（ロールへのメンションを見分ける）
+    pub my_roles: HashMap<String, Vec<String>>,
+    /// ウィンドウにフォーカスがあるか（見ているチャンネルの通知は出さない）
+    pub window_focused: bool,
+    /// 押されたデスクトップ通知の行き先
+    pub notify_clicked: crate::notify::Clicked,
     /// Cmd::Api に付ける番号
     pub next_api_id: u64,
     /// 脱退の確認を出しているサーバー
@@ -1274,6 +1282,28 @@ impl App {
                 Event::Api { id: _, call, result } => self.on_api_result(call, result),
                 Event::Gateway { t, d } => self.on_gateway_event(&t, d),
                 Event::ReadyExtra(d) => {
+                    if let Some(map) = d["my_roles"].as_object() {
+                        for (gid, roles) in map {
+                            let roles = roles.as_array().into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
+                            self.my_roles.insert(gid.clone(), roles);
+                        }
+                    }
+                    let rs = &d["read_state"];
+                    if let Some(entries) = rs["entries"].as_array().or(rs.as_array()) {
+                        let cg = &d["channel_guild"];
+                        self.mention_counts.clear();
+                        for e in entries {
+                            // read_state_type が 0（チャンネル）以外は通知の既読などなので数えない
+                            if e["read_state_type"].as_u64().unwrap_or(0) != 0 {
+                                continue;
+                            }
+                            let (Some(cid), Some(n)) = (e["id"].as_str(), e["mention_count"].as_u64()) else { continue };
+                            if n > 0 {
+                                let gid = cg[cid].as_str().map(String::from);
+                                self.mention_counts.insert(cid.to_string(), (gid, n as u32));
+                            }
+                        }
+                    }
                     let ugs = &d["user_guild_settings"];
                     let entries = ugs["entries"].as_array().or(ugs.as_array());
                     for e in entries.into_iter().flatten() {
@@ -1505,6 +1535,9 @@ impl App {
                     let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
                     if !mine && self.sel_channel.as_deref() != Some(&m.channel_id) {
                         self.unread.insert(m.channel_id.clone(), m.guild_id.clone());
+                    }
+                    if !mine {
+                        self.on_new_message(&m);
                     }
                     // 新着の DM は必ず最新なので、全体を並べ直さず先頭へ移すだけでよい
                     if let Some(i) = self.dms.iter().position(|c| c.id == m.channel_id) {
@@ -1856,6 +1889,26 @@ impl App {
                     if d["manual"] != true {
                         self.unread.remove(cid);
                     }
+                    match d["mention_count"].as_u64() {
+                        Some(n) if n > 0 => {
+                            if let Some(e) = self.mention_counts.get_mut(cid) {
+                                e.1 = n as u32;
+                            }
+                        }
+                        _ => {
+                            self.mention_counts.remove(cid);
+                        }
+                    }
+                }
+            }
+            // 自分のロールが変わった
+            "GUILD_MEMBER_UPDATE" => {
+                let me = self.me.as_ref().map(|u| u.id.as_str());
+                if me.is_some() && d["user"]["id"].as_str() == me {
+                    if let Some(gid) = d["guild_id"].as_str() {
+                        let roles = d["roles"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
+                        self.my_roles.insert(gid.to_string(), roles);
+                    }
                 }
             }
             _ => {}
@@ -1867,6 +1920,8 @@ impl App {
         self.guilds.retain(|g| g.id != gid);
         self.channels.remove(gid);
         self.unread.retain(|_, g| g.as_deref() != Some(gid));
+        self.mention_counts.retain(|_, (g, _)| g.as_deref() != Some(gid));
+        self.my_roles.remove(gid);
         self.guild_settings.remove(gid);
         if self.sel_guild.as_deref() == Some(gid) {
             self.sel_guild = None;
@@ -1878,7 +1933,63 @@ impl App {
     /// サーバーのチャンネルをすべて既読にする
     pub fn mark_guild_read(&mut self, gid: &str) {
         self.unread.retain(|_, g| g.as_deref() != Some(gid));
+        self.mention_counts.retain(|_, (g, _)| g.as_deref() != Some(gid));
         self.api(net::ApiCall::AckGuild(gid.to_string()));
+    }
+
+    /// 自分あてのメンションか（@自分・@everyone/@here・自分のロール）
+    pub fn mentions_me(&self, m: &Message) -> bool {
+        let Some(me) = &self.me else { return false };
+        if m.mentions.iter().any(|u| u.id == me.id) || m.mention_everyone {
+            return true;
+        }
+        let gid = m.guild_id.as_deref().unwrap_or("");
+        self.my_roles.get(gid).is_some_and(|mine| m.mention_roles.iter().any(|r| mine.contains(r)))
+    }
+
+    /// サーバー（None なら DM）の未読メンション数の合計
+    pub fn mention_count(&self, gid: Option<&str>) -> u32 {
+        self.mention_counts.values().filter(|(g, _)| g.as_deref() == gid).map(|(_, n)| n).sum()
+    }
+
+    /// 他の人の新着メッセージ: メンション数を数え、必要ならデスクトップ通知を出す
+    fn on_new_message(&mut self, m: &Message) {
+        let viewing = self.window_focused && self.sel_channel.as_deref() == Some(m.channel_id.as_str());
+        let mentioned = self.mentions_me(m);
+        // DM はすべてがメンション扱い（公式と同じ）
+        if !viewing && (mentioned || m.guild_id.is_none()) {
+            let e = self.mention_counts.entry(m.channel_id.clone()).or_insert((m.guild_id.clone(), 0));
+            e.1 += 1;
+        }
+        let Some(gid) = m.guild_id.as_deref() else { return };
+        if viewing {
+            return;
+        }
+        let set = self.guild_settings.get(gid).cloned().unwrap_or_default();
+        let wanted = match set.notifications {
+            _ if set.muted => false,
+            2 => false,
+            0 => true,
+            // 1 = @メンションのみ、3 = サーバーの既定（多くのサーバーはメンションのみ）
+            _ => mentioned,
+        };
+        if !wanted {
+            return;
+        }
+        let author = m.member.as_ref().and_then(|x| x.nick.as_deref()).unwrap_or_else(|| m.author.display()).to_string();
+        let guild = self.guilds.iter().find(|g| g.id == gid).map(|g| g.name.as_str()).unwrap_or("");
+        let channel = self.channels.get(gid).and_then(|cs| cs.iter().find(|c| c.id == m.channel_id)).and_then(|c| c.name.as_deref()).unwrap_or("");
+        let title = match (channel.is_empty(), guild.is_empty()) {
+            (false, false) => format!("{author}（#{channel}・{guild}）"),
+            (true, false) => format!("{author}（{guild}）"),
+            _ => author,
+        };
+        let roles = self.roles.get(gid).map(Vec::as_slice).unwrap_or_default();
+        let mut body = crate::notify::excerpt(&resolve_mentions(&m.content, m, &self.channels, roles), 200);
+        if body.is_empty() {
+            body = if !m.attachments.is_empty() { "添付ファイルを送信しました".into() } else if !m.sticker_items.is_empty() { "スタンプを送信しました".into() } else { "新しいメッセージ".into() };
+        }
+        crate::notify::show(title, body, (m.guild_id.clone(), m.channel_id.clone()), self.notify_clicked.clone(), self.waker.clone());
     }
 
     /// サーバーの通知設定を変える（先に画面へ反映し、結果で上書きする）
@@ -2009,6 +2120,7 @@ impl App {
         self.acked.insert(cid.clone(), message_id);
         self.last_ack = Some(std::time::Instant::now());
         self.unread.remove(&cid);
+        self.mention_counts.remove(&cid);
     }
 
     pub fn clear_message_error_status(&mut self, channel_id: &str) {
@@ -2036,6 +2148,7 @@ impl App {
             self.reply_to = None;
         }
         self.unread.remove(&id);
+        self.mention_counts.remove(&id);
         if !self.messages.contains_key(&id) || self.stale_channels.contains(&id) {
             self.load_messages(id.clone());
         }

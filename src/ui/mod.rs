@@ -440,7 +440,16 @@ impl Root {
         if self.app.theme_watch.as_ref().is_some_and(|rx| rx.try_iter().count() > 0) {
             self.app.apply_theme(true);
         }
+        self.app.window_focused = window.is_window_active();
         self.app.poll();
+        let clicked = self.app.notify_clicked.lock().unwrap().take();
+        if let Some((gid, cid)) = clicked {
+            // 押された通知のチャンネルを開いて、ウィンドウを前に出す
+            self.app.settings_open = false;
+            self.pick_guild(gid);
+            self.open_channel(cid);
+            window.activate_window();
+        }
         self.app.poll_file_pick();
         if let Some(t) = self.app.clipboard_out.take() {
             cx.write_to_clipboard(ClipboardItem::new_string(t));

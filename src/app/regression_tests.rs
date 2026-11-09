@@ -728,3 +728,50 @@ fn message_revision_advances_only_on_message_changes() {
     fresh.bump_msgs();
     assert!(fresh.msg_rev > app.msg_rev);
 }
+
+/// @自分・@everyone・自分のロールへのメンションを数え、見ているチャンネル・自分の発言・DM 以外の普通の発言は数えない
+#[test]
+fn mentions_are_counted_per_server() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.me = Some(User { id: "me".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    tx.send(Event::ReadyExtra(serde_json::json!({
+        "my_roles": { "g": ["r1"] },
+        "channel_guild": { "c1": "g" },
+        "read_state": { "entries": [{ "id": "c1", "mention_count": 2 }, { "id": "c2", "mention_count": 0 }] },
+    })))
+    .unwrap();
+    app.poll();
+    assert_eq!(app.mention_count(Some("g")), 2);
+    let msg = |id: &str, ch: &str, guild: Option<&str>, author: &str, extra: serde_json::Value| -> Message {
+        let mut v = serde_json::json!({
+            "id": id, "channel_id": ch, "guild_id": guild,
+            "author": { "id": author, "username": author },
+            "content": "hi", "timestamp": "2026-11-01T10:00:00+00:00"
+        });
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    };
+    let me_user = serde_json::json!([{ "id": "me", "username": "me" }]);
+    tx.send(Event::MessageCreate(msg("1", "c1", Some("g"), "x", serde_json::json!({ "mentions": me_user })))).unwrap();
+    tx.send(Event::MessageCreate(msg("2", "c3", Some("g"), "x", serde_json::json!({ "mention_roles": ["r1"] })))).unwrap();
+    tx.send(Event::MessageCreate(msg("3", "c3", Some("g"), "x", serde_json::json!({ "mention_everyone": true })))).unwrap();
+    tx.send(Event::MessageCreate(msg("4", "c3", Some("g"), "x", serde_json::json!({ "mention_roles": ["other"] })))).unwrap();
+    tx.send(Event::MessageCreate(msg("5", "c3", Some("g"), "me", serde_json::json!({ "mentions": me_user })))).unwrap();
+    tx.send(Event::MessageCreate(msg("6", "d1", None, "x", serde_json::json!({})))).unwrap();
+    app.poll();
+    assert_eq!(app.mention_count(Some("g")), 5);
+    assert_eq!(app.mention_count(None), 1);
+    // 開いたチャンネルの分は消える
+    app.open_channel("c3".into());
+    assert_eq!(app.mention_count(Some("g")), 3);
+    // 見ているチャンネルに来たメンションは数えない
+    app.window_focused = true;
+    tx.send(Event::MessageCreate(msg("7", "c3", Some("g"), "x", serde_json::json!({ "mentions": me_user })))).unwrap();
+    app.poll();
+    assert_eq!(app.mention_count(Some("g")), 3);
+    app.mark_guild_read("g");
+    assert_eq!(app.mention_count(Some("g")), 0);
+}

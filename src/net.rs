@@ -1056,6 +1056,37 @@ struct ReadyGuild {
     id: Value,
     #[serde(default)]
     voice_states: Value,
+    /// チャンネル・スレッドの ID だけ（read_state のチャンネルがどのサーバーのものか知るため）
+    #[serde(default)]
+    channels: Vec<IdOnly>,
+    #[serde(default)]
+    threads: Vec<IdOnly>,
+    /// 古い形の READY では、自分のメンバー情報がここに入る
+    #[serde(default)]
+    members: Vec<ReadyMember>,
+}
+
+#[derive(serde::Deserialize)]
+struct IdOnly {
+    #[serde(default)]
+    id: Value,
+}
+
+/// 自分のメンバー情報（ロールでのメンションを見分けるため）
+#[derive(serde::Deserialize)]
+struct ReadyMember {
+    #[serde(default)]
+    user_id: Value,
+    #[serde(default)]
+    user: Option<IdOnly>,
+    #[serde(default)]
+    roles: Vec<Value>,
+}
+
+impl ReadyMember {
+    fn is(&self, me: &Value) -> bool {
+        !me.is_null() && (&self.user_id == me || self.user.as_ref().is_some_and(|u| &u.id == me))
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1072,6 +1103,11 @@ struct Ready {
     relationships: Value,
     #[serde(default)]
     user_settings_proto: Value,
+    #[serde(default)]
+    user: Option<IdOnly>,
+    /// guilds と同じ順に、そのサーバーでの自分のメンバー情報
+    #[serde(default)]
+    merged_members: Vec<Vec<ReadyMember>>,
 }
 
 /// 文字列のままの d を、使う種類のときだけ解析して dispatch に渡す
@@ -1084,7 +1120,19 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
         // READY はサーバーのチャンネル・ロールなどで大きいので、使う所だけの小さい形にしてから渡す。
         // 想定外の形なら従来どおり全体を解析する
         if let Ok(r) = serde_json::from_str::<Ready>(raw.get()) {
-            let guilds = r.guilds.into_iter().map(|g| json!({ "id": g.id, "voice_states": g.voice_states })).collect::<Vec<_>>();
+            let me = r.user.map(|u| u.id).unwrap_or_default();
+            // 自分のメンバー情報だけ残す（dispatch がロールを読む）
+            let member = |m: &ReadyMember| json!({ "user_id": me, "roles": m.roles });
+            let merged: Vec<Value> = r.merged_members.iter().map(|ms| Value::Array(ms.iter().filter(|m| m.is(&me)).map(member).collect())).collect();
+            let ids = |v: &[IdOnly]| v.iter().map(|c| json!({ "id": c.id })).collect::<Vec<_>>();
+            let guilds = r
+                .guilds
+                .into_iter()
+                .map(|g| {
+                    let members: Vec<Value> = g.members.iter().filter(|m| m.is(&me)).map(member).collect();
+                    json!({ "id": g.id, "voice_states": g.voice_states, "channels": ids(&g.channels), "threads": ids(&g.threads), "members": members })
+                })
+                .collect::<Vec<_>>();
             return dispatch(
                 t,
                 json!({
@@ -1094,6 +1142,8 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
                     "read_state": r.read_state,
                     "relationships": r.relationships,
                     "user_settings_proto": r.user_settings_proto,
+                    "user": { "id": me },
+                    "merged_members": merged,
                 }),
                 tx,
                 v_tx,
@@ -1161,6 +1211,27 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                 tx.send(Event::Presences(list));
             }
             let mut extra = serde_json::Map::new();
+            let me = &d["user"]["id"];
+            let is_me = |m: &Value| !me.is_null() && (&m["user_id"] == me || &m["user"]["id"] == me);
+            let (mut my_roles, mut channel_guild) = (serde_json::Map::new(), serde_json::Map::new());
+            for (i, g) in d["guilds"].as_array().into_iter().flatten().enumerate() {
+                let Some(gid) = g["id"].as_str() else { continue };
+                let merged = d["merged_members"][i].as_array().into_iter().flatten();
+                if let Some(m) = merged.chain(g["members"].as_array().into_iter().flatten()).find(|m| is_me(m)) {
+                    my_roles.insert(gid.into(), m["roles"].clone());
+                }
+                for c in g["channels"].as_array().into_iter().flatten().chain(g["threads"].as_array().into_iter().flatten()) {
+                    if let Some(cid) = c["id"].as_str() {
+                        channel_guild.insert(cid.into(), gid.into());
+                    }
+                }
+            }
+            if !my_roles.is_empty() {
+                extra.insert("my_roles".into(), Value::Object(my_roles));
+            }
+            if !channel_guild.is_empty() {
+                extra.insert("channel_guild".into(), Value::Object(channel_guild));
+            }
             for k in ["user_guild_settings", "read_state", "relationships", "user_settings_proto"] {
                 if let Some(v) = d.get_mut(k).map(Value::take).filter(|v| !v.is_null()) {
                     extra.insert(k.into(), v);
@@ -2123,6 +2194,28 @@ mod tests {
     }
 
     /// 1件のフレーム文字列を、従来（全体を Value にして dispatch）と dispatch_raw の両方で処理した結果
+    #[test]
+    fn ready_extracts_my_roles_and_channel_guilds() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (v_tx, _v_rx) = unbounded_channel();
+        let tx = Tx { tx, ctx: crate::wake::Waker::default() };
+        let ready = json!({
+            "user": { "id": "me" },
+            "guilds": [
+                { "id": "g1", "channels": [{ "id": "c1", "name": "x" }], "threads": [{ "id": "t1" }] },
+                { "id": "g2", "channels": [], "members": [{ "user": { "id": "me" }, "roles": ["r2"] }] },
+            ],
+            "merged_members": [[{ "user_id": "me", "roles": ["r1"] }], []],
+            "read_state": { "entries": [{ "id": "c1", "mention_count": 1 }] },
+        });
+        let raw = serde_json::value::RawValue::from_string(ready.to_string()).unwrap();
+        dispatch_raw("READY", Some(&raw), &tx, &v_tx);
+        let extra = rx.try_iter().find_map(|e| match e { Event::ReadyExtra(v) => Some(v), _ => None }).unwrap();
+        assert_eq!(extra["my_roles"], json!({ "g1": ["r1"], "g2": ["r2"] }));
+        assert_eq!(extra["channel_guild"], json!({ "c1": "g1", "t1": "g1" }));
+        assert_eq!(extra["read_state"]["entries"][0]["mention_count"], 1);
+    }
+
     fn both_paths(text: &str) -> [(Option<i64>, Option<u64>, Vec<String>, Vec<String>); 2] {
         let run = |raw: bool| {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -2195,7 +2288,8 @@ mod tests {
         }
         // 確認用: READY から実際にイベントが出ている
         let [old, _] = both_paths(&json!({ "op": 0, "s": 1, "t": "READY", "d": { "guilds": [guild(json!("10"), Some(json!([vs])))], "presences": [presence] } }).to_string());
-        assert_eq!(old.2.len(), 3, "{:?}", old.2);
+        // Status・VoiceStates・Presences と、チャンネル→サーバーの対応（ReadyExtra）
+        assert_eq!(old.2.len(), 4, "{:?}", old.2);
     }
 
     /// 大きい READY（多数のサーバー・チャンネル・ロール・絵文字）と、使わない種類の処理時間

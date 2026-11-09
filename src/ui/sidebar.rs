@@ -127,7 +127,7 @@ impl Root {
             .child(self.userbar(cx))
     }
 
-    fn rail_item(&self, id: impl Into<ElementId>, selected: bool, unread: bool, name: &str, url: Option<&str>) -> Stateful<Div> {
+    fn rail_item(&self, id: impl Into<ElementId>, selected: bool, unread: bool, mentions: u32, name: &str, url: Option<&str>) -> Stateful<Div> {
         let bg = if selected { BLURPLE() } else { HOVER() };
         let face = if name.is_empty() {
             div()
@@ -172,6 +172,7 @@ impl Root {
             .tooltip(tip(tip_text))
             .child(pill)
             .child(face)
+            .when(mentions > 0, |d| d.child(mention_badge(mentions)))
     }
 
     /// サーバーレール
@@ -179,7 +180,7 @@ impl Root {
         let a = &self.app;
         let unread = a.unread_guilds();
         let mut col = div().id("rail").w(z(72.0)).h_full().flex_none().overflow_y_scroll().flex().flex_col().gap(z(4.0)).pt(z(2.0)).pb(z(8.0));
-        col = col.child(self.rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), "", None).on_click(cx.listener(|this, _, _, cx| {
+        col = col.child(self.rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), a.mention_count(None), "", None).on_click(cx.listener(|this, _, _, cx| {
             this.pick_guild(None);
             cx.notify();
         })));
@@ -190,7 +191,7 @@ impl Root {
             let gid = g.id.clone();
             let gid2 = gid.clone();
             col = col.child(
-                self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), &g.name, url.as_deref())
+                self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), a.mention_count(Some(&g.id)), &g.name, url.as_deref())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.pick_guild(Some(gid.clone()));
                         cx.notify();
@@ -618,4 +619,37 @@ fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf
         .child(speaking_avatar(u, id, 22.0, speaking))
         .child(line(name, 14.0, if speaking { WHITE() } else { MUTED() }).flex_1())
         .child(right)
+}
+
+/// サーバーアイコンの右下の、未読メンション数の赤い印（レールの地の色で縁取って、アイコンから切り抜いたように見せる）
+fn mention_badge(n: u32) -> Div {
+    let label = if n > 99 { "99+".to_string() } else { n.to_string() };
+    div()
+        .absolute()
+        .bottom(z(0.0))
+        .right(z(10.0))
+        .min_w(z(24.0))
+        .h(z(24.0))
+        .px(z(4.0))
+        .rounded_full()
+        .bg(opaque(BG()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .min_w(z(16.0))
+                .h(z(16.0))
+                .px(z(4.0))
+                .rounded_full()
+                .bg(RED())
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(z(12.0))
+                .font_weight(FontWeight::BOLD)
+                .line_height(z(16.0))
+                .text_color(Color32::WHITE)
+                .child(label),
+        )
 }

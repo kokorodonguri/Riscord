@@ -397,6 +397,12 @@ pub struct Message {
     /// 本文で @ されたユーザー（<@id> を名前で出すため）
     #[serde(default)]
     pub mentions: Vec<User>,
+    /// @everyone / @here
+    #[serde(default)]
+    pub mention_everyone: bool,
+    /// @ されたロールの ID
+    #[serde(default)]
+    pub mention_roles: Vec<String>,
     pub timestamp: String,
     #[serde(default)]
     pub edited_timestamp: Option<String>,

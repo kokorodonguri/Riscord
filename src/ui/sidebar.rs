@@ -621,16 +621,16 @@ fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf
         .child(right)
 }
 
-/// サーバーアイコンの右下の、未読メンション数の赤い印（レールの地の色で縁取って、アイコンから切り抜いたように見せる）
+/// サーバーアイコンの右下の、未読メンション数の赤い印（レールの地の色で 2px 縁取って、アイコンから切り抜いたように見せる）
 fn mention_badge(n: u32) -> Div {
     let label = if n > 99 { "99+".to_string() } else { n.to_string() };
     div()
         .absolute()
-        .bottom(z(0.0))
-        .right(z(10.0))
-        .min_w(z(24.0))
-        .h(z(24.0))
-        .px(z(4.0))
+        .bottom(z(2.0))
+        .right(z(12.0))
+        .min_w(z(20.0))
+        .h(z(20.0))
+        .px(z(2.0))
         .rounded_full()
         .bg(opaque(BG()))
         .flex()

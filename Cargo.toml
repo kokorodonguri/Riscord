@@ -54,3 +54,6 @@ gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 gpui-pre-util = { path = "vendor/gpui-pre-util" }
 # Rust 1.95 より前でもビルドできるよう、cold_path のヒントを除いた版。
 gpui-pre = { path = "vendor/gpui-pre" }
+# Linux から Windows 版をクロスビルドできるよう、fxc.exe がないときはシェーダーを起動時にコンパイルする版。
+# Windows 上でのビルドは元と同じく fxc.exe で事前コンパイルする
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

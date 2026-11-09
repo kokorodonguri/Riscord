@@ -50,3 +50,5 @@ strip = true
 # 中身は gpui-pre-wgpu 0.3.11 と同じで、src/wgpu_renderer.rs の record_frame だけ変えてある
 [patch.crates-io]
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+# Rust 1.93 より前でもビルドできるよう、slice::as_array を使わない版。
+gpui-pre-util = { path = "vendor/gpui-pre-util" }

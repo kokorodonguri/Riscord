@@ -1,5 +1,6 @@
 # v* のタグを push すると、Windows / Linux（x64・arm64）の実行ファイルをビルドして GitHub Releases に載せる。
-# アプリの自動アップデート（src/update.rs の asset_name）は、ここで付ける名前を探す
+# アプリの自動アップデート（src/update.rs の asset_for）は、ここで付ける名前を探す。
+# asset を足す・変えるときは asset_for と TARGETS も合わせる（cargo test で食い違いを検出する）
 name: release
 
 on:
@@ -13,8 +14,11 @@ jobs:
   build:
     name: ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
+    # arm64 版のビルドが落ちても x64 版だけでリリースする（arm64 機の利用者は、その版では x64 版に更新される）。
+    # x64 版が落ちたときはリリースしない
+    continue-on-error: ${{ matrix.optional == true }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -25,6 +29,7 @@ jobs:
             target: aarch64-pc-windows-msvc
             bin: riscord.exe
             asset: riscord-windows-arm64.exe
+            optional: true
           # glibc が古めの環境でビルドして、新しすぎて動かないディストリを減らす
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -34,6 +39,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             bin: riscord
             asset: riscord-linux-arm64
+            optional: true
     steps:
       - uses: actions/checkout@v4
 

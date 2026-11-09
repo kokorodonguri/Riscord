@@ -47,15 +47,78 @@ fn set(s: Status, waker: &Waker) {
     waker.wake();
 }
 
-/// 配布物の名前（この OS・CPU 向けのものがなければ None）
-fn asset_name() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+/// 配布しているすべての (OS, CPU)。.github/workflows/release.yml の asset と一致していることをテストで確かめる
+#[cfg(test)]
+const TARGETS: [(&str, &str); 4] = [("windows", "x86_64"), ("windows", "aarch64"), ("linux", "x86_64"), ("linux", "aarch64")];
+
+/// 配布物の名前（その OS・CPU 向けのものがなければ None）
+fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
         ("windows", "x86_64") => Some("riscord-windows-x64.exe"),
         ("windows", "aarch64") => Some("riscord-windows-arm64.exe"),
         ("linux", "x86_64") => Some("riscord-linux-x64"),
         ("linux", "aarch64") => Some("riscord-linux-arm64"),
         _ => None,
     }
+}
+
+/// 取りに行く配布物の名前を、使いたい順に並べる。
+/// 実機の CPU 向けを先にする（Windows on ARM で x64 版をエミュレーションで動かしていても arm64 版に移れる）。
+/// その版に実機向けが載っていなければ、いま動いているものと同じ CPU 向けを取る
+fn asset_names() -> Vec<&'static str> {
+    let os = std::env::consts::OS;
+    let mut names = Vec::new();
+    for arch in [native_arch(), Some(std::env::consts::ARCH)].into_iter().flatten() {
+        if let Some(name) = asset_for(os, arch) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// 実機の CPU（エミュレーションで動いていても実機のものを返す）。分からなければ None
+#[cfg(windows)]
+fn native_arch() -> Option<&'static str> {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn GetCurrentProcess() -> *mut c_void;
+    }
+    type IsWow64Process2 = unsafe extern "system" fn(*mut c_void, *mut u16, *mut u16) -> i32;
+    const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+    const IMAGE_FILE_MACHINE_ARM64: u16 = 0xAA64;
+
+    let kernel32: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
+    // IsWow64Process2 は Windows 10 1511 から。古い Windows でも起動できるよう、直接リンクせずに探す
+    unsafe {
+        let module = GetModuleHandleW(kernel32.as_ptr());
+        if module.is_null() {
+            return None;
+        }
+        let f = GetProcAddress(module, c"IsWow64Process2".as_ptr().cast());
+        if f.is_null() {
+            return None;
+        }
+        let f: IsWow64Process2 = std::mem::transmute(f);
+        let (mut process, mut native) = (0u16, 0u16);
+        if f(GetCurrentProcess(), &mut process, &mut native) == 0 {
+            return None;
+        }
+        match native {
+            IMAGE_FILE_MACHINE_AMD64 => Some("x86_64"),
+            IMAGE_FILE_MACHINE_ARM64 => Some("aarch64"),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn native_arch() -> Option<&'static str> {
+    None
 }
 
 /// "v1.2.3" や "1.2.3" を数の組にする
@@ -97,7 +160,10 @@ pub fn start(waker: &Waker) {
         // 前回の差し替えで残った古い版を片付ける（Windows では実行中の exe を消せないので次の起動で）
         let _ = std::fs::remove_file(sibling(&exe, ".old"));
         let _ = std::fs::remove_file(sibling(&exe, ".new"));
-        let Some(name) = asset_name() else { return };
+        let names = asset_names();
+        if names.is_empty() {
+            return;
+        }
         let waker = waker.clone();
         std::thread::spawn(move || {
             set(Status::Checking, &waker);
@@ -105,7 +171,7 @@ pub fn start(waker: &Waker) {
                 Ok(rt) => rt,
                 Err(e) => return set(Status::Failed(e.to_string()), &waker),
             };
-            match rt.block_on(run(&exe, name, &waker)) {
+            match rt.block_on(run(&exe, &names, &waker)) {
                 Ok(None) => set(Status::Latest, &waker),
                 Ok(Some(v)) => {
                     set(Status::Ready(v.clone()), &waker);
@@ -135,7 +201,7 @@ struct Asset {
 }
 
 /// 新しい版に差し替えたらその版を返す。最新なら None
-async fn run(exe: &Path, name: &str, waker: &Waker) -> Result<Option<String>> {
+async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>> {
     let http = reqwest::Client::builder()
         .user_agent(format!("riscord/{CURRENT}"))
         .connect_timeout(Duration::from_secs(10))
@@ -153,7 +219,11 @@ async fn run(exe: &Path, name: &str, waker: &Waker) -> Result<Option<String>> {
         return Ok(None);
     }
     let version = rel.tag_name.clone();
-    let asset = rel.assets.iter().find(|a| a.name == name).ok_or_else(|| anyhow!("{version} に {name} がありません"))?;
+    let asset = names
+        .iter()
+        .find_map(|n| rel.assets.iter().find(|a| a.name == *n))
+        .ok_or_else(|| anyhow!("{version} に {} がありません", names.join(" / ")))?;
+    let name = &asset.name;
     let want = asset
         .digest
         .as_deref()
@@ -231,5 +301,24 @@ mod tests {
         assert!(!is_newer("v0.1.0", "0.1.0"));
         assert!(!is_newer("v0.0.9", "0.1.0"));
         assert!(!is_newer("nightly", "0.1.0"));
+    }
+
+    /// release.yml が載せる配布物と、ここで探す名前が食い違っていないか
+    #[test]
+    fn asset_names_match_release_workflow() {
+        let yml = include_str!("../.github/workflows/release.yml");
+        let mut in_workflow: Vec<&str> =
+            yml.lines().filter_map(|l| l.trim().strip_prefix("asset: ")).map(str::trim).collect();
+        let mut in_code: Vec<&str> = TARGETS.iter().map(|(os, arch)| asset_for(os, arch).unwrap()).collect();
+        in_workflow.sort();
+        in_code.sort();
+        assert_eq!(in_workflow, in_code);
+    }
+
+    #[test]
+    fn running_build_has_an_asset() {
+        if let Some(name) = asset_for(std::env::consts::OS, std::env::consts::ARCH) {
+            assert!(asset_names().contains(&name));
+        }
     }
 }

@@ -478,8 +478,8 @@ impl Root {
                     .child(div().flex_1().min_w_0().flex().flex_col().child(line(me.display().to_string(), 14.0, WHITE()).font_weight(FontWeight::MEDIUM)).child(line(status_label(&cur), 12.0, MUTED()))),
             );
         } else {
-            // ログインが終わるまで（自分の情報が届くまで）
-            row = row.child(div().flex_1().min_w_0().flex().items_center().gap(z(8.0)).px(z(4.0)).child(spinner(20.0)).child(line("接続中…", 12.0, MUTED())));
+            // ログインが終わるまで（自分の情報が届くまで）は空けておく
+            row = row.child(div().flex_1());
         }
         let mic_off = a.mic_off();
         let deaf = a.settings.self_deaf;

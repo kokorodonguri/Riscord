@@ -170,18 +170,22 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
     })
 }
 
-/// 文字列が（ロジック側で）変わっていたら入力欄に写す
+/// 文字列が（ロジック側で）変わっていたら入力欄に写す。
+/// 日本語入力の変換中は、入力欄の中身に未確定の文字が入っているのに変更の通知（InputEvent::Change）が来ないので、
+/// 食い違って見えても写さない（写すと変換が消え、複数行の欄ではカーソルが先頭に戻る）。
+/// 写したらカーソルは末尾に置く（続きを打てるように）
 fn sync<M: gpui::component::input::InputModeKind + 'static>(e: &Entity<gpui::base::input::InputBaseState<M>>, s: &str, window: &mut Window, cx: &mut App) {
-    // IME で変換中の文字は value() に入るのに Change が出ないので、ここで食い違って見える。
-    // そのまま set_value すると変換中の文字が消え、複数行の欄ではカーソルが先頭に戻ってしまう
     use gpui::EntityInputHandler as _;
-    if e.update(cx, |st, cx| st.marked_text_range(window, cx).is_some()) {
+    if e.read(cx).value().as_ref() == s {
         return;
     }
-    if e.read(cx).value().as_ref() != s {
-        let s = s.to_string();
-        e.update(cx, |st, cx| st.set_value(s, window, cx));
-    }
+    e.update(cx, |st, cx| {
+        if st.marked_text_range(window, cx).is_some() {
+            return;
+        }
+        st.set_value(s.to_string(), window, cx);
+        st.set_selected_range(s.len()..s.len(), cx);
+    });
 }
 
 /// fc-match で日本語の既定フォントのファミリー名を調べる

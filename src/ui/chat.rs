@@ -30,7 +30,14 @@ fn sync_list(l: &mut MsgList, keys: Vec<u64>) {
     let max_s = old.len().min(keys.len()) - p;
     let s = old.iter().rev().zip(keys.iter().rev()).take(max_s).take_while(|(a, b)| a == b).count();
     if p + s != old.len() || p + s != keys.len() {
-        l.state.splice(p..old.len() - s, keys.len() - p - s);
+        let top = l.state.logical_scroll_top();
+        let added = keys.len() - p - s;
+        l.state.splice(p..old.len() - s, added);
+        // 先頭の読み込み中表示を見ているときに古いメッセージが前に入ったら、元の一番上のメッセージへ位置を移す。
+        // そのままだと上端に張り付いたままになり、読み足しが止まらなくなる
+        if top.item_ix == 0 && p == 1 && s == old.len() - 1 {
+            l.state.scroll_to(ListOffset { item_ix: 1 + added, offset_in_item: px(0.0) });
+        }
     }
     l.keys = keys;
 }

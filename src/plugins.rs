@@ -143,7 +143,7 @@ impl Runtime {
                 Ok(())
             })?,
         )?;
-        let data_dir = crate::app::config_root().join("riscord/plugin-data");
+        let data_dir = crate::profile::account_dir().join("plugin-data");
         let data_file = data_dir.join(format!("{}.json", manifest.id));
         let file = data_file.clone();
         api.set(

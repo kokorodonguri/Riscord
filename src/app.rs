@@ -35,7 +35,7 @@ pub fn status_label(s: &str) -> &'static str {
 
 // ---- トークン ----
 pub fn token_path() -> PathBuf {
-    config_root().join("riscord").join("token")
+    crate::profile::account_dir().join("token")
 }
 
 /// 設定フォルダの親。テスト中は本物の設定（トークン・settings.json・テーマ）に触らないよう一時フォルダにする
@@ -169,7 +169,8 @@ pub fn save_settings(s: &Settings) {
 
 
 pub fn themes_dir() -> PathBuf {
-    theme::themes_dir(token_path().parent().unwrap_or(std::path::Path::new(".")))
+    // テーマはどのプロファイル（アカウント）でも共有する
+    theme::themes_dir(&crate::profile::shared_dir())
 }
 
 /// themes/ の中身が変わったら知らせる（1秒ごとに更新時刻を見るだけの軽いスレッド）
@@ -1486,6 +1487,8 @@ impl App {
                         }
                     }
                     self.token_input.clear();
+                    // 別アカウントの一覧に名前を出すため、プロファイルのフォルダに覚えておく
+                    crate::profile::remember_account(u.display());
                     self.me = Some(u);
                     self.status = self.gateway_status.clone();
                 }

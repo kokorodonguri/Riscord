@@ -59,7 +59,7 @@ pub struct MessageLog {
 }
 
 fn path() -> PathBuf {
-    crate::app::config_root().join("riscord/message-log.json")
+    crate::profile::account_dir().join("message-log.json")
 }
 
 fn now() -> String {

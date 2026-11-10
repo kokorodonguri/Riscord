@@ -18,7 +18,7 @@ const SETTINGS_TABS: [(&str, IconName); 6] =
 const SETTINGS_ORDER: [usize; 6] = [0, 4, 1, 2, 3, 5];
 /// 設定検索で各ページに含まれる項目を探すための見出し
 const SETTINGS_SECTIONS: [&[&str]; 6] = [
-    &["アカウント情報", "アクティビティ", "トークン", "バージョン"],
+    &["アカウント情報", "アクティビティ", "トークン", "別のアカウント", "バージョン"],
     &["表示サイズ", "メッセージ表示"],
     &["デバイス", "音量", "入力モード", "入力感度"],
     &["テーマ", "背景画像", "色の調整"],
@@ -582,8 +582,63 @@ impl Root {
             crate::update::Status::Ready(v) => format!("{v} に更新しました。次に起動したときから使われます"),
             crate::update::Status::Failed(e) => format!("更新できませんでした: {e}"),
         };
-        pages.push(section(3, "バージョン").child(row(format!("Riscord v{}", crate::update::current_version()), Some(state), div())).into_any_element());
+        pages.push(self.profiles_section(cx));
+        pages.push(section(4, "バージョン").child(row(format!("Riscord v{}", crate::update::current_version()), Some(state), div())).into_any_element());
         pages
+    }
+
+    /// 別のアカウントをそれぞれのウィンドウで開く（プロファイルごとに別のプロセスで動く）
+    fn profiles_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::profile;
+        let current = profile::name().map(str::to_string);
+        let mut s = section(3, "別のアカウント").child(
+            text("アカウントごとに別のウィンドウで開きます。どのウィンドウも同時にログインしたまま使え、通話にもそれぞれ入れます。", 15.0, MUTED()).mb(z(16.0)),
+        );
+        let names: Vec<Option<String>> = std::iter::once(None).chain(profile::list().into_iter().map(Some)).collect();
+        for name in names {
+            let here = name == current;
+            let running = here || profile::is_running(name.as_deref());
+            let title = profile::label(name.as_deref());
+            let who = profile::account_name(name.as_deref()).unwrap_or_else(|| "未ログイン".into());
+            let state = if here { "このウィンドウ" } else if running { "開いています" } else { "閉じています" };
+            let key = name.clone().unwrap_or_default();
+            let mut actions = div().flex().items_center().gap(z(8.0));
+            if !running {
+                let n = name.clone();
+                actions = actions.child(button(SharedString::from(format!("profile_open_{key}")), "開く", false).on_click(cx.listener(move |this, _, _, cx| {
+                    if let Err(e) = profile::launch(n.as_deref()) {
+                        this.app.show_toast(&format!("ウィンドウを開けませんでした: {e}"));
+                    }
+                    cx.notify();
+                })));
+                if let Some(n) = name.clone() {
+                    let confirming = self.confirm_profile_delete.as_deref() == Some(n.as_str());
+                    actions = actions.child(button(SharedString::from(format!("profile_del_{key}")), if confirming { "本当に削除" } else { "削除" }, true).on_click(cx.listener(move |this, _, _, cx| {
+                        if this.confirm_profile_delete.as_deref() != Some(n.as_str()) {
+                            this.confirm_profile_delete = Some(n.clone());
+                        } else {
+                            this.confirm_profile_delete = None;
+                            match profile::remove(&n) {
+                                Ok(()) => this.app.show_toast("サブアカウントを削除しました"),
+                                Err(e) => this.app.show_toast(&format!("削除できませんでした: {e}")),
+                            }
+                        }
+                        cx.notify();
+                    })));
+                }
+            }
+            s = s.child(row(title, Some(format!("{who} · {state}")), actions));
+        }
+        s = s.child(div().mt(z(8.0)).child(button("profile_add", "サブアカウントを追加", false).on_click(cx.listener(|this, _, _, cx| {
+            let name = profile::next_name(&profile::list());
+            let r = profile::create(&name).and_then(|_| profile::launch(Some(&name)));
+            match r {
+                Ok(()) => this.app.show_toast("新しいウィンドウでログインしてください"),
+                Err(e) => this.app.show_toast(&format!("ウィンドウを開けませんでした: {e}")),
+            }
+            cx.notify();
+        }))));
+        s.into_any_element()
     }
 
     fn display_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -35,7 +35,7 @@ pub struct Snapshot {
 }
 
 pub fn path() -> PathBuf {
-    crate::app::cache_root().join("riscord").join("snapshot.json")
+    crate::profile::cache_dir().join("snapshot.json")
 }
 
 /// 画像の控えを置くフォルダ

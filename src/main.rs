@@ -15,6 +15,7 @@ mod model;
 mod net;
 mod notify;
 mod plugins;
+mod profile;
 mod sticker;
 mod theme;
 mod translator;
@@ -25,5 +26,9 @@ mod video;
 mod wake;
 
 fn main() {
+    if !profile::acquire() {
+        eprintln!("{} の Riscord はもう開いています", profile::label(profile::name()));
+        return;
+    }
     ui::run();
 }

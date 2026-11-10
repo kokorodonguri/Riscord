@@ -148,6 +148,8 @@ pub struct Root {
     pub plugin_inputs: HashMap<(String, String), Entity<InputState>>,
     /// MessageLogger のログ一覧で選んでいる種類（0 = 削除、1 = 編集、2 = ゴーストピン）
     pub log_tab: usize,
+    /// 「別のアカウント」で削除を押したプロファイル（もう一度押すと消す）
+    pub confirm_profile_delete: Option<String>,
     pub settings_scroll: ScrollHandle,
     pub font_family: SharedString,
     /// テーマで指定したフォントを読み込んだもの（パス, ファミリー名）
@@ -241,7 +243,10 @@ impl Root {
             let _ = tx.unbounded_send(d);
         });
         crate::images::set_waker(waker.clone());
-        crate::update::start(&waker);
+        // 実行ファイルの置き換えが重ならないよう、更新は既定のプロファイルのウィンドウだけで行う
+        if crate::profile::name().is_none() {
+            crate::update::start(&waker);
+        }
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         cx.spawn(async move |this: WeakEntity<Root>, cx: &mut AsyncApp| {
             while let Some(d) = rx.next().await {
@@ -390,6 +395,7 @@ impl Root {
             color_inputs: HashMap::new(),
             plugin_inputs: HashMap::new(),
             log_tab: 0,
+            confirm_profile_delete: None,
             settings_scroll: ScrollHandle::new(),
             font_family: default_family(),
             theme_font: None,
@@ -592,7 +598,7 @@ impl Root {
 
     fn window_title(&self) -> String {
         let a = &self.app;
-        match (a.current_channel(), &a.sel_guild) {
+        let base = match (a.current_channel(), &a.sel_guild) {
             (Some(c), Some(gid)) => a
                 .guilds
                 .iter()
@@ -601,6 +607,11 @@ impl Root {
                 .unwrap_or_else(|| "Discord".into()),
             (Some(c), None) => format!("@{} - Discord", c.dm_label()),
             (None, _) => "Discord".into(),
+        };
+        // 複数アカウントのウィンドウを並べたときに見分けられるよう、ログイン中のアカウント名を付ける
+        match &a.me {
+            Some(me) => format!("{base} — {}", me.display()),
+            None => base,
         }
     }
 

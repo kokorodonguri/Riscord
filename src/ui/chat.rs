@@ -15,9 +15,10 @@ use crate::model::{Message, User};
 use crate::net::{self, Cmd};
 
 /// 行の中身の目印（変わったら測り直す）。t / pt はこの行と前の行の時刻（読み終えたもの）
-fn row_key(m: &Message, prev: Option<&Message>, t: Option<DateTime<Local>>, pt: Option<DateTime<Local>>, compact: bool) -> u64 {
+fn row_key(m: &Message, prev: Option<&Message>, t: Option<DateTime<Local>>, pt: Option<DateTime<Local>>, compact: bool, plugin_revision: u64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     m.hash(&mut h);
+    plugin_revision.hash(&mut h);
     super::message::row_layout_at(m, prev, t, pt, compact).hash(&mut h);
     h.finish()
 }
@@ -390,7 +391,7 @@ impl Root {
         // 一覧が変わっていなければ、前に作った行の目印をそのまま使う（全件のハッシュと時刻の読み取りを毎フレームしない）
         let stamp = {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (self.app.msg_rev, compact, no_access, hist_end, prefix, cname).hash(&mut h);
+            (self.app.msg_rev, self.app.plugins.revision, compact, no_access, hist_end, prefix, cname).hash(&mut h);
             h.finish()
         };
         let fresh = self.lists.get(&cid).is_some_and(|l| l.stamp == stamp);
@@ -406,7 +407,7 @@ impl Root {
             let mut pt = None;
             for (i, m) in msgs.iter().enumerate() {
                 let t = crate::app::local_dt(&m.timestamp);
-                keys.push(row_key(m, i.checked_sub(1).map(|j| &msgs[j]), t, pt, compact));
+                keys.push(row_key(m, i.checked_sub(1).map(|j| &msgs[j]), t, pt, compact, self.app.plugins.revision));
                 pt = t;
             }
             keys.push(1);
@@ -493,12 +494,15 @@ impl Root {
 
     /// 入力欄（返信・編集の帯、送信中の表示、添付、＋メニュー）
     fn compose(&mut self, prefix: &str, cname: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // :名前: を打ちかけなら、入力欄の上に絵文字の候補を出す
+        let suggest = self.emoji_suggest(_window, cx);
         let a = &self.app;
         let mut col = div().flex_none().bg(CHAT()).px(z(10.0)).pt(z(2.0)).pb(z(10.0)).flex().flex_col();
         let no_access = a.sel_channel.as_ref().is_some_and(|id| a.no_access.contains(id));
         if no_access {
             return col.child(card(INPUT(), DIVIDER(), 8.0).p(z(12.0)).child(text("このチャンネルを見る権限がないため、メッセージを送信できません。", 16.0, MUTED())));
         }
+        col = col.children(suggest);
         if let Some((cid, sub)) = a.sel_channel.as_ref().and_then(|cid| a.compose_submissions.get(cid).map(|s| (cid.clone(), s))) {
             let mut b = div().bg(SIDEBAR()).rounded(z(8.0)).px(z(12.0)).py(z(8.0)).mb(z(4.0)).flex().flex_col().gap(z(6.0));
             if sub.failed {
@@ -624,6 +628,7 @@ impl Root {
             boxed = boxed.child(row);
         }
         let plus_open = self.menu.is_some_and(|m| m.0 == PopMenu::Plus);
+        let emoji_open = self.menu.is_some_and(|m| m.0 == PopMenu::Emoji);
         let hint = format!("{prefix}{cname} へメッセージを送信");
         if self.compose_hint != hint {
             self.compose_hint = hint.clone();
@@ -671,7 +676,26 @@ impl Root {
                     }))
                     .child(icon(IconName::CirclePlus, 22.0, if plus_open { WHITE() } else { MUTED() }).group_hover("plus", |s| s.text_color(WHITE()))),
             )
-            .child(div().flex_1().min_w_0().text_size(z(16.0)).child(input));
+            .child(div().flex_1().min_w_0().text_size(z(16.0)).child(input))
+            .child(
+                div()
+                    .id("emoji_btn")
+                    .group("emoji_btn")
+                    .mt(z(6.0))
+                    .size(z(24.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .tooltip(tip("絵文字"))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_emoji_picker(window, cx);
+                        cx.notify();
+                    }))
+                    .child(icon(IconName::FaceSlightlySmiling, 22.0, if emoji_open { WHITE() } else { MUTED() }).group_hover("emoji_btn", |s| s.text_color(WHITE()))),
+            );
         boxed = boxed.child(entry);
         if left < 200 {
             boxed = boxed.child(div().flex().justify_end().child(text(left.to_string(), 12.0, if left < 0 { RED() } else { MUTED() })));

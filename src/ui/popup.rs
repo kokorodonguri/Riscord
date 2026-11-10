@@ -74,14 +74,84 @@ impl Root {
             }
             PopMenu::Mic | PopMenu::Headset => self.audio_menu(menu == PopMenu::Mic, window, cx).into_any_element(),
             PopMenu::Guild => self.guild_menu(cx)?.into_any_element(),
+            PopMenu::Message => self.message_menu(cx)?.into_any_element(),
+            PopMenu::Emoji => self.emoji_picker(cx).into_any_element(),
         };
         // 右クリックのメニューはカーソルの右下に、ボタンのメニューはボタンの上に出す
-        let (at, anchor) = if menu == PopMenu::Guild { (pos + point(z(4.0), z(0.0)), Anchor::TopLeft) } else { (pos - point(z(0.0), z(8.0)), Anchor::BottomLeft) };
+        let (at, anchor) = if matches!(menu, PopMenu::Guild | PopMenu::Message) {
+            (pos + point(z(4.0), z(0.0)), Anchor::TopLeft)
+        } else if menu == PopMenu::Emoji {
+            // 入力欄の右端のボタンから、左上へ開く
+            (pos - point(z(0.0), z(20.0)), Anchor::BottomRight)
+        } else { (pos - point(z(0.0), z(8.0)), Anchor::BottomLeft) };
         Some(
             deferred(anchored().position(at).anchor(anchor).snap_to_window_with_margin(z(8.0)).child(div().occlude().on_mouse_down_out(close).child(content)))
                 .with_priority(1)
                 .into_any_element(),
         )
+    }
+
+    /// メッセージの右クリックメニュー
+    fn message_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let m = self.menu_msg.clone()?;
+        let mine = self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
+        let close = |this: &mut Root| {
+            this.menu = None;
+            this.menu_msg = None;
+        };
+        let mut col = popup_box().p(z(6.0)).w(z(240.0)).flex().flex_col().gap(z(2.0));
+        let m1 = m.clone();
+        col = col.child(menu_row("mm_reply", icon(IconName::Reply, 18.0, TEXT()).into_any_element(), "返信", false).on_click(cx.listener(move |this, _, _, cx| {
+            close(this);
+            if this.app.editing.take().is_some() {
+                this.app.input.clear();
+            }
+            this.app.reply_to = Some(m1.clone());
+            this.app.focus_input = true;
+            cx.notify();
+        })));
+        if mine {
+            let m1 = m.clone();
+            col = col.child(menu_row("mm_edit", icon(IconName::Pencil, 18.0, TEXT()).into_any_element(), "編集", false).on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                this.app.input = crate::emoji::shorten(&m1.content).0;
+                this.app.editing = Some(m1.clone());
+                this.app.reply_to = None;
+                this.app.focus_input = true;
+                cx.notify();
+            })));
+        }
+        if !m.content.is_empty() {
+            let t = m.content.clone();
+            col = col.child(menu_row("mm_copy", icon(IconName::Copy, 18.0, TEXT()).into_any_element(), "テキストをコピー", false).on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                cx.write_to_clipboard(ClipboardItem::new_string(t.clone()));
+                this.app.show_toast("テキストをコピーしました");
+                cx.notify();
+            })));
+        }
+        let id = m.id.clone();
+        col = col.child(menu_row("mm_copy_id", icon(IconName::Copy, 18.0, TEXT()).into_any_element(), "メッセージIDをコピー", false).on_click(cx.listener(move |this, _, _, cx| {
+            close(this);
+            cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
+            this.app.show_toast("メッセージIDをコピーしました");
+            cx.notify();
+        })));
+        if mine {
+            col = col.child(menu_divider());
+            let m1 = m.clone();
+            col = col.child(
+                menu_row("mm_delete", icon(IconName::Trash, 18.0, RED()).into_any_element(), "メッセージを削除", false)
+                    .text_color(RED())
+                    .hover(|s| s.bg(RED()).text_color(WHITE()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        close(this);
+                        this.app.pending_delete = Some(m1.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        Some(col)
     }
 
     /// サーバーアイコンの右クリックメニュー

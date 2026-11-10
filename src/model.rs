@@ -39,6 +39,22 @@ impl User {
     }
 }
 
+/// サーバーのカスタム絵文字
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Emoji {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub animated: bool,
+    /// サーバーのブーストが切れるなどして使えなくなった絵文字は false
+    #[serde(default = "yes")]
+    pub available: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
 /// サーバーのロール
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Role {
@@ -225,6 +241,15 @@ pub struct Attachment {
 }
 
 impl Attachment {
+    pub fn is_video(&self) -> bool {
+        if let Some(content_type) = &self.content_type {
+            if content_type.starts_with("video/") { return true; }
+            if content_type != "application/octet-stream" { return false; }
+        }
+        let name = self.filename.to_ascii_lowercase();
+        [".mp4", ".webm", ".mov", ".m4v", ".mkv"].iter().any(|ext| name.ends_with(ext))
+    }
+
     pub fn is_image(&self) -> bool {
         if let Some(ct) = &self.content_type {
             return ct.starts_with("image/");
@@ -415,9 +440,29 @@ pub struct Message {
     /// 返信先（削除済みなら null）
     #[serde(default)]
     pub referenced_message: Option<Box<Message>>,
-    /// 19 = 返信
+    /// 3 = 通話の記録、19 = 返信
     #[serde(default, rename = "type")]
     pub kind: u8,
+    /// 通話の記録（type 3 のときだけ付く）
+    #[serde(default)]
+    pub call: Option<CallInfo>,
+}
+
+/// 通話の記録。参加した人と、終わった時刻（続いている間は無い）
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
+pub struct CallInfo {
+    #[serde(default)]
+    pub participants: Vec<String>,
+    #[serde(default)]
+    pub ended_timestamp: Option<String>,
+}
+
+impl Message {
+    pub const CALL: u8 = 3;
+
+    pub fn is_call(&self) -> bool {
+        self.kind == Self::CALL
+    }
 }
 
 /// ボイスチャンネルに誰がいるか

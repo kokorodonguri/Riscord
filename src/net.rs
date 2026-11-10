@@ -223,6 +223,8 @@ pub enum Event {
     Gateway { t: String, d: Value },
     /// READY のうち、自分の設定まわり（user_guild_settings / read_state / relationships / user_settings_proto）
     ReadyExtra(Value),
+    /// サーバーごとのカスタム絵文字（READY）
+    GuildEmojis(Vec<(String, Vec<model::Emoji>)>),
 }
 
 enum VoiceMsg {
@@ -1056,6 +1058,8 @@ struct ReadyGuild {
     id: Value,
     #[serde(default)]
     voice_states: Value,
+    #[serde(default)]
+    emojis: Value,
     /// チャンネル・スレッドの ID だけ（read_state のチャンネルがどのサーバーのものか知るため）
     #[serde(default)]
     channels: Vec<IdOnly>,
@@ -1130,7 +1134,7 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
                 .into_iter()
                 .map(|g| {
                     let members: Vec<Value> = g.members.iter().filter(|m| m.is(&me)).map(member).collect();
-                    json!({ "id": g.id, "voice_states": g.voice_states, "channels": ids(&g.channels), "threads": ids(&g.threads), "members": members })
+                    json!({ "id": g.id, "voice_states": g.voice_states, "emojis": g.emojis, "channels": ids(&g.channels), "threads": ids(&g.threads), "members": members })
                 })
                 .collect::<Vec<_>>();
             return dispatch(
@@ -1205,6 +1209,18 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             }
             if !vs.is_empty() {
                 tx.send(Event::VoiceStates(vs));
+            }
+            // カスタム絵文字（ピッカーと :名前: の変換に使う）
+            let mut emojis = Vec::new();
+            for g in d.get_mut("guilds").and_then(Value::as_array_mut).into_iter().flatten() {
+                let Some(gid) = g["id"].as_str().map(String::from) else { continue };
+                let Some(list) = g.get_mut("emojis").map(Value::take) else { continue };
+                if let Ok(list) = serde_json::from_value::<Vec<model::Emoji>>(list) {
+                    emojis.push((gid, list));
+                }
+            }
+            if emojis.iter().any(|(_, l)| !l.is_empty()) {
+                tx.send(Event::GuildEmojis(emojis));
             }
             let list: Vec<_> = d["presences"].as_array().into_iter().flatten().filter_map(parse_presence).collect();
             if !list.is_empty() {

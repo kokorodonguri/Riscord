@@ -814,3 +814,73 @@ fn guild_order_is_applied_to_new_lists() {
     app.move_guild("b", "c");
     assert_eq!(app.settings.guild_order, ["b", "c", "a", "new1", "new2", "gone"]);
 }
+
+#[test]
+fn voice_call_timer_tracks_connection_transitions() {
+    let mut app = App::default();
+    app.voice_status = Some(VoiceStatus::Connecting { guild_id: Some("g".into()), channel_id: "one".into() });
+    app.update_voice_call_started();
+    assert!(app.voice_call_started.is_none());
+    app.voice_status = Some(VoiceStatus::Connected { guild_id: Some("g".into()), channel_id: "one".into() });
+    app.update_voice_call_started();
+    let first = std::time::Instant::now() - std::time::Duration::from_secs(12);
+    app.voice_call_started.as_mut().unwrap().2 = first;
+    app.update_voice_call_started();
+    assert_eq!(app.voice_call_started.as_ref().unwrap().2, first);
+    app.voice_status = Some(VoiceStatus::Connected { guild_id: None, channel_id: "two".into() });
+    app.update_voice_call_started();
+    let (guild, channel, started) = app.voice_call_started.as_ref().unwrap();
+    assert!(guild.is_none());
+    assert_eq!(channel, "two");
+    assert!(*started > first);
+    app.leave_voice();
+    assert!(app.voice_call_started.is_none());
+}
+
+#[test]
+fn voice_events_start_and_stop_call_timer() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    tx.send(Event::Voice(VoiceStatus::Connected { guild_id: None, channel_id: "dm".into() })).unwrap();
+    app.poll();
+    assert_eq!(app.voice_call_started.as_ref().unwrap().1, "dm");
+    tx.send(Event::Voice(VoiceStatus::Disconnected)).unwrap();
+    app.poll();
+    assert!(app.voice_call_started.is_none());
+}
+
+#[test]
+fn translated_outgoing_is_sent_only_for_current_successful_request() {
+    let mut app = App::default();
+    app.plugins.reload(&["translator".into()]);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let _tx = tx;
+    app.compose_submissions.insert("c".into(), ComposeSubmission { content: "$en こんにちは".into(), reply: None, editing: None, uploads: Vec::new(), failed: false, rejected: None });
+    app.translator.outgoing.insert("c".into(), 2);
+    let generation = app.plugins.generation;
+    let target = |request_id| crate::translator::Target::Outgoing { channel: "c".into(), request_id, generation };
+    app.translator.inject(crate::translator::ResultItem { target: target(1), result: Ok("old".into()) });
+    app.poll();
+    assert!(rx.try_recv().is_err());
+    app.translator.inject(crate::translator::ResultItem { target: target(2), result: Ok("hello".into()) });
+    app.poll();
+    assert!(matches!(rx.try_recv(), Ok(Cmd::Send { content, .. }) if content == "hello"));
+    assert_eq!(app.compose_submissions["c"].content, "hello");
+}
+
+#[test]
+fn failed_translation_retains_original_draft() {
+    let mut app = App::default();
+    app.plugins.reload(&["translator".into()]);
+    app.compose_submissions.insert("c".into(), ComposeSubmission { content: "$en 原文".into(), reply: None, editing: None, uploads: Vec::new(), failed: false, rejected: None });
+    app.translator.outgoing.insert("c".into(), 4);
+    app.translator.inject(crate::translator::ResultItem { target: crate::translator::Target::Outgoing { channel: "c".into(), request_id: 4, generation: app.plugins.generation }, result: Err("通信エラー".into()) });
+    app.poll();
+    assert!(app.compose_submissions["c"].failed);
+    assert!(app.restore_compose("c"));
+    assert_eq!(app.input, "$en 原文");
+}

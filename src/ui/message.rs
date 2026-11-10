@@ -18,6 +18,12 @@ use crate::net::Cmd;
 const EMBED_MAX_W: f32 = 432.0;
 const EMBED_THUMB: f32 = 80.0;
 
+// コンパクト表示の列（時刻・名前・本文）の幅と、本文の開始位置
+const COMPACT_PAD: f32 = 16.0;
+const COMPACT_GAP: f32 = 6.0;
+const COMPACT_TIME_W: f32 = 40.0;
+const COMPACT_NAME_X: f32 = COMPACT_PAD + COMPACT_TIME_W + COMPACT_GAP;
+
 /// 行の並べ方（日付の区切り・前の行とまとめるか・返信か）。これが変わると高さが変わる
 pub fn row_layout(m: &Message, prev: Option<&Message>, compact: bool) -> (bool, bool, bool, bool) {
     row_layout_at(m, prev, local_dt(&m.timestamp), prev.and_then(|p| local_dt(&p.timestamp)), compact)
@@ -37,11 +43,25 @@ pub fn row_layout_at(
         _ => false,
     };
     let reply = is_reply(m);
+    // 通話の記録は1行ずつ独立させる（前後の行とまとめない）
     let grouped = !new_day
         && !reply
+        && !m.is_call()
+        && !prev.is_some_and(Message::is_call)
         && prev.is_some_and(|p| p.author.id == m.author.id)
         && matches!((t, pt), (Some(a), Some(b)) if (a - b).num_minutes() < 7);
     (new_day, grouped, reply, compact)
+}
+
+/// 通話の長さ（「数秒」「5分」「1時間20分」）
+fn call_length(d: chrono::Duration) -> String {
+    let s = d.num_seconds().max(0);
+    match (s / 3600, s % 3600 / 60) {
+        (0, 0) => "数秒".into(),
+        (0, m) => format!("{m}分"),
+        (h, 0) => format!("{h}時間"),
+        (h, m) => format!("{h}時間{m}分"),
+    }
 }
 
 /// 文字と、色や太さを変える範囲・押せるリンクの範囲（バイト位置）
@@ -177,7 +197,7 @@ impl Root {
     }
 
     /// 画像を出したことを覚える（チャンネルを捨てるときに画像のキャッシュも解放するため）
-    fn note_image(&mut self, uri: &str) {
+    pub(super) fn note_image(&mut self, uri: &str) {
         let Some(cid) = &self.app.sel_channel else { return };
         // 毎フレーム見えている画像の数だけ呼ばれるので、覚え済みならキーも作らない
         if let Some(set) = self.app.channel_images.get_mut(cid) {
@@ -212,6 +232,9 @@ impl Root {
                 );
             }
         }
+        if m.is_call() {
+            return outer.child(self.call_row(m, name_col, compact, cx));
+        }
         let mid = m.id.clone();
         let mut row = div()
             .id(SharedString::from(format!("msg{}", m.id)))
@@ -219,6 +242,15 @@ impl Root {
             .w_full()
             .flex()
             .flex_col()
+            .on_mouse_down(MouseButton::Right, {
+                let m = m.clone();
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    this.menu = Some((PopMenu::Message, ev.position));
+                    this.menu_msg = Some(m.clone());
+                    cx.stop_propagation();
+                    cx.notify();
+                })
+            })
             .on_hover(cx.listener(move |this, h: &bool, _, cx| {
                 if *h && this.hover_msg.as_deref() != Some(mid.as_str()) {
                     this.hover_msg = Some(mid.clone());
@@ -231,17 +263,25 @@ impl Root {
             row = row.bg(MSG_HOVER());
         }
         let author = m.author.clone();
+        // コンパクト表示の名前の列の幅（狭い画面では本文の幅を残す）と、本文の開始位置
+        let name_w = if self.app.screen_w < 700.0 { 72.0 } else { 120.0 };
+        let text_x = COMPACT_NAME_X + name_w + COMPACT_GAP;
         if compact {
-            outer = outer.when(new_day, |d| d.pt(z(6.0)));
-            row = row.mt(z(2.0)).py(px(1.0));
+            outer = outer.when(!grouped, |d| d.pt(z(if new_day { 6.0 } else { 4.0 })));
+            row = row.py(px(1.0));
             if reply {
-                row = row.child(self.reply_preview(m, 30.0, 56.0, cx));
+                row = row.child(self.reply_preview(m, COMPACT_NAME_X + 8.0, text_x, cx));
             }
-            let time = local_dt(&m.timestamp).map(|t| t.format("%H:%M ").to_string()).unwrap_or_default();
-            let mut line_row = div().pl(z(16.0)).pr(z(16.0)).flex().flex_wrap().items_baseline().gap_x(z(4.0));
-            line_row = line_row.child(text(time, 11.0, FAINT())).child(
+            // 時刻・名前・本文を固定の列にそろえる。連投は名前を省き、時刻はマウスを乗せたときだけ出す
+            let time = if !grouped || hovered { local_dt(&m.timestamp).map(|t| t.format("%H:%M").to_string()).unwrap_or_default() } else { String::new() };
+            let name: AnyElement = if grouped {
+                div().w(z(name_w)).flex_none().into_any_element()
+            } else {
                 div()
                     .id(SharedString::from(format!("an{}", m.id)))
+                    .w(z(name_w))
+                    .flex_none()
+                    .truncate()
                     .text_size(z(self.app.settings.font_size))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(name_col)
@@ -252,12 +292,28 @@ impl Root {
                         this.app.open_profile(author.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                         cx.notify();
                     }))
-                    .child(format!("{}  ", author_name(m))),
-            );
-            line_row = line_row.child(self.inline_content(m));
-            row = row.child(line_row);
+                    .child(author_name(m).to_string())
+                    .into_any_element()
+            };
+            let mut body = div().flex_1().min_w_0();
+            if !m.content.is_empty() {
+                body = body.child(self.inline_content(m));
+            }
+            // 本文のない連投（画像だけなど）は、空の行を作らない
+            let head = !grouped || !m.content.is_empty();
+            row = row.when(head, |r| r.child(
+                div()
+                    .pl(z(COMPACT_PAD))
+                    .pr(z(16.0))
+                    .flex()
+                    .items_baseline()
+                    .gap(z(COMPACT_GAP))
+                    .child(div().w(z(COMPACT_TIME_W)).flex_none().flex().justify_end().child(text(time, 11.0, FAINT())))
+                    .child(name)
+                    .child(body),
+            ));
             if !m.attachments.is_empty() || !m.sticker_items.is_empty() || m.embeds.iter().any(|e| e.visible()) {
-                row = row.child(div().pl(z(56.0)).pr(z(16.0)).child(self.message_media(m, cx)));
+                row = row.child(div().pl(z(text_x)).pr(z(16.0)).child(self.message_media(m, cx)));
             }
         } else {
             outer = outer.when(!grouped, |d| d.pt(z(13.0)));
@@ -314,10 +370,72 @@ impl Root {
             content = content.child(self.message_media(m, cx));
             row = row.child(div().flex().items_start().pl(z(16.0)).pr(z(16.0)).gap(z(16.0)).child(left).child(content));
         }
+        if self.app.plugins.translator_enabled() {
+            if let Some((_, translated)) = self.app.translator.messages.get(&(m.channel_id.clone(), m.id.clone())).filter(|(original, _)| original == &m.content) {
+                row = row.child(div().pl(z(if compact { text_x } else { 72.0 })).pr(z(16.0)).child(text(format!("翻訳: {translated}"), self.app.settings.font_size, MUTED())));
+            }
+        }
         if hovered {
             row = row.child(self.message_toolbar(m, cx));
         }
         outer.child(row)
+    }
+
+    /// 通話の記録（不在着信か、参加した通話か、続いている通話か）
+    fn call_row(&mut self, m: &Message, name_col: Color32, compact: bool, cx: &mut Context<Self>) -> Div {
+        let call = m.call.as_ref();
+        let ended = call.and_then(|c| c.ended_timestamp.as_deref());
+        let me = self.app.me.as_ref().map(|u| u.id.as_str());
+        // 自分が参加者に入っていなければ不在着信（参加者が分からないときは不在にしない）
+        let missed = ended.is_some() && call.is_some_and(|c| me.is_some_and(|me| !c.participants.iter().any(|p| p == me)));
+        let length = ended.and_then(|e| Some(call_length(local_dt(e)? - local_dt(&m.timestamp)?)));
+        let after = match (missed, &length) {
+            (true, Some(l)) => format!(" からの不在着信（{l}）"),
+            (true, None) => " からの不在着信".to_string(),
+            (false, Some(l)) => format!(" が通話を開始しました（{l}）"),
+            (false, None) => " が通話を開始しました".to_string(),
+        };
+        let author = m.author.clone();
+        let fs = self.app.settings.font_size;
+        let name = div()
+            .id(SharedString::from(format!("an{}", m.id)))
+            .flex_none()
+            .max_w(relative(0.5))
+            .truncate()
+            .text_size(z(fs))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(name_col)
+            .cursor_pointer()
+            .hover(|s| s.underline())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let p = window.mouse_position();
+                this.app.open_profile(author.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
+                cx.notify();
+            }))
+            .child(author_name(m).to_string());
+        let color = if missed { MUTED() } else { GREEN() };
+        // アイコンは、ふつうの行のアバターの列（幅 40）の中央に置く
+        let left = if compact { div().w(z(COMPACT_TIME_W)).flex_none().flex().justify_end() } else { div().w(z(40.0)).flex_none().flex().justify_center() };
+        div()
+            .w_full()
+            .pt(z(if compact { 4.0 } else { 13.0 }))
+            .pb(z(2.0))
+            .pl(z(if compact { COMPACT_PAD } else { 16.0 }))
+            .pr(z(16.0))
+            .flex()
+            .items_center()
+            .gap(z(if compact { COMPACT_GAP } else { 16.0 }))
+            .child(left.child(icon(if missed { IconName::PhoneOff } else { IconName::Phone }, 18.0, color)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_baseline()
+                    .child(name)
+                    .child(text(after, fs, MUTED()).flex_none())
+                    .child(text(fmt_time(&m.timestamp), 12.0, FAINT()).flex_none().ml(z(8.0))),
+            )
     }
 
     /// 右上に出る操作ボタン（返信・編集・コピー・削除）
@@ -350,7 +468,7 @@ impl Root {
         if mine {
             let m2 = m.clone();
             bar = bar.child(btn("tb_edit", IconName::Pencil, false).tooltip(tip("編集")).on_click(cx.listener(move |this, _, _, cx| {
-                this.app.input = m2.content.clone();
+                this.app.input = crate::emoji::shorten(&m2.content).0;
                 this.app.editing = Some(m2.clone());
                 this.app.reply_to = None;
                 this.app.focus_input = true;
@@ -374,6 +492,29 @@ impl Root {
                     this.app.pending_delete = Some(m3.clone());
                 }
                 cx.notify();
+            })));
+        }
+        if self.app.plugins.translator_enabled() && !m.content.trim().is_empty() {
+            let message = m.clone();
+            let key = (m.channel_id.clone(), m.id.clone());
+            let translated = self.app.translator.messages.get(&key).is_some_and(|(original, _)| original == &m.content);
+            bar = bar.child(btn("tb_translate", IconName::Settings, false).tooltip(tip(if translated { "翻訳を閉じる" } else { "Google で翻訳" })).on_click(cx.listener(move |this, _, _, cx| {
+                let key = (message.channel_id.clone(), message.id.clone());
+                if this.app.translator.messages.remove(&key).is_some_and(|(original, _)| original == message.content) {
+                    this.app.plugins.revision = this.app.plugins.revision.wrapping_add(1);
+                } else {
+                    let language = this.app.plugins.translation_target();
+                    let target = crate::translator::Target::Message { channel: message.channel_id.clone(), id: message.id.clone(), original: message.content.clone(), generation: this.app.plugins.generation };
+                    if let Err(e) = this.app.translator.request(target, message.content.clone(), language, this.app.waker.clone()) { this.app.show_toast(&e); }
+                    else { this.app.show_toast("Google で翻訳しています…"); }
+                }
+                cx.notify();
+            })));
+        }
+        for (id, index, label) in self.app.plugins.message_actions() {
+            let message = m.clone();
+            bar = bar.child(btn(&format!("plugin-{id}-{index}"), IconName::Settings, false).tooltip(tip(label)).on_click(cx.listener(move |this, _, _, cx| {
+                this.app.plugins.message_action(&id, index, &message); this.app.waker.wake(); cx.notify();
             })));
         }
         bar
@@ -423,8 +564,9 @@ impl Root {
     fn inline_content(&mut self, m: &Message) -> AnyElement {
         let fs = self.app.settings.font_size;
         let edited = HighlightStyle { color: Some(MUTED().into()), ..Default::default() };
+        let displayed = self.app.plugins.transform("on_display", &m.content, &m.channel_id);
         let roles = self.guild_roles();
-        let content = resolve_mentions(&m.content, m, &self.app.channels, roles).into_owned();
+        let content = resolve_mentions(&displayed, m, &self.app.channels, roles).into_owned();
         let segs = split_emoji(&content);
         if !segs.iter().any(|x| matches!(x, Seg::Emoji { .. })) {
             let mut r = Rich::default();
@@ -483,6 +625,8 @@ impl Root {
                 self.note_image(&src);
                 self.note_image(&a.url);
                 col = col.child(image_box(SharedString::from(format!("at{}_{i}", m.id)), &src, &a.url, size.unwrap_or(max), false, cx));
+            } else if a.is_video() && cfg!(target_os = "linux") {
+                col = col.child(self.video_attachment(a, &m.channel_id, &format!("{}_{i}", m.id), cx));
             } else {
                 col = col.child(embed_line(SharedString::from(format!("af{}_{i}", m.id)), format!("📎 {}", a.filename), 16.0, LINK(), Some(&a.url)));
             }
@@ -505,6 +649,63 @@ impl Root {
             }
         }
         col
+    }
+
+    fn video_attachment(&mut self, attachment: &model::Attachment, channel: &str, key: &str, cx: &mut Context<Self>) -> Div {
+        let size = fit_size(attachment.width, attachment.height, (420.0, 320.0)).unwrap_or((420.0, 236.0));
+        let source = attachment.url.clone();
+        let target_channel = channel.to_owned();
+        let width = attachment.width.unwrap_or(640);
+        let height = attachment.height.unwrap_or(360);
+        let active = self.video.as_ref().filter(|v| v.url == source && v.channel == channel);
+        let frame = active.and_then(|v| v.image.clone());
+        let show_play = active.is_none_or(|v| v.paused || v.ended);
+        let preview = if frame.is_none() { crate::video::thumbnail(&source, width, height, &self.app.waker) } else { None };
+        let has_preview = preview.is_some();
+        let frame = frame.or(preview);
+        let label = match active { Some(v) if v.error.is_some() => "再生できません", Some(v) if v.ended => "もう一度再生", Some(v) if v.paused => "再生", Some(v) if v.image.is_some() => "一時停止", Some(_) => "読み込み中…", None => "動画を再生" };
+        let error = active.and_then(|v| v.error.clone());
+        let mut screen = div().id(SharedString::from(format!("video-screen-{key}"))).w(z(size.0)).h(z(size.1)).relative().rounded(z(8.0)).overflow_hidden().bg(Color32::BLACK).cursor_pointer().flex().items_center().justify_center();
+        if let Some(frame) = frame { screen = screen.child(img(frame).id("video-frame").size_full().object_fit(ObjectFit::Contain)); }
+        else { screen = screen.child(div().flex().flex_col().items_center().gap(z(8.0)).child(icon(IconName::Play, 32.0, WHITE())).child(text(label, 14.0, WHITE()))); }
+        if has_preview && show_play {
+            screen = screen.child(div().absolute().inset_0().flex().items_center().justify_center().child(
+                div().size(z(52.0)).rounded_full().bg(Color32::from_rgba_unmultiplied(0, 0, 0, 170))
+                    .flex().items_center().justify_center().child(icon(IconName::Play, 28.0, WHITE()))));
+        }
+        let download_url = attachment.url.clone();
+        let download_name = attachment.filename.clone();
+        screen = screen.child(div().id(SharedString::from(format!("video-download-{key}")))
+            .absolute().top(z(8.0)).right(z(8.0)).size(z(32.0)).rounded(z(6.0))
+            .bg(Color32::from_rgba_unmultiplied(0, 0, 0, 180)).hover(|s| s.bg(Color32::from_rgba_unmultiplied(0, 0, 0, 230)))
+            .flex().items_center().justify_center().cursor_pointer().tooltip(tip("動画をダウンロード"))
+            .child(icon(IconName::Download, 18.0, WHITE()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                if this.download.is_none() { this.download = Some(crate::download::start(download_url.clone(), download_name.clone(), this.app.waker.clone())); }
+                else { this.app.show_toast("別の動画をダウンロード中です"); }
+                cx.notify();
+            })));
+        let screen = screen.tooltip(tip(label)).on_click(cx.listener(move |this, _, _, cx| {
+            if let Some(player) = this.video.as_mut().filter(|v| v.url == source && v.channel == target_channel) { player.toggle(); }
+            else {
+                this.video = None;
+                match crate::video::Player::new(target_channel.clone(), source.clone(), width, height, this.app.waker.clone()) {
+                    Ok(player) => this.video = Some(player),
+                    Err(error) => this.app.show_toast(&error),
+                }
+            }
+            cx.notify();
+        }));
+        let mut content = div().flex().flex_col().gap(z(4.0)).child(screen);
+        if let Some(error) = error { content = content.child(text(error, 13.0, RED())); }
+        let link = attachment.url.clone();
+        let mut controls = div().w(z(size.0)).flex().items_center().gap(z(10.0)).child(line(attachment.filename.clone(), 12.0, MUTED()).flex_1());
+        if active.is_some() {
+            controls = controls.child(div().id(SharedString::from(format!("video-close-{key}"))).cursor_pointer().child(text("停止", 12.0, LINK())).on_click(cx.listener(|this, _, _, cx| { this.video = None; cx.notify(); })));
+        }
+        controls = controls.child(div().id(SharedString::from(format!("video-open-{key}"))).cursor_pointer().child(text("開く", 12.0, LINK())).on_click(cx.listener(move |_, _, _, cx| cx.open_url(&link))));
+        content.child(controls)
     }
 
     fn sticker(&mut self, st: &model::StickerItem) -> AnyElement {
@@ -646,7 +847,35 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::Rich;
+    use super::{call_length, Message, Rich};
+
+    #[test]
+    fn call_length_reads_naturally() {
+        let len = |s| call_length(chrono::Duration::seconds(s));
+        assert_eq!(len(4), "数秒");
+        assert_eq!(len(59), "数秒");
+        assert_eq!(len(5 * 60 + 30), "5分");
+        assert_eq!(len(3600), "1時間");
+        assert_eq!(len(3600 + 20 * 60), "1時間20分");
+        assert_eq!(len(-3), "数秒");
+    }
+
+    #[test]
+    fn call_rows_stand_alone() {
+        let msg = |id: &str, kind: u8| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "channel_id": "1", "author": { "id": "7", "username": "a" }, "type": kind,
+                "timestamp": "2026-11-09T17:24:00+09:00",
+                "call": if kind == 3 { serde_json::json!({ "participants": ["7"], "ended_timestamp": "2026-11-09T17:24:05+09:00" }) } else { serde_json::Value::Null },
+            }))
+            .unwrap()
+        };
+        let (text, call) = (msg("1", 0), msg("2", 3));
+        assert_eq!(call.call.as_ref().unwrap().participants, ["7"]);
+        assert!(super::row_layout(&text, Some(&text), false).1, "ふつうの連投はまとめる");
+        assert!(!super::row_layout(&call, Some(&text), false).1, "通話の記録はまとめない");
+        assert!(!super::row_layout(&text, Some(&call), false).1, "通話の記録の次の行は名前を出す");
+    }
 
     #[test]
     fn bold_markers_pair_and_leave_unpaired_as_text() {

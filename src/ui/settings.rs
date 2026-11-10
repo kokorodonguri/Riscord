@@ -12,17 +12,18 @@ use crate::net::{self, Cmd};
 use crate::{theme, voice};
 
 /// 設定のページ。添字は settings_tab（一覧での並び順は SETTINGS_ORDER）
-const SETTINGS_TABS: [(&str, IconName); 5] =
-    [("マイアカウント", IconName::UserRound), ("表示", IconName::Settings), ("音声", IconName::Headphones), ("テーマ", IconName::Palette), ("プロフィール", IconName::Pencil)];
+const SETTINGS_TABS: [(&str, IconName); 6] =
+    [("マイアカウント", IconName::UserRound), ("表示", IconName::Settings), ("音声", IconName::Headphones), ("テーマ", IconName::Palette), ("プロフィール", IconName::Pencil), ("プラグイン", IconName::Settings)];
 /// 左の一覧に並べる順（本家と同じく「マイアカウント」の次に「プロフィール」）
-const SETTINGS_ORDER: [usize; 5] = [0, 4, 1, 2, 3];
+const SETTINGS_ORDER: [usize; 6] = [0, 4, 1, 2, 3, 5];
 /// 各ページの見出し。左の一覧で選んだページの下に並び、押すとそこへ移る（本家と同じ）
-const SETTINGS_SECTIONS: [&[&str]; 5] = [
+const SETTINGS_SECTIONS: [&[&str]; 6] = [
     &["アカウント情報", "アクティビティ", "トークン", "バージョン"],
     &["表示サイズ", "メッセージ表示"],
     &["デバイス", "音量", "入力モード", "入力感度"],
     &["テーマ", "背景画像", "色の調整"],
     &["プロフィール"],
+    &["プラグイン"],
 ];
 
 /// スライダーの範囲（最小, 最大, 刻み）
@@ -368,6 +369,7 @@ impl Root {
             2 => self.voice_page(col_w, window, cx),
             3 => self.theme_page(col_w, window, cx),
             4 => self.profile_page(col_w, window, cx),
+            5 => self.plugins_page(window, cx),
             _ => self.display_page(window, cx),
         };
         content = content.children(pages);
@@ -749,6 +751,56 @@ impl Root {
         }
         pages.push(s3.into_any_element());
         pages
+    }
+
+    fn plugins_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let path = crate::plugins::directory();
+        let mut page = section(0, "プラグイン")
+            .child(text(format!("プラグインフォルダ: {}", path.display()), 14.0, MUTED()))
+            .child(div().flex().gap(z(10.0)).mt(z(12.0))
+                .child(action_button("open_plugins", IconName::Folder, "フォルダを開く").on_click(move |_, _, _| open_folder(&path)))
+                .child(action_button("reload_plugins", IconName::RefreshCw, "読み込み直す").on_click(cx.listener(|this, _, _, cx| {
+                    this.app.plugins.reload(&this.app.settings.enabled_plugins); this.plugin_inputs.clear(); this.app.waker.wake(); cx.notify();
+                }))));
+        for error in &self.app.plugins.errors { page = page.child(notice(RED(), "読み込みエラー", error)); }
+        for p in &self.app.plugins.entries {
+            let id = p.manifest.id.clone();
+            let page_id = id.clone();
+            let enabled = self.app.settings.enabled_plugins.contains(&id);
+            let status = if p.running() { "実行中" } else if enabled { "停止中" } else { "無効" };
+            let desc = format!("{} · {} · {}\n{}{}", p.manifest.id, p.manifest.version, status, p.manifest.description, p.error.as_ref().map(|e| format!("\nエラー: {e}")).unwrap_or_default());
+            page = page.child(div().mt(z(16.0)).child(settings_card(None).child(row(p.manifest.name.clone(), Some(desc),
+                div().flex().gap(z(8.0))
+                .when(p.has_page(), |d| d.child(div().id(SharedString::from(format!("plugin-page-{id}"))).cursor_pointer().child(text("ページ", 14.0, LINK())).on_click(cx.listener(move |this, _, _, cx| { this.app.plugins.selected = Some(page_id.clone()); cx.notify(); }))))
+                .child(toggle_switch(SharedString::from(format!("plugin-toggle-{id}")), enabled).tooltip(tip(if enabled { "無効にする" } else { "有効にする" })).on_click(cx.listener(move |this, _, _, cx| { this.app.plugins.toggle(&id, &mut this.app.settings.enabled_plugins); st::save_settings(&this.app.settings); this.app.waker.wake(); cx.notify(); })))))));
+        }
+        if let Some(id) = self.app.plugins.selected.clone().filter(|id| self.app.plugins.entries.iter().any(|p| p.manifest.id == *id && p.has_page())) {
+            page = page.child(div().mt(z(24.0)).child(medium(format!("{id} のページ"), 20.0, WHITE())));
+            for (index, item) in self.app.plugins.page(&id).into_iter().enumerate() {
+                if item.kind == "button" { let id = id.clone(); let action = item.action; page = page.child(div().id(SharedString::from(format!("plugin-action-{index}"))).mt(z(10.0)).cursor_pointer().child(text(item.label, 16.0, LINK())).on_click(cx.listener(move |this, _, _, cx| { let values = this.plugin_inputs.iter().filter(|((plugin, _), _)| plugin == &id).map(|((_, key), input)| (key.clone(), input.read(cx).value().to_string())).collect(); this.app.plugins.page_action(&id, &action, values); this.app.waker.wake(); cx.notify(); }))); }
+                else if item.kind == "switch" {
+                    let plugin_id = id.clone();
+                    let action = item.action;
+                    page = page.child(div().mt(z(10.0)).flex().items_center().gap(z(12.0))
+                        .child(text(item.label, 16.0, TEXT()).flex_1())
+                        .child(toggle_switch(SharedString::from(format!("plugin-switch-{index}")), item.enabled)
+                            .tooltip(tip(if item.enabled { "オフにする" } else { "オンにする" }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let values = this.plugin_inputs.iter().filter(|((plugin, _), _)| plugin == &plugin_id).map(|((_, key), input)| (key.clone(), input.read(cx).value().to_string())).collect();
+                                this.app.plugins.page_action(&plugin_id, &action, values);
+                                this.app.waker.wake();
+                                cx.notify();
+                            }))));
+                }
+                else if item.kind == "text" { page = page.child(div().mt(z(10.0)).child(text(item.label, 16.0, TEXT()))); }
+                else if item.kind == "input" && !item.action.is_empty() {
+                    let key = (id.clone(), item.action.clone());
+                    let input = self.plugin_inputs.entry(key).or_insert_with(|| super::new_input(window, cx, &item.label, false)).clone();
+                    page = page.child(div().mt(z(10.0)).child(text(item.label, 14.0, TEXT())).child(div().bg(INPUT()).px(z(6.0)).child(Input::new(&input).appearance(false).h(z(36.0)))));
+                }
+            }
+        }
+        vec![page.into_any_element()]
     }
 
     fn theme_page(&mut self, col_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -1,6 +1,7 @@
 //! 画面（gpui）。状態とロジックは crate::app にあり、ここではそれを描いて操作をつなぐ
 mod chat;
 mod dialogs;
+mod emoji;
 mod kit;
 mod login;
 mod members;
@@ -30,7 +31,7 @@ pub use kit::*;
 gpui::assets::icon_assets!(
     ExtraIcons,
     [
-        ArrowLeft, ArrowRight, AtSign, ChevronDown, ChevronRight, CirclePlus, CircleX, ClipboardPaste, Copy, FileUp, Folder,
+        ArrowLeft, ArrowRight, AtSign, Download, ChevronDown, ChevronRight, CirclePlus, CircleX, ClipboardPaste, Copy, FileUp, Folder,
         Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, Palette, PanelRight, Pencil, Phone, PhoneOff, Play, Plus, RefreshCw,
         Reply, RotateCw, Search, Settings, Signal, Trash, Upload, User, UserRound, Users, Video, Volume2, X, Check, IdCard,
         LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck
@@ -96,6 +97,8 @@ pub struct Inputs {
     pub pronouns: Entity<InputState>,
     pub bio: Entity<TextareaState>,
     pub bg_image: Entity<InputState>,
+    /// 絵文字ピッカーの検索欄
+    pub emoji_query: Entity<InputState>,
 }
 
 /// ポップアップ（開いている間だけ出す小さなメニュー）
@@ -106,6 +109,10 @@ pub enum PopMenu {
     Headset,
     /// サーバーアイコンの右クリック（対象は Root::menu_guild）
     Guild,
+    /// メッセージの右クリック（対象は Root::menu_msg）
+    Message,
+    /// 入力欄の絵文字ボタン
+    Emoji,
 }
 
 pub struct Root {
@@ -123,11 +130,20 @@ pub struct Root {
     pub menu: Option<(PopMenu, Point<Pixels>)>,
     /// PopMenu::Guild の対象のサーバー
     pub menu_guild: Option<String>,
+    /// PopMenu::Message の対象のメッセージ
+    pub menu_msg: Option<crate::model::Message>,
+    /// 絵文字ピッカーの行（目印が変わったら作り直す）
+    pub emoji_rows: Option<(emoji::EmojiKey, Rc<Vec<emoji::EmojiRow>>)>,
+    /// :名前: の補完で選んでいる候補（打ちかけの名前, 何番目か）
+    pub emoji_ac_sel: (String, usize),
+    /// Esc で閉じた補完（: の位置, 名前）。続きを打つまで出さない
+    pub emoji_ac_dismissed: Option<(usize, String)>,
     /// プロフィールのポップアップで「ステータス」のサブメニューを開いている
     pub status_sub: bool,
     pub sliders: HashMap<&'static str, Entity<SliderState>>,
     /// 設定 → テーマの色ごとの入力欄
     pub color_inputs: HashMap<&'static str, Entity<InputState>>,
+    pub plugin_inputs: HashMap<(String, String), Entity<InputState>>,
     pub settings_scroll: ScrollHandle,
     pub font_family: SharedString,
     /// テーマで指定したフォントを読み込んだもの（パス, ファミリー名）
@@ -136,6 +152,8 @@ pub struct Root {
     /// 入力欄の薄い案内文（チャンネルが変わったら変える）
     pub compose_hint: String,
     pub image_preview: Option<String>,
+    pub video: Option<crate::video::Player>,
+    pub download: Option<std::sync::mpsc::Receiver<crate::download::Event>>,
     _subs: Vec<Subscription>,
 }
 
@@ -265,6 +283,7 @@ impl Root {
             pronouns: new_input(window, cx, "代名詞を追加", false),
             bio,
             bg_image: new_input(window, cx, "画像のパスか https:// の URL（空ならテーマの指定）", false),
+            emoji_query: new_input(window, cx, "絵文字を検索", false),
         };
         let mut subs = vec![
             bind(cx, window, &inp.dm_filter, None, |a| Some(&mut a.dm_filter)),
@@ -273,6 +292,7 @@ impl Root {
             bind(cx, window, &inp.password, None, |a| Some(&mut a.login.password)),
             bind(cx, window, &inp.mfa, None, |a| Some(&mut a.login.mfa_code)),
             bind(cx, window, &inp.settings_query, None, |a| Some(&mut a.settings_query)),
+            bind(cx, window, &inp.emoji_query, None, |a| Some(&mut a.emoji_query)),
             bind(cx, window, &inp.name, Some(st::PROFILE_NAME_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[0])),
             bind(cx, window, &inp.pronouns, Some(st::PROFILE_PRONOUNS_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[1])),
             bind(cx, window, &inp.bio, Some(st::PROFILE_BIO_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[2])),
@@ -287,6 +307,11 @@ impl Root {
                 this.submit_input(window, cx);
             }
             _ => {}
+        }));
+        subs.push(cx.subscribe_in(&inp.emoji_query, window, |this: &mut Root, _, ev: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                this.pick_first_emoji(window, cx);
+            }
         }));
         // 背景画像の欄は、入力を終えたときに保存する
         subs.push(cx.subscribe_in(&inp.bg_image, window, |this: &mut Root, state, ev: &InputEvent, _, cx| match ev {
@@ -351,15 +376,22 @@ impl Root {
             hover_msg: None,
             menu: None,
             menu_guild: None,
+            menu_msg: None,
+            emoji_rows: None,
+            emoji_ac_sel: (String::new(), 0),
+            emoji_ac_dismissed: None,
             status_sub: false,
             sliders: HashMap::new(),
             color_inputs: HashMap::new(),
+            plugin_inputs: HashMap::new(),
             settings_scroll: ScrollHandle::new(),
             font_family: default_family(),
             theme_font: None,
             last_title: String::new(),
             compose_hint: String::new(),
             image_preview: None,
+            video: None,
+            download: None,
             _subs: subs,
         };
         root.apply_fonts(cx);
@@ -446,6 +478,22 @@ impl Root {
         }
         self.app.window_focused = window.is_window_active();
         self.app.poll();
+        if self.video.as_ref().is_some_and(|v| self.app.sel_channel.as_deref() != Some(v.channel.as_str())) { self.video = None; }
+        if let Some(video) = &mut self.video {
+            video.poll();
+            if !video.paused && video.error.is_none() { self.app.repaint_after(Duration::from_millis(250)); }
+        }
+        if let Some(download) = &self.download {
+            let events: Vec<_> = download.try_iter().collect();
+            for event in events {
+                match event {
+                    crate::download::Event::Started => self.app.show_toast("動画をダウンロードしています…"),
+                    crate::download::Event::Finished(path) => { self.download = None; self.app.show_toast(&format!("保存しました: {}", path.display())); },
+                    crate::download::Event::Failed(error) => { self.download = None; self.app.show_toast(&error); },
+                    crate::download::Event::Cancelled => self.download = None,
+                }
+            }
+        }
         let clicked = self.app.notify_clicked.lock().unwrap().take();
         if let Some((gid, cid)) = clicked {
             // 押された通知のチャンネルを開いて、ウィンドウを前に出す
@@ -586,7 +634,7 @@ impl Root {
         let me = a.me.as_ref().map(|u| u.id.clone());
         let last = a.sel_channel.as_ref().and_then(|c| a.messages.get(c)).and_then(|l| l.iter().rev().find(|m| Some(&m.author.id) == me.as_ref())).cloned();
         if let Some(m) = last {
-            a.input = m.content.clone();
+            a.input = crate::emoji::shorten(&m.content).0;
             a.editing = Some(m);
             a.reply_to = None;
         }
@@ -738,6 +786,7 @@ impl Root {
         if k.key == "escape" && (self.app.popup.is_some() || self.menu.is_some()) {
             self.app.popup = None;
             self.menu = None;
+            self.menu_msg = None;
             self.status_sub = false;
             cx.stop_propagation();
             cx.notify();
@@ -848,6 +897,12 @@ impl Render for Root {
             .text_size(z(16.0))
             .line_height(relative(1.375))
             .capture_key_down(cx.listener(Self::on_key_capture))
+            // :名前: の補完中は、入力欄より先にキーを受け取る（補完していなければ素通し）
+            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveUp, window, cx| this.emoji_ac_key(emoji::AcKey::Up, window, cx)))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveDown, window, cx| this.emoji_ac_key(emoji::AcKey::Down, window, cx)))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::IndentInline, window, cx| this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::Enter, window, cx| this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::Escape, window, cx| this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx)))
             .on_key_down(cx.listener(Self::on_key_bubble))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, _| this.ptt(&ev.keystroke.key, false)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, _, cx| {

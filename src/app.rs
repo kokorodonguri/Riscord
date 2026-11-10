@@ -83,6 +83,7 @@ pub fn save_token(token: &str) -> std::io::Result<()> {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub enabled_plugins: Vec<String>,
     pub zoom: f32,
     pub font_size: f32,
     pub compact: bool,
@@ -118,6 +119,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            enabled_plugins: Vec::new(),
             zoom: 1.0,
             font_size: 16.0,
             compact: false,
@@ -813,6 +815,8 @@ pub struct ComposeSubmission {
 
 #[derive(Default)]
 pub struct App {
+    pub plugins: crate::plugins::Plugins,
+    pub translator: crate::translator::Translator,
     /// 別スレッドから画面を描き直させる口（描画側が作って渡す）
     pub waker: Waker,
     /// ウィンドウの幅（拡大率を除いた論理ピクセル）。狭い画面のときの並べ方に使う
@@ -885,6 +889,14 @@ pub struct App {
     pub sel_guild: Option<String>, // None = DM
     pub sel_channel: Option<String>,
     pub input: String,
+    /// サーバーごとのカスタム絵文字（ピッカーと :名前: の変換に使う）
+    pub guild_emojis: HashMap<String, Vec<crate::model::Emoji>>,
+    /// guild_emojis が変わるたびに増える（ピッカーの作り直しの合図）
+    pub emoji_rev: u64,
+    /// 絵文字を REST で取りに行ったサーバー（READY に無かったときの補い。二重に頼まない）
+    pub emoji_requested: HashSet<String>,
+    /// ピッカーの検索欄
+    pub emoji_query: String,
     /// 送信待ちの添付と、それを貼り付けたチャンネル（別のチャンネルに移ったら捨てる）
     pub uploads: Vec<clip::Upload>,
     /// 添付や文字数の上限についてのお知らせ（入力欄の上に出す）
@@ -957,6 +969,8 @@ pub struct App {
     pub voice_index: HashMap<String, Vec<String>>,
     /// 自分の接続状態（None = 未接続）
     pub voice_status: Option<VoiceStatus>,
+    /// 接続確立後の経過時間。チャンネル変更・切断でリセットする。
+    pub voice_call_started: Option<(Option<String>, String, std::time::Instant)>,
     /// DM通話: channel_id → 呼び出し中のユーザー
     pub calls: HashMap<String, Vec<String>>,
     pub mic_test: Option<voice::MicTest>,
@@ -993,6 +1007,7 @@ impl App {
     pub fn new(waker: Waker) -> Self {
         let settings = load_settings();
         let mut app = App { waker, screen_w: 1200.0, remember: true, settings, show_members: true, ..Default::default() };
+        app.plugins.reload(&app.settings.enabled_plugins);
         app.theme_watch = Some(watch_themes(app.waker.clone()));
         app.apply_theme(false);
         if crate::demo::enabled() {
@@ -1147,7 +1162,8 @@ impl App {
         let screen_w = self.screen_w;
         let settings = std::mem::take(&mut self.settings);
         let (applied, watch) = (self.theme_applied.take(), self.theme_watch.take());
-        *self = App { waker, screen_w, remember: true, settings, show_members: true, theme_applied: applied, theme_watch: watch, ..Default::default() };
+        let plugins = std::mem::take(&mut self.plugins);
+        *self = App { waker, screen_w, remember: true, settings, show_members: true, theme_applied: applied, theme_watch: watch, plugins, ..Default::default() };
     }
 
     /// d 後に描き直す（期限のあるお知らせを消すときなど）
@@ -1187,8 +1203,98 @@ impl App {
         }
     }
 
+    fn set_guild_emojis(&mut self, gid: String, list: serde_json::Value) {
+        if let Ok(list) = serde_json::from_value(list) {
+            self.guild_emojis.insert(gid, list);
+            self.emoji_rev += 1;
+        }
+    }
+
+    /// 開いているサーバーの絵文字をまだ持っていなければ取りに行く（READY に入っていなかったとき）
+    pub fn ensure_guild_emojis(&mut self) {
+        let Some(gid) = self.sel_guild.clone() else { return };
+        if !self.guild_emojis.contains_key(&gid) && self.emoji_requested.insert(gid.clone()) {
+            self.api(net::ApiCall::GetEmojis(gid));
+        }
+    }
+
+    /// Nitro があれば、ほかのサーバーの絵文字とアニメ絵文字も使える
+    pub fn has_nitro(&self) -> bool {
+        self.me.as_ref().and_then(|u| u.premium_type).is_some_and(|t| t > 0)
+    }
+
+    /// いま送れるカスタム絵文字を、サーバーごとに（開いているサーバーが先頭、あとはサーバーの並び順）
+    pub fn usable_emojis(&self) -> Vec<(&str, Vec<&crate::model::Emoji>)> {
+        let nitro = self.has_nitro();
+        let current = self.sel_guild.as_deref();
+        let mut out = Vec::new();
+        let ids = current.into_iter().chain(self.guilds.iter().map(|g| g.id.as_str()).filter(|g| nitro && Some(*g) != current));
+        for gid in ids {
+            let list: Vec<_> = self.guild_emojis.get(gid).into_iter().flatten().filter(|e| e.available && (nitro || !e.animated)).collect();
+            if !list.is_empty() {
+                out.push((gid, list));
+            }
+        }
+        out
+    }
+
+    /// 名前で絵文字を探す（補完とピッカーの検索）
+    pub fn emoji_search(&self, query: &str, limit: usize) -> Vec<crate::emoji::Pick> {
+        let custom = self.usable_emojis().into_iter().flat_map(|(_, l)| l).map(|e| crate::emoji::Pick::Custom { name: e.name.clone(), id: e.id.clone(), animated: e.animated });
+        crate::emoji::search(query, custom.collect::<Vec<_>>().into_iter(), limit)
+    }
+
+    /// 本文の :名前: を送れる形にする。known = 編集中のメッセージに元からあった絵文字（使えないサーバーのものでも保つ）
+    pub fn expand_emoji_names(&self, content: &str, known: &[(String, String, bool)]) -> String {
+        if !content.contains(':') {
+            return content.to_string();
+        }
+        let usable = self.usable_emojis();
+        crate::emoji::expand(content, |name| {
+            if let Some((n, id, animated)) = known.iter().find(|k| k.0 == name) {
+                return Some(crate::emoji::markup(n, id, *animated));
+            }
+            if let Some(e) = usable.iter().flat_map(|(_, l)| l).find(|e| e.name == name) {
+                return Some(crate::emoji::markup(&e.name, &e.id, e.animated));
+            }
+            emojis::get_by_shortcode(name).map(|e| e.as_str().to_string())
+        })
+    }
+
     pub fn submit_compose(&mut self, channel_id: String, content: String) {
         if self.compose_submissions.contains_key(&channel_id) { return; }
+        if self.editing.is_none() && self.uploads.is_empty() && self.plugins.command(&content, &channel_id) { self.waker.wake(); return; }
+        let known = self.editing.as_ref().map(|m| crate::emoji::shorten(&m.content).1).unwrap_or_default();
+        let mut content = self.expand_emoji_names(&content, &known);
+        if self.editing.is_none() && self.plugins.translator_enabled() {
+            let auto_target = match self.plugins.translation_outgoing() {
+                Ok(target) => target,
+                Err(error) => {
+                    let reply = self.reply_to.take();
+                    let uploads = std::mem::take(&mut self.uploads);
+                    self.compose_submissions.insert(channel_id, ComposeSubmission { content, reply, editing: None, uploads, failed: true, rejected: Some(error) });
+                    return;
+                }
+            };
+            if auto_target.is_some() && content.starts_with("!tr ") {
+                content = content[4..].to_owned();
+            } else {
+                let request = crate::translator::prefix(&content).map(|(language, body)| (language, body.to_owned()))
+                    .or_else(|| auto_target.filter(|_| !content.trim().is_empty()).map(|language| (language, content.clone())));
+                if let Some((language, body)) = request {
+                    self.translator.next_request_id = self.translator.next_request_id.wrapping_add(1);
+                    let request_id = self.translator.next_request_id;
+                    let target = crate::translator::Target::Outgoing { channel: channel_id.clone(), request_id, generation: self.plugins.generation };
+                    let result = self.translator.request(target, body, language, self.waker.clone());
+                    if result.is_ok() { self.translator.outgoing.insert(channel_id.clone(), request_id); }
+                    let reply = self.reply_to.take();
+                    let uploads = std::mem::take(&mut self.uploads);
+                    let (failed, rejected) = match result { Ok(()) => (false, None), Err(e) => (true, Some(e)) };
+                    self.compose_submissions.insert(channel_id, ComposeSubmission { content, reply, editing: None, uploads, failed, rejected });
+                    return;
+                }
+            }
+        }
         if let Some(m) = self.editing.as_ref() {
             if content.trim().is_empty() {
                 self.pending_delete = self.editing.take();
@@ -1198,6 +1304,13 @@ impl App {
                 self.editing = None;
                 return;
             }
+        }
+        let content = if self.editing.is_none() { self.plugins.transform("on_send", &content, &channel_id) } else { content };
+        if message_text_len(&content) > message_text_limit(self.me.as_ref().and_then(|u| u.premium_type)) {
+            self.input = content;
+            self.compose_notice = Some(("プラグインによる変換後の本文が文字数制限を超えました".into(), std::time::Instant::now()));
+            self.repaint_after(COMPOSE_NOTICE_TTL);
+            return;
         }
         let editing = self.editing.take();
         let reply = self.reply_to.take();
@@ -1237,6 +1350,39 @@ impl App {
     }
 
     pub fn poll(&mut self) {
+        for item in self.translator.drain() {
+            match item.target {
+                crate::translator::Target::Message { channel, id, original, generation } => {
+                    if self.plugins.generation == generation && self.plugins.translator_enabled() && self.messages.get(&channel).is_some_and(|items| items.iter().any(|m| m.id == id && m.content == original)) {
+                        match item.result {
+                            Ok(result) => { if self.translator.messages.len() >= 512 { self.translator.messages.clear(); } self.translator.messages.insert((channel, id), (original, result)); self.plugins.revision = self.plugins.revision.wrapping_add(1); },
+                            Err(error) => self.show_toast(&error),
+                        }
+                    }
+                }
+                crate::translator::Target::Outgoing { channel, request_id, generation } => {
+                    if self.translator.outgoing.get(&channel) != Some(&request_id) { continue; }
+                    self.translator.outgoing.remove(&channel);
+                    if let Some(sub) = self.compose_submissions.get_mut(&channel).filter(|s| !s.failed) {
+                        let result = if self.plugins.translator_enabled() && self.plugins.generation == generation { item.result } else { Err("翻訳中にプラグインが無効になりました".into()) };
+                        match result {
+                            Ok(text) if !text.trim().is_empty() && message_text_len(&text) <= message_text_limit(self.me.as_ref().and_then(|u| u.premium_type)) => {
+                                let cmd = Cmd::Send { channel_id: channel.clone(), content: text.clone(), reply_to: sub.reply.as_ref().map(|m| m.id.clone()), files: sub.uploads.iter().map(|u| (u.name.clone(), u.data.clone())).collect() };
+                                sub.content = text;
+                                if self.backend.as_ref().is_none_or(|b| b.cmd.send(cmd).is_err()) { sub.failed = true; sub.rejected = Some("送信できませんでした".into()); }
+                            }
+                            Ok(_) => { sub.failed = true; sub.rejected = Some("翻訳結果が空か文字数制限を超えています".into()); }
+                            Err(error) => { sub.failed = true; sub.rejected = Some(error); }
+                        }
+                    }
+                }
+            }
+        }
+        let (actions, next) = self.plugins.tick();
+        for action in actions {
+            match action { crate::plugins::Action::Send(channel_id, content) => self.send(Cmd::Send { channel_id, content, reply_to: None, files: Vec::new() }) }
+        }
+        if let Some(delay) = next { self.repaint_after(delay); }
         if self.login_retry_at.is_some_and(|t| t <= std::time::Instant::now()) {
             self.login_retry_at = None;
             if let Some(t) = load_token() {
@@ -1281,6 +1427,10 @@ impl App {
             match e {
                 Event::Api { id: _, call, result } => self.on_api_result(call, result),
                 Event::Gateway { t, d } => self.on_gateway_event(&t, d),
+                Event::GuildEmojis(list) => {
+                    self.guild_emojis.extend(list);
+                    self.emoji_rev += 1;
+                }
                 Event::ReadyExtra(d) => {
                     if let Some(map) = d["my_roles"].as_object() {
                         for (gid, roles) in map {
@@ -1532,6 +1682,8 @@ impl App {
                     list.splice(0..0, older);
                 }
                 Event::MessageCreate(m) => {
+                    self.plugins.event(&m);
+                    self.waker.wake();
                     if let Some(changes) = self.pending_message_loads.get_mut(&m.channel_id) {
                         changes.push(MessageChange::Create(m.clone()));
                     }
@@ -1624,21 +1776,24 @@ impl App {
                         }
                     }
                 }
-                Event::Voice(st) => match st {
-                    VoiceStatus::Disconnected => self.voice_status = None,
-                    VoiceStatus::Error(e) => {
-                        self.voice_status = None;
-                        eprintln!("ボイス接続失敗: {e}");
-                        self.status = "エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。".into();
-                    }
-                    st => {
-                        if let (VoiceStatus::Connected { channel_id, .. }, Some(me)) = (&st, &self.me) {
-                            if let Some(r) = self.calls.get_mut(channel_id) {
-                                r.retain(|u| u != &me.id);
-                            }
+                Event::Voice(st) => {
+                    match st {
+                        VoiceStatus::Disconnected => self.voice_status = None,
+                        VoiceStatus::Error(e) => {
+                            self.voice_status = None;
+                            eprintln!("ボイス接続失敗: {e}");
+                            self.status = "エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。".into();
                         }
-                        self.voice_status = Some(st);
+                        st => {
+                            if let (VoiceStatus::Connected { channel_id, .. }, Some(me)) = (&st, &self.me) {
+                                if let Some(r) = self.calls.get_mut(channel_id) {
+                                    r.retain(|u| u != &me.id);
+                                }
+                            }
+                            self.voice_status = Some(st);
+                        }
                     }
+                    self.update_voice_call_started();
                 },
                 Event::Call { channel_id, ringing } => {
                     self.calls.insert(channel_id, ringing);
@@ -1864,6 +2019,7 @@ impl App {
                 }
             }
             A::LeaveGuild(gid) => self.remove_guild(&gid),
+            A::GetEmojis(gid) => self.set_guild_emojis(gid, v),
             A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => {
                 if let Some((gid, s)) = GuildSettings::parse(&v) {
                     self.guild_settings.insert(gid, s);
@@ -1873,8 +2029,20 @@ impl App {
         }
     }
 
-    fn on_gateway_event(&mut self, t: &str, d: serde_json::Value) {
+    fn on_gateway_event(&mut self, t: &str, mut d: serde_json::Value) {
         match t {
+            "GUILD_EMOJIS_UPDATE" => {
+                if let Some(gid) = d["guild_id"].as_str().map(String::from) {
+                    let list = d.get_mut("emojis").map(serde_json::Value::take).unwrap_or_default();
+                    self.set_guild_emojis(gid, list);
+                }
+            }
+            "GUILD_CREATE" if d["emojis"].is_array() => {
+                if let Some(gid) = d["id"].as_str().map(String::from) {
+                    let list = d.get_mut("emojis").map(serde_json::Value::take).unwrap_or_default();
+                    self.set_guild_emojis(gid, list);
+                }
+            }
             "USER_GUILD_SETTINGS_UPDATE" => {
                 if let Some((gid, s)) = GuildSettings::parse(&d) {
                     self.guild_settings.insert(gid, s);
@@ -1951,6 +2119,9 @@ impl App {
         self.mention_counts.retain(|_, (g, _)| g.as_deref() != Some(gid));
         self.my_roles.remove(gid);
         self.guild_settings.remove(gid);
+        if self.guild_emojis.remove(gid).is_some() {
+            self.emoji_rev += 1;
+        }
         if self.sel_guild.as_deref() == Some(gid) {
             self.sel_guild = None;
             self.sel_channel = None;
@@ -2015,7 +2186,7 @@ impl App {
         let roles = self.roles.get(gid).map(Vec::as_slice).unwrap_or_default();
         let mut body = crate::notify::excerpt(&resolve_mentions(&m.content, m, &self.channels, roles), 200);
         if body.is_empty() {
-            body = if !m.attachments.is_empty() { "添付ファイルを送信しました".into() } else if !m.sticker_items.is_empty() { "スタンプを送信しました".into() } else { "新しいメッセージ".into() };
+            body = if m.is_call() { "通話を開始しました".into() } else if !m.attachments.is_empty() { "添付ファイルを送信しました".into() } else if !m.sticker_items.is_empty() { "スタンプを送信しました".into() } else { "新しいメッセージ".into() };
         }
         crate::notify::show(title, body, (m.guild_id.clone(), m.channel_id.clone()), self.notify_clicked.clone(), self.waker.clone());
     }
@@ -2426,12 +2597,25 @@ impl App {
 
     pub fn join_voice(&mut self, guild_id: Option<String>, channel_id: String, ring: bool) {
         self.voice_status = Some(VoiceStatus::Connecting { guild_id: guild_id.clone(), channel_id: channel_id.clone() });
+        self.update_voice_call_started();
         self.send(Cmd::JoinVoice { guild_id, channel_id, ring });
     }
 
     pub fn leave_voice(&mut self) {
         self.voice_status = None;
+        self.update_voice_call_started();
         self.send(Cmd::LeaveVoice);
+    }
+
+    fn update_voice_call_started(&mut self) {
+        match &self.voice_status {
+            Some(VoiceStatus::Connected { guild_id, channel_id }) => {
+                if !self.voice_call_started.as_ref().is_some_and(|(g, c, _)| g == guild_id && c == channel_id) {
+                    self.voice_call_started = Some((guild_id.clone(), channel_id.clone(), std::time::Instant::now()));
+                }
+            }
+            _ => self.voice_call_started = None,
+        }
     }
 
     /// 接続中（または接続しようとしている）チャンネル

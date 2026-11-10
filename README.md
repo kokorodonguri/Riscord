@@ -11,6 +11,7 @@ Rust と GPUI で作られた、日本語 UI の非公式 Discord デスクト�
 
 - サーバー、チャンネル、DM の表示とメッセージの送受信
 - 画像、GIF、スタンプ、埋め込みコンテンツの表示とファイルのアップロード
+- Linux では添付動画をチャット内で音声付き再生
 - ボイスチャンネルへの接続、マイクと音声出力の設定
 - QR コード、メールアドレスによるログイン
 - ステータスとプロフィールの編集、配色・背景画像・フォントのカスタマイズ
@@ -55,7 +56,7 @@ cargo run --release --locked
 ```sh
 sudo pacman -Syu --needed base-devel git cmake rustup alsa-lib fontconfig freetype2 \
   wayland libxkbcommon libxkbcommon-x11 libx11 libxcb vulkan-headers vulkan-icd-loader \
-  xdg-desktop-portal
+  gstreamer gst-plugins-base gst-plugins-good gst-libav xdg-desktop-portal
 rustup default stable
 git clone https://github.com/kokorodonguri/Riscord.git
 cd Riscord
@@ -71,7 +72,9 @@ sudo apt-get update
 sudo apt-get install -y build-essential git curl pkg-config cmake \
   libasound2-dev libfontconfig-dev libfreetype-dev \
   libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-  libx11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev xdg-desktop-portal
+  libx11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev xdg-desktop-portal \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 . "$HOME/.cargo/env"
 git clone https://github.com/kokorodonguri/Riscord.git
@@ -131,3 +134,7 @@ opacity = 0.35
 ```
 
 すべての色と既定値を記載した [テンプレート](themes/template.toml) と [配色の見本](themes/sample.toml) を用意しています。設定画面の地とメニューは `settings_bg` と `settings_nav` で個別に変更できます。省略するとチャット欄の色を引き継ぎます。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると設定画面にも背景が見えます。
+
+## プラグイン
+
+Lua で書いた Riscord 専用プラグインを設定画面から管理できます。通話の経過時間を表示する CallTimeCounter を同梱しており、「設定 → プラグイン」で有効にできます。Translator を有効にすると Google 翻訳でメッセージや送信文を翻訳できます。翻訳する本文は Google に送られます。インストール方法と API は [プラグイン開発ガイド](docs/plugins.md)、実例は [サンプル](examples/plugins/hello) を参照してください。プラグインはメッセージを読んだり送信したりできるため、信頼できるものだけを有効にしてください。

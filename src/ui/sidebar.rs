@@ -419,6 +419,9 @@ impl Root {
 
     /// 左下のユーザー欄（ボイス接続中はその上に接続の状態）
     fn userbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let call = self.app.voice_call_started.as_ref().map(|(guild, channel, start)| (guild.clone(), channel.clone(), start.elapsed().as_secs()));
+        let labels = call.as_ref().map(|(guild, channel, elapsed)| self.app.plugins.voice_panel(guild.as_deref(), channel, *elapsed)).unwrap_or_default();
+        if !labels.is_empty() { self.app.repaint_after(std::time::Duration::from_secs(1)); }
         let a = &self.app;
         let mut card = div().w_full().bg(USERBAR()).border_1().border_color(DIVIDER()).rounded(z(8.0)).px(z(8.0)).py(z(6.0)).flex().flex_col();
         if let Some((gid, cid, connected)) = a.voice_channel().map(|(g, c, k)| (g.clone(), c.clone(), k)) {
@@ -466,8 +469,11 @@ impl Root {
                             this.app.leave_voice();
                             cx.notify();
                         }))),
-                )
-                .child(div().my(z(6.0)).child(hline(DIVIDER())));
+                );
+            for label in labels {
+                card = card.child(div().pl(z(22.0)).pb(z(4.0)).child(text(label, 12.0, MUTED())));
+            }
+            card = card.child(div().my(z(6.0)).child(hline(DIVIDER())));
         }
         let mut row = div().h(z(40.0)).w_full().flex().items_center();
         if let Some(me) = &a.me {

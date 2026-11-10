@@ -35,6 +35,19 @@ fn message(id: u64, channel: &str, author: &User, content: &str, minutes_ago: i6
     .unwrap()
 }
 
+/// 通話の記録。seconds が無ければ、まだ続いている通話
+fn call(channel: &str, author: &User, participants: &[&str], minutes_ago: i64, seconds: Option<i64>) -> Message {
+    let at = chrono::Utc::now() - chrono::Duration::minutes(minutes_ago);
+    let ended = seconds.map(|s| (at + chrono::Duration::seconds(s)).to_rfc3339());
+    serde_json::from_value(serde_json::json!({
+        "id": "0", "channel_id": channel, "type": 3,
+        "author": { "id": author.id, "username": author.username, "global_name": author.global_name },
+        "timestamp": at.to_rfc3339(),
+        "call": { "participants": participants, "ended_timestamp": ended },
+    }))
+    .unwrap()
+}
+
 pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
     let (cmd_tx, mut cmd_rx) = unbounded_channel();
     let (tx, rx) = mpsc::channel();
@@ -95,10 +108,13 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     let mut list = vec![
                         message(1200, &cid, &others[0], "おはようございます！ **今日** もよろしくお願いします", 60 * 26),
                         message(1201, &cid, &others[1], "<@2> 昨日のリンク https://example.com/page です", 60 * 25),
+                        call(&cid, &others[0], &["2"], 60 * 24, Some(5)),
+                        call(&cid, &others[0], &["1", "2"], 60 * 2, Some(60 * 72)),
                         message(1202, &cid, &me, "ありがとう！", 30),
                         message(1203, &cid, &me, "あとで見ます", 29),
                         message(1204, &cid, &others[2], "名前が長い人のメッセージ。折り返しの確認用に少し長めの文章を書いておきます。ここまで書けば十分に長いはずです。", 5),
                     ];
+                    list.push(call(&cid, &others[1], &["1", "3"], 1, None));
                     for (i, m) in list.iter_mut().enumerate() {
                         m.id = format!("{}", 1200 + i);
                     }

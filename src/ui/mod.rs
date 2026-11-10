@@ -9,6 +9,7 @@ mod message;
 mod popup;
 mod settings;
 mod sidebar;
+mod split;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -67,7 +68,7 @@ pub fn run() {
             titlebar: Some(TitlebarOptions { title: Some("Riscord".into()), ..Default::default() }),
             ..Default::default()
         };
-        let opened = gpui::open_window(options, cx, |window, cx| cx.new(|cx| Root::new(window, cx)));
+        let opened = gpui::open_window(options, cx, |window, cx| cx.new(|cx| split::Shell::new(window, cx)));
         if let Err(e) = opened {
             eprintln!("ウィンドウを開けませんでした: {e}");
             cx.quit();
@@ -160,8 +161,24 @@ pub struct Root {
     pub image_preview: Option<String>,
     pub video: Option<crate::video::Player>,
     pub download: Option<std::sync::mpsc::Receiver<crate::download::Event>>,
+    /// 分割表示で、もう片方の区画のプロファイル（分割していなければ None）
+    pub other: Option<Option<String>>,
+    /// 右の区画のプロファイルの lock（左はプロセスが起動時に取っている）
+    _lock: Option<std::fs::File>,
     _subs: Vec<Subscription>,
 }
+
+thread_local! {
+    static WINDOW_TITLE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// 区画から分割表示の入れ物（split::Shell）への頼みごと
+pub enum PaneEvent {
+    /// このプロファイル（None は既定）を横に並べて開く
+    OpenSplit(Option<String>),
+}
+
+impl EventEmitter<PaneEvent> for Root {}
 
 fn new_input(window: &mut Window, cx: &mut Context<Root>, placeholder: &str, masked: bool) -> Entity<InputState> {
     let p = placeholder.to_string();
@@ -236,16 +253,20 @@ fn default_family() -> SharedString {
 }
 
 impl Root {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// profile = この区画のアカウントのプロファイル。primary = ウィンドウの最初の区画
+    fn new(window: &mut Window, cx: &mut Context<Self>, profile: Option<String>, primary: bool, lock: Option<std::fs::File>) -> Self {
         // 別スレッドからの「描き直して」を受け取る。急がないものは期限までにまとめて1回にする
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<Option<Duration>>();
         let waker = Waker::new(move |d| {
             let _ = tx.unbounded_send(d);
         });
-        crate::images::set_waker(waker.clone());
-        // 実行ファイルの置き換えが重ならないよう、更新は既定のプロファイルのウィンドウだけで行う
-        if crate::profile::name().is_none() {
-            crate::update::start(&waker);
+        if primary {
+            // 画像が届いたらこの区画を描き直す（ウィンドウごと描き直るので、もう片方の区画にも出る）
+            crate::images::set_waker(waker.clone());
+            // 実行ファイルの置き換えが重ならないよう、更新は既定のプロファイルのウィンドウだけで行う
+            if crate::profile::name().is_none() {
+                crate::update::start(&waker);
+            }
         }
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         cx.spawn(async move |this: WeakEntity<Root>, cx: &mut AsyncApp| {
@@ -330,7 +351,7 @@ impl Root {
                 cx.notify();
             }
             InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                st::save_settings(&this.app.settings);
+                this.app.save_settings();
                 this.app.apply_theme(false);
                 cx.notify();
             }
@@ -360,16 +381,8 @@ impl Root {
                 }
             }
         }));
-        // ウィンドウを閉じたら終わる（通信・音声のスレッドも止まる）
-        // 次の起動ですぐ出せるよう、閉じる前に控えを書いておく
-        let root = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
-            let _ = root.update(cx, |this, _| this.app.save_snapshot(true));
-            cx.quit();
-            true
-        });
-
-        let app = AppState::new(waker);
+        // ウィンドウを閉じたときの控えの保存は split::Shell が区画ごとに行う
+        let app = AppState::new(waker, profile);
         set_zoom(app.settings.zoom);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -404,6 +417,8 @@ impl Root {
             image_preview: None,
             video: None,
             download: None,
+            other: None,
+            _lock: lock,
             _subs: subs,
         };
         root.apply_fonts(cx);
@@ -484,11 +499,21 @@ impl Root {
     /// 毎回の描画の前にやること（通信の結果を取り込む・既読・テーマの反映など）
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vp = window.viewport_size();
-        self.app.screen_w = f32::from(vp.width) / zoom();
+        // 分割表示では半分の幅（区画の間の線の分を引く）
+        let panes = if self.other.is_some() { 2.0 } else { 1.0 };
+        self.app.screen_w = (f32::from(vp.width) - (panes - 1.0) * split::DIVIDER) / panes / zoom();
+        if self.other.is_some() {
+            // 色・拡大率はプロセスで1つなので、区画ごとに描く前に自分のものにする
+            if let Some(t) = &self.app.theme_applied {
+                crate::theme::set_colors(&t.colors);
+                crate::theme::set_parts(&t.parts);
+            }
+            set_zoom(self.app.settings.zoom);
+        }
         if self.app.theme_watch.as_ref().is_some_and(|rx| rx.try_iter().count() > 0) {
             self.app.apply_theme(true);
         }
-        self.app.window_focused = window.is_window_active();
+        self.app.window_focused = self.pane_active(window, cx);
         self.app.poll();
         if self.video.as_ref().is_some_and(|v| self.app.sel_channel.as_deref() != Some(v.channel.as_str())) { self.video = None; }
         if let Some(video) = &mut self.video {
@@ -535,7 +560,7 @@ impl Root {
             self.app.theme_dirty = false;
             self.apply_component_theme(window, cx);
         }
-        let focused = window.is_window_active();
+        let focused = self.pane_active(window, cx);
         self.app.sync_read_state(focused);
         if !self.app.settings_open {
             self.app.mic_test = None;
@@ -588,12 +613,23 @@ impl Root {
                 self.inp.compose.update(cx, |s, cx| s.focus(window, cx));
             }
         }
-        // ウィンドウのタイトル
+        // ウィンドウのタイトル（分割表示では操作中の区画のもの）
         let title = self.window_title();
-        if self.last_title != title {
-            window.set_window_title(&title);
+        if self.other.is_none() || self.focus.contains_focused(window, cx) {
+            // 区画どうしで「今ウィンドウに出しているタイトル」を共有する（操作する区画を変えたら付け替える）
+            WINDOW_TITLE.with_borrow_mut(|t| {
+                if *t != title {
+                    window.set_window_title(&title);
+                    t.clone_from(&title);
+                }
+            });
             self.last_title = title;
         }
+    }
+
+    /// ウィンドウが前にあり、分割表示ならこの区画を操作中か（既読・通知の判断に使う）
+    pub fn pane_active(&self, window: &Window, cx: &App) -> bool {
+        window.is_window_active() && (self.other.is_none() || self.focus.contains_focused(window, cx))
     }
 
     fn window_title(&self) -> String {
@@ -729,7 +765,7 @@ impl Root {
         if self.app.binding_ptt {
             if k.key != "escape" {
                 self.app.settings.ptt_key = Some(k.key.clone());
-                st::save_settings(&self.app.settings);
+                self.app.save_settings();
             }
             self.app.binding_ptt = false;
             cx.stop_propagation();

@@ -34,8 +34,8 @@ pub fn status_label(s: &str) -> &'static str {
 }
 
 // ---- トークン ----
-pub fn token_path() -> PathBuf {
-    crate::profile::account_dir().join("token")
+pub fn token_path(profile: Option<&str>) -> PathBuf {
+    crate::profile::account_dir(profile).join("token")
 }
 
 /// 設定フォルダの親。テスト中は本物の設定（トークン・settings.json・テーマ）に触らないよう一時フォルダにする
@@ -61,13 +61,13 @@ pub fn cache_root() -> PathBuf {
     dirs::cache_dir().unwrap_or_else(config_root)
 }
 
-pub fn load_token() -> Option<String> {
-    std::fs::read_to_string(token_path()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+pub fn load_token(profile: Option<&str>) -> Option<String> {
+    std::fs::read_to_string(token_path(profile)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-pub fn save_token(token: &str) -> std::io::Result<()> {
+pub fn save_token(profile: Option<&str>, token: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let p = token_path();
+    let p = token_path(profile);
     std::fs::create_dir_all(p.parent().unwrap())?;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -153,16 +153,16 @@ pub fn lin_to_db(v: f32) -> f32 {
     20.0 * v.max(1e-6).log10()
 }
 
-pub fn settings_path() -> PathBuf {
-    token_path().with_file_name("settings.json")
+pub fn settings_path(profile: Option<&str>) -> PathBuf {
+    token_path(profile).with_file_name("settings.json")
 }
 
-pub fn load_settings() -> Settings {
-    std::fs::read_to_string(settings_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+pub fn load_settings(profile: Option<&str>) -> Settings {
+    std::fs::read_to_string(settings_path(profile)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
-pub fn save_settings(s: &Settings) {
-    let p = settings_path();
+pub fn save_settings(profile: Option<&str>, s: &Settings) {
+    let p = settings_path(profile);
     let _ = std::fs::create_dir_all(p.parent().unwrap());
     let _ = std::fs::write(p, serde_json::to_string_pretty(s).unwrap_or_default());
 }
@@ -987,6 +987,8 @@ pub struct App {
     pub stale_guilds: HashSet<String>,
     /// 今のトークンの持ち主のユーザー ID（控えを書くときに付ける）
     pub token_owner: Option<String>,
+    /// このアカウントのプロファイル（None は既定）。トークン・設定・控えの置き場所が決まる
+    pub profile: Option<String>,
     /// 最後に控えを書いた時刻と中身の目印（変わっていなければ書かない）
     pub cache_saved: Option<(std::time::Instant, u64)>,
     /// 控えを出したまま接続できなかったとき、この時刻にもう一度つなぐ
@@ -1009,9 +1011,11 @@ impl App {
         self.msg_rev = MSG_REV.fetch_add(1, Relaxed) + 1;
     }
 
-    pub fn new(waker: Waker) -> Self {
-        let settings = load_settings();
+    /// profile = このアカウントのプロファイル（None は既定）。分割表示では画面ごとに違う
+    pub fn new(waker: Waker, profile: Option<String>) -> Self {
+        let settings = load_settings(profile.as_deref());
         let mut app = App { waker, screen_w: 1200.0, remember: true, settings, show_members: true, ..Default::default() };
+        app.set_profile(profile);
         app.plugins.reload(&app.settings.enabled_plugins);
         app.theme_watch = Some(watch_themes(app.waker.clone()));
         app.apply_theme(false);
@@ -1025,8 +1029,8 @@ impl App {
                 Ok("dm") => app.select(None, Some("900".into())),
                 _ => {}
             }
-        } else if let Some(t) = load_token() {
-            let snapshot = cache::load(&t);
+        } else if let Some(t) = app.load_token() {
+            let snapshot = cache::load(app.profile.as_deref(), &t);
             std::thread::spawn(cache::prune_images);
             app.start(t);
             if let Some(s) = snapshot {
@@ -1067,7 +1071,7 @@ impl App {
     pub fn snapshot(&self) -> Option<cache::Snapshot> {
         let owner = self.token_owner.as_ref()?;
         // 保存済みのトークンがこのアカウントのものであるときだけ（保存していないなら書かない）
-        if load_token().and_then(|t| cache::token_owner(&t)).as_ref() != Some(owner) {
+        if self.load_token().and_then(|t| cache::token_owner(&t)).as_ref() != Some(owner) {
             return None;
         }
         self.build_snapshot()
@@ -1131,8 +1135,9 @@ impl App {
         if !changed {
             return;
         }
+        let profile = self.profile.clone();
         let write = move || {
-            if let Err(e) = cache::write(&bytes) {
+            if let Err(e) = cache::write(profile.as_deref(), &bytes) {
                 eprintln!("起動用の控えを保存できませんでした: {e}");
             }
         };
@@ -1171,7 +1176,27 @@ impl App {
         let (applied, watch) = (self.theme_applied.take(), self.theme_watch.take());
         let plugins = std::mem::take(&mut self.plugins);
         let message_log = std::mem::take(&mut self.message_log);
-        *self = App { waker, screen_w, remember: true, settings, show_members: true, theme_applied: applied, theme_watch: watch, plugins, message_log, ..Default::default() };
+        let profile = self.profile.take();
+        *self = App { waker, screen_w, remember: true, settings, show_members: true, theme_applied: applied, theme_watch: watch, plugins, message_log, profile, ..Default::default() };
+    }
+
+    /// プロファイルを決め、それに合わせて記録・プラグインのデータの置き場所を変える
+    pub fn set_profile(&mut self, profile: Option<String>) {
+        self.message_log.path = crate::message_log::path_for(profile.as_deref());
+        self.plugins.data_root = crate::profile::account_dir(profile.as_deref()).join("plugin-data");
+        self.profile = profile;
+    }
+
+    pub fn token_path(&self) -> PathBuf {
+        token_path(self.profile.as_deref())
+    }
+
+    pub fn load_token(&self) -> Option<String> {
+        load_token(self.profile.as_deref())
+    }
+
+    pub fn save_settings(&self) {
+        save_settings(self.profile.as_deref(), &self.settings);
     }
 
     /// d 後に描き直す（期限のあるお知らせを消すときなど）
@@ -1352,8 +1377,8 @@ impl App {
 
     pub fn logout(&mut self) {
         self.send(Cmd::LeaveVoice);
-        let _ = std::fs::remove_file(token_path());
-        cache::remove();
+        let _ = std::fs::remove_file(self.token_path());
+        cache::remove(self.profile.as_deref());
         self.reset();
     }
 
@@ -1394,7 +1419,7 @@ impl App {
         if let Some(delay) = next { self.repaint_after(delay); }
         if self.login_retry_at.is_some_and(|t| t <= std::time::Instant::now()) {
             self.login_retry_at = None;
-            if let Some(t) = load_token() {
+            if let Some(t) = self.load_token() {
                 self.retry_login(t);
             }
         }
@@ -1481,19 +1506,19 @@ impl App {
                 }
                 Event::Me(u) => {
                     if self.remember && !self.token_input.is_empty() {
-                        if let Err(e) = save_token(self.token_input.trim()) {
+                        if let Err(e) = save_token(self.profile.as_deref(), self.token_input.trim()) {
                             eprintln!("トークン保存失敗: {e}");
                             self.status = "エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。".into();
                         }
                     }
                     self.token_input.clear();
                     // 別アカウントの一覧に名前を出すため、プロファイルのフォルダに覚えておく
-                    crate::profile::remember_account(u.display());
+                    crate::profile::remember_account(self.profile.as_deref(), u.display());
                     self.me = Some(u);
                     self.status = self.gateway_status.clone();
                 }
                 Event::AuthFailed => {
-                    cache::remove();
+                    cache::remove(self.profile.as_deref());
                     self.reset();
                     self.login_error = Some("ログイン情報が無効です。もう一度ログインしてください。".into());
                     return;
@@ -2651,7 +2676,7 @@ impl App {
 
     pub fn voice_changed(&mut self) {
         self.apply_voice_settings();
-        save_settings(&self.settings);
+        self.save_settings();
         self.send(Cmd::VoiceFlags);
     }
 
@@ -2748,7 +2773,7 @@ impl App {
     pub fn set_status(&mut self, st: String) {
         self.send(Cmd::SetStatus(st.clone()));
         self.settings.status = st;
-        save_settings(&self.settings);
+        self.save_settings();
     }
 
     pub fn open_profile(&mut self, user: User, anchor: Bounds<Pixels>, above: bool) {

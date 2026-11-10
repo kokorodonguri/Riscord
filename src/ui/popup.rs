@@ -274,7 +274,7 @@ impl Root {
                             s.output_device = d.clone();
                         }
                         this.app.apply_voice_settings();
-                        st::save_settings(&this.app.settings);
+                        this.app.save_settings();
                         cx.notify();
                     }))
                     .child(radio(on))
@@ -300,7 +300,7 @@ impl Root {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.app.settings.ptt = ptt;
                             this.app.apply_voice_settings();
-                            st::save_settings(&this.app.settings);
+                            this.app.save_settings();
                             cx.notify();
                         }))
                         .child(radio(on))

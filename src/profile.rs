@@ -61,15 +61,16 @@ fn dir_for(shared: &Path, name: Option<&str>) -> PathBuf {
     }
 }
 
-/// このプロセスのアカウントのフォルダ（トークン・設定・記録など）
-pub fn account_dir() -> PathBuf {
-    dir_for(&shared_dir(), name())
+/// そのプロファイル（None は既定）のアカウントのフォルダ（トークン・設定・記録など）。
+/// 分割表示では1つのプロセスに2つのアカウントがあるので、プロファイルは画面ごとに持つ
+pub fn account_dir(name: Option<&str>) -> PathBuf {
+    dir_for(&shared_dir(), name)
 }
 
 /// 控え（snapshot.json）を置くフォルダ
-pub fn cache_dir() -> PathBuf {
+pub fn cache_dir(name: Option<&str>) -> PathBuf {
     let base = crate::app::cache_root().join("riscord");
-    match name() {
+    match name {
         None => base,
         Some(n) => base.join("profiles").join(n),
     }
@@ -114,7 +115,7 @@ pub fn acquire() -> bool {
     if crate::demo::enabled() {
         return true;
     }
-    match try_lock(&account_dir()) {
+    match try_lock(&account_dir(name())) {
         Ok(Some(f)) => {
             let _ = LOCK.set(f);
             true
@@ -124,6 +125,53 @@ pub fn acquire() -> bool {
         Err(e) => {
             eprintln!("プロファイルの lock を取れませんでした: {e}");
             true
+        }
+    }
+}
+
+/// 分割表示でもう1つのアカウントを開くときの lock。持っている間は他のウィンドウで開かせない。
+/// もう開いていれば None
+pub fn lock(name: Option<&str>) -> Option<File> {
+    if crate::demo::enabled() {
+        return Some(open_lock(&std::env::temp_dir()).ok()?);
+    }
+    match try_lock(&account_dir(name)) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("プロファイルの lock を取れませんでした: {e}");
+            open_lock(&std::env::temp_dir()).ok()
+        }
+    }
+}
+
+/// 分割表示で右に開いているプロファイルを覚えておくファイル（左のプロファイルごと）
+fn split_file(left: Option<&str>) -> PathBuf {
+    account_dir(left).join("split")
+}
+
+/// 前回右に開いていたプロファイル。Some(None) は既定のプロファイル
+pub fn split_load(left: Option<&str>) -> Option<Option<String>> {
+    let s = std::fs::read_to_string(split_file(left)).ok()?;
+    match s.trim() {
+        "" => None,
+        "@" => Some(None),
+        n if valid(n) => Some(Some(n.to_string())),
+        _ => None,
+    }
+}
+
+pub fn split_save(left: Option<&str>, right: Option<Option<&str>>) {
+    if crate::demo::enabled() {
+        return;
+    }
+    let p = split_file(left);
+    match right {
+        Some(r) => {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            let _ = std::fs::write(p, r.unwrap_or("@"));
+        }
+        None => {
+            let _ = std::fs::remove_file(p);
         }
     }
 }
@@ -145,11 +193,11 @@ pub fn launch(name: Option<&str>) -> std::io::Result<()> {
 }
 
 /// そのプロファイルで最後にログインしたアカウントの名前を覚える
-pub fn remember_account(display: &str) {
+pub fn remember_account(name: Option<&str>, display: &str) {
     if crate::demo::enabled() {
         return;
     }
-    let p = account_dir().join("account");
+    let p = account_dir(name).join("account");
     if std::fs::read_to_string(&p).ok().as_deref() != Some(display) {
         let _ = std::fs::write(p, display);
     }
@@ -190,6 +238,20 @@ mod tests {
         assert!(!valid("../x"));
         assert!(!valid("Main"));
         assert!(!valid(&"a".repeat(33)));
+    }
+
+    #[test]
+    fn split_partner_is_remembered_per_left_profile() {
+        let left = Some("split-left");
+        assert_eq!(split_load(left), None);
+        split_save(left, Some(None));
+        assert_eq!(split_load(left), Some(None), "default profile on the right");
+        split_save(left, Some(Some("3")));
+        assert_eq!(split_load(left), Some(Some("3".into())));
+        assert_eq!(split_load(Some("split-other")), None);
+        split_save(left, None);
+        assert_eq!(split_load(left), None);
+        let _ = std::fs::remove_dir_all(account_dir(left));
     }
 
     #[test]

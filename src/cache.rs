@@ -34,8 +34,8 @@ pub struct Snapshot {
     pub sel_channel: Option<String>,
 }
 
-pub fn path() -> PathBuf {
-    crate::profile::cache_dir().join("snapshot.json")
+pub fn path(profile: Option<&str>) -> PathBuf {
+    crate::profile::cache_dir(profile).join("snapshot.json")
 }
 
 /// 画像の控えを置くフォルダ
@@ -59,8 +59,8 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 /// このトークンの控えがあれば返す
-pub fn load(token: &str) -> Option<Snapshot> {
-    let bytes = std::fs::read(path()).ok()?;
+pub fn load(profile: Option<&str>, token: &str) -> Option<Snapshot> {
+    let bytes = std::fs::read(path(profile)).ok()?;
     let s: Snapshot = match serde_json::from_slice(&bytes) {
         Ok(s) => s,
         Err(e) => {
@@ -76,9 +76,9 @@ pub fn load(token: &str) -> Option<Snapshot> {
 static WRITE: Mutex<()> = Mutex::new(());
 
 /// 一時ファイルに書いてから置き換える（途中で落ちても前の控えが残る）
-pub fn write(bytes: &[u8]) -> std::io::Result<()> {
+pub fn write(profile: Option<&str>, bytes: &[u8]) -> std::io::Result<()> {
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let p = path();
+    let p = path(profile);
     std::fs::create_dir_all(p.parent().unwrap())?;
     let tmp = p.with_extension("json.tmp");
     write_private(&tmp, bytes)?;
@@ -99,9 +99,9 @@ pub fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// ログアウト・ログイン失敗のとき。会話の控えを残さない
-pub fn remove() {
+pub fn remove(profile: Option<&str>) {
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = std::fs::remove_file(path());
+    let _ = std::fs::remove_file(path(profile));
 }
 
 /// アイコンの控えがこれより多くなったら、古いものから捨てる

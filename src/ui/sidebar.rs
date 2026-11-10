@@ -223,7 +223,7 @@ impl Root {
                     .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))
                     .on_drop(cx.listener(move |this, d: &GuildDrag, _, cx| {
                         if this.app.move_guild(&d.id, &gid3) {
-                            st::save_settings(&this.app.settings);
+                            this.app.save_settings();
                         }
                         cx.notify();
                     }))

@@ -672,12 +672,35 @@ fn snapshot_is_tied_to_account() {
     app.me = Some(User { id: "123456789012345678".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
     app.token_owner = cache::token_owner(&tok("123456789012345678", "old.sig"));
     let bytes = serde_json::to_vec(&app.build_snapshot().unwrap()).unwrap();
-    cache::write(&bytes).unwrap();
-    assert!(cache::load(&tok("123456789012345678", "new.sig")).is_some(), "same account, new token");
-    assert!(cache::load(&tok("999", "x.y")).is_none(), "other account");
-    assert!(cache::load("garbage").is_none());
-    cache::remove();
-    assert!(cache::load(&tok("123456789012345678", "new.sig")).is_none());
+    cache::write(None, &bytes).unwrap();
+    assert!(cache::load(None, &tok("123456789012345678", "new.sig")).is_some(), "same account, new token");
+    assert!(cache::load(None, &tok("999", "x.y")).is_none(), "other account");
+    assert!(cache::load(None, "garbage").is_none());
+    // 分割表示のもう片方（別のプロファイル）からは見えない
+    assert!(cache::load(Some("split-test"), &tok("123456789012345678", "new.sig")).is_none(), "other profile");
+    cache::remove(None);
+    assert!(cache::load(None, &tok("123456789012345678", "new.sig")).is_none());
+}
+
+/// 分割表示で並べた2つの区画は、トークン・設定・記録・プラグインのデータを別々の場所に持つ
+#[test]
+fn split_panes_keep_separate_storage() {
+    let mut a = App::default();
+    a.set_profile(None);
+    let mut b = App::default();
+    b.set_profile(Some("split-store".into()));
+    assert_ne!(a.token_path(), b.token_path());
+    assert_ne!(a.message_log.path, b.message_log.path);
+    assert_ne!(a.plugins.data_root, b.plugins.data_root);
+    assert!(b.token_path().starts_with(crate::profile::account_dir(Some("split-store"))));
+    b.settings.zoom = 1.75;
+    b.save_settings();
+    assert_eq!(crate::app::load_settings(Some("split-store")).zoom, 1.75);
+    assert_ne!(crate::app::load_settings(None).zoom, 1.75);
+    // reset（ログアウト）してもプロファイルは変わらない
+    b.reset();
+    assert_eq!(b.profile.as_deref(), Some("split-store"));
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some("split-store")));
 }
 
 /// つなぎ始めたら「ログイン中」画面ではなくホーム画面を出す

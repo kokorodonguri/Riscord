@@ -56,10 +56,12 @@ pub struct MessageLog {
     dirty_since: Option<Instant>,
     /// 記録が変わるたびに増える（一覧画面の描き直し用）
     pub revision: u64,
+    /// 記録を置くファイル（アカウントのフォルダの message-log.json）。空なら保存しない
+    pub path: PathBuf,
 }
 
-fn path() -> PathBuf {
-    crate::profile::account_dir().join("message-log.json")
+pub fn path_for(profile: Option<&str>) -> PathBuf {
+    crate::profile::account_dir(profile).join("message-log.json")
 }
 
 fn now() -> String {
@@ -78,7 +80,7 @@ impl MessageLog {
             return;
         }
         self.loaded = true;
-        let Some(stored) = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice::<Stored>(&b).ok()) else { return };
+        let Some(stored) = std::fs::read(&self.path).ok().and_then(|b| serde_json::from_slice::<Stored>(&b).ok()) else { return };
         self.deleted = stored.deleted.into_iter().map(|d| (d.message.id.clone(), d)).collect();
         self.edited = stored.edited.into_iter().map(|e| (e.message.id.clone(), e)).collect();
         self.revision = self.revision.wrapping_add(1);
@@ -204,7 +206,10 @@ impl MessageLog {
         }
         let stored = Stored { deleted: self.deleted.values().cloned().collect(), edited: self.edited.values().cloned().collect() };
         let Ok(bytes) = serde_json::to_vec(&stored) else { return };
-        let p = path();
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        let p = self.path.clone();
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

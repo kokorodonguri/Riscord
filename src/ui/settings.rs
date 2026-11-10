@@ -6,7 +6,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::*;
-use crate::app::{db_to_lin, lin_to_db, open_folder, spawn_file_dialog, themes_dir, token_path, user_avatar_url, AvatarEdit, ProfileDraft, ProfileState, Settings};
+use crate::app::{db_to_lin, lin_to_db, open_folder, spawn_file_dialog, themes_dir, user_avatar_url, AvatarEdit, ProfileDraft, ProfileState, Settings};
 use crate::color::Color32;
 use crate::net::{self, Cmd};
 use crate::{theme, voice};
@@ -252,7 +252,7 @@ impl Root {
                 this.app.apply_theme(false);
             }
             if done || key != "zoom" {
-                st::save_settings(&this.app.settings);
+                this.app.save_settings();
             }
             cx.notify();
         });
@@ -550,13 +550,13 @@ impl Root {
                     toggle_switch("activity_switch", on).on_click(cx.listener(move |this, _, _, cx| {
                         this.app.settings.show_activity = !on;
                         this.app.send(Cmd::SetActivity(!on));
-                        st::save_settings(&this.app.settings);
+                        this.app.save_settings();
                         cx.notify();
                     })),
                 ))
                 .into_any_element(),
         );
-        let path = token_path();
+        let path = self.app.token_path();
         let saved = path.exists();
         // OS ごとに実際の保存場所を出す（Windows/macOS は ~/.config ではない）
         let desc = if saved { format!("このPCに保存されています ({})", path.display()) } else { "このPCには保存されていません".into() };
@@ -566,8 +566,8 @@ impl Root {
                     "保存したトークン",
                     Some(desc),
                     div().when(saved, |d| {
-                        d.child(button("delete_token", "削除", true).on_click(cx.listener(move |_, _, _, cx| {
-                            let _ = std::fs::remove_file(token_path());
+                        d.child(button("delete_token", "削除", true).on_click(cx.listener(move |this, _, _, cx| {
+                            let _ = std::fs::remove_file(this.app.token_path());
                             cx.notify();
                         })))
                     }),
@@ -587,25 +587,31 @@ impl Root {
         pages
     }
 
-    /// 別のアカウントをそれぞれのウィンドウで開く（プロファイルごとに別のプロセスで動く）
+    /// 別のアカウント。同じウィンドウで横に並べる（分割表示）か、別のウィンドウ（別のプロセス）で開く
     fn profiles_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
         use crate::profile;
-        let current = profile::name().map(str::to_string);
+        let current = self.app.profile.clone();
         let mut s = section(3, "別のアカウント").child(
-            text("アカウントごとに別のウィンドウで開きます。どのウィンドウも同時にログインしたまま使え、通話にもそれぞれ入れます。", 15.0, MUTED()).mb(z(16.0)),
+            text("「横に並べる」で、このウィンドウを左右に分けて2つのアカウントを同時に使えます。別のウィンドウで開くこともできます。どれも同時にログインしたまま使え、通話にもそれぞれ入れます。", 15.0, MUTED()).mb(z(16.0)),
         );
         let names: Vec<Option<String>> = std::iter::once(None).chain(profile::list().into_iter().map(Some)).collect();
         for name in names {
             let here = name == current;
-            let running = here || profile::is_running(name.as_deref());
+            let beside = self.other.as_ref() == Some(&name);
+            let running = here || beside || profile::is_running(name.as_deref());
             let title = profile::label(name.as_deref());
             let who = profile::account_name(name.as_deref()).unwrap_or_else(|| "未ログイン".into());
-            let state = if here { "このウィンドウ" } else if running { "開いています" } else { "閉じています" };
+            let state = if here { "この区画" } else if beside { "横に並べています" } else if running { "別のウィンドウで開いています" } else { "閉じています" };
             let key = name.clone().unwrap_or_default();
             let mut actions = div().flex().items_center().gap(z(8.0));
             if !running {
                 let n = name.clone();
-                actions = actions.child(button(SharedString::from(format!("profile_open_{key}")), "開く", false).on_click(cx.listener(move |this, _, _, cx| {
+                actions = actions.child(button(SharedString::from(format!("profile_split_{key}")), "横に並べる", false).on_click(cx.listener(move |this, _, _, cx| {
+                    this.app.settings_open = false;
+                    cx.emit(PaneEvent::OpenSplit(n.clone()));
+                })));
+                let n = name.clone();
+                actions = actions.child(button(SharedString::from(format!("profile_open_{key}")), "別ウィンドウ", false).on_click(cx.listener(move |this, _, _, cx| {
                     if let Err(e) = profile::launch(n.as_deref()) {
                         this.app.show_toast(&format!("ウィンドウを開けませんでした: {e}"));
                     }
@@ -629,12 +635,14 @@ impl Root {
             }
             s = s.child(row(title, Some(format!("{who} · {state}")), actions));
         }
-        s = s.child(div().mt(z(8.0)).child(button("profile_add", "サブアカウントを追加", false).on_click(cx.listener(|this, _, _, cx| {
+        s = s.child(div().mt(z(8.0)).child(button("profile_add", "サブアカウントを追加して横に並べる", false).on_click(cx.listener(|this, _, _, cx| {
             let name = profile::next_name(&profile::list());
-            let r = profile::create(&name).and_then(|_| profile::launch(Some(&name)));
-            match r {
-                Ok(()) => this.app.show_toast("新しいウィンドウでログインしてください"),
-                Err(e) => this.app.show_toast(&format!("ウィンドウを開けませんでした: {e}")),
+            match profile::create(&name) {
+                Ok(()) => {
+                    this.app.settings_open = false;
+                    cx.emit(PaneEvent::OpenSplit(Some(name)));
+                }
+                Err(e) => this.app.show_toast(&format!("サブアカウントを作れませんでした: {e}")),
             }
             cx.notify();
         }))));
@@ -649,7 +657,7 @@ impl Root {
             s1 = s1.child(radio_card(SharedString::from(format!("compact{compact}")), self.app.settings.compact == compact, title, Some(desc)).on_click(cx.listener(move |this, _, _, cx| {
                 if this.app.settings.compact != compact {
                     this.app.settings.compact = compact;
-                    st::save_settings(&this.app.settings);
+                    this.app.save_settings();
                 }
                 cx.notify();
             })));
@@ -663,7 +671,7 @@ impl Root {
                 (s.zoom, s.font_size, s.compact) = (d.zoom, d.font_size, d.compact);
                 set_zoom(d.zoom);
                 this.app.theme_dirty = true;
-                st::save_settings(&this.app.settings);
+                this.app.save_settings();
                 window.refresh();
                 cx.notify();
             })),
@@ -707,7 +715,7 @@ impl Root {
                                 s.output_device = d.clone();
                             }
                             this.app.apply_voice_settings();
-                            st::save_settings(&this.app.settings);
+                            this.app.save_settings();
                             cx.notify();
                         })),
                 );
@@ -735,7 +743,7 @@ impl Root {
                 if this.app.settings.ptt != ptt {
                     this.app.settings.ptt = ptt;
                     this.app.apply_voice_settings();
-                    st::save_settings(&this.app.settings);
+                    this.app.save_settings();
                 }
                 cx.notify();
             })));
@@ -783,14 +791,14 @@ impl Root {
         page = page.child(div().flex().flex_wrap().gap(z(10.0)).mt(z(12.0))
             .child(action_button("enable_all_plugins", IconName::Check, "すべてオン").on_click(cx.listener(|this, _, _, cx| {
                 this.app.plugins.set_all(true, &mut this.app.settings.enabled_plugins);
-                st::save_settings(&this.app.settings);
+                this.app.save_settings();
                 this.app.waker.wake();
                 cx.notify();
             })))
             .child(action_button("disable_all_plugins", IconName::X, "すべてオフ").on_click(cx.listener(|this, _, _, cx| {
                 this.app.plugins.set_all(false, &mut this.app.settings.enabled_plugins);
                 this.plugin_inputs.clear();
-                st::save_settings(&this.app.settings);
+                this.app.save_settings();
                 this.app.waker.wake();
                 cx.notify();
             }))));
@@ -804,7 +812,7 @@ impl Root {
             page = page.child(div().mt(z(16.0)).child(settings_card(None).child(row(p.manifest.name.clone(), Some(desc),
                 div().flex().gap(z(8.0))
                 .when(p.has_page(), |d| d.child(div().id(SharedString::from(format!("plugin-page-{id}"))).cursor_pointer().child(text("ページ", 14.0, LINK())).on_click(cx.listener(move |this, _, _, cx| { this.app.plugins.selected = Some(page_id.clone()); cx.notify(); }))))
-                .child(toggle_switch(SharedString::from(format!("plugin-toggle-{id}")), enabled).tooltip(tip(if enabled { "無効にする" } else { "有効にする" })).on_click(cx.listener(move |this, _, _, cx| { this.app.plugins.toggle(&id, &mut this.app.settings.enabled_plugins); st::save_settings(&this.app.settings); this.app.waker.wake(); cx.notify(); })))))));
+                .child(toggle_switch(SharedString::from(format!("plugin-toggle-{id}")), enabled).tooltip(tip(if enabled { "無効にする" } else { "有効にする" })).on_click(cx.listener(move |this, _, _, cx| { this.app.plugins.toggle(&id, &mut this.app.settings.enabled_plugins); this.app.save_settings(); this.app.waker.wake(); cx.notify(); })))))));
         }
         if let Some(id) = self.app.plugins.selected.clone().filter(|id| self.app.plugins.entries.iter().any(|p| p.manifest.id == *id && p.has_page())) {
             page = page.child(div().mt(z(24.0)).child(medium(format!("{id} のページ"), 20.0, WHITE())));
@@ -918,7 +926,7 @@ impl Root {
             self.app.bg_pick = None;
             if let Some(p) = p.first() {
                 self.app.settings.background.image = Some(p.display().to_string());
-                st::save_settings(&self.app.settings);
+                self.app.save_settings();
                 self.app.apply_theme(false);
             }
         }
@@ -971,7 +979,7 @@ impl Root {
                                     this.app.settings.theme = path.file_name().unwrap().to_string_lossy().into_owned();
                                     // 書き出した色はファイルに入ったので、上書きは消す
                                     this.app.settings.color_overrides.clear();
-                                    st::save_settings(&this.app.settings);
+                                    this.app.save_settings();
                                     this.app.apply_theme(false);
                                 }
                                 Err(e) => this.app.theme_error = Some(format!("{}: {e}", path.display())),
@@ -1011,7 +1019,7 @@ impl Root {
                     .child(toggle_switch(("theme_sw", i), on).on_click(cx.listener(move |this, _, _, cx| {
                         // 使っているものを切ったら既定に戻す
                         this.app.settings.theme = if on { "builtin:black".into() } else { key.clone() };
-                        st::save_settings(&this.app.settings);
+                        this.app.save_settings();
                         this.app.apply_theme(false);
                         cx.notify();
                     }))),
@@ -1042,7 +1050,7 @@ impl Root {
                     .child(text(label, 14.0, TEXT()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.app.settings.background.area = v.clone();
-                        st::save_settings(&this.app.settings);
+                        this.app.save_settings();
                         this.app.apply_theme(false);
                         cx.notify();
                     })),
@@ -1082,7 +1090,7 @@ impl Root {
             div().when(has_overrides, |d| {
                 d.child(button("clear_overrides", "調整をすべて消す", false).on_click(cx.listener(|this, _, _, cx| {
                     this.app.settings.color_overrides.clear();
-                    st::save_settings(&this.app.settings);
+                    this.app.save_settings();
                     this.app.apply_theme(false);
                     cx.notify();
                 })))
@@ -1105,7 +1113,7 @@ impl Root {
                     .when(overridden, |d| {
                         d.child(small_button(SharedString::from(format!("reset_{k}")), "戻す").on_click(cx.listener(move |this, _, _, cx| {
                             this.app.settings.color_overrides.remove(k);
-                            st::save_settings(&this.app.settings);
+                            this.app.save_settings();
                             this.app.apply_theme(false);
                             cx.notify();
                         })))
@@ -1133,7 +1141,7 @@ impl Root {
                 let v = state.read(cx).value().to_string();
                 if let Some(col) = theme::parse_color(&v) {
                     this.app.settings.color_overrides.insert(key.to_string(), theme::format_color(col));
-                    st::save_settings(&this.app.settings);
+                    this.app.save_settings();
                     this.app.apply_theme(false);
                     cx.notify();
                 }

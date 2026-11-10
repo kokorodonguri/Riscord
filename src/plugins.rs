@@ -56,6 +56,8 @@ pub struct Plugins {
     pub selected: Option<String>,
     pub revision: u64,
     pub generation: u64,
+    /// プラグインが riscord.save で書くフォルダ（アカウントごと）
+    pub data_root: PathBuf,
 }
 
 pub fn directory() -> PathBuf {
@@ -87,13 +89,13 @@ fn entry_path(dir: &Path, entry: &str) -> anyhow::Result<PathBuf> {
 }
 
 impl Runtime {
-    fn new(manifest: &Manifest, dir: &Path) -> mlua::Result<Self> {
+    fn new(manifest: &Manifest, dir: &Path, data_dir: &Path) -> mlua::Result<Self> {
         let path =
             entry_path(dir, &manifest.entry).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         let script = read_limited(&path).map_err(|e| mlua::Error::runtime(e.to_string()))?;
-        Self::from_source(manifest, &script)
+        Self::from_source(manifest, &script, data_dir)
     }
-    fn from_source(manifest: &Manifest, script: &str) -> mlua::Result<Self> {
+    fn from_source(manifest: &Manifest, script: &str, data_dir: &Path) -> mlua::Result<Self> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
             LuaOptions::default(),
@@ -143,7 +145,7 @@ impl Runtime {
                 Ok(())
             })?,
         )?;
-        let data_dir = crate::profile::account_dir().join("plugin-data");
+        let data_dir = data_dir.to_path_buf();
         let data_file = data_dir.join(format!("{}.json", manifest.id));
         let file = data_file.clone();
         api.set(
@@ -237,7 +239,7 @@ impl Plugins {
             bundled_source: Some(include_str!("../plugins/call-time-counter/main.lua")),
         };
         if enabled.contains(&bundled.manifest.id) {
-            bundled.start();
+            bundled.start(&self.data_root);
         }
         self.entries.push(bundled);
         let manifest = Manifest {
@@ -256,7 +258,7 @@ impl Plugins {
             bundled_source: Some(include_str!("../plugins/translator/main.lua")),
         };
         if enabled.contains(&bundled.manifest.id) {
-            bundled.start();
+            bundled.start(&self.data_root);
         }
         self.entries.push(bundled);
         let manifest = Manifest {
@@ -275,7 +277,7 @@ impl Plugins {
             bundled_source: Some(include_str!("../plugins/message-logger/main.lua")),
         };
         if enabled.contains(&bundled.manifest.id) {
-            bundled.start();
+            bundled.start(&self.data_root);
         }
         self.entries.push(bundled);
         let dir = directory();
@@ -316,7 +318,7 @@ impl Plugins {
                         bundled_source: None,
                     };
                     if enabled.contains(&p.manifest.id) {
-                        p.start();
+                        p.start(&self.data_root);
                     }
                     self.entries.push(p);
                 }
@@ -331,7 +333,7 @@ impl Plugins {
         if on {
             for plugin in &mut self.entries {
                 if !enabled.contains(&plugin.manifest.id) { enabled.push(plugin.manifest.id.clone()); }
-                if !plugin.running() { plugin.start(); }
+                if !plugin.running() { plugin.start(&self.data_root); }
             }
         } else {
             for plugin in &mut self.entries { plugin.stop(); }
@@ -348,7 +350,7 @@ impl Plugins {
                 p.stop();
             } else {
                 enabled.push(id.to_owned());
-                p.start();
+                p.start(&self.data_root);
             }
         }
     }
@@ -670,11 +672,11 @@ impl Drop for Plugins {
     }
 }
 impl Plugin {
-    fn start(&mut self) {
+    fn start(&mut self, data_dir: &Path) {
         self.error = None;
         let runtime = match self.bundled_source {
-            Some(source) => Runtime::from_source(&self.manifest, source),
-            None => Runtime::new(&self.manifest, &self.path),
+            Some(source) => Runtime::from_source(&self.manifest, source, data_dir),
+            None => Runtime::new(&self.manifest, &self.path, data_dir),
         };
         match runtime {
             Ok(r) => self.runtime = Some(r),
@@ -728,7 +730,7 @@ mod tests {
             api: 1,
             entry: "main.lua".into(),
         };
-        (Runtime::new(&m, &dir).unwrap(), dir)
+        (Runtime::new(&m, &dir, &dir).unwrap(), dir)
     }
     #[test]
     fn restricted_lua_and_command_queue() {
@@ -767,7 +769,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins/hello");
         let manifest: Manifest =
             toml::from_str(&std::fs::read_to_string(dir.join("plugin.toml")).unwrap()).unwrap();
-        let r = Runtime::new(&manifest, &dir).unwrap();
+        let r = Runtime::new(&manifest, &dir, &dir).unwrap();
         let Value::Table(page) = r.call("page", ()).unwrap() else {
             panic!()
         };
@@ -849,7 +851,7 @@ mod tests {
                 api: 1,
                 entry: "main.lua".into(),
             };
-            let runtime = Runtime::from_source(&manifest, source).unwrap();
+            let runtime = Runtime::from_source(&manifest, source, Path::new("")).unwrap();
             plugins.entries.push(Plugin {
                 manifest,
                 error: None,

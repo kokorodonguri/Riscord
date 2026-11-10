@@ -127,6 +127,8 @@ pub struct Root {
     pub member_key: (String, u64),
     /// マウスが乗っているメッセージ（ツールバーを出す）
     pub hover_msg: Option<String>,
+    /// スポイラーを押して開いたメッセージ
+    pub revealed: std::collections::HashSet<String>,
     pub menu: Option<(PopMenu, Point<Pixels>)>,
     /// PopMenu::Guild の対象のサーバー
     pub menu_guild: Option<String>,
@@ -374,6 +376,7 @@ impl Root {
             member_list: ListState::new(0, ListAlignment::Top, px(400.0)),
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
+            revealed: Default::default(),
             menu: None,
             menu_guild: None,
             menu_msg: None,

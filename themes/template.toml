@@ -106,6 +106,9 @@ area = "chat"               # "chat" または "window"（全体に敷く）
 # 日付の区切りの文字（text）
 # [parts.message.date]
 
+# コードブロック（bg・text・border・radius）
+# [parts.message.code]
+
 # 埋め込みのカード（bg・radius・opacity。左の縦線は埋め込みごとの色）
 # [parts.message.embed]
 

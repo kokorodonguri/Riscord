@@ -1,5 +1,6 @@
 //! メッセージの1行（本文のリンク・絵文字、添付画像、埋め込み、スタンプ、返信、操作ボタン）
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::assets::IconName;
 use gpui::prelude::*;
@@ -12,6 +13,7 @@ use crate::app::{
 };
 use crate::color::Color32;
 use crate::images::{self as imgs, Img};
+use crate::markdown as md;
 use crate::model::{self, Embed, Message, Role};
 use crate::net::Cmd;
 
@@ -70,6 +72,35 @@ pub struct Rich {
     pub text: String,
     pub styles: Vec<(Range<usize>, HighlightStyle)>,
     pub links: Vec<(Range<usize>, String)>,
+    /// 等幅フォントで出す範囲（`コード`）
+    pub mono: Vec<Range<usize>>,
+    /// 押すまで隠す範囲（||スポイラー||）
+    pub spoilers: Vec<Range<usize>>,
+}
+
+/// 記法の飾りを、文字の色や太さに直す
+fn highlight(st: md::Style) -> Option<HighlightStyle> {
+    if st == md::Style::default() {
+        return None;
+    }
+    let mut h = HighlightStyle::default();
+    if st.bold {
+        h.color = Some(WHITE().into());
+        h.font_weight = Some(FontWeight::BOLD);
+    }
+    if st.italic {
+        h.font_style = Some(FontStyle::Italic);
+    }
+    if st.underline {
+        h.underline = Some(UnderlineStyle { thickness: px(1.0), ..Default::default() });
+    }
+    if st.strike {
+        h.strikethrough = Some(StrikethroughStyle { thickness: px(1.0), ..Default::default() });
+    }
+    if st.code || st.spoiler {
+        h.background_color = Some(WIDGET().into());
+    }
+    Some(h)
 }
 
 impl Rich {
@@ -122,31 +153,59 @@ impl Rich {
         self.linked(rest, style);
     }
 
-    /// **…** を太字にして足す（埋め込みと同じく太く白く）。対になっていない ** は記号のまま残す
-    pub fn bold(&mut self, text: &str) {
-        let bold = HighlightStyle { color: Some(WHITE().into()), font_weight: Some(FontWeight::BOLD), ..Default::default() };
-        let parts: Vec<&str> = text.split("**").collect();
-        // 使える区切りは偶数個まで。余った最後の ** はそのまま出す
-        let paired = (parts.len() - 1) / 2 * 2;
-        for (i, part) in parts.iter().enumerate() {
-            if i > paired {
-                self.linked("**", None);
-            }
-            self.linked(part, (i % 2 == 1 && i <= paired).then_some(bold));
+    /// 記法を解いた文字を足す。`コード` の中はリンクにしない。revealed でなければスポイラーは塗りつぶす
+    pub fn span(&mut self, s: &md::Span, revealed: bool) {
+        let start = self.text.len();
+        let style = highlight(s.style);
+        if s.style.spoiler && !revealed {
+            let hidden: Hsla = WIDGET().into();
+            self.push(&s.text, Some(HighlightStyle { color: Some(hidden), background_color: Some(hidden), ..Default::default() }));
+            self.spoilers.push(start..self.text.len());
+        } else if s.style.code {
+            self.push(&s.text, style);
+            self.mono.push(start..self.text.len());
+        } else {
+            self.masked(&s.text, style);
         }
     }
 
     /// 押せるリンク付きの文字の要素
     pub fn element(self, id: impl Into<ElementId>) -> AnyElement {
-        let styled = StyledText::new(self.text).with_highlights(self.styles);
-        if self.links.is_empty() {
+        self.element_with(id, None)
+    }
+
+    /// on_spoiler は、隠れているスポイラーを押したときに呼ぶ
+    pub fn element_with(self, id: impl Into<ElementId>, on_spoiler: Option<Rc<dyn Fn(&mut Window, &mut App)>>) -> AnyElement {
+        let id = id.into();
+        if self.links.is_empty()
+            && (self.spoilers.is_empty() || on_spoiler.is_none())
+            && self.mono.is_empty()
+            && self.styles.is_empty()
+        {
+            return gpui::base::SelectableText::new(id, self.text).into_any_element();
+        }
+        let mut styled = StyledText::new(self.text).with_highlights(self.styles);
+        if !self.mono.is_empty() {
+            let family = mono_family();
+            styled = styled.with_font_family_overrides(self.mono.into_iter().map(|r| (r, family.clone())));
+        }
+        let spoilers = if on_spoiler.is_some() { self.spoilers } else { Vec::new() };
+        if self.links.is_empty() && spoilers.is_empty() {
             return styled.into_any_element();
         }
         let (ranges, urls): (Vec<_>, Vec<_>) = self.links.into_iter().unzip();
         let urls2 = urls.clone();
         let ranges2 = ranges.clone();
+        let clickable = ranges.iter().cloned().chain(spoilers).collect();
         InteractiveText::new(id, styled)
-            .on_click(ranges, move |i, _, cx| cx.open_url(&urls[i]))
+            .on_click(clickable, move |i, window, cx| match urls.get(i) {
+                Some(url) => cx.open_url(url),
+                None => {
+                    if let Some(f) = &on_spoiler {
+                        f(window, cx)
+                    }
+                }
+            })
             .tooltip(move |ix, window, cx| {
                 let i = ranges2.iter().position(|r| r.contains(&ix))?;
                 Some(gpui::component::tooltip::Tooltip::new(urls2[i].clone()).build(window, cx))
@@ -155,12 +214,11 @@ impl Rich {
     }
 }
 
-/// 埋め込みの本文。URL・[文字](URL) の伏せリンク・**太字** だけ解釈する
+/// 埋め込みの本文。URL・[文字](URL) の伏せリンクと、文中の記法（太字・`コード` など）を解釈する
 fn embed_text(id: impl Into<ElementId>, s: &str, size: f32, color: Color32) -> Div {
     let mut r = Rich::default();
-    let bold = HighlightStyle { color: Some(WHITE().into()), font_weight: Some(FontWeight::BOLD), ..Default::default() };
-    for (i, part) in s.split("**").enumerate() {
-        r.masked(part, (i % 2 == 1).then_some(bold));
+    for span in md::inline(s) {
+        r.span(&span, true);
     }
     div().text_size(z(size)).text_color(color).child(r.element(id))
 }
@@ -297,7 +355,7 @@ impl Root {
             };
             let mut body = div().flex_1().min_w_0();
             if !m.content.is_empty() {
-                body = body.child(self.inline_content(m));
+                body = body.child(self.inline_content(m, cx));
             }
             // 本文のない連投（画像だけなど）は、空の行を作らない
             let head = !grouped || !m.content.is_empty();
@@ -365,7 +423,7 @@ impl Root {
                 );
             }
             if !m.content.is_empty() {
-                content = content.child(self.inline_content(m));
+                content = content.child(self.inline_content(m, cx));
             }
             content = content.child(self.message_media(m, cx));
             row = row.child(div().flex().items_start().pl(z(16.0)).pr(z(16.0)).gap(z(16.0)).child(left).child(content));
@@ -560,47 +618,120 @@ impl Root {
             .child(line(body, 13.0, MUTED()).flex_1().ml(z(2.0)))
     }
 
-    /// 本文。カスタム絵文字があれば画像を文中に並べる
-    fn inline_content(&mut self, m: &Message) -> AnyElement {
+    /// 本文。記法ごとの塊（文・見出し・引用・コードブロック）を上から並べる
+    fn inline_content(&mut self, m: &Message, cx: &mut Context<Self>) -> AnyElement {
         let fs = self.app.settings.font_size;
-        let edited = HighlightStyle { color: Some(MUTED().into()), ..Default::default() };
         let displayed = self.app.plugins.transform("on_display", &m.content, &m.channel_id);
         let roles = self.guild_roles();
         let content = resolve_mentions(&displayed, m, &self.app.channels, roles).into_owned();
-        let segs = split_emoji(&content);
-        if !segs.iter().any(|x| matches!(x, Seg::Emoji { .. })) {
-            let mut r = Rich::default();
-            r.bold(&content);
-            if m.edited_timestamp.is_some() {
-                r.push(" (編集済)", Some(edited));
-            }
-            return div().min_w_0().text_size(z(fs)).text_color(TEXT()).part(Part::MessageText).child(r.element(SharedString::from(format!("t{}", m.id)))).into_any_element();
-        }
-        // 絵文字だけのメッセージは大きく表示
-        let only_emoji = segs.iter().all(|x| match x {
-            Seg::Text(t) => t.trim().is_empty(),
-            Seg::Emoji { .. } => true,
-        });
-        let size = if only_emoji { 48.0 } else { (fs * 1.4).round() };
-        let mut row = div().w_full().min_w_0().flex().flex_wrap().items_center().gap_y(z(2.0)).text_size(z(fs)).text_color(TEXT()).part(Part::MessageText);
-        let mut urls = Vec::new();
-        for (i, seg) in segs.into_iter().enumerate() {
-            match seg {
-                Seg::Text(t) => {
-                    if !(only_emoji && t.trim().is_empty()) {
-                        let mut r = Rich::default();
-                        r.bold(t);
-                        // 長い文は行いっぱいで折り返す（flex_wrap の中では幅を絞らないとはみ出す）
-                        row = row.child(div().max_w_full().child(r.element(SharedString::from(format!("t{}_{i}", m.id)))));
+        let blocks = md::blocks(&content);
+        let edited = m.edited_timestamp.is_some();
+        let revealed = self.revealed.contains(&m.id);
+        let on_spoiler: Rc<dyn Fn(&mut Window, &mut App)> = {
+            let (root, id) = (cx.entity().downgrade(), m.id.clone());
+            Rc::new(move |_, cx| {
+                let _ = root.update(cx, |this, cx| {
+                    this.revealed.insert(id.clone());
+                    cx.notify();
+                });
+            })
+        };
+        let last = blocks.len().saturating_sub(1);
+        let mut items = Vec::with_capacity(blocks.len());
+        for (i, block) in blocks.iter().enumerate() {
+            let item = match block {
+                md::Block::Code(code) => div()
+                    .min_w_0()
+                    .my(z(2.0))
+                    .px(z(8.0))
+                    .py(z(6.0))
+                    .rounded(z(4.0))
+                    .border_1()
+                    .border_color(BORDER())
+                    .bg(EMBED_BG())
+                    .font_family(mono_family())
+                    .text_size(z((fs * 0.875).round()))
+                    .part(Part::MessageCode)
+                    .child(StyledText::new(code.clone())),
+                md::Block::Text { kind, spans } => {
+                    let body = self.text_block(&format!("t{}_{i}", m.id), spans, fs, edited && i == last, revealed, on_spoiler.clone());
+                    match kind {
+                        md::Kind::Plain => body,
+                        md::Kind::Heading(level) => {
+                            let scale = [1.5, 1.25, 1.1][(*level as usize - 1).min(2)];
+                            body.text_size(z((fs * scale).round())).text_color(WHITE()).font_weight(FontWeight::BOLD).when(i > 0, |d| d.mt(z(6.0)))
+                        }
+                        md::Kind::Subtext => body.text_size(z((fs * 0.8).round())).text_color(MUTED()),
+                        md::Kind::Quote => div().min_w_0().flex().gap(z(10.0)).child(div().flex_none().w(z(4.0)).rounded(z(2.0)).bg(REPLY_LINE())).child(body.flex_1()),
                     }
                 }
-                Seg::Emoji { name, id, animated } => {
+            };
+            items.push(item);
+        }
+        if edited && matches!(blocks.last(), Some(md::Block::Code(_))) {
+            items.push(text("(編集済)", 11.0, MUTED()));
+        }
+        let style = |d: Div| d.min_w_0().text_size(z(fs)).text_color(TEXT()).part(Part::MessageText);
+        if items.len() == 1 && matches!(blocks[0], md::Block::Text { kind: md::Kind::Plain, .. }) {
+            return style(items.pop().unwrap()).into_any_element();
+        }
+        style(div().flex().flex_col().gap(z(2.0))).children(items).into_any_element()
+    }
+
+    /// 文の塊1つ。カスタム絵文字があれば画像を文中に並べる
+    fn text_block(&mut self, key: &str, spans: &[md::Span], fs: f32, edited: bool, revealed: bool, on_spoiler: Rc<dyn Fn(&mut Window, &mut App)>) -> Div {
+        enum Piece<'a> {
+            Text(Rich),
+            Emoji { name: &'a str, id: &'a str, animated: bool },
+        }
+        // 飾りは絵文字をまたいで続くので、記法を解いてから絵文字で切る
+        let mut pieces = Vec::new();
+        let mut cur = Rich::default();
+        for span in spans {
+            if span.style.code {
+                cur.span(span, revealed);
+                continue;
+            }
+            for seg in split_emoji(&span.text) {
+                match seg {
+                    Seg::Text(t) => cur.span(&md::Span { text: t.to_string(), style: span.style }, revealed),
+                    Seg::Emoji { name, id, animated } => {
+                        pieces.push(Piece::Text(std::mem::take(&mut cur)));
+                        pieces.push(Piece::Emoji { name, id, animated });
+                    }
+                }
+            }
+        }
+        if pieces.is_empty() {
+            if edited {
+                cur.push(" (編集済)", Some(HighlightStyle { color: Some(MUTED().into()), ..Default::default() }));
+            }
+            return div().min_w_0().child(cur.element_with(SharedString::from(key.to_string()), Some(on_spoiler)));
+        }
+        pieces.push(Piece::Text(cur));
+        // 絵文字だけのメッセージは大きく表示
+        let only_emoji = pieces.iter().all(|p| match p {
+            Piece::Text(r) => r.text.trim().is_empty(),
+            Piece::Emoji { .. } => true,
+        });
+        let size = if only_emoji { 48.0 } else { (fs * 1.4).round() };
+        let mut row = div().w_full().min_w_0().flex().flex_wrap().items_center().gap_y(z(2.0));
+        let mut urls = Vec::new();
+        for (i, piece) in pieces.into_iter().enumerate() {
+            match piece {
+                Piece::Text(r) => {
+                    if !(r.text.is_empty() || only_emoji) {
+                        // 長い文は行いっぱいで折り返す（flex_wrap の中では幅を絞らないとはみ出す）
+                        row = row.child(div().max_w_full().child(r.element_with(SharedString::from(format!("{key}_{i}")), Some(on_spoiler.clone()))));
+                    }
+                }
+                Piece::Emoji { name, id, animated } => {
                     let url = emoji_url(id, animated);
                     let face = match imgs::get(&url) {
                         Img::Ready(img_) => div().size(z(size)).child(img(img_).id("img").size_full().object_fit(ObjectFit::Contain)),
                         _ => div().size(z(size)),
                     };
-                    row = row.child(face.id(SharedString::from(format!("e{}_{i}", m.id))).tooltip(tip(format!(":{name}:"))).when(only_emoji, |d| d.mr(z(4.0))));
+                    row = row.child(face.id(SharedString::from(format!("{key}_e{i}"))).tooltip(tip(format!(":{name}:"))).when(only_emoji, |d| d.mr(z(4.0))));
                     urls.push(url);
                 }
             }
@@ -608,10 +739,10 @@ impl Root {
         for u in urls {
             self.note_image(&u);
         }
-        if m.edited_timestamp.is_some() {
+        if edited {
             row = row.child(text(" (編集済)", 11.0, MUTED()));
         }
-        row.into_any_element()
+        row
     }
 
     /// 添付画像・スタンプ・埋め込み画像
@@ -852,7 +983,7 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{call_length, Message, Rich};
+    use super::{call_length, Message};
 
     #[test]
     fn call_length_reads_naturally() {
@@ -880,20 +1011,5 @@ mod tests {
         assert!(super::row_layout(&text, Some(&text), false).1, "ふつうの連投はまとめる");
         assert!(!super::row_layout(&call, Some(&text), false).1, "通話の記録はまとめない");
         assert!(!super::row_layout(&text, Some(&call), false).1, "通話の記録の次の行は名前を出す");
-    }
-
-    #[test]
-    fn bold_markers_pair_and_leave_unpaired_as_text() {
-        let render = |t: &str| {
-            let mut r = Rich::default();
-            r.bold(t);
-            let bolded: String = r.styles.iter().filter(|(_, s)| s.font_weight.is_some()).map(|(range, _)| &r.text[range.clone()]).collect();
-            (r.text.clone(), bolded)
-        };
-        assert_eq!(render("a **b** c"), ("a b c".to_string(), "b".to_string()));
-        assert_eq!(render("**x** と **y**"), ("x と y".to_string(), "xy".to_string()));
-        assert_eq!(render("2 ** 3"), ("2 ** 3".to_string(), String::new()));
-        assert_eq!(render("**a** **b"), ("a **b".to_string(), "a".to_string()));
-        assert_eq!(render("普通"), ("普通".to_string(), String::new()));
     }
 }

@@ -9,6 +9,7 @@ mod download;
 mod emoji;
 mod images;
 mod login;
+mod markdown;
 mod model;
 mod net;
 mod notify;

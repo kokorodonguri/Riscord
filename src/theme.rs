@@ -116,6 +116,7 @@ parts! {
     MessageText "message.text" "メッセージの本文（text）";
     MessageTime "message.time" "メッセージの時刻（text）";
     MessageDate "message.date" "日付の区切りの文字（text）";
+    MessageCode "message.code" "コードブロック（bg・text・border・radius）";
     MessageEmbed "message.embed" "埋め込みのカード（bg・radius・opacity。左の縦線は埋め込みごとの色）";
     MessageToolbar "message.toolbar" "メッセージにマウスを乗せると出る操作ボタンの枠";
     MembersPanel "members.panel" "メンバー一覧の欄";

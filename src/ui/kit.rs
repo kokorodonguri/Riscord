@@ -327,3 +327,25 @@ pub fn modal(id: &'static str, content: impl IntoElement, on_backdrop: impl Fn(&
 pub fn popup_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow { color: Color32::from_black_alpha(140).into(), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }]
 }
+
+/// コードを出す等幅フォントのファミリー名
+pub fn mono_family() -> SharedString {
+    static FAMILY: std::sync::OnceLock<SharedString> = std::sync::OnceLock::new();
+    FAMILY
+        .get_or_init(|| {
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                let found = std::process::Command::new("fc-match").args(["-f", "%{family[0]}", "monospace"]).output().ok().and_then(|o| String::from_utf8(o.stdout).ok());
+                found.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "DejaVu Sans Mono".into()).into()
+            }
+            #[cfg(windows)]
+            {
+                "Consolas".into()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                "Menlo".into()
+            }
+        })
+        .clone()
+}

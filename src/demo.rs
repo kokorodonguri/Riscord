@@ -113,6 +113,8 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                         message(1202, &cid, &me, "ありがとう！", 30),
                         message(1203, &cid, &me, "あとで見ます", 29),
                         message(1204, &cid, &others[2], "名前が長い人のメッセージ。折り返しの確認用に少し長めの文章を書いておきます。ここまで書けば十分に長いはずです。", 5),
+                        message(1205, &cid, &others[0], "# 見出し\n*斜体* __下線__ ~~打ち消し~~ `let x = 1;` ||ひみつ|| snake_case_name\n- 箇条書き\n- **太字** の項目\n> 引用の行\n> 続き\n-# 小さい文字", 4),
+                        message(1206, &cid, &others[1], "こう書きます\n```rust\nfn main() {\n    println!(\"こんにちは\");\n}\n```\n以上です", 3),
                     ];
                     list.push(call(&cid, &others[1], &["1", "3"], 1, None));
                     for (i, m) in list.iter_mut().enumerate() {

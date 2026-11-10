@@ -21,7 +21,7 @@ fn bench_app(n_msgs: usize) -> App {
         let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });
         let member = |id: &str, name: &str| Member {
-            user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None }),
+            user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None, bot: false }),
             nick: None, roles: Vec::new(),
         };
         tx.send(Event::GuildMembers("a".into(), vec![member("1", "old"), member("2", "two")])).unwrap();
@@ -41,7 +41,7 @@ fn bench_app(n_msgs: usize) -> App {
         let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });
         let member = |id: &str, name: &str| Member {
-            user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None }),
+            user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None, bot: false }),
             nick: None, roles: vec![],
         };
         tx.send(Event::GuildMembers("a".into(), vec![member("1", "old")])).unwrap();
@@ -580,7 +580,7 @@ fn server_member_list_headers_use_group_counts() {
     let items = vec![net::ListItem::Group("online".into(), 0), net::ListItem::Member("m0".into()), net::ListItem::Member("m1".into())];
     assert!(list.apply("l", vec![("online".into(), 2)], vec![net::ListOp::Sync { range: [0, 99], items }]));
     let members: Vec<Member> = (0..2)
-        .map(|i| Member { user: Some(User { id: format!("m{i}"), username: format!("u{i}"), global_name: None, avatar: None, premium_type: None }), nick: None, roles: vec![] })
+        .map(|i| Member { user: Some(User { id: format!("m{i}"), username: format!("u{i}"), global_name: None, avatar: None, premium_type: None, bot: false }), nick: None, roles: vec![] })
         .collect();
     let cache = MemberListCache::from_server("g", 1, &list, &members, &[]);
     assert!(matches!(&cache.rows[0], MemberRow::Header(h) if h == "オンライン — 2"));
@@ -610,7 +610,7 @@ fn status_notice_keeps_gateway_state_and_dms_loaded_is_tracked() {
 fn snapshot_restores_recent_conversation_and_refreshes_it() {
     let mut app = bench_app(80);
     app.token_owner = Some("1".into());
-    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
     let s = app.build_snapshot().expect("snapshot");
     assert_eq!(s.messages.len(), 1);
     assert_eq!(s.messages[0].1.len(), cache::MESSAGES_PER_CHANNEL);
@@ -646,7 +646,7 @@ fn snapshot_restores_recent_conversation_and_refreshes_it() {
 #[test]
 fn login_failure_with_snapshot_keeps_view_and_retries() {
     let mut app = bench_app(3);
-    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
@@ -669,7 +669,7 @@ fn snapshot_is_tied_to_account() {
     assert_eq!(cache::token_owner(&tok("123456789012345678", "a.b")).as_deref(), Some("123456789012345678"));
     assert_eq!(cache::token_owner("not a token"), None);
     let mut app = bench_app(2);
-    app.me = Some(User { id: "123456789012345678".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    app.me = Some(User { id: "123456789012345678".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
     app.token_owner = cache::token_owner(&tok("123456789012345678", "old.sig"));
     let bytes = serde_json::to_vec(&app.build_snapshot().unwrap()).unwrap();
     cache::write(&bytes).unwrap();
@@ -696,7 +696,7 @@ fn home_is_shown_while_connecting() {
 #[test]
 fn own_presence_is_stored_under_my_id() {
     let mut app = App::default();
-    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
@@ -736,7 +736,7 @@ fn mentions_are_counted_per_server() {
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
-    app.me = Some(User { id: "me".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None });
+    app.me = Some(User { id: "me".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
     tx.send(Event::ReadyExtra(serde_json::json!({
         "my_roles": { "g": ["r1"] },
         "channel_guild": { "c1": "g" },

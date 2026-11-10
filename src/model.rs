@@ -31,6 +31,8 @@ pub struct User {
     /// Nitro の種類（0/なし = 無料、1 = Classic、2 = Nitro、3 = Basic）。自分の情報にだけ入る
     #[serde(default)]
     pub premium_type: Option<u8>,
+    #[serde(default)]
+    pub bot: bool,
 }
 
 impl User {
@@ -446,6 +448,27 @@ pub struct Message {
     /// 通話の記録（type 3 のときだけ付く）
     #[serde(default)]
     pub call: Option<CallInfo>,
+    /// MessageLogger の記録（削除済み・編集前の本文）。Discord からは来ない
+    #[serde(skip)]
+    pub log: Option<Box<LogMark>>,
+}
+
+/// MessageLogger が付ける印
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash, PartialEq)]
+pub struct LogMark {
+    /// 削除を受け取った時刻（RFC 3339）
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    /// 編集前の本文（古い順）
+    #[serde(default)]
+    pub edits: Vec<PastEdit>,
+}
+
+/// 編集で置き換わる前の本文と、編集を受け取った時刻
+#[derive(Clone, Debug, Deserialize, Serialize, Hash, PartialEq)]
+pub struct PastEdit {
+    pub content: String,
+    pub at: String,
 }
 
 /// 通話の記録。参加した人と、終わった時刻（続いている間は無い）

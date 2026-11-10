@@ -817,6 +817,8 @@ pub struct ComposeSubmission {
 pub struct App {
     pub plugins: crate::plugins::Plugins,
     pub translator: crate::translator::Translator,
+    /// MessageLogger の記録（削除・編集）
+    pub message_log: crate::message_log::MessageLog,
     /// 別スレッドから画面を描き直させる口（描画側が作って渡す）
     pub waker: Waker,
     /// ウィンドウの幅（拡大率を除いた論理ピクセル）。狭い画面のときの並べ方に使う
@@ -1167,7 +1169,8 @@ impl App {
         let settings = std::mem::take(&mut self.settings);
         let (applied, watch) = (self.theme_applied.take(), self.theme_watch.take());
         let plugins = std::mem::take(&mut self.plugins);
-        *self = App { waker, screen_w, remember: true, settings, show_members: true, theme_applied: applied, theme_watch: watch, plugins, ..Default::default() };
+        let message_log = std::mem::take(&mut self.message_log);
+        *self = App { waker, screen_w, remember: true, settings, show_members: true, theme_applied: applied, theme_watch: watch, plugins, message_log, ..Default::default() };
     }
 
     /// d 後に描き直す（期限のあるお知らせを消すときなど）
@@ -1382,6 +1385,7 @@ impl App {
                 }
             }
         }
+        if let Some(delay) = self.message_log.save_if_due() { self.repaint_after(delay); }
         let (actions, next) = self.plugins.tick();
         for action in actions {
             match action { crate::plugins::Action::Send(channel_id, content) => self.send(Cmd::Send { channel_id, content, reply_to: None, files: Vec::new() }) }
@@ -1642,6 +1646,10 @@ impl App {
                     let cap = if self.sel_channel.as_deref() == Some(&cid) { MAX_HISTORY } else { MAX_MSGS };
                     let trimmed = m.len() > cap;
                     if trimmed { m.drain(..m.len() - cap); }
+                    if self.plugins.logger_enabled() {
+                        for x in &m { self.message_log.remember(x); }
+                        self.message_log.restore(&cid, &mut m, end && !trimmed);
+                    }
                     self.history.insert(cid.clone(), History { end: end && !trimmed, ..Default::default() });
                     self.stale_channels.remove(&cid);
                     self.no_access.remove(&cid);
@@ -1684,9 +1692,16 @@ impl App {
                     let have: HashSet<&str> = list.iter().map(|m| m.id.as_str()).collect();
                     let older: Vec<Message> = older.into_iter().filter(|m| !have.contains(m.id.as_str())).collect();
                     list.splice(0..0, older);
+                    if self.plugins.logger_enabled() {
+                        for x in list.iter().take(net::HISTORY_PAGE) { self.message_log.remember(x); }
+                        self.message_log.restore(&channel_id, list, h.end);
+                    }
                 }
                 Event::MessageCreate(m) => {
                     self.plugins.event(&m);
+                    if self.plugins.logger_enabled() {
+                        self.message_log.remember(&m);
+                    }
                     self.waker.wake();
                     if let Some(changes) = self.pending_message_loads.get_mut(&m.channel_id) {
                         changes.push(MessageChange::Create(m.clone()));
@@ -1726,6 +1741,7 @@ impl App {
                     if let Some(changes) = self.pending_message_loads.get_mut(&channel_id) {
                         changes.push(MessageChange::Update { id: id.clone(), content: content.clone(), embeds: embeds.clone() });
                     }
+                    let logged = content.as_deref().is_some_and(|c| self.on_message_edit(&channel_id, &id, c));
                     if let Some(m) = self.messages.get_mut(&channel_id).and_then(|l| l.iter_mut().find(|m| m.id == id)) {
                         if let Some(c) = content {
                             if c != m.content {
@@ -1733,19 +1749,16 @@ impl App {
                                 m.edited_timestamp = Some(String::new());
                             }
                         }
+                        if logged {
+                            m.log = self.message_log.mark_for(&id);
+                        }
                         if let Some(e) = embeds {
                             m.embeds = e;
                         }
                     }
                 }
                 Event::MessageDelete { channel_id, id } => {
-                    if let Some(changes) = self.pending_message_loads.get_mut(&channel_id) {
-                        changes.push(MessageChange::Delete(id.clone()));
-                    }
-                    if let Some(l) = self.messages.get_mut(&channel_id) {
-                        sticker_cache_dirty |= l.iter().any(|m| m.id == id && !m.sticker_items.is_empty());
-                        l.retain(|m| m.id != id);
-                    }
+                    sticker_cache_dirty |= self.on_message_delete(&channel_id, &id);
                 }
                 Event::Status(s) => {
                     self.gateway_status = s.clone();
@@ -2033,8 +2046,64 @@ impl App {
         }
     }
 
+    /// 編集を受け取ったとき（一覧を書き換える前）。MessageLogger が記録したら true
+    fn on_message_edit(&mut self, channel_id: &str, id: &str, content: &str) -> bool {
+        let old = self.messages.get(channel_id).and_then(|l| l.iter().find(|m| m.id == id)).or_else(|| self.message_log.cached(id)).cloned();
+        let Some(old) = old.filter(|o| o.content != content) else { return false };
+        self.plugins.message_hook("on_edit", &old, Some(content));
+        let Some(opt) = self.plugins.logger_options() else { return false };
+        let me = self.me.as_ref().map(|u| u.id.as_str());
+        if !crate::message_log::MessageLog::wanted(&old, me, opt) {
+            return false;
+        }
+        self.message_log.on_edit(&old, content);
+        true
+    }
+
+    /// 削除を受け取ったとき。MessageLogger が記録したら一覧に削除済みとして残し、そうでなければ消す。
+    /// 消したメッセージにスタンプがあれば true（スタンプの画像を手放すため）
+    fn on_message_delete(&mut self, channel_id: &str, id: &str) -> bool {
+        if let Some(changes) = self.pending_message_loads.get_mut(channel_id) {
+            changes.push(MessageChange::Delete(id.to_string()));
+        }
+        let old = self.messages.get(channel_id).and_then(|l| l.iter().find(|m| m.id == id)).or_else(|| self.message_log.cached(id)).cloned();
+        let mut keep = false;
+        if let Some(old) = old.filter(|o| o.log.as_ref().is_none_or(|l| l.deleted_at.is_none())) {
+            self.plugins.message_hook("on_delete", &old, None);
+            if let Some(opt) = self.plugins.logger_options() {
+                let me = self.me.as_ref().map(|u| u.id.as_str());
+                if crate::message_log::MessageLog::wanted(&old, me, opt) {
+                    self.message_log.on_delete(&old);
+                    keep = true;
+                }
+            }
+        }
+        let Some(l) = self.messages.get_mut(channel_id) else { return false };
+        if keep {
+            if let Some(m) = l.iter_mut().find(|m| m.id == id) {
+                m.log = self.message_log.mark_for(id);
+            }
+            return false;
+        }
+        let stickers = l.iter().any(|m| m.id == id && !m.sticker_items.is_empty());
+        l.retain(|m| m.id != id);
+        stickers
+    }
+
     fn on_gateway_event(&mut self, t: &str, mut d: serde_json::Value) {
         match t {
+            "MESSAGE_DELETE_BULK" => {
+                let Some(cid) = d["channel_id"].as_str().map(String::from) else { return };
+                let ids: Vec<String> = d["ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
+                let mut stickers = false;
+                for id in ids {
+                    stickers |= self.on_message_delete(&cid, &id);
+                }
+                self.bump_msgs();
+                if stickers {
+                    self.prune_stickers();
+                }
+            }
             "GUILD_EMOJIS_UPDATE" => {
                 if let Some(gid) = d["guild_id"].as_str().map(String::from) {
                     let list = d.get_mut("emojis").map(serde_json::Value::take).unwrap_or_default();
@@ -2300,7 +2369,8 @@ impl App {
         let Some(cid) = self.sel_channel.clone() else { return };
         // 控えのままの一覧は最新とは限らないので、既読を古い位置に戻さないよう送らない
         if self.stale_channels.contains(&cid) { return; }
-        let Some(last) = self.messages.get(&cid).and_then(|l| l.last()) else { return };
+        // MessageLogger が残した削除済みメッセージは既読の位置に使わない（もう存在しない ID のため）
+        let Some(last) = self.messages.get(&cid).and_then(|l| l.iter().rev().find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))) else { return };
         if self.acked.get(&cid) == Some(&last.id) {
             return;
         }

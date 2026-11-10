@@ -754,7 +754,10 @@ impl Root {
         if let Some(id) = self.app.plugins.selected.clone().filter(|id| self.app.plugins.entries.iter().any(|p| p.manifest.id == *id && p.has_page())) {
             page = page.child(div().mt(z(24.0)).child(medium(format!("{id} のページ"), 20.0, WHITE())));
             for (index, item) in self.app.plugins.page(&id).into_iter().enumerate() {
-                if item.kind == "button" { let id = id.clone(); let action = item.action; page = page.child(div().id(SharedString::from(format!("plugin-action-{index}"))).mt(z(10.0)).cursor_pointer().child(text(item.label, 16.0, LINK())).on_click(cx.listener(move |this, _, _, cx| { let values = this.plugin_inputs.iter().filter(|((plugin, _), _)| plugin == &id).map(|((_, key), input)| (key.clone(), input.read(cx).value().to_string())).collect(); this.app.plugins.page_action(&id, &action, values); this.app.waker.wake(); cx.notify(); }))); }
+                if item.kind == "button" { let id = id.clone(); let action = item.action; page = page.child(div().id(SharedString::from(format!("plugin-action-{index}"))).mt(z(10.0)).cursor_pointer().child(text(item.label, 16.0, LINK())).on_click(cx.listener(move |this, _, _, cx| {
+                    // MessageLogger の記録は本体が持っているので、消すのも本体で行う
+                    if id == "message-logger" && action == "clear" { this.app.message_log.clear(); this.app.show_toast("メッセージの記録を消しました"); }
+                    let values = this.plugin_inputs.iter().filter(|((plugin, _), _)| plugin == &id).map(|((_, key), input)| (key.clone(), input.read(cx).value().to_string())).collect(); this.app.plugins.page_action(&id, &action, values); this.app.waker.wake(); cx.notify(); }))); }
                 else if item.kind == "switch" {
                     let plugin_id = id.clone();
                     let action = item.action;
@@ -776,8 +779,83 @@ impl Root {
                     page = page.child(div().mt(z(10.0)).child(text(item.label, 14.0, TEXT())).child(div().bg(INPUT()).px(z(6.0)).child(Input::new(&input).appearance(false).h(z(36.0)))));
                 }
             }
+            if id == "message-logger" {
+                page = page.child(self.message_log_view(cx));
+            }
         }
         vec![page.into_any_element()]
+    }
+
+    /// MessageLogger のログ一覧（削除・編集・ゴーストピン）。押すとそのチャンネルを開く
+    fn message_log_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        /// 一度に並べる件数
+        const SHOWN: usize = 200;
+        self.app.message_log.ensure_loaded();
+        let a = &self.app;
+        let me = a.me.as_ref().map(|u| u.id.as_str());
+        let log = &a.message_log;
+        let ping = |m: &crate::model::Message| me.is_some_and(|me| m.mentions.iter().any(|u| u.id == me));
+        let pings = log.deleted.values().filter(|d| ping(&d.message)).count();
+        let counts = [log.deleted.len(), log.edited.len(), pings];
+        let tab = self.log_tab.min(2);
+        // (並べ替えの時刻, メッセージ, 本文の行)
+        let mut entries: Vec<(String, &crate::model::Message, Vec<(String, Color32)>)> = match tab {
+            1 => log.edited.values().map(|e| {
+                let mut lines: Vec<(String, Color32)> = e.history.iter().map(|h| (format!("編集前: {}", h.content), FAINT())).collect();
+                lines.push((format!("現在: {}", e.message.content), TEXT()));
+                (e.history.last().map(|h| h.at.clone()).unwrap_or_default(), &e.message, lines)
+            }).collect(),
+            _ => log.deleted.values().filter(|d| tab == 0 || ping(&d.message)).map(|d| {
+                let mut lines = vec![(d.message.content.clone(), TEXT())];
+                for f in &d.message.attachments { lines.push((format!("添付: {}", f.filename), FAINT())); }
+                (d.at.clone(), &d.message, lines)
+            }).collect(),
+        };
+        entries.sort_by(|x, y| y.0.cmp(&x.0));
+        let total = entries.len();
+        let mut tabs = div().mt(z(24.0)).flex().gap(z(16.0)).items_center().child(medium("記録", 20.0, WHITE()).mr(z(8.0)));
+        for (i, label) in ["削除", "編集", "ゴーストピン"].into_iter().enumerate() {
+            let on = i == tab;
+            tabs = tabs.child(div().id(SharedString::from(format!("log-tab-{i}"))).cursor_pointer()
+                .px(z(8.0)).py(z(2.0)).rounded(z(4.0)).when(on, |d| d.bg(SELECTED()))
+                .child(text(format!("{label} {}", counts[i]), 16.0, if on { WHITE() } else { MUTED() }))
+                .on_click(cx.listener(move |this, _, _, cx| { this.log_tab = i; cx.notify(); })));
+        }
+        let mut col = div().flex().flex_col().child(tabs);
+        if total == 0 {
+            col = col.child(div().mt(z(12.0)).child(text("まだ記録はありません", 16.0, MUTED())));
+        }
+        for (n, (at, m, lines)) in entries.into_iter().take(SHOWN).enumerate() {
+            // 開くときに使うサーバー（REST で読んだメッセージには guild_id が無いので、チャンネル一覧から探す）
+            let guild = a.channels.iter().find(|(_, l)| l.iter().any(|c| c.id == m.channel_id)).map(|(g, _)| g.clone()).or_else(|| m.guild_id.clone());
+            let place = match &guild {
+                Some(g) => {
+                    let ch = a.channels.get(g).and_then(|l| l.iter().find(|c| c.id == m.channel_id)).and_then(|c| c.name.clone()).unwrap_or_else(|| "不明なチャンネル".into());
+                    let gn = a.guilds.iter().find(|x| &x.id == g).map(|x| x.name.clone()).unwrap_or_default();
+                    format!("#{ch} · {gn}")
+                }
+                None => a.dms.iter().find(|c| c.id == m.channel_id).map(|c| c.dm_label()).unwrap_or_else(|| "ダイレクトメッセージ".into()),
+            };
+            let when = crate::app::local_dt(&at).map(|t| t.format("%Y/%-m/%-d %H:%M").to_string()).unwrap_or_default();
+            let head = format!("{} · {place} · {when}", crate::app::author_name(m));
+            let mut card = settings_card(None).mt(z(8.0)).flex().flex_col().gap(z(4.0)).child(text(head, 13.0, MUTED()));
+            for (line, color) in lines {
+                if !line.is_empty() { card = card.child(text(line, 15.0, color)); }
+            }
+            let (cid, open) = (m.channel_id.clone(), guild.is_some() || a.dms.iter().any(|c| c.id == m.channel_id));
+            col = col.child(div().id(SharedString::from(format!("log-entry-{n}"))).when(open, |d| d.cursor_pointer().hover(|s| s.opacity(0.85))).child(card)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !open { return; }
+                    this.close_settings();
+                    this.pick_guild(guild.clone());
+                    this.open_channel(cid.clone());
+                    cx.notify();
+                })));
+        }
+        if total > SHOWN {
+            col = col.child(div().mt(z(8.0)).child(text(format!("新しい {SHOWN} 件だけ表示しています（全 {total} 件）"), 13.0, FAINT())));
+        }
+        col.into_any_element()
     }
 
     fn theme_page(&mut self, col_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {

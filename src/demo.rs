@@ -13,7 +13,7 @@ pub fn enabled() -> bool {
 }
 
 fn user(id: &str, name: &str) -> User {
-    User { id: id.into(), username: name.into(), global_name: Some(name.into()), avatar: None, premium_type: None }
+    User { id: id.into(), username: name.into(), global_name: Some(name.into()), avatar: None, premium_type: None, bot: false }
 }
 
 fn channel(id: &str, kind: u8, name: &str, parent: Option<&str>, position: i32) -> Channel {

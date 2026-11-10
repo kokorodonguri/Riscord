@@ -342,8 +342,13 @@ impl Root {
                     cx.notify();
                 }
             }));
+        let deleted_at = m.log.as_ref().and_then(|l| l.deleted_at.as_deref());
         if highlight {
             row = row.bg(Color32::from_rgba_unmultiplied(0x58, 0x65, 0xf2, 14)).child(div().absolute().left_0().top_0().bottom_0().w(px(2.0)).bg(BLURPLE()));
+        } else if deleted_at.is_some() {
+            // MessageLogger: 削除されたメッセージは赤く残す
+            let a = if hovered { 34 } else { 22 };
+            row = row.bg(Color32::from_rgba_unmultiplied(0xf2, 0x3f, 0x43, a)).child(div().absolute().left_0().top_0().bottom_0().w(px(2.0)).bg(RED()));
         } else if hovered {
             row = row.bg(MSG_HOVER());
         }
@@ -460,6 +465,22 @@ impl Root {
                 row = row.child(div().pl(z(if compact { text_x } else { 72.0 })).pr(z(16.0)).child(text(format!("翻訳: {translated}"), self.app.settings.font_size, MUTED())));
             }
         }
+        if let Some(log) = &m.log {
+            let pad = if compact { text_x } else { 72.0 };
+            let fs = self.app.settings.font_size;
+            if !log.edits.is_empty() {
+                let mut col = div().pl(z(pad)).pr(z(16.0)).flex().flex_col().gap(z(2.0));
+                for e in &log.edits {
+                    let t = local_dt(&e.at).map(|t| t.format("%-m/%-d %H:%M").to_string()).unwrap_or_default();
+                    col = col.child(text(format!("編集前（{t} に変更）: {}", e.content), fs - 1.0, FAINT()));
+                }
+                row = row.child(col);
+            }
+            if let Some(at) = deleted_at {
+                let t = local_dt(at).map(|t| t.format("%-m/%-d %H:%M").to_string()).unwrap_or_default();
+                row = row.child(div().pl(z(pad)).pr(z(16.0)).child(text(format!("削除済み（{t}）"), 12.0, RED())));
+            }
+        }
         if hovered {
             row = row.child(self.message_toolbar(m, cx));
         }
@@ -525,7 +546,9 @@ impl Root {
 
     /// 右上に出る操作ボタン（返信・編集・コピー・削除）
     fn message_toolbar(&mut self, m: &Message, cx: &mut Context<Self>) -> impl IntoElement {
-        let mine = self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
+        // 削除済みとして残しているメッセージには、返信・編集・削除をさせない
+        let deleted = m.log.as_ref().is_some_and(|l| l.deleted_at.is_some());
+        let mine = !deleted && self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
         let mut bar = div().absolute().top(z(-16.0)).right(z(16.0)).h(z(32.0)).px(z(2.0)).flex().items_center().bg(SIDEBAR()).border_1().border_color(BORDER()).rounded(z(8.0)).part(Part::MessageToolbar);
         let btn = |id: &str, name: IconName, danger: bool| {
             div()
@@ -542,14 +565,14 @@ impl Root {
                 .child(icon(name, 18.0, MUTED()).group_hover("tb", move |s| s.text_color(if danger { RED() } else { WHITE() })))
         };
         let m1 = m.clone();
-        bar = bar.child(btn("tb_reply", IconName::Reply, false).tooltip(tip("返信")).on_click(cx.listener(move |this, _, _, cx| {
+        bar = bar.when(!deleted, |bar| bar.child(btn("tb_reply", IconName::Reply, false).tooltip(tip("返信")).on_click(cx.listener(move |this, _, _, cx| {
             if this.app.editing.take().is_some() {
                 this.app.input.clear();
             }
             this.app.reply_to = Some(m1.clone());
             this.app.focus_input = true;
             cx.notify();
-        })));
+        }))));
         if mine {
             let m2 = m.clone();
             bar = bar.child(btn("tb_edit", IconName::Pencil, false).tooltip(tip("編集")).on_click(cx.listener(move |this, _, _, cx| {

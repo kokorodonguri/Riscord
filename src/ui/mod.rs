@@ -146,6 +146,8 @@ pub struct Root {
     /// 設定 → テーマの色ごとの入力欄
     pub color_inputs: HashMap<&'static str, Entity<InputState>>,
     pub plugin_inputs: HashMap<(String, String), Entity<InputState>>,
+    /// MessageLogger のログ一覧で選んでいる種類（0 = 削除、1 = 編集、2 = ゴーストピン）
+    pub log_tab: usize,
     pub settings_scroll: ScrollHandle,
     pub font_family: SharedString,
     /// テーマで指定したフォントを読み込んだもの（パス, ファミリー名）
@@ -387,6 +389,7 @@ impl Root {
             sliders: HashMap::new(),
             color_inputs: HashMap::new(),
             plugin_inputs: HashMap::new(),
+            log_tab: 0,
             settings_scroll: ScrollHandle::new(),
             font_family: default_family(),
             theme_font: None,

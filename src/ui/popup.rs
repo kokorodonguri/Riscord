@@ -95,14 +95,16 @@ impl Root {
     /// メッセージの右クリックメニュー
     fn message_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         let m = self.menu_msg.clone()?;
-        let mine = self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
+        // 削除済みとして残しているメッセージには、返信・編集・削除をさせない
+        let deleted = m.log.as_ref().is_some_and(|l| l.deleted_at.is_some());
+        let mine = !deleted && self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
         let close = |this: &mut Root| {
             this.menu = None;
             this.menu_msg = None;
         };
         let mut col = popup_box().p(z(6.0)).w(z(240.0)).flex().flex_col().gap(z(2.0));
         let m1 = m.clone();
-        col = col.child(menu_row("mm_reply", icon(IconName::Reply, 18.0, TEXT()).into_any_element(), "返信", false).on_click(cx.listener(move |this, _, _, cx| {
+        col = col.when(!deleted, |col| col.child(menu_row("mm_reply", icon(IconName::Reply, 18.0, TEXT()).into_any_element(), "返信", false).on_click(cx.listener(move |this, _, _, cx| {
             close(this);
             if this.app.editing.take().is_some() {
                 this.app.input.clear();
@@ -110,7 +112,7 @@ impl Root {
             this.app.reply_to = Some(m1.clone());
             this.app.focus_input = true;
             cx.notify();
-        })));
+        }))));
         if mine {
             let m1 = m.clone();
             col = col.child(menu_row("mm_edit", icon(IconName::Pencil, 18.0, TEXT()).into_any_element(), "編集", false).on_click(cx.listener(move |this, _, _, cx| {

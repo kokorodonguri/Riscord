@@ -10,6 +10,7 @@ mod emoji;
 mod images;
 mod login;
 mod markdown;
+mod message_log;
 mod model;
 mod net;
 mod notify;

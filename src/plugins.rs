@@ -199,13 +199,16 @@ impl Runtime {
         }
     }
     fn message(&self, name: &str, m: &Message) -> mlua::Result<Value> {
+        self.message_with(name, m, None)
+    }
+    fn message_with(&self, name: &str, m: &Message, extra: Option<&str>) -> mlua::Result<Value> {
         let t = self.lua.create_table()?;
         t.set("id", m.id.clone())?;
         t.set("channel_id", m.channel_id.clone())?;
         t.set("guild_id", m.guild_id.clone())?;
         t.set("author_id", m.author.id.clone())?;
         t.set("content", m.content.clone())?;
-        self.call(name, t)
+        self.call(name, (t, extra))
     }
 }
 impl Plugins {
@@ -256,6 +259,25 @@ impl Plugins {
             bundled.start();
         }
         self.entries.push(bundled);
+        let manifest = Manifest {
+            id: "message-logger".into(),
+            name: "MessageLogger".into(),
+            version: "1.0.0".into(),
+            description: "削除・編集されたメッセージを記録して表示します（同梱）".into(),
+            api: API_VERSION,
+            entry: "main.lua".into(),
+        };
+        let mut bundled = Plugin {
+            manifest,
+            error: None,
+            runtime: None,
+            path: PathBuf::new(),
+            bundled_source: Some(include_str!("../plugins/message-logger/main.lua")),
+        };
+        if enabled.contains(&bundled.manifest.id) {
+            bundled.start();
+        }
+        self.entries.push(bundled);
         let dir = directory();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             self.errors.push(e.to_string());
@@ -273,6 +295,7 @@ impl Plugins {
         let mut seen = std::collections::HashSet::from([
             "call-time-counter".to_string(),
             "translator".to_string(),
+            "message-logger".to_string(),
         ]);
         for path in paths {
             let result = (|| -> anyhow::Result<Manifest> {
@@ -505,6 +528,32 @@ impl Plugins {
             let result = p.runtime.as_ref().map(|r| r.message("on_message", m));
             p.check(result);
         }
+    }
+    /// 削除（on_delete）・編集（on_edit、2つ目の引数は編集後の本文）をプラグインへ知らせる。m は削除・編集前のメッセージ
+    pub fn message_hook(&mut self, name: &str, m: &Message, extra: Option<&str>) {
+        for p in &mut self.entries {
+            let result = p.runtime.as_ref().map(|r| r.message_with(name, m, extra));
+            p.check(result);
+        }
+    }
+    /// MessageLogger が動いていれば、その記録の条件
+    pub fn logger_options(&mut self) -> Option<crate::message_log::Options> {
+        let p = self.entries.iter_mut().find(|p| p.manifest.id == "message-logger")?;
+        let result = p.runtime.as_ref()?.call("logger_options", ());
+        match result {
+            Ok(Value::Table(t)) => Some(crate::message_log::Options {
+                ignore_self: t.get("ignore_self").unwrap_or(false),
+                ignore_bots: t.get("ignore_bots").unwrap_or(false),
+            }),
+            Ok(_) => Some(Default::default()),
+            Err(e) => {
+                p.fail(e.to_string());
+                None
+            }
+        }
+    }
+    pub fn logger_enabled(&self) -> bool {
+        self.entries.iter().any(|p| p.manifest.id == "message-logger" && p.running())
     }
     pub fn transform(&mut self, name: &str, content: &str, channel: &str) -> String {
         let mut content = content.to_owned();

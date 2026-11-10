@@ -910,6 +910,8 @@ pub struct App {
     /// 今使っている見た目（テーマ＋上書き）。変わったときだけ適用し直す
     pub theme_applied: Option<theme::Resolved>,
     pub theme_error: Option<String>,
+    /// テーマファイルの読み飛ばした項目（知らない部品・読めない値）
+    pub theme_warnings: Vec<String>,
     /// themes/ のファイルが変わったら届く（保存するとすぐ反映）
     pub theme_watch: Option<Receiver<()>>,
     /// 開いているファイル選択ダイアログの結果の受け口
@@ -1014,9 +1016,11 @@ impl App {
             app.voice.set_ctx(app.waker.clone());
             let (cmd, ev) = crate::demo::spawn(app.waker.clone());
             app.backend = Some(Backend { cmd, ev });
-            // RISCORD_DEMO=guild なら最初からサーバーのチャンネルを開いておく（画面確認用）
-            if std::env::var("RISCORD_DEMO").as_deref() == Ok("guild") {
-                app.select(Some("100".into()), Some("10011".into()));
+            // RISCORD_DEMO=guild なら最初からサーバーのチャンネルを、dm なら DM を開いておく（画面確認用）
+            match std::env::var("RISCORD_DEMO").as_deref() {
+                Ok("guild") => app.select(Some("100".into()), Some("10011".into())),
+                Ok("dm") => app.select(None, Some("900".into())),
+                _ => {}
             }
         } else if let Some(t) = load_token() {
             let snapshot = cache::load(&t);
@@ -2257,14 +2261,16 @@ impl App {
     /// 設定のテーマを読み直し、変わっていれば配色・フォント・背景画像を適用する。force = ファイルが変わった
     pub fn apply_theme(&mut self, force: bool) {
         let dir = themes_dir();
-        let (r, err) = theme::resolve(&self.settings.theme, &dir, &self.settings.color_overrides, &self.settings.background);
+        let (r, err, warnings) = theme::resolve(&self.settings.theme, &dir, &self.settings.color_overrides, &self.settings.background);
         self.theme_error = err;
+        self.theme_warnings = warnings;
         let old = self.theme_applied.as_ref();
         if !force && old == Some(&r) {
             return;
         }
         let font_changed = old.map(|o| &o.font) != Some(&r.font);
         theme::set_colors(&r.colors);
+        theme::set_parts(&r.parts);
         self.theme_dirty = true;
         if font_changed && (r.font.is_some() || old.is_some()) {
             self.font_dirty = true;

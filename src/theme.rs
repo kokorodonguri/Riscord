@@ -15,12 +15,20 @@
 //! opacity = 0.35                  # 画像の見え具合 0〜1
 //! area = "window"                 # "chat"（チャット欄だけ・既定）か "window"（ウィンドウ全体。
 //!                                 #  各面の色を #rrggbbaa で透かすと壁紙が見える）
+//!
+//! [parts.profile.card]   # 部品ごとの上書き（省略可）。部品の名前は PARTS、書ける項目は PART_PROPS
+//! bg = "#0e0e1080"
+//! radius = 16
 //! ```
+//!
+//! [colors] は画面全体の配色、[parts] は名前の付いた部品1つだけの見た目。部品を増やすときは parts! に
+//! 1行足し、UI 側でその部品に `.part(Part::名前)` を付ける（src/ui/kit.rs の Themed）。
 use crate::color::Color32;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::RwLock;
 
 fn pack(c: Color32) -> u32 {
     u32::from_le_bytes(c.rgba)
@@ -79,6 +87,137 @@ palette! {
     29 REPLY_LINE "reply_line" "返信の線" [0x4e, 0x4f, 0x56];
     30 SETTINGS_BG "settings_bg" "設定画面の地" [0x00, 0x00, 0x00];
     31 SETTINGS_NAV "settings_nav" "設定画面のメニュー" [0x00, 0x00, 0x00];
+}
+
+macro_rules! parts {
+    ($($name:ident $key:literal $label:literal;)*) => {
+        /// テーマで見た目を上書きできる部品
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Part { $($name),* }
+        /// (テーマファイルでの名前, 説明)。並びは Part と同じ
+        pub const PARTS: &[(&str, &str)] = &[$(($key, $label)),*];
+    };
+}
+
+// 名前は「画面.部品」。テーマファイルでは [parts.画面.部品] と書く
+parts! {
+    Titlebar "window.titlebar" "最上段のタイトルバー";
+    SidebarPane "sidebar.pane" "左列全体（サーバー一覧＋チャンネル欄＋ユーザー欄）の地";
+    SidebarRail "sidebar.rail" "サーバーアイコンの列";
+    SidebarServer "sidebar.server" "サーバーアイコン（radius だけ。20 で丸になる）";
+    SidebarChannels "sidebar.channels" "チャンネル・DM の一覧の欄";
+    SidebarHeader "sidebar.header" "チャンネル欄の上のサーバー名・DM 検索の段";
+    SidebarCategory "sidebar.category" "カテゴリー名・「ダイレクトメッセージ」の見出し（text）";
+    SidebarRow "sidebar.row" "チャンネル・DM の行（text はふだんの文字色、hover_bg はマウスを乗せたとき）";
+    SidebarRowSelected "sidebar.row_selected" "選択中のチャンネル・DM の行";
+    SidebarUserbar "sidebar.userbar" "左下のユーザー欄";
+    ChatHeader "chat.header" "チャット上部のチャンネル名の段";
+    ChatInput "chat.input" "メッセージの入力欄";
+    MessageText "message.text" "メッセージの本文（text）";
+    MessageTime "message.time" "メッセージの時刻（text）";
+    MessageDate "message.date" "日付の区切りの文字（text）";
+    MessageEmbed "message.embed" "埋め込みのカード（bg・radius・opacity。左の縦線は埋め込みごとの色）";
+    MessageToolbar "message.toolbar" "メッセージにマウスを乗せると出る操作ボタンの枠";
+    MembersPanel "members.panel" "メンバー一覧の欄";
+    MembersHeading "members.heading" "メンバー一覧の見出し（text）";
+    MembersRow "members.row" "メンバー一覧の行（hover_bg はマウスを乗せたとき）";
+    MenuBox "menu.box" "右クリックメニューなどの浮いた箱";
+    MenuRow "menu.row" "メニューの行（hover_bg はマウスを乗せたとき）";
+    DialogBox "dialog.box" "確認ダイアログ・チャンネル検索の箱";
+    ProfilePanel "profile.panel" "DM 右側のプロフィール欄の地";
+    ProfileCard "profile.card" "DM 右側のプロフィールカード";
+    ProfilePopup "profile.popup" "名前やアバターを押して出るプロフィール";
+    ProfileAvatar "profile.avatar" "プロフィールのアバターの縁（bg）";
+    ProfileName "profile.name" "プロフィールの表示名（text）";
+    ProfileText "profile.text" "プロフィールの本文（text）";
+    ProfileMuted "profile.muted" "プロフィールの控えめな文字と見出し（text）";
+    ProfileBox "profile.box" "プロフィールの中の囲み（アクティビティ・自己紹介・メニュー）";
+    ProfileButton "profile.button" "プロフィールのボタン";
+}
+
+/// 部品に書ける項目（名前, 説明）
+pub const PART_PROPS: &[(&str, &str)] = &[
+    ("bg", "地の色"),
+    ("text", "文字の色"),
+    ("border", "枠線の色"),
+    ("border_width", "枠線の太さ"),
+    ("radius", "角の丸み"),
+    ("opacity", "中身ごとの見え具合（0〜1）"),
+    ("hover_bg", "マウスを乗せたときの地の色（行・ボタンなど、乗せると色が変わる部品だけ）"),
+];
+
+/// 部品1つの上書き。None の項目は元の見た目のまま
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PartStyle {
+    pub bg: Option<Color32>,
+    pub text: Option<Color32>,
+    pub border: Option<Color32>,
+    pub border_width: Option<f32>,
+    pub radius: Option<f32>,
+    pub opacity: Option<f32>,
+    pub hover_bg: Option<Color32>,
+}
+
+static PART_STYLES: RwLock<Vec<PartStyle>> = RwLock::new(Vec::new());
+
+pub fn set_parts(parts: &[PartStyle]) {
+    *PART_STYLES.write().unwrap() = parts.to_vec();
+}
+
+/// 今のテーマでの、その部品の上書き
+pub fn part_style(p: Part) -> PartStyle {
+    PART_STYLES.read().unwrap().get(p as usize).copied().unwrap_or_default()
+}
+
+/// テーマの [parts] を読む。知らない部品・項目や読めない値は飛ばして、warnings に理由を足す
+fn resolve_parts(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<PartStyle> {
+    let mut out = vec![PartStyle::default(); PARTS.len()];
+    for (group, v) in table {
+        let Some(members) = v.as_table() else {
+            warnings.push(format!("parts.{group} は [parts.{group}.部品] の形で書いてください"));
+            continue;
+        };
+        for (name, v) in members {
+            let key = format!("{group}.{name}");
+            let Some(props) = v.as_table() else {
+                warnings.push(format!("parts.{key} は読めません。[parts.画面.部品] の下に項目を書いてください"));
+                continue;
+            };
+            let Some(i) = PARTS.iter().position(|p| p.0 == key) else {
+                warnings.push(format!("{key} という部品はありません"));
+                continue;
+            };
+            for (prop, v) in props {
+                let color = || v.as_str().and_then(parse_color);
+                let number = || v.as_float().or_else(|| v.as_integer().map(|n| n as f64)).map(|n| n as f32).filter(|n| n.is_finite() && *n >= 0.0);
+                let st = &mut out[i];
+                let ok = match prop.as_str() {
+                    "bg" => color().map(|c| st.bg = Some(c)).is_some(),
+                    "text" => color().map(|c| st.text = Some(c)).is_some(),
+                    "border" => color().map(|c| st.border = Some(c)).is_some(),
+                    "hover_bg" => color().map(|c| st.hover_bg = Some(c)).is_some(),
+                    "border_width" => number().map(|n| st.border_width = Some(n)).is_some(),
+                    "radius" => number().map(|n| st.radius = Some(n)).is_some(),
+                    "opacity" => number().map(|n| st.opacity = Some(n.min(1.0))).is_some(),
+                    _ => {
+                        warnings.push(format!("{key} に {prop} という項目はありません"));
+                        continue;
+                    }
+                };
+                if !ok {
+                    let shown = match v {
+                        toml::Value::String(s) => format!("\"{s}\""),
+                        toml::Value::Integer(n) => n.to_string(),
+                        toml::Value::Float(n) => n.to_string(),
+                        toml::Value::Boolean(b) => b.to_string(),
+                        _ => "表や配列".into(),
+                    };
+                    warnings.push(format!("{key} の {prop} を読めません（{shown}）"));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn set_colors(colors: &[Color32]) {
@@ -140,12 +279,16 @@ pub struct ThemeFile {
     pub font: Option<String>,
     pub colors: BTreeMap<String, String>,
     pub background: Background,
+    /// 部品ごとの上書き（[parts.画面.部品]）。中身は resolve_parts で確かめる
+    pub parts: toml::Table,
 }
 
 /// 実際に使う見た目（テーマ＋設定画面での上書きを合わせたもの）
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resolved {
     pub colors: Vec<Color32>,
+    /// 部品ごとの上書き（並びは PARTS と同じ）
+    pub parts: Vec<PartStyle>,
     /// 背景画像の URI（file は bytes:// で読み込む）と見え具合
     pub background: Option<BackgroundImage>,
     pub font: Option<PathBuf>,
@@ -242,13 +385,14 @@ pub fn image_uri(spec: &str, base: &Path) -> String {
     format!("file://{}", p.display())
 }
 
-/// 選んだテーマ（"builtin:black" か themes/ のファイル名）と設定画面での上書きから、使う見た目を決める
+/// 選んだテーマ（"builtin:black" か themes/ のファイル名）と設定画面での上書きから、使う見た目を決める。
+/// 返すのは（見た目, ファイルを読めなかった理由, 読み飛ばした項目の一覧）
 pub fn resolve(
     selected: &str,
     dir: &Path,
     overrides: &BTreeMap<String, String>,
     bg_override: &Background,
-) -> (Resolved, Option<String>) {
+) -> (Resolved, Option<String>, Vec<String>) {
     let mut colors: Vec<Color32> = KEYS.iter().map(|k| k.2).collect();
     let mut set = |key: &str, val: &str| {
         if let (Some(i), Some(c)) = (KEYS.iter().position(|k| k.0 == key), parse_color(val)) {
@@ -269,9 +413,16 @@ pub fn resolve(
             Err(e) => error = Some(e),
         }
     }
+    let mut warnings = Vec::new();
     for (k, v) in &file.colors {
+        if !KEYS.iter().any(|x| x.0 == k) {
+            warnings.push(format!("colors に {k} という色はありません"));
+        } else if parse_color(v).is_none() {
+            warnings.push(format!("colors の {k} を読めません（\"{v}\"）"));
+        }
         set(k, v);
     }
+    let parts = resolve_parts(&file.parts, &mut warnings);
     for (k, v) in overrides {
         set(k, v);
     }
@@ -288,7 +439,7 @@ pub fn resolve(
     let window = bg_override.area.as_deref().or(file.background.area.as_deref()) == Some("window");
     let background = image.filter(|s| !s.trim().is_empty()).map(|s| BackgroundImage { uri: image_uri(&s, dir), opacity, window });
     let font = file.font.as_deref().map(expand_home).map(|p| if p.is_relative() { dir.join(p) } else { p });
-    (Resolved { colors, background, font }, error)
+    (Resolved { colors, parts, background, font }, error, warnings)
 }
 
 /// TOML の文字列にする（" と \ と制御文字だけ \uXXXX などで書き、それ以外の文字はそのまま）
@@ -361,8 +512,9 @@ mod tests {
         .unwrap();
         let mut ov = BTreeMap::new();
         ov.insert("accent".to_string(), "#abcdef".to_string());
-        let (r, err) = resolve("t.toml", &dir, &ov, &Background::default());
+        let (r, err, warnings) = resolve("t.toml", &dir, &ov, &Background::default());
         assert!(err.is_none());
+        assert_eq!(warnings, ["colors に nope という色はありません"]);
         let at = |k: &str| r.colors[KEYS.iter().position(|x| x.0 == k).unwrap()];
         assert_eq!(at("bg"), Color32::from_rgb(0x11, 0x22, 0x33));
         assert_eq!(at("accent"), Color32::from_rgb(0xab, 0xcd, 0xef));
@@ -373,7 +525,7 @@ mod tests {
         assert!(!b.window, "既定はチャット欄だけ");
         // 壊れたファイルは既定に戻してエラーを返す
         std::fs::write(dir.join("bad.toml"), "[colors\n").unwrap();
-        let (r, err) = resolve("bad.toml", &dir, &BTreeMap::new(), &Background::default());
+        let (r, err, _) = resolve("bad.toml", &dir, &BTreeMap::new(), &Background::default());
         assert!(err.is_some());
         assert_eq!(r.colors[0], KEYS[0].2);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -392,13 +544,13 @@ mod tests {
 
     #[test]
     fn export_round_trips() {
-        let (r, _) = resolve("builtin:midnight", Path::new("/nonexistent"), &BTreeMap::new(), &Background::default());
+        let (r, _, _) = resolve("builtin:midnight", Path::new("/nonexistent"), &BTreeMap::new(), &Background::default());
         let text = export("x", &r.colors, &Background::default());
         let f: ThemeFile = toml::from_str(&text).unwrap();
         let dir = std::env::temp_dir().join(format!("riscord-theme-rt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("x.toml"), &text).unwrap();
-        let (back, _) = resolve("x.toml", &dir, &BTreeMap::new(), &Background::default());
+        let (back, _, _) = resolve("x.toml", &dir, &BTreeMap::new(), &Background::default());
         assert_eq!(back.colors, r.colors);
         assert_eq!(f.name.as_deref(), Some("x"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -413,6 +565,69 @@ mod tests {
         }
         assert_eq!(f.background.opacity, Some(0.35));
         assert_eq!(f.background.area.as_deref(), Some("chat"));
+    }
+
+    #[test]
+    fn parts_override_and_report_mistakes() {
+        let f: ThemeFile = toml::from_str(
+            r##"
+            [parts.profile.card]
+            bg = "#0e0e1080"
+            radius = 16
+            opacity = 0.5
+            border_width = 2.5
+            shadow = "big"
+            text = "red"
+            [parts.profile.nope]
+            bg = "#000000"
+            [parts.oops]
+            bg = "#000000"
+            "##,
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let parts = resolve_parts(&f.parts, &mut warnings);
+        let card = parts[Part::ProfileCard as usize];
+        assert_eq!(card.bg, parse_color("#0e0e1080"));
+        assert_eq!((card.radius, card.opacity, card.border_width, card.text), (Some(16.0), Some(0.5), Some(2.5), None));
+        assert_eq!(parts[Part::ProfileButton as usize], PartStyle::default(), "書いていない部品はそのまま");
+        warnings.sort();
+        assert_eq!(
+            warnings,
+            [
+                "parts.oops.bg は読めません。[parts.画面.部品] の下に項目を書いてください",
+                "profile.card に shadow という項目はありません",
+                "profile.card の text を読めません（\"red\"）",
+                "profile.nope という部品はありません",
+            ]
+        );
+    }
+
+    #[test]
+    fn part_names_are_unique_and_two_levels() {
+        for (i, (key, label)) in PARTS.iter().enumerate() {
+            assert_eq!(key.split('.').filter(|s| !s.is_empty()).count(), 2, "{key}");
+            assert!(!label.is_empty(), "{key}");
+            assert!(!PARTS[..i].iter().any(|p| p.0 == *key), "{key} が重複");
+        }
+    }
+
+    /// テンプレートには全部の部品と項目が（コメントで）載っている
+    #[test]
+    fn template_lists_every_part() {
+        let t = include_str!("../themes/template.toml");
+        for (key, _) in PARTS {
+            assert!(t.contains(&format!("[parts.{key}]")), "{key}");
+        }
+        for (prop, _) in PART_PROPS {
+            assert!(t.contains(&format!("# {prop} = ")), "{prop}");
+        }
+        // 部品の見出しのコメントを外しても、警告なしで読めること
+        let open: String = t.lines().map(|l| l.strip_prefix("# [parts.").map_or(l.to_string(), |r| format!("[parts.{r}")) + "\n").collect();
+        let f: ThemeFile = toml::from_str(&open).unwrap();
+        let mut warnings = Vec::new();
+        resolve_parts(&f.parts, &mut warnings);
+        assert_eq!(warnings, Vec::<String>::new());
     }
 
     #[test]

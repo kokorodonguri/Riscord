@@ -52,7 +52,7 @@ impl Root {
             }
         });
         let this = self.this.clone();
-        div().h_full().flex().flex_col().border_l_1().border_t_1().border_color(DIVIDER()).bg(BG()).child(
+        div().h_full().flex().flex_col().border_l_1().border_t_1().border_color(DIVIDER()).bg(BG()).part(Part::MembersPanel).child(
             list(self.member_list.clone(), move |ix, _, cx| {
                 let Some(e) = this.upgrade() else { return div().into_any_element() };
                 e.update(cx, |r, cx| r.member_row(ix, cx))
@@ -79,7 +79,7 @@ impl Root {
                         .child(div().flex_1().h(z(12.0)).mr(z(30.0)).rounded(z(6.0)).bg(HOVER())),
                 )
             }
-            MemberRow::Header(t) => div().h(z(MEMBER_HEAD_H)).pl(z(16.0)).pb(z(4.0)).flex().items_end().child(line(t.clone(), 12.0, FAINT())).into_any_element(),
+            MemberRow::Header(t) => div().h(z(MEMBER_HEAD_H)).pl(z(16.0)).pb(z(4.0)).flex().items_end().child(line(t.clone(), 12.0, FAINT()).part(Part::MembersHeading)).into_any_element(),
             MemberRow::Member(mi) => {
                 let gid = a.member_cache.gid.clone();
                 let Some(member) = a.members.get(&gid).and_then(|l| l.get(*mi)) else { return div().into_any_element() };
@@ -103,7 +103,8 @@ impl Root {
                     .items_center()
                     .gap(z(12.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(HOVER()))
+                    .hover(|s| s.bg(part_hover(Part::MembersRow, HOVER())))
+                    .part(Part::MembersRow)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let p = window.mouse_position();
                         this.app.open_profile(user.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
@@ -125,7 +126,10 @@ impl Root {
         let presence = self.app.presences.get(&u.id).cloned();
         let accent = data.as_ref().and_then(|d| d.accent_color).map(rgb).unwrap_or_else(|| darken(name_color(&u.id)));
         let status = presence.as_ref().map_or("offline".to_string(), |p| p.status.clone());
-        let mut banner = div().relative().h(z(120.0)).w_full().rounded_t(z(8.0)).bg(accent).overflow_hidden();
+        // カードの角の丸みと縁の色をテーマで変えたら、バナーとアバターの縁もそれに合わせる
+        let radius = part_style(Part::ProfileCard).radius.unwrap_or(8.0);
+        let ring = part_style(Part::ProfileAvatar).bg.unwrap_or(SIDEBAR());
+        let mut banner = div().relative().h(z(120.0)).w_full().rounded_t(z(radius)).bg(accent).overflow_hidden();
         if let Some(h) = data.as_ref().and_then(|d| d.banner.as_ref()) {
             let url = format!("https://cdn.discordapp.com/banners/{}/{}.png?size=600", u.id, h);
             if let Some(i) = loaded(&url) {
@@ -138,26 +142,27 @@ impl Root {
             .top(z(120.0 - 50.0))
             .size(z(92.0))
             .rounded_full()
-            .bg(SIDEBAR())
+            .bg(ring)
             .flex()
             .items_center()
             .justify_center()
-            .child(with_status(avatar(Some(&user_avatar_url(u)), 80.0, u.display(), 40.0, name_color(&u.id)), 80.0, &status, SIDEBAR()));
-        let mut info = div().px(z(16.0)).pt(z(48.0)).flex().flex_col().gap(z(4.0)).child(line(u.display().to_string(), 20.0, WHITE()).font_weight(FontWeight::MEDIUM));
+            .child(with_status(avatar(Some(&user_avatar_url(u)), 80.0, u.display(), 40.0, name_color(&u.id)), 80.0, &status, ring));
+        let mut info = div().px(z(16.0)).pt(z(48.0)).flex().flex_col().gap(z(4.0)).child(line(u.display().to_string(), 20.0, WHITE()).font_weight(FontWeight::MEDIUM).part(Part::ProfileName));
         let mut l = u.username.clone();
         if let Some(p) = data.as_ref().and_then(|d| d.pronouns.as_deref()).filter(|p| !p.is_empty()) {
             l.push_str(&format!(" • {p}"));
         }
-        info = info.child(text(l, 14.0, MUTED()));
+        info = info.child(text(l, 14.0, MUTED()).part(Part::ProfileMuted));
         if let Some(act) = presence.as_ref().and_then(|p| p.activity.clone()) {
-            info = info.child(text(act, 13.0, TEXT()).mt(z(4.0)));
+            info = info.child(text(act, 13.0, TEXT()).mt(z(4.0)).part(Part::ProfileText));
         }
         if let Some(bio) = data.as_ref().and_then(|d| d.bio.clone()).filter(|b| !b.is_empty()) {
-            info = info.child(self.bio_text(&bio, 14.0).mt(z(10.0)));
+            info = info.child(self.bio_text(&bio, 14.0).mt(z(10.0)).part(Part::ProfileText));
         }
-        info = info.child(medium("メンバー登録日", 12.0, MUTED()).mt(z(14.0))).child(text(snowflake_date(&u.id), 14.0, TEXT()));
+        info = info.child(medium("メンバー登録日", 12.0, MUTED()).mt(z(14.0)).part(Part::ProfileMuted)).child(text(snowflake_date(&u.id), 14.0, TEXT()).part(Part::ProfileText));
         let u2 = u.clone();
         let card = card(SIDEBAR(), BORDER(), 8.0)
+            .part(Part::ProfileCard)
             .size_full()
             .flex()
             .flex_col()
@@ -165,14 +170,14 @@ impl Root {
             .child(div().id("dm_profile_scroll").flex_1().min_h_0().overflow_y_scroll().child(info))
             .child(
                 div().p(z(16.0)).child(
-                    fill_button("dm_full_profile", "プロフィール全体を表示", RAIL(), WHITE(), true).w_full().on_click(cx.listener(move |this, _, window, cx| {
+                    fill_button_part("dm_full_profile", "プロフィール全体を表示", RAIL(), WHITE(), true, Some(Part::ProfileButton)).w_full().on_click(cx.listener(move |this, _, window, cx| {
                         let p = window.mouse_position();
                         this.app.open_profile(u2.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                         cx.notify();
                     })),
                 ),
             );
-        div().w(z(340.0)).h_full().flex_none().bg(BG()).border_l_1().border_t_1().border_color(DIVIDER()).p(z(10.0)).child(card)
+        div().w(z(340.0)).h_full().flex_none().bg(BG()).border_l_1().border_t_1().border_color(DIVIDER()).part(Part::ProfilePanel).p(z(10.0)).child(card)
     }
 
     /// 自己紹介（カスタム絵文字 <:name:id> は画像で出す）

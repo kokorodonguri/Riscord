@@ -158,6 +158,22 @@ pub fn icon_button(id: impl Into<ElementId>, name: IconName, size: f32) -> State
 
 /// 横いっぱいなどの色付きボタン（文字は中央）
 pub fn fill_button(id: impl Into<ElementId>, label: impl Into<SharedString>, fill: Color32, fg: Color32, enabled: bool) -> Stateful<Div> {
+    fill_button_part(id, label, fill, fg, enabled, None)
+}
+
+/// fill_button の、テーマの部品として色を変えられる版（hover_bg も効く）
+pub fn fill_button_part(id: impl Into<ElementId>, label: impl Into<SharedString>, fill: Color32, fg: Color32, enabled: bool, part: Option<crate::theme::Part>) -> Stateful<Div> {
+    let st = part.map(crate::theme::part_style).unwrap_or_default();
+    // 地を変えたのに hover_bg を書いていないときは、変えた地を少し暗くする
+    let hover = st.hover_bg.or(st.bg.map(|c| c.lerp_to_gamma(Color32::BLACK, 0.15)));
+    let b = fill_button_base(id, label, fill, fg, enabled, hover);
+    match part {
+        Some(p) => b.part(p),
+        None => b,
+    }
+}
+
+fn fill_button_base(id: impl Into<ElementId>, label: impl Into<SharedString>, fill: Color32, fg: Color32, enabled: bool, hover: Option<Color32>) -> Stateful<Div> {
     let b = div()
         .id(id)
         .h(z(38.0))
@@ -170,7 +186,7 @@ pub fn fill_button(id: impl Into<ElementId>, label: impl Into<SharedString>, fil
         .font_weight(FontWeight::MEDIUM)
         .child(label.into());
     if enabled {
-        b.bg(fill).text_color(fg).cursor_pointer().hover(move |s| s.bg(fill.lerp_to_gamma(Color32::BLACK, 0.15)))
+        b.bg(fill).text_color(fg).cursor_pointer().hover(move |s| s.bg(hover.unwrap_or(fill.lerp_to_gamma(Color32::BLACK, 0.15))))
     } else {
         b.bg(fill.gamma_multiply(0.5)).text_color(Color32::from_white_alpha(140))
     }
@@ -243,6 +259,46 @@ pub fn toggle_switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
 }
 
 /// 枠付きの入れ物
+/// テーマの [parts] での上書きを当てる。元の色や形を決めたあと、最後に呼ぶ
+pub trait Themed: Styled + Sized {
+    fn part(mut self, p: crate::theme::Part) -> Self {
+        let s = crate::theme::part_style(p);
+        if let Some(c) = s.bg {
+            self = self.bg(c);
+        }
+        if let Some(c) = s.text {
+            self = self.text_color(c);
+        }
+        if let Some(c) = s.border {
+            self = self.border_color(c);
+        }
+        if let Some(w) = s.border_width {
+            let w: AbsoluteLength = z(w).into();
+            let b = &mut self.style().border_widths;
+            (b.top, b.right, b.bottom, b.left) = (Some(w), Some(w), Some(w), Some(w));
+        }
+        if let Some(r) = s.radius {
+            self = self.rounded(z(r));
+        }
+        if let Some(o) = s.opacity {
+            self = self.opacity(o);
+        }
+        self
+    }
+}
+
+impl<T: Styled> Themed for T {}
+
+/// マウスを乗せたときの地の色（テーマの hover_bg があればそれ、なければ default）
+pub fn part_hover(p: crate::theme::Part, default: Color32) -> Color32 {
+    crate::theme::part_style(p).hover_bg.unwrap_or(default)
+}
+
+/// 文字の色（テーマの text があればそれ、なければ default）。状態で色を選ぶ所で使う
+pub fn part_text(p: crate::theme::Part, default: Color32) -> Color32 {
+    crate::theme::part_style(p).text.unwrap_or(default)
+}
+
 pub fn card(fill: Color32, border: Color32, radius: f32) -> Div {
     div().bg(fill).border_1().border_color(border).rounded(z(radius))
 }

@@ -46,3 +46,113 @@ settings_nav = "#000000" # 設定画面のメニュー
 opacity = 0.35              # 画像の見え具合（0.0〜1.0）
 area = "chat"               # "chat" または "window"（全体に敷く）
 # window の場合、面の色を #rrggbbaa で透かすと背景画像が見えます。
+
+# ---- 部品ごとの上書き ----
+# [colors] は画面全体の配色です。特定の部品だけ変えたいときは、行頭の # を外して [parts.画面.部品] に書きます。
+# 書いた項目だけが変わり、書かない項目は [colors] の色のままです。
+# 一覧にない部品や項目を書くと、設定 → テーマ に警告が出ます。
+#
+# どの部品にも書ける項目:
+# bg = "#0e0e1080"    # 地の色（#rrggbbaa で透かせる）
+# text = "#ffffff"    # 文字の色
+# border = "#2a2a2e"  # 枠線の色
+# border_width = 1    # 枠線の太さ
+# radius = 8          # 角の丸み
+# opacity = 1.0       # 中身ごとの見え具合（0〜1）
+# hover_bg = "#ffffff20" # マウスを乗せたときの地の色（行・ボタンなど、乗せると色が変わる部品だけ）
+
+# 最上段のタイトルバー
+# [parts.window.titlebar]
+
+# 左列全体（サーバー一覧＋チャンネル欄＋ユーザー欄）の地
+# [parts.sidebar.pane]
+
+# サーバーアイコンの列
+# [parts.sidebar.rail]
+
+# サーバーアイコン（radius だけ。20 で丸になる）
+# [parts.sidebar.server]
+
+# チャンネル・DM の一覧の欄
+# [parts.sidebar.channels]
+
+# チャンネル欄の上のサーバー名・DM 検索の段
+# [parts.sidebar.header]
+
+# カテゴリー名・「ダイレクトメッセージ」の見出し（text）
+# [parts.sidebar.category]
+
+# チャンネル・DM の行（text はふだんの文字色、hover_bg はマウスを乗せたとき）
+# [parts.sidebar.row]
+
+# 選択中のチャンネル・DM の行
+# [parts.sidebar.row_selected]
+
+# 左下のユーザー欄
+# [parts.sidebar.userbar]
+
+# チャット上部のチャンネル名の段
+# [parts.chat.header]
+
+# メッセージの入力欄
+# [parts.chat.input]
+
+# メッセージの本文（text）
+# [parts.message.text]
+
+# メッセージの時刻（text）
+# [parts.message.time]
+
+# 日付の区切りの文字（text）
+# [parts.message.date]
+
+# 埋め込みのカード（bg・radius・opacity。左の縦線は埋め込みごとの色）
+# [parts.message.embed]
+
+# メッセージにマウスを乗せると出る操作ボタンの枠
+# [parts.message.toolbar]
+
+# メンバー一覧の欄
+# [parts.members.panel]
+
+# メンバー一覧の見出し（text）
+# [parts.members.heading]
+
+# メンバー一覧の行（hover_bg はマウスを乗せたとき）
+# [parts.members.row]
+
+# 右クリックメニューなどの浮いた箱
+# [parts.menu.box]
+
+# メニューの行（hover_bg はマウスを乗せたとき）
+# [parts.menu.row]
+
+# 確認ダイアログ・チャンネル検索の箱
+# [parts.dialog.box]
+
+# DM 右側のプロフィール欄の地
+# [parts.profile.panel]
+
+# DM 右側のプロフィールカード
+# [parts.profile.card]
+
+# 名前やアバターを押して出るプロフィール
+# [parts.profile.popup]
+
+# プロフィールのアバターの縁（bg）
+# [parts.profile.avatar]
+
+# プロフィールの表示名（text）
+# [parts.profile.name]
+
+# プロフィールの本文（text）
+# [parts.profile.text]
+
+# プロフィールの控えめな文字と見出し（text）
+# [parts.profile.muted]
+
+# プロフィールの中の囲み（アクティビティ・自己紹介・メニュー）
+# [parts.profile.box]
+
+# プロフィールのボタン
+# [parts.profile.button]

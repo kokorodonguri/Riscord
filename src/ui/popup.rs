@@ -12,7 +12,7 @@ use crate::voice;
 
 /// ポップアップの箱
 fn popup_box() -> Div {
-    div().bg(SIDEBAR()).border_1().border_color(BORDER()).rounded(z(8.0)).shadow(popup_shadow())
+    div().bg(SIDEBAR()).border_1().border_color(BORDER()).rounded(z(8.0)).part(Part::MenuBox).shadow(popup_shadow())
 }
 
 /// メニューの1行（左に印、右に › を出せる）
@@ -28,7 +28,8 @@ fn menu_row(id: impl Into<ElementId>, mark: AnyElement, label: impl Into<SharedS
         .gap(z(10.0))
         .cursor_pointer()
         .text_color(TEXT())
-        .hover(|s| s.bg(HOVER()).text_color(WHITE()))
+        .hover(|s| s.bg(part_hover(Part::MenuRow, HOVER())).text_color(WHITE()))
+        .part(Part::MenuRow)
         .child(div().w(z(20.0)).flex().justify_center().child(mark))
         .child(div().flex_1().min_w_0().text_size(z(15.0)).truncate().child(label.into()))
         .when(chevron, |d| d.child(icon(IconName::ChevronRight, 14.0, TEXT()).group_hover("mr", |s| s.text_color(WHITE()))))
@@ -342,7 +343,9 @@ impl Root {
 
         // バナー（画像 → 指定色 → 名前から決めた色の順）
         let color = data.as_ref().and_then(|d| d.accent_color).map(rgb).unwrap_or_else(|| darken(name_color(&user.id)));
-        let mut banner = div().h(z(120.0)).w_full().rounded_t(z(8.0)).bg(color).overflow_hidden();
+        let radius = part_style(Part::ProfilePopup).radius.unwrap_or(8.0);
+        let ring = part_style(Part::ProfileAvatar).bg.unwrap_or(SIDEBAR());
+        let mut banner = div().h(z(120.0)).w_full().rounded_t(z(radius)).bg(color).overflow_hidden();
         if let Some(h) = data.as_ref().and_then(|d| d.banner.as_ref()) {
             if let Some(i) = loaded(&format!("https://cdn.discordapp.com/banners/{}/{}.png?size=600", user.id, h)) {
                 banner = banner.child(img(i).size_full().object_fit(ObjectFit::Cover));
@@ -354,22 +357,22 @@ impl Root {
             .top(z(120.0 - 50.0))
             .size(z(92.0))
             .rounded_full()
-            .bg(SIDEBAR())
+            .bg(ring)
             .flex()
             .items_center()
             .justify_center()
-            .child(with_status(avatar(Some(&user_avatar_url(&user)), 80.0, user.display(), 40.0, BLURPLE()), 80.0, &status, SIDEBAR()));
+            .child(with_status(avatar(Some(&user_avatar_url(&user)), 80.0, user.display(), 40.0, BLURPLE()), 80.0, &status, ring));
         let name = data.as_ref().and_then(|d| d.nick.clone()).unwrap_or_else(|| user.display().to_string());
         let mut sub = user.username.clone();
         if let Some(pr) = data.as_ref().and_then(|d| d.pronouns.as_deref()) {
             sub += &format!(" • {pr}");
         }
-        let mut info = div().px(z(16.0)).pt(z(52.0)).pb(z(16.0)).flex().flex_col().gap(z(4.0)).child(line(name, 20.0, WHITE())).child(line(sub, 14.0, TEXT()));
+        let mut info = div().px(z(16.0)).pt(z(52.0)).pb(z(16.0)).flex().flex_col().gap(z(4.0)).child(line(name, 20.0, WHITE()).part(Part::ProfileName)).child(line(sub, 14.0, TEXT()).part(Part::ProfileText));
         if !is_me {
-            info = info.child(text(status_label(&status), 12.0, MUTED()));
+            info = info.child(text(status_label(&status), 12.0, MUTED()).part(Part::ProfileMuted));
         }
         if let Some(act) = &activity {
-            info = info.child(div().mt(z(4.0)).bg(RAIL()).rounded(z(8.0)).px(z(10.0)).py(z(6.0)).child(text(act.clone(), 13.0, TEXT())));
+            info = info.child(div().mt(z(4.0)).bg(RAIL()).rounded(z(8.0)).part(Part::ProfileBox).px(z(10.0)).py(z(6.0)).child(text(act.clone(), 13.0, TEXT()).part(Part::ProfileText)));
         }
         let retry = {
             let pp = pp.clone();
@@ -387,13 +390,13 @@ impl Root {
         if is_me {
             // 自分のときは本家と同じく、自己紹介を名前の下にそのまま出してメニューを並べる
             if let Some(bio) = data.as_ref().and_then(|d| d.bio.clone()) {
-                info = info.child(self.bio_text(&bio, 14.0).mt(z(8.0)));
+                info = info.child(self.bio_text(&bio, 14.0).mt(z(8.0)).part(Part::ProfileText));
             }
             if failed {
                 info = info.child(div().flex().child(small_button("retry_profile", "再読み込み").on_click(retry)));
             }
             let uid = user.id.clone();
-            let mut menu = div().mt(z(10.0)).bg(RAIL()).rounded(z(8.0)).p(z(6.0)).flex().flex_col();
+            let mut menu = div().mt(z(10.0)).bg(RAIL()).rounded(z(8.0)).part(Part::ProfileBox).p(z(6.0)).flex().flex_col();
             menu = menu.child(
                 menu_row("edit_profile", icon(IconName::Pencil, 18.0, TEXT()).into_any_element(), "プロフィールを編集", false)
                     .on_hover(cx.listener(|this, h: &bool, _, cx| {
@@ -460,19 +463,19 @@ impl Root {
             );
             info = info.child(menu);
         } else {
-            let mut about = div().mt(z(6.0)).bg(RAIL()).rounded(z(8.0)).p(z(12.0)).flex().flex_col().gap(z(4.0));
+            let mut about = div().mt(z(6.0)).bg(RAIL()).rounded(z(8.0)).part(Part::ProfileBox).p(z(12.0)).flex().flex_col().gap(z(4.0));
             if loading {
                 about = about.child(div().flex().justify_center().child(spinner(20.0)));
             } else if failed {
-                about = about.child(text("詳しいプロフィールを取得できませんでした", 13.0, MUTED())).child(div().flex().child(small_button("retry_profile", "再読み込み").on_click(retry)));
+                about = about.child(text("詳しいプロフィールを取得できませんでした", 13.0, MUTED()).part(Part::ProfileMuted)).child(div().flex().child(small_button("retry_profile", "再読み込み").on_click(retry)));
             }
-            let heading = |t: &'static str| text(t, 12.0, WHITE()).font_weight(FontWeight::MEDIUM);
+            let heading = |t: &'static str| text(t, 12.0, WHITE()).font_weight(FontWeight::MEDIUM).part(Part::ProfileMuted);
             if let Some(bio) = data.as_ref().and_then(|d| d.bio.clone()) {
-                about = about.child(heading("自己紹介")).child(self.bio_text(&bio, 14.0).mb(z(8.0)));
+                about = about.child(heading("自己紹介")).child(self.bio_text(&bio, 14.0).mb(z(8.0)).part(Part::ProfileText));
             }
-            about = about.child(heading("Discordメンバー歴")).child(text(snowflake_date(&user.id), 14.0, TEXT()));
+            about = about.child(heading("Discordメンバー歴")).child(text(snowflake_date(&user.id), 14.0, TEXT()).part(Part::ProfileText));
             if let Some(j) = data.as_ref().and_then(|d| d.joined_at.as_deref()).and_then(local_dt) {
-                about = about.child(heading("サーバーメンバー歴").mt(z(8.0))).child(text(j.format("%Y年%-m月%-d日").to_string(), 14.0, TEXT()));
+                about = about.child(heading("サーバーメンバー歴").mt(z(8.0))).child(text(j.format("%Y年%-m月%-d日").to_string(), 14.0, TEXT()).part(Part::ProfileText));
             }
             if let Some(roles) = data.as_ref().map(|d| d.roles.clone()).filter(|r| !r.is_empty()) {
                 let mut wrap = div().flex().flex_wrap().gap(z(4.0));
@@ -496,7 +499,7 @@ impl Root {
             }
             info = info.child(about);
             if let Some(cid) = dm {
-                info = info.child(div().mt(z(10.0)).child(fill_button("send_dm", "メッセージを送る", BLURPLE(), Color32::WHITE, true).w_full().on_click(cx.listener(move |this, _, _, cx| {
+                info = info.child(div().mt(z(10.0)).child(fill_button_part("send_dm", "メッセージを送る", BLURPLE(), Color32::WHITE, true, Some(Part::ProfileButton)).w_full().on_click(cx.listener(move |this, _, _, cx| {
                     this.app.popup = None;
                     let before = (this.app.sel_guild.clone(), this.app.sel_channel.clone());
                     this.app.sel_guild = None;
@@ -507,6 +510,7 @@ impl Root {
             }
         }
         let body = popup_box()
+            .part(Part::ProfilePopup)
             .w(z(width))
             .max_h(z(max_h))
             .flex()

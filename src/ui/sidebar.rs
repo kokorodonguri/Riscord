@@ -37,8 +37,12 @@ fn row_frame(id: impl Into<ElementId>, height: f32, selected: bool, _unread: boo
         .items_center()
         .cursor_pointer()
         .overflow_hidden();
-    d = if selected { d.bg(SELECTED()) } else { d.hover(|s| s.bg(HOVER())) };
-    d
+    if selected {
+        d.bg(SELECTED()).part(Part::SidebarRowSelected)
+    } else {
+        d = d.hover(|s| s.bg(part_hover(Part::SidebarRow, HOVER())));
+        d.part(Part::SidebarRow)
+    }
 }
 
 /// 未読の印（行の左端の白い小さな縦棒）
@@ -47,10 +51,12 @@ fn unread_pill(height: f32) -> Div {
 }
 
 fn row_color(selected: bool, unread: bool) -> Color32 {
-    if selected || unread {
+    if selected {
+        part_text(Part::SidebarRowSelected, WHITE())
+    } else if unread {
         WHITE()
     } else {
-        MUTED()
+        part_text(Part::SidebarRow, MUTED())
     }
 }
 
@@ -115,6 +121,7 @@ impl Root {
             .flex_none()
             .px(z(10.0))
             .bg(BG())
+            .part(Part::Titlebar)
             .flex()
             .items_center()
             .on_mouse_down(MouseButton::Left, |ev, window, _| {
@@ -137,16 +144,19 @@ impl Root {
             .flex()
             .flex_col()
             .bg(BG())
+            .part(Part::SidebarPane)
             .child(div().flex_1().min_h_0().flex().flex_row().child(self.rail(cx)).child(self.channel_pane(window, cx)))
             .child(self.userbar(cx))
     }
 
     fn rail_item(&self, id: impl Into<ElementId>, selected: bool, unread: bool, mentions: u32, name: &str, url: Option<&str>) -> Stateful<Div> {
         let bg = if selected { BLURPLE() } else { HOVER() };
+        // テーマで変えられるのは形（radius）と枠。地は選択・ホバーで変わるのでそのまま
+        let radius = part_style(Part::SidebarServer).radius.unwrap_or(12.0);
         let face = if name.is_empty() {
             div()
                 .size(z(40.0))
-                .rounded(z(12.0))
+                .rounded(z(radius))
                 .bg(bg)
                 .group_hover("rail", |s| s.bg(BLURPLE()))
                 .flex()
@@ -154,7 +164,7 @@ impl Root {
                 .justify_center()
                 .child(logo(22.0, WHITE(), bg))
         } else {
-            avatar(url, 40.0, name, 12.0, bg).group_hover("rail", |s| s.bg(BLURPLE()))
+            avatar(url, 40.0, name, radius, bg).group_hover("rail", |s| s.bg(BLURPLE()))
         };
         let pill_h = if selected {
             40.0
@@ -193,7 +203,7 @@ impl Root {
     fn rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let a = &self.app;
         let unread = a.unread_guilds();
-        let mut col = div().id("rail").w(z(72.0)).h_full().flex_none().overflow_y_scroll().flex().flex_col().gap(z(4.0)).pt(z(2.0)).pb(z(8.0));
+        let mut col = div().id("rail").w(z(72.0)).h_full().flex_none().overflow_y_scroll().flex().flex_col().gap(z(4.0)).pt(z(2.0)).pb(z(8.0)).part(Part::SidebarRail);
         col = col.child(self.rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), a.mention_count(None), "", None).on_click(cx.listener(|this, _, _, cx| {
             this.pick_guild(None);
             cx.notify();
@@ -264,12 +274,12 @@ impl Root {
                 div().pl(z(7.0)).w_full().child(line(title, 16.0, WHITE()).font_weight(FontWeight::MEDIUM))
             }
         };
-        let head = div().h(z(48.0)).flex_none().flex().items_center().pl(z(9.0)).pr(z(8.0)).border_b_1().border_color(DIVIDER()).child(head);
+        let head = div().h(z(48.0)).flex_none().flex().items_center().pl(z(9.0)).pr(z(8.0)).border_b_1().border_color(DIVIDER()).part(Part::SidebarHeader).child(head);
 
         let mut list = div().id("channels").flex_1().min_h_0().flex().flex_col().gap(px(1.0)).pt(z(8.0)).pb(z(8.0));
         match &a.sel_guild {
             None => {
-                list = list.child(div().h(z(28.0)).flex_none().flex().items_center().pl(z(16.0)).child(text("ダイレクトメッセージ", 13.0, FAINT())));
+                list = list.child(div().h(z(28.0)).flex_none().flex().items_center().pl(z(16.0)).child(text("ダイレクトメッセージ", 13.0, FAINT()).part(Part::SidebarCategory)));
                 let q = a.dm_filter.trim().to_lowercase();
                 let shown: Vec<usize> = a.dms.iter().enumerate().filter(|(_, c)| q.is_empty() || c.dm_label().to_lowercase().contains(&q)).map(|(i, _)| i).collect();
                 if !shown.is_empty() {
@@ -349,7 +359,7 @@ impl Root {
                                 .pl(z(16.0))
                                 .flex()
                                 .items_center()
-                                .child(line(cat.name.as_deref().unwrap_or("").to_uppercase(), 12.0, FAINT()))
+                                .child(line(cat.name.as_deref().unwrap_or("").to_uppercase(), 12.0, FAINT()).part(Part::SidebarCategory))
                                 .into_any_element(),
                         );
                         for c in l {
@@ -371,6 +381,7 @@ impl Root {
             .border_r_1()
             .border_color(DIVIDER())
             .rounded_tl(z(8.0))
+            .part(Part::SidebarChannels)
             .child(head)
             .child(list)
     }
@@ -423,7 +434,7 @@ impl Root {
         let labels = call.as_ref().map(|(guild, channel, elapsed)| self.app.plugins.voice_panel(guild.as_deref(), channel, *elapsed)).unwrap_or_default();
         if !labels.is_empty() { self.app.repaint_after(std::time::Duration::from_secs(1)); }
         let a = &self.app;
-        let mut card = div().w_full().bg(USERBAR()).border_1().border_color(DIVIDER()).rounded(z(8.0)).px(z(8.0)).py(z(6.0)).flex().flex_col();
+        let mut card = div().w_full().bg(USERBAR()).border_1().border_color(DIVIDER()).rounded(z(8.0)).part(Part::SidebarUserbar).px(z(8.0)).py(z(6.0)).flex().flex_col();
         if let Some((gid, cid, connected)) = a.voice_channel().map(|(g, c, k)| (g.clone(), c.clone(), k)) {
             let (cname, place) = a.voice_place(gid.as_deref(), &cid);
             let color = if connected { GREEN() } else { ORANGE() };

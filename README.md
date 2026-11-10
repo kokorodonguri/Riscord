@@ -124,7 +124,7 @@ cargo run --release --locked
 Remove-Item Env:RISCORD_DEMO
 ```
 
-`RISCORD_DEMO` に `guild` を指定すると、サーバーのチャンネルを開いた状態で始まります。デモでは通常の保存済みトークンや設定を読み書きしません。
+`RISCORD_DEMO` に `guild` を指定するとサーバーのチャンネルを、`dm` を指定すると DM を開いた状態で始まります。デモでは通常の保存済みトークンや設定を読み書きしません。
 
 ## ログイン
 
@@ -154,6 +154,22 @@ opacity = 0.35
 ```
 
 すべての色と既定値を記載した [テンプレート](themes/template.toml) と [配色の見本](themes/sample.toml) を用意しています。設定画面の地とメニューは `settings_bg` と `settings_nav` で個別に変更できます。省略するとチャット欄の色を引き継ぎます。背景画像は `area = "window"` でウィンドウ全体に表示できます。面の色に透明度（`#rrggbbaa`）を指定すると設定画面にも背景が見えます。
+
+### 部品ごとの上書き
+
+`[colors]` は画面全体の配色です。特定の部品だけ変えたいときは `[parts.画面.部品]` に書きます。書いた項目だけが変わり、書かない項目は `[colors]` の色のままです。
+
+```toml
+[parts.profile.card]   # DM 右側のプロフィールカード
+bg = "#0e0e1080"       # 地を半透明に
+radius = 16
+
+[parts.profile.button]
+bg = "#ffffff20"
+text = "#ffffff"
+```
+
+部品には `bg`（地の色）、`text`（文字の色）、`border`（枠線の色）、`border_width`（枠線の太さ）、`radius`（角の丸み）、`opacity`（中身ごとの見え具合）、`hover_bg`（マウスを乗せたときの地の色）を書けます。部品は `window`、`sidebar`、`chat`、`message`、`members`、`menu`、`dialog`、`profile` に分かれていて、一覧は [テンプレート](themes/template.toml) の末尾にあります。一覧にない部品や項目を書くと、その項目だけ読み飛ばして「設定 → テーマ」に警告を表示します。
 
 ## プラグイン
 

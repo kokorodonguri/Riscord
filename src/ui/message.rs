@@ -227,7 +227,7 @@ impl Root {
                         .items_center()
                         .gap(z(8.0))
                         .child(div().flex_1().h(px(1.0)).bg(DIVIDER()))
-                        .child(text(t.format("%Y年%-m月%-d日").to_string(), 12.0, FAINT()))
+                        .child(text(t.format("%Y年%-m月%-d日").to_string(), 12.0, FAINT()).part(Part::MessageDate))
                         .child(div().flex_1().h(px(1.0)).bg(DIVIDER())),
                 );
             }
@@ -308,7 +308,7 @@ impl Root {
                     .flex()
                     .items_baseline()
                     .gap(z(COMPACT_GAP))
-                    .child(div().w(z(COMPACT_TIME_W)).flex_none().flex().justify_end().child(text(time, 11.0, FAINT())))
+                    .child(div().w(z(COMPACT_TIME_W)).flex_none().flex().justify_end().child(text(time, 11.0, FAINT()).part(Part::MessageTime)))
                     .child(name)
                     .child(body),
             ));
@@ -324,7 +324,7 @@ impl Root {
             let left: AnyElement = if grouped {
                 // まとめた行はアバターの代わりに、マウスを乗せたとき時刻を出す
                 let t = if hovered { local_dt(&m.timestamp).map(|t| t.format("%H:%M").to_string()).unwrap_or_default() } else { String::new() };
-                div().w(z(40.0)).h(z(22.0)).flex_none().flex().items_center().justify_center().child(text(t, 11.0, FAINT())).into_any_element()
+                div().w(z(40.0)).h(z(22.0)).flex_none().flex().items_center().justify_center().child(text(t, 11.0, FAINT()).part(Part::MessageTime)).into_any_element()
             } else {
                 let url = user_avatar_url(&m.author);
                 let author = author.clone();
@@ -361,7 +361,7 @@ impl Root {
                                 }))
                                 .child(author_name(m).to_string()),
                         )
-                        .child(text(fmt_time(&m.timestamp), 12.0, FAINT())),
+                        .child(text(fmt_time(&m.timestamp), 12.0, FAINT()).part(Part::MessageTime)),
                 );
             }
             if !m.content.is_empty() {
@@ -434,14 +434,14 @@ impl Root {
                     .items_baseline()
                     .child(name)
                     .child(text(after, fs, MUTED()).flex_none())
-                    .child(text(fmt_time(&m.timestamp), 12.0, FAINT()).flex_none().ml(z(8.0))),
+                    .child(text(fmt_time(&m.timestamp), 12.0, FAINT()).part(Part::MessageTime).flex_none().ml(z(8.0))),
             )
     }
 
     /// 右上に出る操作ボタン（返信・編集・コピー・削除）
     fn message_toolbar(&mut self, m: &Message, cx: &mut Context<Self>) -> impl IntoElement {
         let mine = self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
-        let mut bar = div().absolute().top(z(-16.0)).right(z(16.0)).h(z(32.0)).px(z(2.0)).flex().items_center().bg(SIDEBAR()).border_1().border_color(BORDER()).rounded(z(8.0));
+        let mut bar = div().absolute().top(z(-16.0)).right(z(16.0)).h(z(32.0)).px(z(2.0)).flex().items_center().bg(SIDEBAR()).border_1().border_color(BORDER()).rounded(z(8.0)).part(Part::MessageToolbar);
         let btn = |id: &str, name: IconName, danger: bool| {
             div()
                 .id(SharedString::from(id.to_string()))
@@ -574,7 +574,7 @@ impl Root {
             if m.edited_timestamp.is_some() {
                 r.push(" (編集済)", Some(edited));
             }
-            return div().min_w_0().text_size(z(fs)).text_color(TEXT()).child(r.element(SharedString::from(format!("t{}", m.id)))).into_any_element();
+            return div().min_w_0().text_size(z(fs)).text_color(TEXT()).part(Part::MessageText).child(r.element(SharedString::from(format!("t{}", m.id)))).into_any_element();
         }
         // 絵文字だけのメッセージは大きく表示
         let only_emoji = segs.iter().all(|x| match x {
@@ -582,7 +582,7 @@ impl Root {
             Seg::Emoji { .. } => true,
         });
         let size = if only_emoji { 48.0 } else { (fs * 1.4).round() };
-        let mut row = div().w_full().min_w_0().flex().flex_wrap().items_center().gap_y(z(2.0)).text_size(z(fs)).text_color(TEXT());
+        let mut row = div().w_full().min_w_0().flex().flex_wrap().items_center().gap_y(z(2.0)).text_size(z(fs)).text_color(TEXT()).part(Part::MessageText);
         let mut urls = Vec::new();
         for (i, seg) in segs.into_iter().enumerate() {
             match seg {
@@ -837,6 +837,11 @@ impl Root {
             .rounded(z(4.0))
             .border_l(z(4.0))
             .border_color(bar)
+            .map(|d| {
+                // 左の縦線は埋め込みごとの色なので、テーマで変えるのは地と角の丸みだけ
+                let st = part_style(Part::MessageEmbed);
+                d.when_some(st.bg, |d, c| d.bg(c)).when_some(st.radius, |d, r| d.rounded(z(r))).when_some(st.opacity, |d, o| d.opacity(o))
+            })
             .pl(z(12.0))
             .pr(z(16.0))
             .pt(z(8.0))

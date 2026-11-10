@@ -234,7 +234,7 @@ impl Root {
 
     fn chat_head(&mut self, members_shown: bool, narrow_members: bool, has_dm_user: bool, prefix: &'static str, cname: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let a = &self.app;
-        let head = div().h(z(48.0)).flex_none().px(z(16.0)).flex().items_center().gap(z(6.0)).border_t_1().border_b_1().border_color(DIVIDER()).bg(CHAT());
+        let head = div().h(z(48.0)).flex_none().px(z(16.0)).flex().items_center().gap(z(6.0)).border_t_1().border_b_1().border_color(DIVIDER()).bg(CHAT()).part(Part::ChatHeader);
         let Some(c) = a.current_channel().cloned() else { return head };
         // 左: アイコン（DM は相手）＋名前＋トピック
         let mut left = div().flex_1().min_w_0().flex().items_center().gap(z(6.0));
@@ -589,7 +589,12 @@ impl Root {
             );
         }
         let mut boxed = div().bg(INPUT()).border_1().border_color(DIVIDER()).pl(z(12.0)).pr(z(16.0)).py(z(10.0)).flex().flex_col();
-        boxed = if bar.is_some() { boxed.rounded_b(z(8.0)).border_t_0() } else { boxed.rounded(z(8.0)) };
+        boxed = if bar.is_some() { boxed.rounded_b(z(8.0)).border_t_0() } else { boxed.rounded(z(8.0)).part(Part::ChatInput) };
+        if bar.is_some() {
+            // 返信・編集の帯が上に付いているときは、上の角と枠をつなげたままにする（色だけ変える）
+            let st = part_style(Part::ChatInput);
+            boxed = boxed.when_some(st.bg, |d, c| d.bg(c)).when_some(st.border, |d, c| d.border_color(c)).when_some(st.text, |d, c| d.text_color(c));
+        }
         // 添付の上限を超えて除いたファイルのお知らせ（しばらくするか × で消える）
         if a.compose_notice.as_ref().is_some_and(|(_, at)| at.elapsed() >= st::COMPOSE_NOTICE_TTL) {
             self.app.compose_notice = None;

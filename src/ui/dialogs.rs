@@ -120,6 +120,7 @@ impl Root {
             );
         }
         let content = card(SIDEBAR(), BORDER(), 8.0)
+            .part(Part::DialogBox)
             .p(z(16.0))
             .w(z(w))
             .flex()
@@ -142,6 +143,7 @@ impl Root {
         let w = (self.app.screen_w - 56.0).clamp(0.0, 440.0);
         let preview_h = 180.0;
         let content = card(SIDEBAR(), BORDER(), 8.0)
+            .part(Part::DialogBox)
             .p(z(20.0))
             .w(z(w))
             .flex()
@@ -188,6 +190,7 @@ impl Root {
         let name = self.app.guilds.iter().find(|g| g.id == gid).map(|g| g.name.clone()).unwrap_or_default();
         let w = (self.app.screen_w - 56.0).clamp(0.0, 440.0);
         let content = card(SIDEBAR(), BORDER(), 8.0)
+            .part(Part::DialogBox)
             .p(z(20.0))
             .w(z(w))
             .flex()

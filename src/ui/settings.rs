@@ -829,6 +829,9 @@ impl Root {
         if let Some(e) = &self.app.theme_error {
             s0 = s0.child(div().mt(z(12.0)).child(notice(RED(), "テーマを読めませんでした", e)));
         }
+        if !self.app.theme_warnings.is_empty() {
+            s0 = s0.child(div().mt(z(12.0)).child(notice(ORANGE(), "テーマの一部を読み飛ばしました", &self.app.theme_warnings.join("\n"))));
+        }
         let d2 = dir.clone();
         let d3 = dir.clone();
         s0 = s0.child(div().h(z(40.0))).child(

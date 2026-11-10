@@ -225,11 +225,55 @@ impl Root {
             msgs = msgs.child(background(bg, opaque(CHAT())));
         }
         msgs = msgs.child(self.messages_view(prefix, &cname, cx));
+        msgs = msgs.children(self.jump_hint(cx));
         col = col.child(msgs);
         if cur.is_some() {
             col = col.child(self.compose(prefix, &cname, window, cx));
         }
         col
+    }
+
+    /// 上へさかのぼっている間、下端に出す「最新へ」の案内。押すか Shift+L で一番下へ
+    fn jump_hint(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.scrolled_up() {
+            return None;
+        }
+        let pill = div()
+            .id("jump_latest")
+            .flex()
+            .items_center()
+            .gap(z(6.0))
+            .px(z(12.0))
+            .py(z(5.0))
+            .rounded_full()
+            .bg(opaque(SIDEBAR()))
+            .border_1()
+            .border_color(BORDER())
+            .shadow_lg()
+            .cursor_pointer()
+            .hover(|s| s.bg(opaque(WIDGET_HOVER())))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.jump_to_latest();
+                cx.notify();
+            }))
+            .child(text("最新のメッセージへ", 13.0, TEXT()))
+            .child(div().px(z(5.0)).rounded(z(4.0)).bg(WIDGET()).child(text("Shift+L", 11.0, MUTED())))
+            .child(icon(IconName::ArrowDown, 14.0, MUTED()));
+        Some(div().absolute().bottom(z(10.0)).left_0().right_0().flex().justify_center().child(pill).into_any_element())
+    }
+
+    /// 開いているチャンネルを、一番下から上へさかのぼっているか
+    pub fn scrolled_up(&self) -> bool {
+        let Some(cid) = self.app.sel_channel.as_ref() else { return false };
+        self.lists.get(cid).is_some_and(|l| !l.state.is_following_tail())
+    }
+
+    /// 開いているチャンネルの一番下（最新のメッセージ）へ飛び、新しいメッセージに付いていく
+    pub fn jump_to_latest(&mut self) {
+        let Some(cid) = self.app.sel_channel.as_ref() else { return };
+        if let Some(l) = self.lists.get(cid) {
+            l.state.set_follow_mode(FollowMode::Tail);
+        }
     }
 
     fn chat_head(&mut self, members_shown: bool, narrow_members: bool, has_dm_user: bool, prefix: &'static str, cname: &str, cx: &mut Context<Self>) -> impl IntoElement {
@@ -448,6 +492,13 @@ impl Root {
                 None => {
                     let state = ListState::new(n, ListAlignment::Bottom, px(600.0));
                     state.set_follow_mode(FollowMode::Tail);
+                    // 下端から離れた・戻ったときだけ描き直す（「最新へ」の案内を出し入れする）
+                    let (root, away) = (self.this.clone(), std::cell::Cell::new(false));
+                    state.set_scroll_handler(move |ev, _, cx| {
+                        if away.replace(!ev.is_following_tail) != !ev.is_following_tail {
+                            let _ = root.update(cx, |_, cx| cx.notify());
+                        }
+                    });
                     self.lists.insert(cid.clone(), MsgList { state, keys, stamp: 0 });
                 }
             }

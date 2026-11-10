@@ -16,7 +16,7 @@ const SETTINGS_TABS: [(&str, IconName); 6] =
     [("マイアカウント", IconName::UserRound), ("表示", IconName::Settings), ("音声", IconName::Headphones), ("テーマ", IconName::Palette), ("プロフィール", IconName::Pencil), ("プラグイン", IconName::Settings)];
 /// 左の一覧に並べる順（本家と同じく「マイアカウント」の次に「プロフィール」）
 const SETTINGS_ORDER: [usize; 6] = [0, 4, 1, 2, 3, 5];
-/// 各ページの見出し。左の一覧で選んだページの下に並び、押すとそこへ移る（本家と同じ）
+/// 設定検索で各ページに含まれる項目を探すための見出し
 const SETTINGS_SECTIONS: [&[&str]; 6] = [
     &["アカウント情報", "アクティビティ", "トークン", "バージョン"],
     &["表示サイズ", "メッセージ表示"],
@@ -195,7 +195,7 @@ impl Root {
         a.profile_error = None;
     }
 
-    fn jump(&mut self, tab: usize, sec: usize) {
+    fn jump(&mut self, tab: usize) {
         let a = &mut self.app;
         if tab != a.settings_tab && a.profile_draft.as_ref().is_some_and(ProfileDraft::dirty) {
             a.profile_nag = Some(std::time::Instant::now());
@@ -204,11 +204,7 @@ impl Root {
         }
         a.settings_tab = tab;
         a.settings_query.clear();
-        if sec == 0 {
-            self.settings_scroll.set_offset(point(px(0.), px(0.)));
-        } else {
-            self.settings_scroll.scroll_to_top_of_item(sec + 1);
-        }
+        self.settings_scroll.set_offset(point(px(0.), px(0.)));
     }
 
     /// スライダーの状態（設定の値と同期する）
@@ -317,7 +313,7 @@ impl Root {
                         .text_color(if on { WHITE() } else { TEXT() })
                         .child(SETTINGS_TABS[i].0)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.jump(i, 0);
+                            this.jump(i);
                             cx.notify();
                         })),
                 );
@@ -362,7 +358,6 @@ impl Root {
         let side = if compact { 16.0 } else { 24.0 };
         let col_w = (w - nav_w - side * 2.0).clamp(0.0, 700.0);
         let mut content = div().w(z(col_w)).flex().flex_col().pt(z(40.0)).pb(z(64.0));
-        // 中身の子 = [上の余白, 見出し1, 見出し2, …]（左の一覧から見出しへ飛べるように、見出しごとに1つの子にする）
         content = content.child(div());
         let pages: Vec<AnyElement> = match tab {
             0 => self.account_page(cx),
@@ -412,8 +407,6 @@ impl Root {
         let a = &self.app;
         let query = a.settings_query.trim().to_lowercase();
         let matches = |s: &str| query.is_empty() || s.to_lowercase().contains(&query);
-        // 今見ている見出し（左の一覧で強調する）
-        let active = self.settings_scroll.top_item().saturating_sub(1);
         let mut col = div().w(z(nav_w)).h_full().flex_none().flex().flex_col().pl(z(16.0)).pr(z(12.0)).pt(z(20.0)).pb(z(12.0)).border_r_1().border_color(DIVIDER());
         if let Some(me) = &a.me {
             col = col.child(
@@ -465,40 +458,10 @@ impl Root {
                     .child(icon(ic, 20.0, if selected { WHITE() } else { TEXT() }))
                     .child(text(name, 16.0, if selected { WHITE() } else { TEXT() }))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.jump(i, 0);
+                        this.jump(i);
                         cx.notify();
                     })),
             );
-            // 選んでいるページ（検索中は見つかった見出し）の見出しを縦線付きで並べる。見出しが1つだけのページは出さない
-            let shown: Vec<usize> = if !query.is_empty() { hit } else if selected && secs.len() > 1 { (0..secs.len()).collect() } else { Vec::new() };
-            for j in shown {
-                let on = selected && j == active;
-                list = list.child(
-                    div()
-                        .id(("navsub", i * 10 + j))
-                        .h(z(34.0))
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .child(div().ml(z(20.0)).w(z(if on { 2.0 } else { 1.0 })).h_full().bg(if on { WHITE() } else { BORDER() }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .h_full()
-                                .ml(z(10.0))
-                                .pl(z(12.0))
-                                .rounded(z(6.0))
-                                .flex()
-                                .items_center()
-                                .hover(|s| s.bg(HOVER()))
-                                .child(text(secs[j], 15.0, if on { WHITE() } else { MUTED() })),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.jump(i, j);
-                            cx.notify();
-                        })),
-                );
-            }
         }
         if !any {
             list = list.child(text("見つかりませんでした", 14.0, MUTED()).mt(z(8.0)));
@@ -762,6 +725,20 @@ impl Root {
                 .child(action_button("reload_plugins", IconName::RefreshCw, "読み込み直す").on_click(cx.listener(|this, _, _, cx| {
                     this.app.plugins.reload(&this.app.settings.enabled_plugins); this.plugin_inputs.clear(); this.app.waker.wake(); cx.notify();
                 }))));
+        page = page.child(div().flex().flex_wrap().gap(z(10.0)).mt(z(12.0))
+            .child(action_button("enable_all_plugins", IconName::Check, "すべてオン").on_click(cx.listener(|this, _, _, cx| {
+                this.app.plugins.set_all(true, &mut this.app.settings.enabled_plugins);
+                st::save_settings(&this.app.settings);
+                this.app.waker.wake();
+                cx.notify();
+            })))
+            .child(action_button("disable_all_plugins", IconName::X, "すべてオフ").on_click(cx.listener(|this, _, _, cx| {
+                this.app.plugins.set_all(false, &mut this.app.settings.enabled_plugins);
+                this.plugin_inputs.clear();
+                st::save_settings(&this.app.settings);
+                this.app.waker.wake();
+                cx.notify();
+            }))));
         for error in &self.app.plugins.errors { page = page.child(notice(RED(), "読み込みエラー", error)); }
         for p in &self.app.plugins.entries {
             let id = p.manifest.id.clone();

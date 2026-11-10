@@ -214,6 +214,33 @@ impl Rich {
     }
 }
 
+/// 返信のプレビュー用に、本文を記法を解いた1行にする。リンクは色だけで、押せない
+fn preview_rich(content: &str, revealed: bool) -> Rich {
+    let mut r = Rich::default();
+    for block in md::blocks(content) {
+        if !r.text.is_empty() {
+            r.push(" ", None);
+        }
+        let spans = match block {
+            md::Block::Code(code) => vec![md::Span { text: code, style: md::Style { code: true, ..Default::default() } }],
+            md::Block::Text { spans, .. } => spans,
+        };
+        for mut span in spans {
+            // カスタム絵文字は画像を並べられないので :名前: で出す
+            span.text = split_emoji(&span.text)
+                .into_iter()
+                .map(|seg| match seg {
+                    Seg::Text(t) => t.replace('\n', " "),
+                    Seg::Emoji { name, .. } => format!(":{name}:"),
+                })
+                .collect();
+            r.span(&span, revealed);
+        }
+    }
+    r.links.clear();
+    r
+}
+
 /// 埋め込みの本文。URL・[文字](URL) の伏せリンクと、文中の記法（太字・`コード` など）を解釈する
 fn embed_text(id: impl Into<ElementId>, s: &str, size: f32, color: Color32) -> Div {
     let mut r = Rich::default();
@@ -588,8 +615,11 @@ impl Root {
             return row.child(text("元のメッセージは削除されました", 13.0, FAINT()));
         };
         let nc = r.member.as_ref().and_then(|member| member_role_color(member, roles)).unwrap_or(TEXT());
+        let mut rich = Rich::default();
         let body = if !r.content.is_empty() {
-            resolve_mentions(&r.content, r, &self.app.channels, roles).replace('\n', " ")
+            let content = resolve_mentions(&r.content, r, &self.app.channels, roles);
+            rich = preview_rich(&content, self.revealed.contains(&r.id));
+            String::new()
         } else if !r.attachments.is_empty() {
             "添付ファイル".to_string()
         } else if !r.sticker_items.is_empty() {
@@ -615,7 +645,7 @@ impl Root {
                     }))
                     .child(format!("@{}", author_name(r))),
             )
-            .child(line(body, 13.0, MUTED()).flex_1().ml(z(2.0)))
+            .child(if rich.text.is_empty() { line(body, 13.0, MUTED()) } else { div().text_size(z(13.0)).text_color(MUTED()).min_w_0().truncate().child(rich.element(SharedString::from(format!("rb{}", m.id)))) }.flex_1().ml(z(2.0)))
     }
 
     /// 本文。記法ごとの塊（文・見出し・引用・コードブロック）を上から並べる
@@ -983,7 +1013,7 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{call_length, Message};
+    use super::{call_length, preview_rich, Message};
 
     #[test]
     fn call_length_reads_naturally() {
@@ -1011,5 +1041,15 @@ mod tests {
         assert!(super::row_layout(&text, Some(&text), false).1, "ふつうの連投はまとめる");
         assert!(!super::row_layout(&call, Some(&text), false).1, "通話の記録はまとめない");
         assert!(!super::row_layout(&text, Some(&call), false).1, "通話の記録の次の行は名前を出す");
+    }
+
+    #[test]
+    fn reply_preview_is_one_line_without_markers() {
+        let r = preview_rich("# 見出し\n**太字** と `code`\n```rust\nlet x = 1;\n```\n<:blob:123> https://example.com", true);
+        assert_eq!(r.text, "見出し 太字 と code let x = 1; :blob: https://example.com");
+        assert!(r.links.is_empty(), "プレビューのリンクは押せない");
+        assert_eq!(r.mono.len(), 2);
+        let hidden = preview_rich("||ひみつ||", false);
+        assert_eq!(hidden.spoilers.len(), 1);
     }
 }

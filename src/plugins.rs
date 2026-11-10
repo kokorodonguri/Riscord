@@ -301,6 +301,21 @@ impl Plugins {
             }
         }
     }
+    /// Set all discovered plugins at once without restarting those already running.
+    pub fn set_all(&mut self, on: bool, enabled: &mut Vec<String>) {
+        self.generation = self.generation.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
+        if on {
+            for plugin in &mut self.entries {
+                if !enabled.contains(&plugin.manifest.id) { enabled.push(plugin.manifest.id.clone()); }
+                if !plugin.running() { plugin.start(); }
+            }
+        } else {
+            for plugin in &mut self.entries { plugin.stop(); }
+            enabled.clear();
+            self.selected = None;
+        }
+    }
     pub fn toggle(&mut self, id: &str, enabled: &mut Vec<String>) {
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
@@ -708,6 +723,29 @@ mod tests {
             panic!()
         };
         assert_eq!(page.raw_len(), 3);
+    }
+    #[test]
+    fn set_all_starts_stops_and_preserves_running_plugin_state() {
+        let mut plugins = Plugins::default();
+        for id in ["first", "second"] {
+            let manifest = Manifest { id: id.into(), name: id.into(), version: "1".into(), description: String::new(), api: 1, entry: "main.lua".into() };
+            plugins.entries.push(Plugin { manifest, error: None, runtime: None, path: PathBuf::new(), bundled_source: Some("local count = 0; return {start=function() count=count+1 end, page=function() return count end}") });
+        }
+        let mut enabled = vec!["missing".to_string()];
+        plugins.set_all(true, &mut enabled);
+        assert!(plugins.entries.iter().all(Plugin::running));
+        assert_eq!(enabled, ["missing", "first", "second"]);
+        plugins.set_all(true, &mut enabled);
+        assert_eq!(enabled, ["missing", "first", "second"]);
+        for plugin in &plugins.entries {
+            let value = plugin.runtime.as_ref().unwrap().call("page", ()).unwrap();
+            assert!(matches!(value, Value::Integer(1)));
+        }
+        plugins.selected = Some("first".into());
+        plugins.set_all(false, &mut enabled);
+        assert!(enabled.is_empty());
+        assert!(plugins.entries.iter().all(|plugin| !plugin.running()));
+        assert!(plugins.selected.is_none());
     }
     #[test]
     fn bundled_call_timer_renders_and_can_be_disabled() {

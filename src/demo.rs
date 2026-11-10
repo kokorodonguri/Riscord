@@ -116,6 +116,9 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                         message(1205, &cid, &others[0], "# 見出し\n*斜体* __下線__ ~~打ち消し~~ `let x = 1;` ||ひみつ|| snake_case_name\n- 箇条書き\n- **太字** の項目\n> 引用の行\n> 続き\n-# 小さい文字", 4),
                         message(1206, &cid, &others[1], "こう書きます\n```rust\nfn main() {\n    println!(\"こんにちは\");\n}\n```\n以上です", 3),
                     ];
+                    let mut reply = message(1207, &cid, &me, "返信です", 2);
+                    reply.referenced_message = Some(Box::new(message(1205, &cid, &others[0], "# 見出し\n**太字** *斜体* ~~打ち消し~~ `let x = 1;` ||ひみつ|| https://example.com/a_b\n```rust\nfn main() {}\n```\n長い返信元は1行に収めて、はみ出した分は切ります。ここからは幅を超えるための文章です。まだ続きます。もう少し続きます。これくらいあれば十分に長いはずです。さらに念のためもう一文だけ足しておきます。", 4)));
+                    list.push(reply);
                     list.push(call(&cid, &others[1], &["1", "3"], 1, None));
                     for (i, m) in list.iter_mut().enumerate() {
                         m.id = format!("{}", 1200 + i);

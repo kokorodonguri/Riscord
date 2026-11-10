@@ -817,8 +817,15 @@ impl Root {
             cx.notify();
             return;
         }
-        // 入力欄で: Esc は返信・編集をやめる、↑ は直前のメッセージを編集
         let compose_focused = self.inp.compose.read(cx).focus_handle(cx).is_focused(window);
+        // Shift+L: 最新のメッセージへ。案内が出ているときだけで、入力中の文字の L は打てるようにする
+        if m.shift && !m.control && !m.alt && !m.platform && k.key.eq_ignore_ascii_case("l") && self.scrolled_up() && (!compose_focused || self.app.input.is_empty()) {
+            self.jump_to_latest();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        // 入力欄で: Esc は返信・編集をやめる、↑ は直前のメッセージを編集
         if compose_focused {
             if k.key == "escape" && (self.app.editing.is_some() || self.app.reply_to.is_some()) {
                 self.cancel_compose();

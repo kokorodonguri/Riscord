@@ -49,6 +49,37 @@ impl Root {
 
         // 右側（ステータス帯・チャット・メンバー一覧／DM のプロフィール）
         let mut right = div().flex_1().min_w_0().h_full().flex().flex_col().relative();
+        if let Some(v) = crate::update::banner() {
+            right = right.child(
+                div()
+                    .flex_none()
+                    .bg(GREEN())
+                    .px(z(12.0))
+                    .py(z(4.0))
+                    .flex()
+                    .items_center()
+                    .gap(z(8.0))
+                    .child(line(format!("Riscord を {v} に更新しました。再起動すると新しい版になります"), 13.0, Color32::WHITE).flex_1().min_w_0())
+                    .child(
+                        div()
+                            .id("update_dismiss")
+                            .size(z(18.0))
+                            .flex_none()
+                            .rounded(z(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(Color32::from_black_alpha(50)))
+                            .tooltip(tip("閉じる"))
+                            .child(icon(IconName::Close, 12.0, Color32::WHITE))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                crate::update::close_banner();
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
         if !self.app.status.is_empty() && self.app.status != "接続済み" {
             let color = if self.app.status.starts_with("エラー") { RED() } else { ORANGE() };
             // 操作の結果のお知らせは閉じられる（閉じないと次の接続状態の変化まで出たままになる）。接続の状態そのものは閉じない

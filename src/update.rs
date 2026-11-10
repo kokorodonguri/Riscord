@@ -1,5 +1,6 @@
-//! 自動アップデート。起動時に GitHub の最新の正式リリースを見て、新しければ裏でダウンロードし、
-//! 実行ファイルを差し替える。新しい版が使われるのは次に起動したときから。
+//! 自動アップデート。起動時と、その後は数時間おきに GitHub の最新の正式リリースを見て、新しければ裏で
+//! ダウンロードし、実行ファイルを差し替える。新しい版が使われるのは次に起動したときから。
+//! 差し替えたら OS の通知と、画面上部の帯（banner）で知らせる。
 //!
 //! - releases/latest はプレリリースと下書きを返さないので、正式リリースだけが対象になる
 //! - 差し替えの前に、サイズと SHA-256（GitHub が asset に付ける digest）を確かめる
@@ -7,6 +8,7 @@
 //! - 環境変数 RISCORD_NO_UPDATE を設定すると確認もしない
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once};
 use std::time::Duration;
 
@@ -33,6 +35,22 @@ pub enum Status {
 
 static STATUS: Mutex<Status> = Mutex::new(Status::Off);
 static START: Once = Once::new();
+/// 起動中に確認し直す間隔
+const RECHECK: Duration = Duration::from_secs(3 * 60 * 60);
+/// 「更新しました」の帯を閉じたか
+static BANNER_CLOSED: AtomicBool = AtomicBool::new(false);
+
+/// 画面上部の帯に出す版（差し替え済みで、まだ閉じていないとき）
+pub fn banner() -> Option<String> {
+    match status() {
+        Status::Ready(v) if !BANNER_CLOSED.load(Ordering::Relaxed) => Some(v),
+        _ => None,
+    }
+}
+
+pub fn close_banner() {
+    BANNER_CLOSED.store(true, Ordering::Relaxed);
+}
 
 pub fn current_version() -> &'static str {
     CURRENT
@@ -153,7 +171,7 @@ fn sibling(exe: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// 起動時に一度だけ呼ぶ（2回目以降は何もしない）
+/// 起動時に一度だけ呼ぶ（2回目以降は何もしない）。確認は裏のスレッドが続ける
 pub fn start(waker: &Waker) {
     START.call_once(|| {
         let Some(exe) = updatable_exe() else { return };
@@ -171,16 +189,21 @@ pub fn start(waker: &Waker) {
                 Ok(rt) => rt,
                 Err(e) => return set(Status::Failed(e.to_string()), &waker),
             };
-            match rt.block_on(run(&exe, &names, &waker)) {
-                Ok(None) => set(Status::Latest, &waker),
-                Ok(Some(v)) => {
-                    set(Status::Ready(v.clone()), &waker);
-                    notify_ready(&v);
+            // 起動しっぱなしでも新しい版に気づけるよう、間をおいて確認し直す。差し替えたら終わり
+            loop {
+                match rt.block_on(run(&exe, &names, &waker)) {
+                    Ok(None) => set(Status::Latest, &waker),
+                    Ok(Some(v)) => {
+                        set(Status::Ready(v.clone()), &waker);
+                        notify_ready(&v);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("自動アップデートに失敗: {e:#}");
+                        set(Status::Failed(format!("{e:#}")), &waker);
+                    }
                 }
-                Err(e) => {
-                    eprintln!("自動アップデートに失敗: {e:#}");
-                    set(Status::Failed(format!("{e:#}")), &waker);
-                }
+                std::thread::sleep(RECHECK);
             }
         });
     });
@@ -274,7 +297,7 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
 }
 
 fn notify_ready(version: &str) {
-    let body = format!("{version} に更新しました。次に起動したときから使われます。");
+    let body = format!("{version} に更新しました。再起動すると新しい版になります。");
     if let Err(e) = notify_rust::Notification::new().appname("Riscord").summary("Riscord を更新しました").body(&body).show() {
         eprintln!("通知を出せませんでした: {e}");
     }
@@ -283,6 +306,18 @@ fn notify_ready(version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn banner_shows_after_replacing_until_closed() {
+        *STATUS.lock().unwrap() = Status::Latest;
+        assert_eq!(banner(), None);
+        *STATUS.lock().unwrap() = Status::Ready("v9.9.9".into());
+        assert_eq!(banner().as_deref(), Some("v9.9.9"));
+        close_banner();
+        assert_eq!(banner(), None);
+        *STATUS.lock().unwrap() = Status::Off;
+        BANNER_CLOSED.store(false, Ordering::Relaxed);
+    }
 
     #[test]
     fn parses_versions() {

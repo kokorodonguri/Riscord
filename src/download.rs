@@ -18,7 +18,38 @@ pub enum Event {
 }
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
-pub fn start(url: String, filename: String, waker: Waker) -> Receiver<Event> {
+/// 何を保存するか（保存ダイアログの題・お知らせの言い回し・名前が分からないときのファイル名に使う）
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Video,
+    Image,
+}
+
+impl Kind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Video => "動画",
+            Kind::Image => "画像",
+        }
+    }
+
+    fn default_name(self) -> &'static str {
+        match self {
+            Kind::Video => "video.mp4",
+            Kind::Image => "image.png",
+        }
+    }
+}
+
+/// URL の最後の部分をファイル名にする（? 以降は除く）。取れなければ空
+pub fn name_from_url(url: &str) -> String {
+    let rest = url.split(['?', '#']).next().unwrap_or("");
+    // ホスト名をファイル名にしないよう、スキーム://ホスト の後ろだけを見る
+    let path = rest.split_once("://").map_or(rest, |(_, r)| r).split_once('/').map_or("", |(_, p)| p);
+    path.rsplit('/').next().unwrap_or("").to_string()
+}
+
+pub fn start(url: String, filename: String, kind: Kind, waker: Waker) -> Receiver<Event> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -34,9 +65,9 @@ pub fn start(url: String, filename: String, waker: Waker) -> Receiver<Event> {
                 .rsplit(['/', '\\'])
                 .next()
                 .filter(|s| !s.is_empty() && *s != "." && *s != "..")
-                .unwrap_or("video.mp4");
+                .unwrap_or(kind.default_name());
             let mut dialog = rfd::AsyncFileDialog::new()
-                .set_title("動画を保存")
+                .set_title(format!("{}を保存", kind.label()))
                 .set_file_name(name);
             if let Some(dir) = dirs::download_dir() {
                 dialog = dialog.set_directory(dir);
@@ -49,7 +80,7 @@ pub fn start(url: String, filename: String, waker: Waker) -> Receiver<Event> {
             let path = file.path().to_path_buf();
             let _ = tx.send(Event::Started);
             waker.wake();
-            let event = match download_to(&url, &path).await {
+            let event = match download_to(&url, &path, kind.label()).await {
                 Ok(()) => Event::Finished(path),
                 Err(error) => Event::Failed(error),
             };
@@ -60,10 +91,11 @@ pub fn start(url: String, filename: String, waker: Waker) -> Receiver<Event> {
     rx
 }
 
-async fn download_to(url: &str, destination: &Path) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url).map_err(|_| "動画の URL が無効です".to_string())?;
+/// what = 保存するものの呼び名（「動画」「画像」。失敗したときのお知らせに使う）
+async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| format!("{what}の URL が無効です"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("対応していない動画の URL です".into());
+        return Err(format!("対応していない{what}の URL です"));
     }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -74,11 +106,11 @@ async fn download_to(url: &str, destination: &Path) -> Result<(), String> {
         .get(parsed)
         .send()
         .await
-        .map_err(|_| "動画を取得できませんでした".to_string())?
+        .map_err(|_| format!("{what}を取得できませんでした"))?
         .error_for_status()
         .map_err(|e| {
             format!(
-                "動画を取得できませんでした ({})",
+                "{what}を取得できませんでした ({})",
                 e.status().map(|s| s.as_u16()).unwrap_or(0)
             )
         })?;
@@ -109,21 +141,21 @@ async fn download_to(url: &str, destination: &Path) -> Result<(), String> {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| "動画のダウンロードが途中で失敗しました")?
+            .map_err(|_| format!("{what}のダウンロードが途中で失敗しました"))?
         {
             file.write_all(&chunk)
-                .map_err(|_| "動画を保存できませんでした")?;
+                .map_err(|_| format!("{what}を保存できませんでした"))?;
         }
-        file.flush().map_err(|_| "動画を保存できませんでした")?;
+        file.flush().map_err(|_| format!("{what}を保存できませんでした"))?;
         drop(file);
-        std::fs::rename(&path, destination).map_err(|_| "保存先へ移動できませんでした")?;
-        Ok(())
+        std::fs::rename(&path, destination).map_err(|_| "保存先へ移動できませんでした".to_string())?;
+        Ok::<(), String>(())
     }
     .await;
     if result.is_err() {
         let _ = std::fs::remove_file(&path);
     }
-    result.map_err(str::to_owned)
+    result
 }
 
 #[cfg(test)]
@@ -156,7 +188,7 @@ mod tests {
         let path = dir.join("video.mp4");
         std::fs::write(&path, b"old").unwrap();
         let url = server(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nvideo");
-        download_to(&url, &path).await.unwrap();
+        download_to(&url, &path, "動画").await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"video");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
@@ -168,7 +200,7 @@ mod tests {
         std::fs::write(&path, b"old").unwrap();
         let url =
             server(b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\nConnection: close\r\n\r\nshort");
-        assert!(download_to(&url, &path).await.is_err());
+        assert!(download_to(&url, &path, "動画").await.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
@@ -179,8 +211,15 @@ mod tests {
         let path = dir.join("video.mp4");
         let url =
             server(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        assert!(download_to(&url, &path).await.is_err());
+        assert!(download_to(&url, &path, "動画").await.is_err());
         assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn file_name_is_taken_from_url_path() {
+        assert_eq!(name_from_url("https://cdn.example.com/a/b/cat.png?ex=1&is=2"), "cat.png");
+        assert_eq!(name_from_url("https://example.com/photo.jpg#x"), "photo.jpg");
+        assert_eq!(name_from_url("https://example.com/"), "");
+        assert_eq!(name_from_url("https://example.com"), "");
     }
 }

@@ -2230,6 +2230,17 @@ impl App {
         self.mention_counts.values().filter(|(g, _)| g.as_deref() == gid).map(|(_, n)| n).sum()
     }
 
+    /// 未読のある DM と件数（新しい順）。レールに相手のアイコンを並べるのに使う
+    pub fn unread_dms(&self) -> Vec<(&Channel, u32)> {
+        self.dms
+            .iter()
+            .filter_map(|c| match self.mention_counts.get(&c.id) {
+                Some((None, n)) if *n > 0 => Some((c, *n)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// 他の人の新着メッセージ: メンション数を数え、必要ならデスクトップ通知を出す
     fn on_new_message(&mut self, m: &Message) {
         let viewing = self.window_focused && self.sel_channel.as_deref() == Some(m.channel_id.as_str());
@@ -2378,6 +2389,10 @@ impl App {
         // MessageLogger が残した削除済みメッセージは既読の位置に使わない（もう存在しない ID のため）
         let Some(last) = self.messages.get(&cid).and_then(|l| l.iter().rev().find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))) else { return };
         if self.acked.get(&cid) == Some(&last.id) {
+            // 最新まで既読にしてあるのに未読の印だけ残っていたら消す（届いたメッセージがすぐ消された、
+            // つなぎ直しで件数だけ入り直した、など。残すと次のメッセージが来るまでレールのアイコンが出たままになる）
+            self.unread.remove(&cid);
+            self.mention_counts.remove(&cid);
             return;
         }
         if let Some(wait) = self.ack_retry_at.get(&cid).and_then(|t| t.checked_duration_since(std::time::Instant::now())) {

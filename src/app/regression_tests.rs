@@ -919,3 +919,41 @@ fn failed_translation_retains_original_draft() {
     assert!(app.restore_compose("c"));
     assert_eq!(app.input, "$en 原文");
 }
+
+#[test]
+fn unread_dms_lists_only_dms_with_counts_in_dm_order_until_opened() {
+    let mut app = App::default();
+    let dm = |id: &str| -> Channel { serde_json::from_value(serde_json::json!({ "id": id, "type": 1, "recipients": [{ "id": format!("u{id}"), "username": "u" }] })).unwrap() };
+    app.dms = vec![dm("3"), dm("2"), dm("1")];
+    app.mention_counts.insert("1".into(), (None, 2));
+    app.mention_counts.insert("2".into(), (None, 0));
+    app.mention_counts.insert("3".into(), (None, 5));
+    // サーバーのチャンネルと、一覧にない DM は並べない
+    app.mention_counts.insert("g".into(), (Some("100".into()), 4));
+    app.mention_counts.insert("9".into(), (None, 1));
+    let list: Vec<(&str, u32)> = app.unread_dms().into_iter().map(|(c, n)| (c.id.as_str(), n)).collect();
+    assert_eq!(list, [("3", 5), ("1", 2)]);
+    assert_eq!(app.mention_count(None), 8);
+    app.open_channel("3".into());
+    let list: Vec<(&str, u32)> = app.unread_dms().into_iter().map(|(c, n)| (c.id.as_str(), n)).collect();
+    assert_eq!(list, [("1", 2)]);
+}
+
+#[test]
+fn viewing_already_acked_channel_clears_leftover_unread_marks() {
+    let mut app = bench_app(1);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let _tx = tx;
+    app.sync_read_state(true);
+    assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { .. })));
+    // 最新は既読のまま、件数だけが入り直した（つなぎ直しの READY や、届いてすぐ消されたメッセージ）
+    app.mention_counts.insert("c".into(), (None, 1));
+    app.unread.insert("c".into(), None);
+    app.sync_read_state(false);
+    assert!(app.mention_counts.contains_key("c"), "見ていない間は残す");
+    app.sync_read_state(true);
+    assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
+    assert!(rx.try_recv().is_err(), "既読は送り直さない");
+}

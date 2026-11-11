@@ -533,7 +533,7 @@ impl Root {
             let events: Vec<_> = download.try_iter().collect();
             for event in events {
                 match event {
-                    crate::download::Event::Started => self.app.show_toast("動画をダウンロードしています…"),
+                    crate::download::Event::Started => self.app.show_toast("ダウンロードしています…"),
                     crate::download::Event::Finished(path) => { self.download = None; self.app.show_toast(&format!("保存しました: {}", path.display())); },
                     crate::download::Event::Failed(error) => { self.download = None; self.app.show_toast(&error); },
                     crate::download::Event::Cancelled => self.download = None,
@@ -924,6 +924,15 @@ impl Root {
         }
         if s.ptt_key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(key)) {
             self.app.voice.ptt_down.store(down, Relaxed);
+        }
+    }
+
+    /// 動画・画像を保存する（保存先を選ぶダイアログを出す）。一度に1つだけ
+    pub fn start_download(&mut self, url: String, filename: String, kind: crate::download::Kind) {
+        if self.download.is_none() {
+            self.download = Some(crate::download::start(url, filename, kind, self.app.waker.clone()));
+        } else {
+            self.app.show_toast("別のファイルをダウンロード中です");
         }
     }
 

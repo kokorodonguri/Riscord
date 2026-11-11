@@ -262,16 +262,51 @@ fn embed_line(id: impl Into<ElementId>, s: impl Into<SharedString>, size: f32, c
     }
 }
 
-/// 画像（読み込み中は同じ大きさの箱を出して、行の高さが変わらないようにする）
-fn image_box(id: impl Into<ElementId>, src: &str, open: &str, size: (f32, f32), video: bool, cx: &mut Context<Root>) -> Stateful<Div> {
+/// 動画・画像の右上に重ねるダウンロードのボタン（押したときの動きは呼ぶ側で付ける）
+fn download_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .absolute()
+        .top(z(8.0))
+        .right(z(8.0))
+        .size(z(32.0))
+        .rounded(z(6.0))
+        .bg(Color32::from_rgba_unmultiplied(0, 0, 0, 180))
+        .hover(|s| s.bg(Color32::from_rgba_unmultiplied(0, 0, 0, 230)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .tooltip(tip(label))
+        .child(icon(IconName::Download, 18.0, WHITE()))
+}
+
+/// ダウンロードのボタンを重ねる画像の最小の大きさ（これより小さいとボタンで絵が隠れる）
+const DOWNLOAD_MIN: f32 = 80.0;
+
+/// 画像（読み込み中は同じ大きさの箱を出して、行の高さが変わらないようにする）。
+/// download = 保存するときのファイル名。Some なら右上にダウンロードのボタンを出す（保存するのは open の元画像）
+fn image_box(id: impl Into<ElementId>, src: &str, open: &str, size: (f32, f32), video: bool, download: Option<String>, cx: &mut Context<Root>) -> Stateful<Div> {
     let open = open.to_string();
-    let d = div().id(id).w(z(size.0)).h(z(size.1)).max_w_full().rounded(z(8.0)).overflow_hidden().cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-        if video { cx.open_url(&open); } else { this.image_preview = Some(open.clone()); cx.notify(); }
+    let d = div().id(id).relative().w(z(size.0)).h(z(size.1)).max_w_full().rounded(z(8.0)).overflow_hidden().cursor_pointer().on_click(cx.listener({
+        let open = open.clone();
+        move |this, _, _, cx| {
+            if video { cx.open_url(&open); } else { this.image_preview = Some(open.clone()); cx.notify(); }
+        }
     }));
-    match imgs::get(src) {
+    let d = match imgs::get(src) {
         Img::Ready(i) => d.child(img(i).id("img").size_full().rounded(z(8.0)).object_fit(ObjectFit::Contain)),
         Img::Pending => d.bg(EMBED_BG()).flex().items_center().justify_center().child(spinner(20.0)),
         Img::Failed => d.bg(EMBED_BG()).flex().items_center().justify_center().child(icon(IconName::TriangleAlert, 20.0, FAINT())),
+    };
+    match download.filter(|_| size.0 >= DOWNLOAD_MIN && size.1 >= DOWNLOAD_MIN) {
+        Some(name) => d.child(download_button("download", "画像をダウンロード").on_click(cx.listener(move |this, _, _, cx| {
+            // 下の画像（プレビューを開く）には伝えない
+            cx.stop_propagation();
+            this.start_download(open.clone(), name.clone(), crate::download::Kind::Image);
+            cx.notify();
+        }))),
+        None => d,
     }
 }
 
@@ -808,7 +843,7 @@ impl Root {
                 let src = resized(a.proxy_url.as_deref(), &a.url, size.unwrap_or(max));
                 self.note_image(&src);
                 self.note_image(&a.url);
-                col = col.child(image_box(SharedString::from(format!("at{}_{i}", m.id)), &src, &a.url, size.unwrap_or(max), false, cx));
+                col = col.child(image_box(SharedString::from(format!("at{}_{i}", m.id)), &src, &a.url, size.unwrap_or(max), false, Some(a.filename.clone()), cx));
             } else if a.is_video() && cfg!(target_os = "linux") {
                 col = col.child(self.video_attachment(a, &m.channel_id, &format!("{}_{i}", m.id), cx));
             } else {
@@ -827,7 +862,8 @@ impl Root {
                 let open = e.animated_url().unwrap_or_else(|| md.url.clone());
                 self.note_image(&src);
                 self.note_image(&open);
-                col = col.child(image_box(SharedString::from(format!("em{}_{i}", m.id)), &src, &open, size, false, cx));
+                let name = crate::download::name_from_url(&open);
+                col = col.child(image_box(SharedString::from(format!("em{}_{i}", m.id)), &src, &open, size, false, Some(name), cx));
             } else if e.is_rich() {
                 col = col.child(self.embed_card(e, &format!("{}_{i}", m.id), cx));
             }
@@ -859,15 +895,10 @@ impl Root {
         }
         let download_url = attachment.url.clone();
         let download_name = attachment.filename.clone();
-        screen = screen.child(div().id(SharedString::from(format!("video-download-{key}")))
-            .absolute().top(z(8.0)).right(z(8.0)).size(z(32.0)).rounded(z(6.0))
-            .bg(Color32::from_rgba_unmultiplied(0, 0, 0, 180)).hover(|s| s.bg(Color32::from_rgba_unmultiplied(0, 0, 0, 230)))
-            .flex().items_center().justify_center().cursor_pointer().tooltip(tip("動画をダウンロード"))
-            .child(icon(IconName::Download, 18.0, WHITE()))
+        screen = screen.child(download_button(SharedString::from(format!("video-download-{key}")), "動画をダウンロード")
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
-                if this.download.is_none() { this.download = Some(crate::download::start(download_url.clone(), download_name.clone(), this.app.waker.clone())); }
-                else { this.app.show_toast("別の動画をダウンロード中です"); }
+                this.start_download(download_url.clone(), download_name.clone(), crate::download::Kind::Video);
                 cx.notify();
             })));
         let screen = screen.tooltip(tip(label)).on_click(cx.listener(move |this, _, _, cx| {
@@ -976,7 +1007,7 @@ impl Root {
             let src = resized(t.proxy_url.as_deref(), &t.url, size);
             self.note_image(&src);
             self.note_image(&t.url);
-            top = top.child(div().mt(z(4.0)).child(image_box(SharedString::from(format!("eth{key}")), &src, &t.url, size, false, cx)));
+            top = top.child(div().mt(z(4.0)).child(image_box(SharedString::from(format!("eth{key}")), &src, &t.url, size, false, None, cx)));
         }
         let mut col = div().flex().flex_col().child(top);
         if let Some(md) = big {
@@ -986,7 +1017,9 @@ impl Root {
             let video = e.video.is_some() || e.kind.as_deref() == Some("video");
             let open = if video { e.url.clone().unwrap_or_else(|| md.url.clone()) } else { md.url.clone() };
             if !video { self.note_image(&open); }
-            let mut b = div().relative().mt(z(8.0)).child(image_box(SharedString::from(format!("eb{key}")), &src, &open, size, video, cx));
+            // 動画の埋め込みはサムネイルなので、ダウンロードは画像のときだけ
+            let name = (!video).then(|| crate::download::name_from_url(&open));
+            let mut b = div().relative().mt(z(8.0)).child(image_box(SharedString::from(format!("eb{key}")), &src, &open, size, video, name, cx));
             if video {
                 // 動画はアプリ内で再生できないので、再生マークを重ねてブラウザで開く
                 b = b.child(

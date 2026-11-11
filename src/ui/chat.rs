@@ -203,6 +203,13 @@ impl Root {
             };
             let content = div().flex().flex_col().items_center().gap(z(12.0)).child(picture).child(
                 div().flex().gap(z(24.0))
+                    .child(text("ダウンロード", 14.0, WHITE()).id("preview_download").cursor_pointer().on_click(cx.listener({
+                        let uri = uri.clone();
+                        move |this, _, _, cx| {
+                            this.start_download(uri.clone(), crate::download::name_from_url(&uri), crate::download::Kind::Image);
+                            cx.notify();
+                        }
+                    })))
                     .child(text("ブラウザで開く", 14.0, WHITE()).id("preview_browser").cursor_pointer().on_click(move |_, _, cx| cx.open_url(&uri)))
                     .child(text("閉じる", 14.0, WHITE()).id("preview_close").cursor_pointer().on_click(cx.listener(|this, _, _, cx| { this.image_preview = None; cx.notify(); }))),
             );

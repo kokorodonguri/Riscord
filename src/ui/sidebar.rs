@@ -149,10 +149,11 @@ impl Root {
             .child(self.userbar(cx))
     }
 
-    fn rail_item(&self, id: impl Into<ElementId>, selected: bool, unread: bool, mentions: u32, name: &str, url: Option<&str>) -> Stateful<Div> {
+    /// round = 丸いアイコン（未読の DM の相手）。サーバーはテーマの形に従う
+    fn rail_item(id: impl Into<ElementId>, selected: bool, unread: bool, mentions: u32, name: &str, url: Option<&str>, round: bool) -> Stateful<Div> {
         let bg = if selected { BLURPLE() } else { HOVER() };
         // テーマで変えられるのは形（radius）と枠。地は選択・ホバーで変わるのでそのまま
-        let radius = part_style(Part::SidebarServer).radius.unwrap_or(12.0);
+        let radius = if round { 20.0 } else { part_style(Part::SidebarServer).radius.unwrap_or(12.0) };
         let face = if name.is_empty() {
             div()
                 .size(z(40.0))
@@ -204,10 +205,22 @@ impl Root {
         let a = &self.app;
         let unread = a.unread_guilds();
         let mut col = div().id("rail").w(z(72.0)).h_full().flex_none().overflow_y_scroll().flex().flex_col().gap(z(4.0)).pt(z(2.0)).pb(z(8.0)).part(Part::SidebarRail);
-        col = col.child(self.rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), a.mention_count(None), "", None).on_click(cx.listener(|this, _, _, cx| {
+        // 未読の DM は、相手のアイコンを DM ボタンの下に並べて件数を出す（本家と同じ）。
+        // DM ボタンの数字は、アイコンにできなかった分（DM 一覧が届く前など）だけ
+        let unread_dms = a.unread_dms();
+        let shown: u32 = unread_dms.iter().map(|(_, n)| n).sum();
+        col = col.child(Self::rail_item("rail_dm", a.sel_guild.is_none(), unread.contains(&None), a.mention_count(None).saturating_sub(shown), "", None, false).on_click(cx.listener(|this, _, _, cx| {
             this.pick_guild(None);
             cx.notify();
         })));
+        for (c, n) in unread_dms {
+            let cid = c.id.clone();
+            col = col.child(Self::rail_item(SharedString::from(format!("rdm{}", c.id)), false, true, n, &c.dm_label(), dm_icon_url(c).as_deref(), true).on_click(cx.listener(move |this, _, _, cx| {
+                this.pick_guild(None);
+                this.open_channel(cid.clone());
+                cx.notify();
+            })));
+        }
         col = col.child(div().h(z(6.0)).flex_none().flex().items_center().justify_center().child(div().w(z(32.0)).h(px(1.0)).bg(DIVIDER())));
         for g in &a.guilds {
             let sel = a.sel_guild.as_deref() == Some(&g.id);
@@ -217,7 +230,7 @@ impl Root {
             let gid3 = gid.clone();
             let drag = GuildDrag { id: gid.clone(), name: g.name.clone(), url: url.clone() };
             col = col.child(
-                self.rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), a.mention_count(Some(&g.id)), &g.name, url.as_deref())
+                Self::rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), a.mention_count(Some(&g.id)), &g.name, url.as_deref(), false)
                     // ドラッグして別のサーバーの上で離すと、そこへ動かす（並びは settings.json に残す）
                     .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
                     .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))

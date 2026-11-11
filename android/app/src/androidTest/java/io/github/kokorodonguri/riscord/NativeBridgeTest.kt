@@ -28,6 +28,14 @@ class NativeBridgeTest {
             assertTrue(result.getJSONObject("data").getJSONArray("output").length()>0)
         } finally {NativeBridge.destroy(id)}
     }
+    @Test fun uploadFailureLeavesTheCallersDescriptorOpen() {
+        android.os.ParcelFileDescriptor.open(java.io.File("/dev/null"),android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            val request=JSONObject().put("op","upload").put("fd",descriptor.fd).put("channel","1").put("filename","x").put("content","")
+            val result=JSONObject(NativeBridge.call(-1,request.toString()))
+            assertFalse(result.getBoolean("ok"))
+            android.system.Os.fstat(descriptor.fileDescriptor)
+        }
+    }
     @Test fun qrLoginCreatesScannableModules() {
         val id=NativeBridge.create()
         try {

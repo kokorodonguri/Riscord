@@ -1,7 +1,5 @@
 package io.github.kokorodonguri.riscord
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
@@ -32,7 +30,7 @@ import org.json.JSONObject
 import java.time.Duration
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable internal fun MobileChat(s:ChatState,model:ChatModel,onVoice:(JSONObject,String?)->Unit) {
+@Composable internal fun MobileChat(s:ChatState,model:ChatModel,onVoice:(JSONObject,String?)->Unit,onPickAttachment:(String)->Unit) {
     val channel=s.channel ?: return
     val id=channel.getString("id")
     val dm=channel.optInt("type") in listOf(1,3)
@@ -94,7 +92,7 @@ import java.time.Duration
             }
             if(!nearBottom&&s.messages.isNotEmpty()) SmallFloatingActionButton(onClick={scope.launch {list.animateScrollToItem(0);followLatest=true}},containerColor=MobileRaised,contentColor=Color.White,modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp)) {MobileIcon(Glyph.Down,"最新のメッセージへ")}
         }
-        MessageComposer(s,model,focus)
+        MessageComposer(s,model,focus,onPickAttachment)
     }
     selected?.let {message->MessageActions(message,s.me?.optString("id").orEmpty(),onDismiss={selected=null},onReply={model.reply(message);selected=null},onEdit={model.beginEdit(message);selected=null},onDelete={deleting=message;selected=null},onReact={model.react(message,it);selected=null})}
     deleting?.let {message->AlertDialog(onDismissRequest={deleting=null},title={Text("メッセージを削除")},text={Text("このメッセージを削除します。元に戻せません。")},confirmButton={TextButton(onClick={model.delete(message);deleting=null}) {Text("削除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={deleting=null}) {Text("キャンセル")}})}
@@ -185,9 +183,8 @@ private fun richMessage(text:String):AnnotatedString=buildAnnotatedString {
     }
     append(text.substring(offset))
 }
-@Composable private fun MessageComposer(s:ChatState,model:ChatModel,focus:FocusRequester) {
+@Composable private fun MessageComposer(s:ChatState,model:ChatModel,focus:FocusRequester,onPickAttachment:(String)->Unit) {
     val id=s.channel?.optString("id") ?: return
-    val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {uri->uri?.let(model::stageAttachment)}
     var emoji by remember {mutableStateOf(false)}
     val editing=s.editing!=null
     val text=if(editing) s.editDraft else s.drafts[id].orEmpty()
@@ -213,8 +210,10 @@ private fun richMessage(text:String):AnnotatedString=buildAnnotatedString {
         }}
         Surface(color=MobileRaised,shape=RoundedCornerShape(if(s.reply!=null||editing) 12.dp else 26.dp),modifier=Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().heightIn(min=54.dp).padding(3.dp),verticalAlignment=Alignment.Bottom) {
-                if(!editing) MobileIconButton(Glyph.Plus,"ファイルを添付",{picker.launch(arrayOf("*/*"))},enabled=!s.sending,tint=MobileMuted)
-                BasicTextField(text,change,textStyle=MaterialTheme.typography.bodyMedium.copy(color=Color(0xfff1f1f4),fontSize=15.sp,lineHeight=21.sp),cursorBrush=SolidColor(MobileAccent),maxLines=5,keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences,imeAction=ImeAction.Default),modifier=Modifier.weight(1f).padding(horizontal=6.dp,vertical=14.dp).focusRequester(focus).semantics {contentDescription="メッセージ入力"},decorationBox={inner->Box {if(text.isEmpty()) Text(if(editing) "メッセージを編集" else "${if(s.channel.optInt("type") in listOf(1,3)) "@" else "#"}${s.channel.channelLabel()} へメッセージ",color=MobileMuted,fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis);inner()}})
+                if(!editing) MobileIconButton(Glyph.Plus,"ファイルを添付",{onPickAttachment(id)},enabled=!s.sending,tint=MobileMuted)
+                key(editing) {
+                    BasicTextField(text,change,textStyle=MaterialTheme.typography.bodyMedium.copy(color=Color(0xfff1f1f4),fontSize=15.sp,lineHeight=21.sp),cursorBrush=SolidColor(MobileAccent),maxLines=5,keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences,imeAction=ImeAction.Default),modifier=Modifier.weight(1f).padding(horizontal=6.dp,vertical=14.dp).focusRequester(focus).semantics {contentDescription="メッセージ入力"},decorationBox={inner->Box {if(text.isEmpty()) Text(if(editing) "メッセージを編集" else "${if(s.channel.optInt("type") in listOf(1,3)) "@" else "#"}${s.channel.channelLabel()} へメッセージ",color=MobileMuted,fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis);inner()}})
+                }
                 if(text.isNotBlank()||attachment!=null||editing) {
                     FilledIconButton(onClick=model::send,enabled=!s.sending&&(text.isNotBlank()||!editing&&attachment!=null),shape=CircleShape,modifier=Modifier.size(48.dp),colors=IconButtonDefaults.filledIconButtonColors(containerColor=MobileAccent)) {
                         if(s.sending) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Color.White)

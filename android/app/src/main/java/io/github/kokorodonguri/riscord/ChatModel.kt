@@ -29,7 +29,7 @@ data class ChatState(
     val unreadChannels:Set<String> = emptySet(),
     val attachments:Map<String,PendingAttachment> = emptyMap(),
     val editing:JSONObject?=null,val editDraft:String="",
-    val profile: JSONObject? = null,
+    val profile: JSONObject? = null, val profileLoading:Boolean=false, val profileSaving:Boolean=false, val profileError:String?=null,
     val me: JSONObject? = null, val guilds: List<JSONObject> = emptyList(),
     val channels: List<JSONObject> = emptyList(), val dms: List<JSONObject> = emptyList(),
     val guild: JSONObject? = null, val channel: JSONObject? = null,
@@ -55,6 +55,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private val settings = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
     @Volatile private var handle = NativeBridge.create()
     private var historyJob: Job? = null
+    private var channelsJob: Job? = null
+    private var profileJob: Job? = null
     private val typingTracker=TypingTracker()
     private var typingExpiryJob:Job?=null
     private var typingSendJob:Job?=null
@@ -73,8 +75,9 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             while (isActive) {
                 try {
                     // イベントが届くまで Rust 側で待つ（届けばすぐ返る）
-                    val events = NativeBridge.request(handle, JSONObject().put("op", "poll").put("wait_ms", 25_000)) as? JSONArray
-                    val list = events?.objects().orEmpty()
+                    val session=handle
+                    val events = NativeBridge.request(session, JSONObject().put("op", "poll").put("wait_ms", 25_000)) as? JSONArray
+                    val list = if(session==handle) events?.objects().orEmpty() else emptyList()
                     list.forEach { receiveEvent(it) }
                     if (list.isNotEmpty()) delay(50)
                 } catch (e: Exception) { if (e is CancellationException) throw e; delay(1000) }
@@ -88,13 +91,25 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             }
         }
     }
-    private fun task(block: suspend () -> Unit) { viewModelScope.launch {
+    private fun task(block: suspend () -> Unit) {
+        val session=handle
+        viewModelScope.launch {
         try { block() } catch (e: Exception) {
             if (e is CancellationException) throw e
+            if (session!=handle) return@launch
             if (e is AuthExpiredException) { expire(e.message); return@launch }
-            state.update { it.copy(error = e.message ?: "通信に失敗しました", loading = false, sending = false, loginBusy = false) }
+            state.update { it.copy(error = userFacingError(e), loginBusy = false) }
         }
     } }
+    private fun sendingTask(block: suspend () -> Unit) {
+        val session=handle
+        task {
+            try { block() } catch (e: Exception) {
+                if(e !is CancellationException && session==handle) state.update {it.copy(sending=false)}
+                throw e
+            }
+        }
+    }
     suspend fun rest(path: String, method: String = "GET", body: JSONObject? = null): Any? {
         apiOverride?.let {return it(path,method,body)}
         val input = JSONObject().put("op", "rest").put("path", path).put("method", method)
@@ -122,7 +137,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 return
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                state.update { it.copy(connection = "接続できません。${wait / 1000}秒後に再試行します", error = e.message) }
+                state.update { it.copy(connection = "接続できません。${wait / 1000}秒後に再試行します", error = "接続できませんでした。通信状態を確認してください。") }
             }
             delay(wait)
             wait = (wait * 2).coerceAtMost(60_000)
@@ -215,7 +230,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 val status=d.optString("status")
                 state.update { it.copy(voiceStatus=status,voiceChannel=d.optString("channel_id").takeIf {id->id.isNotEmpty()},
                     speaker=if(status=="未接続") false else it.speaker,
-                    error=d.optString("error").takeIf {error->error.isNotEmpty()} ?: it.error) }
+                    error=if(d.optString("error").isNotEmpty()) "通話に接続できませんでした。通信状態を確認して再試行してください。" else it.error) }
                 if(status=="未接続") getApplication<Application>().stopService(android.content.Intent(getApplication(),CallService::class.java))
                 updateGateway()
             }
@@ -326,15 +341,22 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         clearTyping()
         cacheMessages()
         historyJob?.cancel()
-        state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null) }
-        if (guild != null) task {
-            state.update { it.copy(loading = true) }
-            loadChannels(guild)
+        channelsJob?.cancel()
+        state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null, loading = guild != null) }
+        if (guild != null) channelsJob=viewModelScope.launch {
+            try { loadChannels(guild) }
+            catch (e: CancellationException) { throw e }
+            catch (e: AuthExpiredException) { expire(e.message) }
+            catch (e: Exception) {
+                if(state.value.guild?.optString("id")==guild.optString("id") && state.value.channel==null)
+                    state.update { it.copy(loading=false,error="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。") }
+            }
         }
     }
     private suspend fun loadChannels(guild: JSONObject) {
         val channels = (rest("/guilds/${guild.getString("id")}/channels") as JSONArray).objects().sortedBy { it.optInt("position") }
-        if (state.value.guild?.optString("id") == guild.optString("id")) state.update { it.copy(channels = channels, loading = false) }
+        currentCoroutineContext().ensureActive()
+        if (state.value.guild?.optString("id") == guild.optString("id")) state.update { it.copy(channels = channels, loading = if(it.channel==null) false else it.loading) }
     }
     private fun cacheMessages() {state.value.channel?.optString("id")?.let {messageCache[it]=state.value.messages}}
     fun openChannel(channel: JSONObject) {
@@ -347,11 +369,12 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         historyJob = viewModelScope.launch { try { refreshMessages(channel.getString("id")) } catch(e: Exception) {
             if(e is CancellationException) throw e
             if(e is AuthExpiredException) { expire(e.message); return@launch }
-            state.update { it.copy(error = e.message, loading = false) }
+            if(state.value.channel?.optString("id")==id) state.update { it.copy(error = "メッセージを読み込めませんでした。通信状態を確認して再試行してください。", loading = false) }
         } }
     }
     private suspend fun refreshMessages(id: String, before: String? = null) {
         val list = (rest("/channels/$id/messages?limit=50" + (before?.let { "&before=$it" } ?: "")) as JSONArray).objects()
+        currentCoroutineContext().ensureActive()
         if (state.value.channel?.optString("id") == id) state.update { old ->
             val fetchedMax = list.maxOfOrNull { it.optString("id").padStart(20, '0') }
             val fetchedMin = list.minOfOrNull { it.optString("id").padStart(20, '0') }
@@ -363,14 +386,36 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             old.copy(messages = merged, loading = false, hasMore = list.size == 50)
         }
     }
-    fun older() = task {
-        val s=state.value; val id=s.channel?.optString("id") ?: return@task
-        if (s.loading || !s.hasMore) return@task
-        state.update { it.copy(loading = true) }; refreshMessages(id,s.messages.firstOrNull()?.optString("id"))
+    fun older() {
+        val s=state.value; val id=s.channel?.optString("id") ?: return
+        if (s.loading || !s.hasMore) return
+        state.update { it.copy(loading = true) }
+        historyJob=viewModelScope.launch {
+            try { refreshMessages(id,s.messages.firstOrNull()?.optString("id")) }
+            catch (e: CancellationException) { throw e }
+            catch (e: AuthExpiredException) { expire(e.message) }
+            catch (e: Exception) {
+                if(state.value.channel?.optString("id")==id)
+                    state.update { it.copy(loading=false,error="以前のメッセージを読み込めませんでした。再試行してください。") }
+            }
+        }
     }
-    fun back() { clearTyping(); cacheMessages(); historyJob?.cancel(); state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",loading = false) } }
+    fun back() {
+        clearTyping(); cacheMessages(); historyJob?.cancel()
+        val guild=state.value.guild
+        state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",loading = guild!=null && it.channels.isEmpty()) }
+        if(guild!=null && state.value.channels.isEmpty() && channelsJob?.isActive!=true) {
+            channelsJob=viewModelScope.launch {
+                try {loadChannels(guild)}
+                catch(e: CancellationException) {throw e}
+                catch(e: AuthExpiredException) {expire(e.message)}
+                catch(e: Exception) {if(state.value.guild?.optString("id")==guild.optString("id") && state.value.channel==null) state.update {it.copy(loading=false,error="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。")} }
+            }
+        }
+    }
     fun draft(value: String) {
         val s=state.value;val id=s.channel?.optString("id") ?: return
+        if(s.editing!=null) return
         state.update {it.copy(drafts=it.drafts+(id to value))}
         if(value.isNotBlank()&&value!=s.drafts[id]) notifyTyping(id)
     }
@@ -382,19 +427,23 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         s.channel?.optString("id")?.let {id->s.attachments[id]?.let {upload(it.uri);return}}
         sendText()
     }
-    private fun sendText() = task {
-        val s=state.value; val id=s.channel?.optString("id") ?: return@task
-        val text=s.drafts[id].orEmpty(); if(text.isBlank() || s.sending) return@task
+    private fun sendText() = sendingTask {
+        val s=state.value; val id=s.channel?.optString("id") ?: return@sendingTask
+        val session=handle;val owner=s.me?.optString("id")
+        val text=s.drafts[id].orEmpty(); if(text.isBlank() || s.sending) return@sendingTask
         state.update { it.copy(sending = true) }
         val body=JSONObject().put("content",text).put("nonce",System.currentTimeMillis().toString()).put("enforce_nonce",true)
         s.reply?.let { body.put("message_reference", JSONObject().put("message_id",it.getString("id")).put("channel_id",id)) }
         val message=rest("/channels/$id/messages","POST",body) as JSONObject
+        if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
         state.update { old -> old.copy(sending=false, drafts=if(old.drafts[id]==text) old.drafts+(id to "") else old.drafts,
-            reply=if(old.channel?.optString("id")==id) null else old.reply,
+            reply=if(old.channel?.optString("id")==id && old.reply?.optString("id")==s.reply?.optString("id")) null else old.reply,
             messages=if(old.channel?.optString("id")==id) (old.messages.filterNot { it.optString("id")==message.optString("id") }+message).sortedBy { it.optString("id").padStart(20,'0') } else old.messages) }
     }
-    fun stageAttachment(uri:android.net.Uri) = task {
-        val id=state.value.channel?.optString("id") ?: return@task
+    fun stageAttachment(uri:android.net.Uri, channelId:String?=state.value.channel?.optString("id"), ownerId:String?=state.value.me?.optString("id")) = task {
+        val id=channelId ?: return@task
+        val owner=ownerId ?: return@task
+        if(state.value.me?.optString("id")!=owner) return@task
         val attachment=withContext(Dispatchers.IO) {
             var name="添付ファイル"; var size=-1L
             getApplication<Application>().contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME,android.provider.OpenableColumns.SIZE),null,null,null)?.use {cursor->
@@ -403,35 +452,46 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             require(size<=UPLOAD_LIMIT) {"添付は10MBまでです"}
             PendingAttachment(uri,name,size)
         }
-        state.update {it.copy(attachments=it.attachments+(id to attachment))}
+        state.update {if(it.me?.optString("id")==owner) it.copy(attachments=it.attachments+(id to attachment)) else it}
     }
     fun removeAttachment() {val id=state.value.channel?.optString("id") ?: return;state.update {it.copy(attachments=it.attachments-id)}}
     fun beginEdit(message:JSONObject) {state.update {it.copy(editing=message,editDraft=message.optString("content"),reply=null)}}
     fun cancelEdit() {state.update {it.copy(editing=null,editDraft="")}}
-    fun editDraft(text:String) {state.update {it.copy(editDraft=text)}}
-    private fun submitEdit() = task {
-        val s=state.value;val message=s.editing ?: return@task
-        if(s.editDraft.isBlank()||s.sending) return@task
+    fun editDraft(text:String) {state.update {if(it.editing!=null) it.copy(editDraft=text) else it}}
+    private fun submitEdit() = sendingTask {
+        val s=state.value;val message=s.editing ?: return@sendingTask
+        val session=handle;val owner=s.me?.optString("id")
+        if(s.editDraft.isBlank()||s.sending) return@sendingTask
         state.update {it.copy(sending=true)}
         val updated=rest("/channels/${message.getString("channel_id")}/messages/${message.getString("id")}","PATCH",JSONObject().put("content",s.editDraft)) as JSONObject
-        state.update {old->old.copy(sending=false,editing=null,editDraft="",messages=old.messages.map {if(it.optString("id")==updated.optString("id")) updated else it})}
+        if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
+        state.update {old->
+            val sameEdit=old.channel?.optString("id")==message.optString("channel_id") && old.editing?.optString("id")==message.optString("id") && old.editDraft==s.editDraft
+            old.copy(sending=false,editing=if(sameEdit) null else old.editing,editDraft=if(sameEdit) "" else old.editDraft,messages=old.messages.map {if(it.optString("id")==updated.optString("id")) updated else it})
+        }
     }
-    /** ファイルの中身は Kotlin 側で読まず、fd の所有権ごと Rust へ渡す */
-    fun upload(uri: android.net.Uri) = task {
-        val snapshot=state.value; val channel=snapshot.channel?.optString("id") ?: return@task
-        if(snapshot.sending) return@task
+    /** ファイルの中身は Kotlin 側で読まず、開いた fd を Rust へ渡す。 */
+    fun upload(uri: android.net.Uri) = sendingTask {
+        val snapshot=state.value; val channel=snapshot.channel?.optString("id") ?: return@sendingTask
+        val session=handle;val owner=snapshot.me?.optString("id")
+        if(snapshot.sending) return@sendingTask
         state.update { it.copy(sending=true) }
         val content=snapshot.drafts[channel].orEmpty()
         val resolver=getApplication<Application>().contentResolver
-        val (filename,fd)=withContext(Dispatchers.IO) {
+        val message=withContext(Dispatchers.IO) {
             val filename=snapshot.attachments[channel]?.name ?: resolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use { cursor ->
                 if(cursor.moveToFirst()) cursor.getString(0) else null
             } ?: "attachment"
             val descriptor=resolver.openFileDescriptor(uri,"r") ?: error("ファイルを開けませんでした")
-            filename to descriptor.detachFd()
+            descriptor.use {
+                val request=JSONObject().put("op","upload").put("channel",channel).put("filename",filename).put("fd",it.fd).put("content",content)
+                snapshot.reply?.optString("id")?.takeIf {id->id.isNotEmpty()}?.let {id->request.put("reply_to",id)}
+                NativeBridge.request(session,request) as JSONObject
+            }
         }
-        val message=NativeBridge.request(handle,JSONObject().put("op","upload").put("channel",channel).put("filename",filename).put("fd",fd).put("content",content)) as JSONObject
-        state.update { old -> old.copy(sending=false,attachments=old.attachments-channel,drafts=if(old.drafts[channel]==content) old.drafts+(channel to "") else old.drafts,
+        if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
+        state.update { old -> old.copy(sending=false,attachments=if(old.attachments[channel]?.uri==uri) old.attachments-channel else old.attachments,drafts=if(old.drafts[channel]==content) old.drafts+(channel to "") else old.drafts,
+            reply=if(old.channel?.optString("id")==channel && old.reply?.optString("id")==snapshot.reply?.optString("id")) null else old.reply,
             messages=if(old.channel?.optString("id")==channel) (old.messages.filterNot { it.optString("id")==message.optString("id") }+message).sortedBy {it.optString("id").padStart(20,'0')} else old.messages) }
     }
     fun edit(message: JSONObject, text: String) = task {
@@ -482,24 +542,58 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         NativeBridge.request(handle,JSONObject().put("op","voice_flags").put("mute",mute).put("deaf",deaf))
         state.update {it.copy(mute=mute,deaf=deaf)}
     }
-    fun loadMyProfile() = task {
-        state.update { it.copy(profile=null) }
-        val id=state.value.me?.optString("id") ?: return@task
-        val profile=rest("/users/$id/profile") as JSONObject
-        state.update { it.copy(profile=profile.optJSONObject("user_profile") ?: JSONObject()) }
-    }
-    /** 変わった項目だけ送る */
-    fun saveProfile(name: String, bio: String, status: String) = task {
-        val s=state.value
-        if(name!=s.me?.label()) {
-            val me=rest("/users/@me","PATCH",JSONObject().put("global_name",name)) as JSONObject
-            state.update { it.copy(me=me) }
+    fun loadMyProfile() {
+        val id=state.value.me?.optString("id") ?: return
+        profileJob?.cancel()
+        state.update { it.copy(profile=null,profileLoading=true,profileError=null) }
+        profileJob=viewModelScope.launch {
+            try {
+                val profile=rest("/users/$id/profile") as JSONObject
+                currentCoroutineContext().ensureActive()
+                val userProfile=profile.optJSONObject("user_profile") ?: error("missing user profile")
+                check(userProfile.isNull("bio") || userProfile.opt("bio") is String)
+                if(state.value.me?.optString("id")==id) state.update { it.copy(profile=userProfile,profileLoading=false) }
+            } catch(e: CancellationException) { throw e }
+            catch(e: AuthExpiredException) { expire(e.message) }
+            catch(e: Exception) {
+                if(state.value.me?.optString("id")==id) state.update { it.copy(profileLoading=false,profileError="プロフィールを読み込めませんでした。通信状態を確認して再試行してください。") }
+            }
         }
-        if(bio!=s.profile?.optString("bio").orEmpty()) rest("/users/@me/profile","PATCH",JSONObject().put("bio",bio))
-        if(status!=s.status) {
-            NativeBridge.request(handle,JSONObject().put("op","presence").put("status",status))
-            settings.edit().putString("status",status).apply()
-            state.update { it.copy(status=status) }
+    }
+    /** 変更が確定した項目から状態を更新し、失敗時は編集画面を維持する。 */
+    fun saveProfile(name: String, bio: String, status: String, onSaved:()->Unit = {}) {
+        val s=state.value
+        if(s.profileSaving || s.profile==null || name.isBlank()) return
+        val userId=s.me?.optString("id") ?: return
+        state.update { it.copy(profileSaving=true,profileError=null) }
+        profileJob=viewModelScope.launch {
+            try {
+                if(name!=s.me?.label()) {
+                    val me=rest("/users/@me","PATCH",JSONObject().put("global_name",name)) as JSONObject
+                    currentCoroutineContext().ensureActive()
+                    check(me.optString("id")==userId)
+                    if(state.value.me?.optString("id")!=userId) return@launch
+                    state.update { it.copy(me=me) }
+                }
+                if(bio!=s.profile.optString("bio").takeUnless {it=="null"}.orEmpty()) {
+                    rest("/users/@me/profile","PATCH",JSONObject().put("bio",bio))
+                    currentCoroutineContext().ensureActive()
+                    if(state.value.me?.optString("id")!=userId) return@launch
+                    state.update { it.copy(profile=JSONObject(it.profile.toString()).put("bio",bio)) }
+                }
+                if(status!=s.status) {
+                    NativeBridge.request(handle,JSONObject().put("op","presence").put("status",status))
+                    currentCoroutineContext().ensureActive()
+                    if(state.value.me?.optString("id")!=userId) return@launch
+                    settings.edit().putString("status",status).apply()
+                    state.update { it.copy(status=status) }
+                }
+                if(state.value.me?.optString("id")==userId) {state.update {it.copy(profileSaving=false)};onSaved()}
+            } catch(e: CancellationException) { throw e }
+            catch(e: AuthExpiredException) { expire(e.message) }
+            catch(e: Exception) {
+                if(state.value.me?.optString("id")==userId) state.update {it.copy(profileSaving=false,profileError="一部の変更を保存できませんでした。内容を確認して再試行してください。")}
+            }
         }
     }
     fun openFromNotification(id: String) {
@@ -519,7 +613,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             if(enabled) app.startForegroundService(intent) else app.stopService(intent)
             state.update { it.copy(persistent=enabled) }
             updateGateway()
-        } catch(e:Exception) { state.update { it.copy(error="常駐を開始できませんでした: ${e.message}") } }
+        } catch(e:Exception) { state.update { it.copy(error="通知の接続を開始できませんでした。アプリを開いた状態で再試行してください。") } }
     }
     private fun canNotify(app:Application)=android.os.Build.VERSION.SDK_INT<33 || app.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)==android.content.pm.PackageManager.PERMISSION_GRANTED
     private fun notifyMessage(message: JSONObject) {
@@ -572,7 +666,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         clearTyping();typingTracker.reset()
         restoreJob?.cancel(); restoreJob=null; pauseJob?.cancel(); pauseJob=null; gatewayPaused=false
         val app=getApplication<Application>()
-        app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false); historyJob?.cancel(); messageCache.clear(); store.clear()
+        app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false); historyJob?.cancel(); channelsJob?.cancel(); profileJob?.cancel(); messageCache.clear(); store.clear()
         app.getSystemService(android.app.NotificationManager::class.java).cancelAll()
         val old=handle; handle=NativeBridge.create(); NativeBridge.destroy(old)
         state.value=ChatState(status=state.value.status)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
@@ -46,6 +47,13 @@ class MainActivity : ComponentActivity() {
     val s by model.state.collectAsStateWithLifecycle()
     val context=LocalContext.current
     val screens=rememberSaveableStateHolder()
+    var attachmentChannel by rememberSaveable {mutableStateOf<String?>(null)}
+    var attachmentOwner by rememberSaveable {mutableStateOf<String?>(null)}
+    val attachmentPicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {uri->
+        val channel=attachmentChannel;val owner=attachmentOwner
+        attachmentChannel=null;attachmentOwner=null
+        if(uri!=null && channel!=null && owner!=null) model.stageAttachment(uri,channel,owner)
+    }
     var pendingVoice by remember {mutableStateOf<Pair<JSONObject,String?>?>(null)}
     val micPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {allowed->
         if(allowed) pendingVoice?.let {(channel,guild)->model.joinVoice(channel,guild)}
@@ -96,7 +104,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Box(Modifier.weight(1f)) {
                     if(s.channel==null) screens.SaveableStateProvider("home") {MobileHome(s,model,{account=true},notifications,onVoice)}
-                    else screens.SaveableStateProvider("chat-${s.channel!!.optString("id")}") {MobileChat(s,model,onVoice)}
+                    else screens.SaveableStateProvider("chat-${s.channel!!.optString("id")}") {MobileChat(s,model,onVoice) {channel->attachmentChannel=channel;attachmentOwner=s.me?.optString("id");attachmentPicker.launch(arrayOf("*/*"))}}
                 }
             }
         }
@@ -132,18 +140,23 @@ class MainActivity : ComponentActivity() {
     var name by remember {mutableStateOf(s.me?.label().orEmpty())}
     var bio by remember {mutableStateOf("")}
     var status by remember {mutableStateOf(s.status)}
-    LaunchedEffect(s.profile) {s.profile?.let {bio=it.optString("bio")}}
-    ModalBottomSheet(onDismissRequest=onDismiss,containerColor=MobileRaised,modifier=Modifier.imePadding()) {
+    LaunchedEffect(s.profile) {s.profile?.let {bio=it.nonNull("bio").orEmpty()}}
+    val saving by rememberUpdatedState(s.profileSaving)
+    val sheetState=rememberModalBottomSheetState(confirmValueChange={it!=SheetValue.Hidden || !saving})
+    ModalBottomSheet(onDismissRequest={if(!s.profileSaving) onDismiss()},sheetState=sheetState,containerColor=MobileRaised,modifier=Modifier.imePadding()) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(.85f).padding(horizontal=20.dp)) {
             Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                 Text("プロフィール",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.Bold)
-                TextButton(onClick={model.saveProfile(name,bio,status);onDismiss()},enabled=s.profile!=null&&name.isNotBlank()) {Text("保存")}
+                TextButton(onClick={model.saveProfile(name,bio,status,onDismiss)},enabled=s.profile!=null&&name.isNotBlank()&&!s.profileSaving) {Text(if(s.profileSaving) "保存中…" else "保存")}
             }
+            s.profileError?.let {Text(it,Modifier.fillMaxWidth().padding(vertical=8.dp),color=MaterialTheme.colorScheme.error,fontSize=13.sp)}
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-                OutlinedTextField(name,{name=it},label={Text("表示名")},singleLine=true,modifier=Modifier.fillMaxWidth())
-                if(s.profile==null) CircularProgressIndicator() else OutlinedTextField(bio,{bio=it},label={Text("自己紹介")},minLines=3,maxLines=6,modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(name,{name=it},label={Text("表示名")},singleLine=true,enabled=!s.profileSaving,modifier=Modifier.fillMaxWidth())
+                if(s.profileLoading) CircularProgressIndicator()
+                else if(s.profile==null) TextButton(onClick=model::loadMyProfile) {Text("再読み込み")}
+                else OutlinedTextField(bio,{bio=it},label={Text("自己紹介")},minLines=3,maxLines=6,enabled=!s.profileSaving,modifier=Modifier.fillMaxWidth())
                 Text("ステータス",fontSize=13.sp,color=MobileMuted)
-                listOf("online" to "オンライン","idle" to "退席中","dnd" to "取り込み中","invisible" to "オンライン状態を隠す").forEach {(value,label)->Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clickable {status=value},verticalAlignment=Alignment.CenterVertically) {RadioButton(status==value,{status=value});Text(label,fontSize=14.sp)}}
+                listOf("online" to "オンライン","idle" to "退席中","dnd" to "取り込み中","invisible" to "オンライン状態を隠す").forEach {(value,label)->Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clickable(enabled=!s.profileSaving) {status=value},verticalAlignment=Alignment.CenterVertically) {RadioButton(status==value,{status=value},enabled=!s.profileSaving);Text(label,fontSize=14.sp)}}
                 Spacer(Modifier.height(24.dp))
             }
         }

@@ -54,6 +54,7 @@ pub struct VoiceCtl {
     /// 自分以外の話している人 (user_id)
     pub speaking: Mutex<HashSet<String>>,
     /// 視聴中の画面共有の最新の 1 枚（src/golive）
+    #[cfg(not(target_os = "android"))]
     pub screen: Arc<Mutex<Option<crate::golive::Frame>>>,
     repaint: Mutex<Option<crate::wake::Waker>>,
 }
@@ -75,6 +76,7 @@ impl Default for VoiceCtl {
             output_device: Mutex::new(None),
             restart: AtomicBool::new(false),
             speaking: Mutex::new(HashSet::new()),
+            #[cfg(not(target_os = "android"))]
             screen: Arc::default(),
             repaint: Mutex::new(None),
         }

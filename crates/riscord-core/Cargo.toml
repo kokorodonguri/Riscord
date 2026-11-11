@@ -8,6 +8,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 jni = "0.21"
+libc = "0.2"
 
 anyhow = "1"
 base64 = "0.22"

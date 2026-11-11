@@ -7385,6 +7385,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "jni 0.21.1",
+ "libc",
  "ndk-context",
  "qrcode",
  "rand 0.8.8",

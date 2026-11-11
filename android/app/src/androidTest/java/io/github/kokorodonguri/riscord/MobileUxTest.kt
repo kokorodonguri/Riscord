@@ -32,6 +32,7 @@ class MobileUxTest {
     private val store=ViewModelStore()
     private lateinit var model:ChatModel
     private var fixtureMessages=listOf<JSONObject>()
+    private var restHandler:(suspend (String,String,JSONObject?)->Any?)?=null
     private val typingRequests=mutableListOf<String>()
     private val dm=JSONObject("""{"id":"100","type":1,"recipients":[{"id":"2","username":"mika","global_name":"Mika"}]}""")
     private val me=JSONObject("""{"id":"1","username":"riscord","global_name":"テストユーザー"}""")
@@ -44,7 +45,8 @@ class MobileUxTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             compose.activity.enableEdgeToEdge(statusBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),navigationBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
             compose.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-            model=ChatModel(app,restoreSession=false,apiOverride={path,method,_->
+            model=ChatModel(app,restoreSession=false,apiOverride={path,method,body->
+                restHandler?.let {return@ChatModel it(path,method,body)}
                 if(method=="POST"&&path.endsWith("/typing")) {typingRequests+=path;return@ChatModel JSONObject.NULL}
                 check(method=="GET") {"UI test attempted a network write: $method $path"}
                 when {
@@ -75,6 +77,149 @@ class MobileUxTest {
         val bitmap=requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
         File(directory,"$name.png").outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}
         bitmap.recycle()
+    }
+    @Test fun switchingToDmCancelsGuildLoadingAndIgnoresTheOldResult() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val guild=JSONObject("""{"id":"9","name":"遅いサーバー"}""")
+        restHandler={_,_,_->gate.await()}
+        compose.runOnUiThread {model.selectGuild(guild)}
+        compose.waitUntil(5000) {model.state.value.loading}
+        compose.runOnUiThread {model.selectGuild(null)}
+        Assert.assertFalse(model.state.value.loading)
+        gate.complete(JSONArray().put(JSONObject().put("id","11").put("name","古いチャンネル")))
+        compose.waitForIdle()
+        Assert.assertNull(model.state.value.guild)
+        Assert.assertTrue(model.state.value.channels.isEmpty())
+        Assert.assertNull(model.state.value.error)
+    }
+    @Test fun returningFromAChannelWaitsForTheOriginalGuildList() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val guild=JSONObject("""{"id":"9","name":"サーバー"}""")
+        val channel=JSONObject("""{"id":"11","name":"一般","type":0}""")
+        restHandler={path,_,_->if(path=="/guilds/9/channels") gate.await() else JSONArray()}
+        compose.runOnUiThread {model.selectGuild(guild);model.openChannel(channel);model.back()}
+        Assert.assertTrue(model.state.value.loading)
+        gate.complete(JSONArray().put(channel))
+        compose.waitUntil(5000) {!model.state.value.loading}
+        Assert.assertEquals("11",model.state.value.channels.single().optString("id"))
+        Assert.assertNull(model.state.value.error)
+    }
+    @Test fun attachmentIsKeptWithTheChannelThatOpenedThePicker() {
+        val file=File(app.cacheDir,"picker-origin.txt").apply {writeText("fixture")}
+        try {
+            compose.runOnUiThread {
+                model.state.value=model.state.value.copy(channel=dm)
+                model.state.value=model.state.value.copy(channel=JSONObject().put("id","200"))
+                model.stageAttachment(Uri.fromFile(file),"100")
+            }
+            compose.waitUntil(5000) {model.state.value.attachments.containsKey("100")}
+            Assert.assertFalse(model.state.value.attachments.containsKey("200"))
+        } finally {file.delete()}
+    }
+    @Test fun pickerResultFromAnotherAccountIsDiscarded() {
+        val file=File(app.cacheDir,"picker-other-account.txt").apply {writeText("fixture")}
+        try {
+            compose.runOnUiThread {
+                model.state.value=model.state.value.copy(me=JSONObject().put("id","2"),channel=dm)
+                model.stageAttachment(Uri.fromFile(file),"100","1")
+            }
+            compose.waitForIdle()
+            Assert.assertTrue(model.state.value.attachments.isEmpty())
+        } finally {file.delete()}
+    }
+    @Test fun profileSaveRetainsPartialSuccessAndCanRetryWithoutDoubleSubmit() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONObject>()
+        var names=0;var bios=0;var saved=0;var failBio=true
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(profile=JSONObject().put("bio","元の紹介"))
+            restHandler={path,method,_->
+                check(method=="PATCH")
+                when(path) {
+                    "/users/@me"->{names++;gate.await()}
+                    "/users/@me/profile"->{bios++;if(failBio) throw java.io.IOException("private technical error");JSONObject()}
+                    else->error("unexpected request")
+                }
+            }
+            model.saveProfile("新しい名前","新しい紹介","online") {saved++}
+            model.saveProfile("新しい名前","新しい紹介","online") {saved++}
+        }
+        Assert.assertTrue(model.state.value.profileSaving)
+        Assert.assertEquals(1,names)
+        gate.complete(JSONObject().put("id","1").put("global_name","新しい名前"))
+        compose.waitUntil(5000) {!model.state.value.profileSaving}
+        Assert.assertEquals("新しい名前",model.state.value.me?.label())
+        Assert.assertEquals("元の紹介",model.state.value.profile?.optString("bio"))
+        Assert.assertTrue(model.state.value.profileError!!.contains("再試行"))
+        Assert.assertFalse(model.state.value.profileError!!.contains("private"))
+        Assert.assertEquals(0,saved)
+        failBio=false
+        compose.runOnUiThread {model.saveProfile("新しい名前","新しい紹介","online") {saved++}}
+        compose.waitUntil(5000) {saved==1}
+        Assert.assertEquals(1,names)
+        Assert.assertEquals(2,bios)
+        Assert.assertEquals("新しい紹介",model.state.value.profile?.optString("bio"))
+        Assert.assertNull(model.state.value.profileError)
+    }
+    @Test fun incompleteProfileResponseShowsRetryInsteadOfAnEmptyForm() {
+        restHandler={_,_,_->JSONObject()}
+        compose.runOnUiThread {model.loadMyProfile()}
+        compose.waitUntil(5000) {!model.state.value.profileLoading}
+        Assert.assertNull(model.state.value.profile)
+        Assert.assertTrue(model.state.value.profileError!!.contains("再試行"))
+    }
+    @Test fun profileSheetShowsSavingAndKeepsInputWhenTheRequestFails() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONObject>()
+        var attempts=0
+        restHandler={path,method,_->
+            when {
+                method=="GET" && path=="/users/1/profile" -> JSONObject().put("user_profile",JSONObject().put("bio","元の紹介"))
+                method=="PATCH" && path=="/users/@me" -> {attempts++;if(attempts==1) gate.await() else JSONObject().put("id","1").put("global_name","新しい名前")}
+                else -> error("unexpected request: $method $path")
+            }
+        }
+        render()
+        compose.onNodeWithText("テストユーザー").performClick()
+        compose.onNodeWithText("プロフィールを編集").performClick()
+        compose.waitUntil(5000) {model.state.value.profile!=null}
+        compose.onNode(hasSetTextAction() and hasText("テストユーザー")).performTextReplacement("新しい名前")
+        compose.onNodeWithText("保存").performClick()
+        compose.onNodeWithText("保存中…").assertIsDisplayed().assertIsNotEnabled()
+        gate.completeExceptionally(java.io.IOException("private diagnostic"))
+        compose.waitUntil(5000) {!model.state.value.profileSaving}
+        compose.onNodeWithText("一部の変更を保存できませんでした。内容を確認して再試行してください。").assertIsDisplayed()
+        compose.onNode(hasSetTextAction() and hasText("新しい名前")).assertIsDisplayed()
+        screenshot("profile-save-error")
+        compose.onNodeWithText("保存").performClick()
+        compose.waitUntil(5000) {model.state.value.me?.label()=="新しい名前"}
+        Assert.assertEquals(2,attempts)
+        compose.onNodeWithText("プロフィール").assertDoesNotExist()
+    }
+    @Test fun sendingDoesNotClearAReplySelectedWhileRequestIsPending() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONObject>()
+        val first=message(1);val second=message(2)
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(channel=dm,reply=first,drafts=mapOf("100" to "送る"))
+            restHandler={_,method,_->check(method=="POST");gate.await()}
+            model.send()
+            model.reply(second)
+        }
+        Assert.assertTrue(model.state.value.sending)
+        gate.complete(message(3,"送る","1"))
+        compose.waitUntil(5000) {!model.state.value.sending}
+        Assert.assertEquals(second.optString("id"),model.state.value.reply?.optString("id"))
+    }
+    @Test fun pendingSendDoesNotUpdateANewAccount() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONObject>()
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(channel=dm,drafts=mapOf("100" to "送る"))
+            restHandler={_,_,_->gate.await()}
+            model.send()
+            model.state.value=ChatState(me=JSONObject().put("id","2"),channel=dm,drafts=mapOf("100" to "新しい下書き"))
+        }
+        gate.complete(message(3,"送る","1"))
+        compose.waitForIdle()
+        Assert.assertEquals("新しい下書き",model.state.value.drafts["100"])
+        Assert.assertTrue(model.state.value.messages.isEmpty())
     }
     @Test fun typingIsSentOnActualEditsAndThrottledWithinABurst() {
         render();open()
@@ -109,6 +254,7 @@ class MobileUxTest {
         compose.onNodeWithText("編集",useUnmergedTree=true).performClick()
         compose.onNodeWithContentDescription("メッセージ入力").assertTextContains("自分のメッセージ")
         compose.onNodeWithContentDescription("編集をキャンセル").performClick()
+        Assert.assertEquals("下書きを残す",model.state.value.drafts["100"])
         compose.onNodeWithContentDescription("メッセージ入力").assertTextContains("下書きを残す")
         screenshot("reply-edit-draft")
         compose.onNodeWithContentDescription("チャンネル一覧に戻る").performClick()

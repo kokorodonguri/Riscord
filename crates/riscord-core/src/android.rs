@@ -20,10 +20,10 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(mu
     let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<Value> {
         let input:String=env.get_string(&input)?.into();
         let v:Value=serde_json::from_str(&input)?;
-        // 添付は Java から fd の所有権を受け取る。どの経路で失敗しても File が閉じる
+        // Kotlin が所有する fd を複製し、送信中のキャンセルや例外でも双方を閉じる。
         #[cfg(unix)]
         let upload_file=match (v["op"].as_str(),v["fd"].as_i64()) {
-            (Some("upload"),Some(fd)) if (0..=i32::MAX as i64).contains(&fd) => Some(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd as i32) }),
+            (Some("upload"),Some(fd)) if (0..=i32::MAX as i64).contains(&fd) => Some(duplicate_file(fd as i32)?),
             _ => None,
         };
         let client=clients().lock().unwrap().get(&id).cloned().ok_or_else(||anyhow::anyhow!("セッションは終了しました"))?;
@@ -51,7 +51,7 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(mu
                 #[cfg(unix)]
                 "upload" => {
                     let file=upload_file.ok_or_else(||anyhow::anyhow!("ファイルを開けませんでした"))?;
-                    client.upload(v["channel"].as_str().unwrap_or_default(),v["filename"].as_str().unwrap_or("attachment"),file,v["content"].as_str().unwrap_or_default()).await
+                    client.upload(v["channel"].as_str().unwrap_or_default(),v["filename"].as_str().unwrap_or("attachment"),file,v["content"].as_str().unwrap_or_default(),v["reply_to"].as_str()).await
                 },
                 "rest" => client.request(v["method"].as_str().unwrap_or("GET").parse()?,v["path"].as_str().unwrap_or_default(),v.get("body").cloned()).await,
                 _ => anyhow::bail!("不明な操作"),
@@ -60,6 +60,27 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(mu
     }));
     let output=match result { Ok(Ok(v))=>json!({"ok":true,"data":v}), Ok(Err(e))=>json!({"ok":false,"error":e.to_string(),"auth":e.is::<crate::mobile::AuthExpired>()}), Err(_)=>json!({"ok":false,"error":"内部エラーが発生しました"}) };
     env.new_string(output.to_string()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(unix)]
+fn duplicate_file(fd: i32) -> anyhow::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    let duplicate=unsafe {libc::dup(fd)};
+    if duplicate<0 {return Err(std::io::Error::last_os_error().into());}
+    Ok(unsafe {std::fs::File::from_raw_fd(duplicate)})
+}
+
+#[cfg(all(test,unix))]
+mod tests {
+    use std::os::fd::AsRawFd;
+    #[test]
+    fn duplicate_does_not_take_ownership_of_the_original() {
+        let original=std::fs::File::open("/dev/null").unwrap();
+        let duplicate=super::duplicate_file(original.as_raw_fd()).unwrap();
+        drop(duplicate);
+        assert!(original.metadata().is_ok());
+        assert!(super::duplicate_file(-1).is_err());
+    }
 }
 
 #[cfg(target_os = "android")]

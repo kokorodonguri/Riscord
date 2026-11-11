@@ -189,7 +189,7 @@ impl Client {
         response(req.send().await?).await
     }
     /// 添付を送る。file は呼び出し側から所有権を受け取り、上限まで読む
-    pub async fn upload(&self, channel: &str, filename: &str, file: std::fs::File, content: &str) -> Result<Value> {
+    pub async fn upload(&self, channel: &str, filename: &str, file: std::fs::File, content: &str, reply_to: Option<&str>) -> Result<Value> {
         anyhow::ensure!(!channel.is_empty() && channel.bytes().all(|b| b.is_ascii_digit()), "無効なチャンネル");
         let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
             use std::io::Read;
@@ -199,7 +199,7 @@ impl Client {
         }).await??;
         anyhow::ensure!(bytes.len() as u64 <= UPLOAD_LIMIT, "添付は10MBまでです");
         let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_owned());
-        let payload = json!({"content":content,"attachments":[{"id":"0","filename":filename}]});
+        let payload = upload_payload(channel, filename, content, reply_to)?;
         let form = reqwest::multipart::Form::new().text("payload_json",payload.to_string()).part("files[0]",part);
         let token = self.token.lock().unwrap().clone();
         response(self.http.post(format!("{API}/channels/{channel}/messages")).header("Authorization",token).multipart(form).send().await?).await
@@ -295,6 +295,15 @@ impl Client {
     }
 }
 /// 画面へ渡す形 {t, d} にする。使わない種類は None
+fn upload_payload(channel: &str, filename: &str, content: &str, reply_to: Option<&str>) -> Result<Value> {
+    let mut payload=json!({"content":content,"attachments":[{"id":"0","filename":filename}]});
+    if let Some(id)=reply_to {
+        anyhow::ensure!(!id.is_empty() && id.bytes().all(|b|b.is_ascii_digit()), "無効な返信先");
+        payload["message_reference"]=json!({"message_id":id,"channel_id":channel});
+    }
+    Ok(payload)
+}
+
 fn typing_subscription(guild: &str, channel: &str) -> Value {
     json!({"op":37,"d":{"subscriptions":{(guild):{"typing":true,"activities":false,"threads":false,"channels":{(channel):[[0,99]]}}}}})
 }
@@ -328,6 +337,15 @@ fn text(v: &Value, k: &str) -> String { v[k].as_str().unwrap_or_default().into()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn upload_preserves_the_reply_target_and_rejects_invalid_ids() {
+        let reply=super::upload_payload("100","image.png","hello",Some("200")).unwrap();
+        assert_eq!(reply["message_reference"]["channel_id"],"100");
+        assert_eq!(reply["message_reference"]["message_id"],"200");
+        assert!(super::upload_payload("100","x","",None).unwrap().get("message_reference").is_none());
+        assert!(super::upload_payload("100","x","",Some("bad/id")).is_err());
+    }
+
     #[test]
     fn typing_subscription_targets_the_selected_guild_and_channel() {
         let value=super::typing_subscription("42","99");
@@ -378,7 +396,7 @@ mod tests {
         std::fs::write(&path,vec![0u8;(UPLOAD_LIMIT+1) as usize]).unwrap();
         let file=std::fs::File::open(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
-        let err=Client::new().upload("1","big.bin",file,"").await.unwrap_err();
+        let err=Client::new().upload("1","big.bin",file,"",None).await.unwrap_err();
         assert!(err.to_string().contains("10MB"),"{err}");
     }
 }

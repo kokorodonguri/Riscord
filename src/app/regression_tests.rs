@@ -14,6 +14,18 @@ fn bench_app(n_msgs: usize) -> App {
     app
 }
 
+#[test]
+fn repeated_delete_preserves_logged_deleted_message() {
+    let mut app = bench_app(1);
+    app.messages.get_mut("c").unwrap()[0].log = Some(Box::new(crate::model::LogMark {
+        deleted_at: Some("2026-11-01T10:01:00+00:00".into()),
+        edits: vec![],
+    }));
+    app.on_message_delete("c", "100000");
+    assert_eq!(app.messages["c"].len(), 1);
+    assert!(app.messages["c"][0].log.as_ref().unwrap().deleted_at.is_some());
+}
+
     #[test]
     fn member_chunks_preserve_order_and_latest_updates() {
         let mut app = App::default();

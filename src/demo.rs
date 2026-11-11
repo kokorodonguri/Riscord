@@ -90,6 +90,8 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
         send(Event::GatewayReady);
         send(Event::Status("接続済み".into()));
         let mut next = 2000u64;
+        let mut messages = std::collections::HashMap::<String, Vec<Message>>::new();
+        let mut initialized = std::collections::HashSet::<String>::new();
         while let Some(c) = cmd_rx.blocking_recv() {
             match c {
                 Cmd::LoadGuildChannels(gid) => {
@@ -105,6 +107,10 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     send(Event::GuildChannels(gid, chans));
                 }
                 Cmd::LoadMessages(cid) => {
+                    if initialized.contains(&cid) {
+                        send(Event::Messages(cid.clone(), messages.get(&cid).cloned().unwrap_or_default()));
+                        continue;
+                    }
                     let mut list = vec![
                         message(1200, &cid, &others[0], "おはようございます！ **今日** もよろしくお願いします", 60 * 26),
                         message(1201, &cid, &others[1], "<@2> 昨日のリンク https://example.com/page です", 60 * 25),
@@ -123,6 +129,11 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     for (i, m) in list.iter_mut().enumerate() {
                         m.id = format!("{}", 1200 + i);
                     }
+                    if let Some(existing) = messages.remove(&cid) {
+                        list.extend(existing);
+                    }
+                    initialized.insert(cid.clone());
+                    messages.insert(cid.clone(), list.clone());
                     send(Event::Messages(cid, list));
                 }
                 Cmd::LoadOlder { channel_id, before } => send(Event::OlderMessages { channel_id, before, messages: Some(vec![]) }),
@@ -155,9 +166,21 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                 Cmd::Send { channel_id, content, .. } => {
                     next += 1;
                     let m = message(next, &channel_id, &me, &content, 0);
+                    messages.entry(channel_id.clone()).or_default().push(m.clone());
                     send(Event::ComposeResult { channel_id, result: Ok(Some(m)) });
                 }
+                Cmd::Edit { channel_id, id, content } => {
+                    let result = messages.get_mut(&channel_id).and_then(|list| list.iter_mut().find(|m| m.id == id)).map(|m| {
+                        m.content = content;
+                        m.edited_timestamp = Some(chrono::Utc::now().to_rfc3339());
+                        m.clone()
+                    }).ok_or(()).map(Some);
+                    send(Event::ComposeResult { channel_id, result });
+                }
                 Cmd::Delete { channel_id, id } => {
+                    if let Some(list) = messages.get_mut(&channel_id) {
+                        list.retain(|m| m.id != id);
+                    }
                     send(Event::MessageDelete { channel_id, id });
                 }
                 _ => {}
@@ -165,4 +188,64 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
         }
     });
     (cmd_tx, rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn message_changes_survive_reload_in_each_channel() {
+        let (tx, rx) = spawn(Waker::default());
+        let receive = || rx.recv_timeout(Duration::from_secs(2)).expect("demo response");
+        while !matches!(receive(), Event::GatewayReady) {}
+        let load = |id: &str| tx.send(Cmd::LoadMessages(id.into())).unwrap();
+        load("900");
+        while !matches!(receive(), Event::Messages(_, _)) {}
+        tx.send(Cmd::Send { channel_id: "900".into(), content: "first".into(), reply_to: None, files: vec![] }).unwrap();
+        let id = loop {
+            if let Event::ComposeResult { result: Ok(Some(m)), .. } = receive() { break m.id; }
+        };
+        tx.send(Cmd::Edit { channel_id: "900".into(), id: id.clone(), content: "edited".into() }).unwrap();
+        loop {
+            if let Event::ComposeResult { result: Ok(Some(m)), .. } = receive() {
+                assert_eq!(m.content, "edited");
+                break;
+            }
+        }
+        load("900");
+        loop {
+            if let Event::Messages(_, list) = receive() {
+                assert!(list.iter().any(|m| m.id == id && m.content == "edited"));
+                break;
+            }
+        }
+        tx.send(Cmd::Delete { channel_id: "900".into(), id: id.clone() }).unwrap();
+        while !matches!(receive(), Event::MessageDelete { .. }) {}
+        load("900");
+        loop {
+            if let Event::Messages(_, list) = receive() {
+                assert!(!list.iter().any(|m| m.id == id));
+                break;
+            }
+        }
+        load("other");
+        loop {
+            if let Event::Messages(_, list) = receive() {
+                assert!(!list.is_empty());
+                break;
+            }
+        }
+        tx.send(Cmd::Send { channel_id: "new".into(), content: "before load".into(), reply_to: None, files: vec![] }).unwrap();
+        while !matches!(receive(), Event::ComposeResult { .. }) {}
+        load("new");
+        loop {
+            if let Event::Messages(_, list) = receive() {
+                assert!(list.len() > 1);
+                assert!(list.iter().any(|m| m.content == "before load"));
+                break;
+            }
+        }
+    }
 }

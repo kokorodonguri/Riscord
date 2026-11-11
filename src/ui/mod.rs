@@ -590,14 +590,12 @@ impl Root {
         sync(&self.inp.dm_filter, &self.app.dm_filter, window, cx);
         sync(&self.inp.settings_query, &self.app.settings_query, window, cx);
         if let Some((q, _)) = &self.app.switcher {
-            let q = q.clone();
-            sync(&self.inp.switcher, &q, window, cx);
+            sync(&self.inp.switcher, q, window, cx);
         }
         if let Some(d) = &self.app.profile_draft {
-            let f = d.fields.clone();
-            sync(&self.inp.name, &f[0], window, cx);
-            sync(&self.inp.pronouns, &f[1], window, cx);
-            sync(&self.inp.bio, &f[2], window, cx);
+            sync(&self.inp.name, &d.fields[0], window, cx);
+            sync(&self.inp.pronouns, &d.fields[1], window, cx);
+            sync(&self.inp.bio, &d.fields[2], window, cx);
         }
         if self.app.focus_input {
             self.app.focus_input = false;

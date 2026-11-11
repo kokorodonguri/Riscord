@@ -133,7 +133,7 @@ pub fn acquire() -> bool {
 /// もう開いていれば None
 pub fn lock(name: Option<&str>) -> Option<File> {
     if crate::demo::enabled() {
-        return Some(open_lock(&std::env::temp_dir()).ok()?);
+        return open_lock(&std::env::temp_dir()).ok();
     }
     match try_lock(&account_dir(name)) {
         Ok(f) => f,

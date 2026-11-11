@@ -47,8 +47,9 @@ pub fn standard() -> impl Iterator<Item = (emojis::Group, Pick)> {
     emojis::iter().filter(|e| e.unicode_version().major() <= 15).map(|e| (e.group(), Pick::Unicode { ch: e.as_str(), name: e.shortcode().unwrap_or(e.name()) }))
 }
 
-/// 名前で探す。前方一致を先に、部分一致を後に並べる（custom が先、標準が後）
-pub fn search(query: &str, custom: impl Iterator<Item = Pick>, limit: usize) -> Vec<Pick> {
+/// 名前で探す。前方一致を先に、部分一致を後に並べる（custom が先、標準が後）。
+/// custom は（名前, id, アニメか）。数千件になるので、当たったものだけ Pick にする（打つたびに全件を複製しない）
+pub fn search<'a>(query: &str, custom: impl Iterator<Item = (&'a str, &'a str, bool)>, limit: usize) -> Vec<Pick> {
     let q = query.to_lowercase();
     let (mut head, mut tail) = (Vec::new(), Vec::new());
     let mut seen = std::collections::HashSet::new();
@@ -57,12 +58,12 @@ pub fn search(query: &str, custom: impl Iterator<Item = Pick>, limit: usize) -> 
         Some(_) => tail.push(p),
         None => {}
     };
-    for p in custom {
-        let rank = p.name().to_lowercase().find(&q);
-        if rank.is_some() && !seen.insert(match &p { Pick::Custom { id, .. } => id.clone(), Pick::Unicode { ch, .. } => ch.to_string() }) {
+    for (name, id, animated) in custom {
+        let rank = name.to_lowercase().find(&q);
+        if rank.is_none() || !seen.insert(id) {
             continue;
         }
-        put(rank, p, &mut head, &mut tail);
+        put(rank, Pick::Custom { name: name.to_string(), id: id.to_string(), animated }, &mut head, &mut tail);
     }
     for e in emojis::iter().filter(|e| e.unicode_version().major() <= 15) {
         // ショートコードが複数あるものは、いちばん良く当たったもので並べる
@@ -205,7 +206,7 @@ mod tests {
 
     #[test]
     fn search_puts_prefix_matches_and_custom_first() {
-        let custom = vec![Pick::Custom { name: "catjam".into(), id: "1".into(), animated: false }, Pick::Custom { name: "blobcat".into(), id: "2".into(), animated: false }];
+        let custom = [("catjam", "1", false), ("blobcat", "2", false)];
         let hits = search("cat", custom.into_iter(), 5);
         assert_eq!(hits[0].name(), "catjam");
         assert!(matches!(hits[1], Pick::Unicode { .. }), "{hits:?}");

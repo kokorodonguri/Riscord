@@ -127,7 +127,8 @@ pub fn get(uri: &str) -> Img {
     Img::Pending
 }
 
-/// 読み込み済みなら返す（読み込みは始めない）
+/// 読み込み済みなら返す（読み込みは始めない）。テストで結果を待つのに使う
+#[cfg(test)]
 pub fn peek(uri: &str) -> Img {
     match store().cache.lock().unwrap().get(uri) {
         Some(Entry::Ready(i)) => Img::Ready(i.clone()),

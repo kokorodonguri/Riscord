@@ -238,12 +238,6 @@ pub fn open_folder(path: &std::path::Path) {
     let _ = std::process::Command::new(cmd).arg(path).spawn();
 }
 
-/// 背景画像を rect いっぱいに（縦横比を保って切り抜いて）描き、上から dim の色を重ねて暗くする
-
-pub fn opaque(c: Color32) -> Color32 {
-    Color32::from_rgb(c.r(), c.g(), c.b())
-}
-
 
 // ---- ヘルパー ----
 pub fn local_dt(ts: &str) -> Option<DateTime<Local>> {
@@ -329,7 +323,7 @@ pub fn fit_size(w: Option<u32>, h: Option<u32>, max: (f32, f32)) -> Option<(f32,
 pub fn resized(proxy: Option<&str>, url: &str, size: (f32, f32)) -> String {
     let base = proxy.unwrap_or(url);
     let path = base.split(['?', '#']).next().unwrap_or("").to_lowercase();
-    let out = if base.contains("media.discordapp.net") && !path.ends_with(".gif") {
+    if base.contains("media.discordapp.net") && !path.ends_with(".gif") {
         let sep = if base.contains('?') { '&' } else { '?' };
         let ppp = 2.0; // 高DPI用に倍で取る
         // WebP は animated=true を付けないとプロキシが1枚目だけにしてしまう
@@ -337,8 +331,7 @@ pub fn resized(proxy: Option<&str>, url: &str, size: (f32, f32)) -> String {
         format!("{base}{sep}width={}&height={}{anim}", (size.0 * ppp) as u32, (size.1 * ppp) as u32)
     } else {
         base.to_string()
-    };
-    out
+    }
 }
 
 /// スタンプ（Lottie・APNG・GIF をデコードしたもの。アニメは gpui が進める）
@@ -414,9 +407,6 @@ pub fn emoji_url(id: &str, animated: bool) -> String {
     }
 }
 
-/// 本文（先頭に `prefix` を付ける）。カスタム絵文字があれば画像を文中に並べる
-/// images には表示したカスタム絵文字の URI を足す（チャンネル破棄時に画像キャッシュを解放するため）
-/// 本文中の http(s) URL の位置（バイト範囲）。末尾の句読点や対応しない ) は含めない
 /// 本文の <#id>・<@id>・<@!id>・<@&id> を本家と同じく「#チャンネル名」「@名前」「@ロール名」にする（ID のまま見せない）
 pub fn resolve_mentions<'a>(content: &'a str, m: &Message, channels: &HashMap<String, Vec<Channel>>, roles: &[Role]) -> std::borrow::Cow<'a, str> {
     if !content.contains("<#") && !content.contains("<@") {
@@ -465,6 +455,7 @@ pub fn resolve_mentions<'a>(content: &'a str, m: &Message, channels: &HashMap<St
     std::borrow::Cow::Owned(out)
 }
 
+/// 本文中の http(s) URL の位置（バイト範囲）。末尾の句読点や対応しない ) は含めない
 pub fn find_links(s: &str) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut from = 0;
@@ -491,9 +482,6 @@ pub fn find_links(s: &str) -> Vec<std::ops::Range<usize>> {
     }
     out
 }
-
-/// text を job に足す。URL は色を変え、その文字位置（job 全体の文字番号）と URL を links に入れる。
-/// 埋め込みを抑止する <URL> の山かっこは本家と同じく表示しない
 
 pub const MEMBER_ROW_H: f32 = 42.0;
 pub const MEMBER_HEAD_H: f32 = 40.0;
@@ -651,15 +639,6 @@ impl MemberListCache {
     }
 }
 
-/// メッセージにマウスを乗せたときのツールバーの操作
-pub enum MsgAction {
-    Reply(Message),
-    Edit(Message),
-    /// true = Shift を押しながら（確認なしで削除）
-    Delete(Message, bool),
-    Copy(String),
-}
-
 pub fn author_name(m: &Message) -> &str {
     m.member.as_ref().and_then(|member| member.nick.as_deref()).unwrap_or_else(|| m.author.display())
 }
@@ -667,8 +646,6 @@ pub fn author_name(m: &Message) -> &str {
 pub fn is_reply(m: &Message) -> bool {
     m.kind == 19 || m.referenced_message.is_some()
 }
-
-/// 行が「マウスで選ばれている」か。前のフレームのツールバーの上にいる間は、その持ち主の行だけを選ばれている扱いにする
 
 pub fn rgb(c: u32) -> Color32 {
     Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
@@ -867,8 +844,6 @@ pub struct App {
     pub channel_images: HashMap<String, HashSet<String>>,
     /// 未読チャンネル → 所属サーバー（DMならNone）
     pub unread: HashMap<String, Option<String>>,
-
-    pub last_title: String,
     /// DM 一覧の絞り込み
     pub dm_search: bool,
     pub dm_filter: String,
@@ -1273,8 +1248,8 @@ impl App {
 
     /// 名前で絵文字を探す（補完とピッカーの検索）
     pub fn emoji_search(&self, query: &str, limit: usize) -> Vec<crate::emoji::Pick> {
-        let custom = self.usable_emojis().into_iter().flat_map(|(_, l)| l).map(|e| crate::emoji::Pick::Custom { name: e.name.clone(), id: e.id.clone(), animated: e.animated });
-        crate::emoji::search(query, custom.collect::<Vec<_>>().into_iter(), limit)
+        let usable = self.usable_emojis();
+        crate::emoji::search(query, usable.iter().flat_map(|(_, l)| l).map(|e| (e.name.as_str(), e.id.as_str(), e.animated)), limit)
     }
 
     /// 本文の :名前: を送れる形にする。known = 編集中のメッセージに元からあった絵文字（使えないサーバーのものでも保つ）
@@ -2095,6 +2070,9 @@ impl App {
             changes.push(MessageChange::Delete(id.to_string()));
         }
         let old = self.messages.get(channel_id).and_then(|l| l.iter().find(|m| m.id == id)).or_else(|| self.message_log.cached(id)).cloned();
+        if old.as_ref().and_then(|m| m.log.as_ref()).is_some_and(|log| log.deleted_at.is_some()) {
+            return false;
+        }
         let mut keep = false;
         if let Some(old) = old.filter(|o| o.log.as_ref().is_none_or(|l| l.deleted_at.is_none())) {
             self.plugins.message_hook("on_delete", &old, None);
@@ -2616,8 +2594,6 @@ impl App {
         }
     }
 
-    /// DM 右側のプロフィールカード。「プロフィール全体を表示」が押されたら (ユーザー, 位置) を返す
-
     pub fn select(&mut self, guild: Option<String>, channel: Option<String>) {
         if let Some(gid) = &guild {
             self.ensure_guild_channels(gid);
@@ -2646,8 +2622,6 @@ impl App {
             }
         }
     }
-
-    /// 左下のマイク／ヘッドホン横の ⌄ メニュー
 
     pub fn apply_voice_settings(&self) {
         let (v, s) = (&self.voice, &self.settings);
@@ -2875,8 +2849,6 @@ impl ProfileDraft {
         self.avatar.is_some() || self.fields.iter().zip(&self.base).any(|(a, b)| a.trim() != b.trim())
     }
 }
-
-/// プロフィール編集の入力欄（本家と同じ暗い箱）。自己紹介は複数行で、残りの文字数を右下に出す
 
 pub fn make_avatar(path: &std::path::Path) -> Result<AvatarEdit, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("画像を読めません: {e}"))?;

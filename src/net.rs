@@ -671,13 +671,19 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                     tx.send(Event::ComposeResult { channel_id, result });
                     Ok(())
                 }
-                Cmd::Delete { channel_id, id } => api.delete(&format!("/channels/{channel_id}/messages/{id}")).await,
+                Cmd::Delete { channel_id, id } => delete_message(&api, &tx, channel_id, id).await,
             };
             if let Err(e) = res {
                 tx.send(Event::Error(format!("{e:#}")));
             }
         });
     }
+}
+
+async fn delete_message(api: &Api, tx: &Tx, channel_id: String, id: String) -> Result<()> {
+    api.delete(&format!("/channels/{channel_id}/messages/{id}")).await?;
+    tx.send(Event::MessageDelete { channel_id, id });
+    Ok(())
 }
 
 async fn send_ack(api: &Api, tx: &Tx, channel_id: String, message_id: String) -> Result<()> {
@@ -950,6 +956,9 @@ async fn gateway_once_at(
         }
     };
     let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41_250);
+    if interval_ms == 0 {
+        bail!("無効な heartbeat interval");
+    }
 
     let first = match &resume {
         // 途中から再開する（切れていた間のイベントは Discord が送り直す）
@@ -1504,6 +1513,34 @@ async fn voice_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delete_notifies_only_after_http_success() {
+        use std::io::{Read, Write};
+        for (status, success) in [("204 No Content", true), ("500 Internal Server Error", false)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = [0; 2048];
+                let n = socket.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..n]).starts_with("DELETE /channels/c/messages/m HTTP/1.1\r\n"));
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let api = Api { base_url: Some(format!("http://{addr}")), http: reqwest::Client::builder().no_proxy().build().unwrap(), token: "test".into(), roles: Default::default(), guild_perms: Default::default() };
+            let (sender, events) = std::sync::mpsc::channel();
+            let tx = Tx { tx: sender, ctx: crate::wake::Waker::default() };
+            let result = delete_message(&api, &tx, "c".into(), "m".into()).await;
+            server.join().unwrap();
+            assert_eq!(result.is_ok(), success);
+            if success {
+                assert!(matches!(events.try_recv(), Ok(Event::MessageDelete { channel_id, id }) if channel_id == "c" && id == "m"));
+            } else {
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn ack_http_error_notifies_backend_and_success_does_not() {
@@ -2105,6 +2142,29 @@ mod tests {
         assert_eq!(close_action(4007), GatewayEnd::Reidentify);
         assert_eq!(close_action(4000), GatewayEnd::Resume, "その他は再開を試す");
         assert_eq!(close_action(1006), GatewayEnd::Resume);
+    }
+
+    #[test]
+    fn gateway_rejects_zero_heartbeat_interval() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("ws://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (sock, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+                ws.send(WsMsg::Text(r#"{"op":10,"d":{"heartbeat_interval":0}}"#.into())).await.unwrap();
+            });
+            let s = sink();
+            let (_out_tx, mut out) = unbounded_channel();
+            let status = Mutex::new(MyPresence { status: "online".into(), activity: true });
+            let mut session = GatewaySession::default();
+            let mut ready = false;
+            let result = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready).await;
+            assert!(result.is_err());
+            assert!(!ready);
+            server.await.unwrap();
+        });
     }
 
     #[test]

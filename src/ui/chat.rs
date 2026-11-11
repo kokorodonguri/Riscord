@@ -48,8 +48,7 @@ impl Root {
         self.app.subscribe_member_list();
         let narrow_members = self.app.screen_w < 900.0;
         let members_shown = if narrow_members { self.app.show_members_narrow } else { self.app.show_members };
-        let cur = self.app.current_channel().cloned();
-        let dm_user = match (&self.app.sel_guild, &cur) {
+        let dm_user = match (&self.app.sel_guild, self.app.current_channel()) {
             (None, Some(c)) if c.recipients.len() == 1 => Some(c.recipients[0].clone()),
             _ => None,
         };
@@ -286,11 +285,11 @@ impl Root {
     fn chat_head(&mut self, members_shown: bool, narrow_members: bool, has_dm_user: bool, prefix: &'static str, cname: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let a = &self.app;
         let head = div().h(z(48.0)).flex_none().px(z(16.0)).flex().items_center().gap(z(6.0)).border_t_1().border_b_1().border_color(DIVIDER()).bg(CHAT()).part(Part::ChatHeader);
-        let Some(c) = a.current_channel().cloned() else { return head };
+        let Some(c) = a.current_channel() else { return head };
         // 左: アイコン（DM は相手）＋名前＋トピック
         let mut left = div().flex_1().min_w_0().flex().items_center().gap(z(6.0));
         if a.sel_guild.is_none() {
-            let av = avatar(dm_icon_url(&c).as_deref(), 24.0, cname, 12.0, BLURPLE());
+            let av = avatar(dm_icon_url(c).as_deref(), 24.0, cname, 12.0, BLURPLE());
             left = left.child(if c.recipients.len() == 1 {
                 let stt = a.presences.get(&c.recipients[0].id).map_or("offline", |p| p.status.as_str());
                 with_status(av, 24.0, stt, CHAT())
@@ -381,9 +380,7 @@ impl Root {
             return None;
         }
         let mut faces = div().flex().gap(z(20.0)).justify_center();
-        let mut ringing_any = false;
         for (id, u, muted, ringing) in &members {
-            ringing_any |= *ringing;
             let mut face = div().relative().flex().flex_col().items_center().gap(z(6.0)).child(
                 div()
                     .relative()
@@ -405,7 +402,6 @@ impl Root {
             }
             faces = faces.child(face);
         }
-        let _ = ringing_any;
         let cid_s = cid.to_string();
         let buttons = if in_call {
             let off = a.mic_off();

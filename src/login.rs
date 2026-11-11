@@ -128,6 +128,9 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
         match v["op"].as_str().unwrap_or("") {
             "hello" => {
                 if let Some(ms) = v["heartbeat_interval"].as_u64() {
+                    if ms == 0 {
+                        return Err(anyhow!("無効な heartbeat interval"));
+                    }
                     heartbeat = tokio::time::interval(Duration::from_millis(ms));
                     heartbeat.tick().await;
                 }

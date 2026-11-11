@@ -1,3 +1,8 @@
+[workspace]
+members = ["crates/riscord-core"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "riscord"
 version = "0.2.1"

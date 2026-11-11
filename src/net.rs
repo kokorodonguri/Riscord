@@ -13,90 +13,31 @@ use crate::voice::{VoiceCtl, VoiceSession};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod inflate;
 mod rest;
+use inflate::Inflater;
 pub use rest::ApiCall;
 #[allow(unused_imports)]
 pub use rest::encode;
 #[allow(unused_imports)]
 pub use rest::{call_connect, request_guild_members, stream_create, stream_delete, stream_set_paused, stream_watch};
 
+impl Api {
+    /// ApiCall を実行して、返ってきた JSON（本文がなければ Null）を返す
+    async fn call(&self, call: &ApiCall) -> anyhow::Result<Value> {
+        let (method, path, body) = call.route();
+        let r = self.request(method, &path, body.as_ref()).await?;
+        let bytes = r.bytes().await?;
+        if bytes.is_empty() {
+            return Ok(Value::Null);
+        }
+        Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+}
+
 const API: &str = "https://discord.com/api/v10";
 /// zlib-stream: READY などの大きいペイロードを圧縮して受け取る（展開は Inflater）
 const GATEWAY: &str = "wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream";
-
-/// ゲートウェイの zlib-stream 展開。1接続で1つの圧縮文脈を使い続け、
-/// 1件のメッセージは 00 00 FF FF で終わる（途中で分割されて届くこともある）
-struct Inflater {
-    z: flate2::Decompress,
-    buf: Vec<u8>,
-    out: Vec<u8>,
-}
-
-impl Inflater {
-    const SUFFIX: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
-    /// READY 後などに大きくなった作業領域は、次のメッセージで小さく取り直す
-    const KEEP: usize = 1 << 20;
-    // 非圧縮時の tungstenite のメッセージ上限と同じ。
-    const MAX_MESSAGE: usize = 64 << 20;
-
-    fn new() -> Self {
-        Inflater { z: flate2::Decompress::new(true), buf: Vec::new(), out: Vec::new() }
-    }
-
-    /// 受け取ったバイナリを足し、1件そろったら展開した JSON 文字列を返す
-    fn push(&mut self, data: &[u8]) -> Result<Option<&str>> {
-        self.push_with_limit(data, Self::MAX_MESSAGE)
-    }
-
-    fn push_with_limit(&mut self, data: &[u8], limit: usize) -> Result<Option<&str>> {
-        if data.len() > limit.saturating_sub(self.buf.len()) {
-            bail!("圧縮ゲートウェイメッセージが上限を超えました");
-        }
-        if self.buf.is_empty() && self.buf.capacity() > Self::KEEP {
-            self.buf = Vec::new();
-        }
-        self.buf.extend_from_slice(data);
-        if !self.buf.ends_with(&Self::SUFFIX) {
-            return Ok(None);
-        }
-        if self.out.capacity() > Self::KEEP {
-            self.out = Vec::new();
-        }
-        self.out.clear();
-        let mut input = &self.buf[..];
-        loop {
-            if self.out.len() == self.out.capacity() {
-                let target = self.out.capacity().saturating_mul(2).max(64 * 1024).min(limit + 1);
-                if target == limit + 1 {
-                    // 上限判定の1バイトのために、確保容量をさらに倍増させない。
-                    self.out.reserve_exact(target - self.out.len());
-                } else {
-                    self.out.reserve(target - self.out.len());
-                }
-            }
-            let (in0, out0) = (self.z.total_in(), self.z.total_out());
-            self.z.decompress_vec(input, &mut self.out, flate2::FlushDecompress::Sync)?;
-            let used = (self.z.total_in() - in0) as usize;
-            let made = self.z.total_out() - out0;
-            if self.out.len() > limit {
-                bail!("展開済みゲートウェイメッセージが上限を超えました");
-            }
-            input = &input[used..];
-            if input.is_empty() && self.out.len() < self.out.capacity() {
-                break;
-            }
-            if used == 0 && made == 0 && self.out.len() < self.out.capacity() {
-                bail!("zlib-stream の展開が進みません");
-            }
-        }
-        if self.buf.capacity() > Self::KEEP {
-            self.buf = Vec::new();
-        } else {
-            self.buf.clear();
-        }
-        Ok(Some(std::str::from_utf8(&self.out)?))
-    }
-}
 
 /// テキスト・圧縮バイナリのどちらで届いても JSON にする。まだ途中なら None
 fn decode_frame(msg: &WsMsg, inflater: &mut Inflater) -> Result<Option<Value>> {

@@ -1,0 +1,39 @@
+name: Android
+on:
+  push:
+    paths: ['android/**', 'crates/riscord-core/**', 'src/**', 'scripts/build-android-native.sh', 'Cargo.*', '.github/workflows/android.yml']
+  pull_request:
+    paths: ['android/**', 'crates/riscord-core/**', 'src/**', 'scripts/build-android-native.sh', 'Cargo.*', '.github/workflows/android.yml']
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install NDK
+        run: |
+          # ランナーの sdkmanager は PATH にないので場所を指定する。ANDROID_NDK_HOME は既定版を指すため上書きする
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+      - name: Core tests
+        run: cargo test -p riscord-core --locked
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew --no-daemon :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: riscord-android-arm64-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk

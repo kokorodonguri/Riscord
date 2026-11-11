@@ -381,19 +381,6 @@ impl ApiCall {
     }
 }
 
-impl super::Api {
-    /// ApiCall を実行して、返ってきた JSON（本文がなければ Null）を返す
-    pub(super) async fn call(&self, call: &ApiCall) -> anyhow::Result<Value> {
-        let (method, path, body) = call.route();
-        let r = self.request(method, &path, body.as_ref()).await?;
-        let bytes = r.bytes().await?;
-        if bytes.is_empty() {
-            return Ok(Value::Null);
-        }
-        Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
-    }
-}
-
 // ---- ゲートウェイに送るもの ----
 
 /// op 8: メンバーを名前の前方一致か ID で取る（結果は GUILD_MEMBERS_CHUNK で届く）

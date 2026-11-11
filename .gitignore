@@ -2,3 +2,13 @@
 /target/
 # 配布用に作った実行ファイル
 /dist/
+
+# Android local build state
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/app/src/main/jniLibs/
+
+# Serena（ローカルの LSP ツール）の作業領域
+/.serena/

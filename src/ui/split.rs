@@ -2,6 +2,8 @@
 //! 区画（Root）はそれぞれ自分のプロファイルのトークン・設定・控えを持ち、別々に Discord へつなぐ
 use gpui::prelude::*;
 use gpui::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 use super::{icon, opaque, tip, z, PaneEvent, Root};
 use crate::profile;
@@ -10,20 +12,26 @@ use crate::theme::*;
 /// 区画の間の線の太さ（論理ピクセル）
 pub const DIVIDER: f32 = 1.0;
 /// 分割表示のときに区画の上に出す帯の高さ
-const HEADER_H: f32 = 28.0;
+pub(super) const HEADER_H: f32 = 28.0;
+
+fn vertical_split(width: f32, zoom: f32) -> bool {
+    (width - DIVIDER).max(0.0) / 2.0 < 700.0 * zoom
+}
 
 pub struct Shell {
     /// 左（ウィンドウを開いたときのプロファイル）と、分割していれば右
     panes: Vec<Entity<Root>>,
     _subs: Vec<Subscription>,
+    vertical: Rc<Cell<bool>>,
 }
 
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let left_profile = profile::name().map(str::to_string);
-        let left = cx.new(|cx| Root::new(window, cx, left_profile.clone(), true, None));
+        let vertical = Rc::new(Cell::new(false));
+        let left = cx.new(|cx| Root::new(window, cx, left_profile.clone(), true, None, vertical.clone()));
         let sub = cx.subscribe_in(&left, window, Self::on_pane_event);
-        let mut shell = Shell { panes: vec![left], _subs: vec![sub] };
+        let mut shell = Shell { panes: vec![left], _subs: vec![sub], vertical };
         // 前回右に開いていたアカウントを開き直す
         // デモで RISCORD_DEMO_SPLIT を付けたら、最初から分割しておく（画面確認用）
         let demo_split = crate::demo::enabled() && std::env::var_os("RISCORD_DEMO_SPLIT").is_some();
@@ -79,7 +87,7 @@ impl Shell {
             }
             return;
         };
-        let pane = cx.new(|cx| Root::new(window, cx, right.clone(), false, Some(lock)));
+        let pane = cx.new(|cx| Root::new(window, cx, right.clone(), false, Some(lock), self.vertical.clone()));
         self._subs.push(cx.subscribe_in(&pane, window, Self::on_pane_event));
         self.panes.push(pane);
         self.sync_others(cx);
@@ -185,18 +193,35 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let split = self.panes.len() > 1;
         let n = self.panes.len() as f32;
+        let vp = window.viewport_size();
+        let vertical = split && vertical_split(f32::from(vp.width), self.panes[0].read(cx).app.settings.zoom);
+        self.vertical.set(vertical);
         // 区画の幅は半分ずつに決め打ちする（中身の最小幅で片方が押し出されないように）
-        let pane_w = (window.viewport_size().width - px(DIVIDER) * (n - 1.0)) / n;
-        let mut row = div().id("shell").size_full().flex().flex_row().overflow_hidden().bg(opaque(BG()));
+        let pane_w = (vp.width - px(DIVIDER) * (n - 1.0)) / n;
+        let pane_h = (vp.height - px(DIVIDER) * (n - 1.0)) / n;
+        let mut row = div().id("shell").size_full().flex().when(vertical, |d| d.flex_col()).when(!vertical, |d| d.flex_row()).overflow_hidden().bg(opaque(BG()));
         for i in 0..self.panes.len() {
             if i > 0 {
-                row = row.child(div().flex_none().w(px(DIVIDER)).h_full().bg(BORDER()));
+                row = row.child(div().flex_none().when(vertical, |d| d.h(px(DIVIDER)).w_full()).when(!vertical, |d| d.w(px(DIVIDER)).h_full()).bg(BORDER()));
             }
             let body = div().flex_1().min_h_0().w_full().relative().overflow_hidden().child(self.panes[i].clone());
-            let col = div().flex_none().w(pane_w).h_full().flex().flex_col().overflow_hidden();
+            let col = div().flex_none().when(vertical, |d| d.w_full().h(pane_h)).when(!vertical, |d| d.w(pane_w).h_full()).flex().flex_col().overflow_hidden();
             let col = if split { col.child(self.header(i, window, cx)) } else { col };
             row = row.child(col.child(body));
         }
         row
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vertical_split;
+
+    #[test]
+    fn split_direction_respects_width_and_zoom() {
+        assert!(vertical_split(1400.0, 1.0));
+        assert!(!vertical_split(1401.0, 1.0));
+        assert!(vertical_split(1401.0, 1.25));
+        assert!(!vertical_split(1751.0, 1.25));
     }
 }

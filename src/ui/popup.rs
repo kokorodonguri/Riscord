@@ -320,7 +320,7 @@ impl Root {
     }
 
     /// プロフィールのポップアップ（アバターや名前を押したとき）
-    pub fn profile_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub fn profile_popup(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let pp = self.app.popup.clone()?;
         let user = pp.user.clone();
         let key = net::profile_key(&user.id, pp.guild_id.as_deref());
@@ -341,7 +341,7 @@ impl Root {
         };
         let dm = self.app.dms.iter().find(|c| c.recipients.len() == 1 && c.recipients[0].id == user.id).map(|c| c.id.clone());
         let width = (self.app.screen_w - 16.0).clamp(0.0, 300.0);
-        let max_h = (f32::from(window.viewport_size().height) / zoom() - 16.0).max(0.0);
+        let max_h = (self.pane_h - 16.0).max(0.0);
 
         // バナー（画像 → 指定色 → 名前から決めた色の順）
         let color = data.as_ref().and_then(|d| d.accent_color).map(rgb).unwrap_or_else(|| darken(name_color(&user.id)));

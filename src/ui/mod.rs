@@ -163,6 +163,8 @@ pub struct Root {
     pub download: Option<std::sync::mpsc::Receiver<crate::download::Event>>,
     /// 分割表示で、もう片方の区画のプロファイル（分割していなければ None）
     pub other: Option<Option<String>>,
+    split_vertical: Rc<Cell<bool>>,
+    pane_h: f32,
     /// 右の区画のプロファイルの lock（左はプロセスが起動時に取っている）
     _lock: Option<std::fs::File>,
     _subs: Vec<Subscription>,
@@ -254,7 +256,7 @@ fn default_family() -> SharedString {
 
 impl Root {
     /// profile = この区画のアカウントのプロファイル。primary = ウィンドウの最初の区画
-    fn new(window: &mut Window, cx: &mut Context<Self>, profile: Option<String>, primary: bool, lock: Option<std::fs::File>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>, profile: Option<String>, primary: bool, lock: Option<std::fs::File>, split_vertical: Rc<Cell<bool>>) -> Self {
         // 別スレッドからの「描き直して」を受け取る。急がないものは期限までにまとめて1回にする
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<Option<Duration>>();
         let waker = Waker::new(move |d| {
@@ -418,6 +420,8 @@ impl Root {
             video: None,
             download: None,
             other: None,
+            split_vertical,
+            pane_h: 0.0,
             _lock: lock,
             _subs: subs,
         };
@@ -499,9 +503,6 @@ impl Root {
     /// 毎回の描画の前にやること（通信の結果を取り込む・既読・テーマの反映など）
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vp = window.viewport_size();
-        // 分割表示では半分の幅（区画の間の線の分を引く）
-        let panes = if self.other.is_some() { 2.0 } else { 1.0 };
-        self.app.screen_w = (f32::from(vp.width) - (panes - 1.0) * split::DIVIDER) / panes / zoom();
         if self.other.is_some() {
             // 色・拡大率はプロセスで1つなので、区画ごとに描く前に自分のものにする
             if let Some(t) = &self.app.theme_applied {
@@ -510,6 +511,14 @@ impl Root {
             }
             set_zoom(self.app.settings.zoom);
         }
+        let split = self.other.is_some();
+        let vertical = split && self.split_vertical.get();
+        let width = f32::from(vp.width);
+        let height = f32::from(vp.height);
+        self.app.screen_w = if split && !vertical { (width - split::DIVIDER).max(0.0) / 2.0 } else { width } / zoom();
+        self.pane_h = (if vertical { (height - split::DIVIDER).max(0.0) / 2.0 } else { height }) / zoom()
+            - if split { split::HEADER_H } else { 0.0 };
+        self.pane_h = self.pane_h.max(0.0);
         if self.app.theme_watch.as_ref().is_some_and(|rx| rx.try_iter().count() > 0) {
             self.app.apply_theme(true);
         }

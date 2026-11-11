@@ -194,9 +194,8 @@ impl Root {
             v.push(self.settings_modal(window, cx).into_any_element());
         }
         if let Some(uri) = self.image_preview.clone() {
-            let vp = window.viewport_size();
-            let w = (f32::from(vp.width) / zoom() - 80.0).max(100.0);
-            let h = (f32::from(vp.height) / zoom() - 140.0).max(100.0);
+            let w = (self.app.screen_w - 80.0).max(0.0);
+            let h = (self.pane_h - 140.0).max(0.0);
             let picture = match crate::images::get(&uri) {
                 crate::images::Img::Ready(image) => div().w(z(w)).h(z(h)).child(img(image).size_full().object_fit(ObjectFit::Contain)),
                 crate::images::Img::Pending => div().w(z(w)).h(z(h)).flex().items_center().justify_center().child(spinner(32.0)),

@@ -274,10 +274,9 @@ impl Root {
     }
 
     pub fn settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let vp = window.viewport_size();
-        let (sw, sh) = (f32::from(vp.width) / zoom(), f32::from(vp.height) / zoom());
+        let (sw, sh) = (self.app.screen_w, self.pane_h);
         let compact = sw < 700.0;
-        let (w, h) = if compact { ((sw - 16.0).max(0.0), (sh - 16.0).max(0.0)) } else { ((sw - 128.0).max(560.0), (sh - 90.0).max(360.0)) };
+        let (w, h) = if compact { ((sw - 16.0).max(0.0), (sh - 16.0).max(0.0)) } else { ((sw - 128.0).max(560.0).min((sw - 16.0).max(0.0)), (sh - 90.0).max(360.0).min((sh - 16.0).max(0.0))) };
         let wallpaper = self.app.theme_applied.as_ref().and_then(|t| t.background.as_ref()).filter(|b| b.window);
         let surface = if wallpaper.is_some() { SETTINGS_BG() } else { opaque(SETTINGS_BG()) };
         let nav_surface = if wallpaper.is_some() { SETTINGS_NAV() } else { opaque(SETTINGS_NAV()) };

@@ -41,6 +41,7 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(mu
                     client.voice_ctl.deaf.store(v["deaf"].as_bool().unwrap_or(false),Ordering::Relaxed);
                     client.voice(crate::mobile_voice::Command::Flags)
                 },
+                "subscribe_typing" => client.subscribe_typing(v["guild"].as_str().unwrap_or_default(),v["channel"].as_str().unwrap_or_default()),
                 "presence" => client.presence(v["status"].as_str().unwrap_or("online")),
                 "poll" => Ok(client.wait_events(std::time::Duration::from_millis(v["wait_ms"].as_u64().unwrap_or(0).min(30_000))).await),
                 "pause" => { client.pause(); Ok(Value::Null) },

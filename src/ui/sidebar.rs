@@ -347,7 +347,7 @@ impl Root {
                     for c in chs {
                         if c.kind == Channel::CATEGORY {
                             cats.push(c);
-                        } else if c.is_text() || c.is_voice() {
+                        } else if c.is_text() || c.is_voice() || c.is_forum() {
                             match c.parent_id.as_deref() {
                                 None => top.push(c),
                                 Some(p) => by_parent.entry(p).or_default().push(c),
@@ -422,12 +422,27 @@ impl Root {
             );
             for v in a.voice_members(&c.id) {
                 let u = v.user.clone().or_else(|| a.find_user(&v.user_id));
-                rows.push(voice_member_row(u.as_ref(), &v.user_id, a.is_speaking(&v.user_id), v.self_mute, v.self_deaf).into_any_element());
+                let live = a.is_streaming(&v.user_id);
+                let mut row = voice_member_row(u.as_ref(), &v.user_id, a.is_speaking(&v.user_id), v.self_mute, v.self_deaf, live);
+                // 自分以外の配信は、クリックで見る
+                if live && here && a.me.as_ref().is_none_or(|m| m.id != v.user_id) {
+                    let uid = v.user_id.clone();
+                    row = row.cursor_pointer().tooltip(tip("配信を見る")).on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.watch_stream(&uid);
+                        cx.notify();
+                    }));
+                }
+                rows.push(row.into_any_element());
             }
             return;
         }
         let sel = a.sel_channel.as_deref() == Some(&c.id);
         let unread = a.unread.contains_key(&c.id);
+        let mark = if c.is_forum() {
+            div().w(z(30.0)).pl(z(6.0)).flex().items_center().child(icon(IconName::MessagesSquare, 18.0, FAINT()))
+        } else {
+            div().w(z(30.0)).pl(z(8.0)).text_size(z(20.0)).text_color(FAINT()).child("#")
+        };
         rows.push(
             row_frame(SharedString::from(format!("ch{}", c.id)), 32.0, sel, unread)
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -435,10 +450,29 @@ impl Root {
                     cx.notify();
                 }))
                 .when(unread && !sel, |d| d.child(unread_pill(32.0)))
-                .child(div().w(z(30.0)).pl(z(8.0)).text_size(z(20.0)).text_color(FAINT()).child("#"))
+                .child(mark)
                 .child(line(name, 16.0, row_color(sel, unread)).font_weight(FontWeight::MEDIUM).group_hover("row", |s| s.text_color(if sel || unread { WHITE() } else { TEXT() })))
                 .into_any_element(),
         );
+        // 参加中のスレッドを親の下に
+        if let Some(threads) = a.sidebar_threads(gid).remove(c.id.as_str()) {
+            for t in threads {
+                let sel = a.sel_channel.as_deref() == Some(&t.id);
+                let unread = a.unread.contains_key(&t.id);
+                let id = t.id.clone();
+                rows.push(
+                    row_frame(SharedString::from(format!("th{}", t.id)), 28.0, sel, unread)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_channel(id.clone());
+                            cx.notify();
+                        }))
+                        .when(unread && !sel, |d| d.child(unread_pill(28.0)))
+                        .child(div().w(z(40.0)).pl(z(20.0)).text_color(FAINT()).child("└"))
+                        .child(line(t.name.clone().unwrap_or_default(), 14.0, row_color(sel, unread)).group_hover("row", |s| s.text_color(if sel || unread { WHITE() } else { TEXT() })))
+                        .into_any_element(),
+                );
+            }
+        }
     }
 
     /// 左下のユーザー欄（ボイス接続中はその上に接続の状態）
@@ -489,11 +523,32 @@ impl Root {
                                         .child(line(format!("{cname} / {place}"), 12.0, MUTED())),
                                 ),
                         )
+                        .when(connected, |d| {
+                            let sharing = a.my_stream.is_some();
+                            d.child(
+                                icon_button("screenshare", if sharing { IconName::MonitorOff } else { IconName::MonitorUp }, 32.0)
+                                    .tooltip(tip(if sharing { "画面共有を停止" } else { "画面を共有" }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.app.toggle_stream();
+                                        cx.notify();
+                                    })),
+                            )
+                        })
                         .child(icon_button("hangup", IconName::PhoneOff, 32.0).tooltip(tip("切断")).on_click(cx.listener(|this, _, _, cx| {
                             this.app.leave_voice();
                             cx.notify();
                         }))),
                 );
+            if let Some(phase) = &a.my_stream {
+                let label = match phase {
+                    crate::golive::Phase::Live => match a.stream_viewers.iter().filter(|v| a.me.as_ref().is_none_or(|m| &m.id != *v)).count() {
+                        0 => "画面を共有しています".to_string(),
+                        n => format!("画面を共有しています・{n} 人が視聴中"),
+                    },
+                    _ => "画面共有を準備しています…".to_string(),
+                };
+                card = card.child(div().pl(z(22.0)).pb(z(4.0)).flex().items_center().gap(z(6.0)).when(matches!(phase, crate::golive::Phase::Live), |d| d.child(live_badge())).child(text(label, 12.0, MUTED())));
+            }
             for label in labels {
                 card = card.child(div().pl(z(22.0)).pb(z(4.0)).child(text(label, 12.0, MUTED())));
             }
@@ -651,9 +706,12 @@ pub fn speaking_avatar(u: Option<&User>, fallback: &str, size: f32, speaking: bo
 }
 
 /// ボイスチャンネル内の参加者の行
-fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf: bool) -> Div {
+fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf: bool, live: bool) -> Stateful<Div> {
     let name = u.map(|u| u.display().to_string()).unwrap_or_else(|| id.to_string());
     let mut right = div().flex().items_center().gap(z(4.0));
+    if live {
+        right = right.child(live_badge());
+    }
     if deaf {
         right = right.child(icon(IconName::HeadphoneOff, 14.0, MUTED()));
     }
@@ -661,6 +719,7 @@ fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf
         right = right.child(icon(IconName::MicOff, 14.0, MUTED()));
     }
     div()
+        .id(SharedString::from(format!("vm{id}")))
         .h(z(30.0))
         .flex_none()
         .ml(z(36.0))
@@ -674,6 +733,11 @@ fn voice_member_row(u: Option<&User>, id: &str, speaking: bool, mute: bool, deaf
         .child(speaking_avatar(u, id, 22.0, speaking))
         .child(line(name, 14.0, if speaking { WHITE() } else { MUTED() }).flex_1())
         .child(right)
+}
+
+/// 画面共有中の赤い「LIVE」
+pub fn live_badge() -> Div {
+    div().flex_none().px(z(4.0)).rounded(z(4.0)).bg(RED()).child(text("LIVE", 10.0, WHITE()).font_weight(FontWeight::BOLD))
 }
 
 /// サーバーアイコンの右下の、未読メンション数の赤い印（レールの地の色で 2px 縁取って、アイコンから切り抜いたように見せる）

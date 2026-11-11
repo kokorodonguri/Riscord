@@ -332,7 +332,7 @@ impl Root {
     pub fn message_row(&mut self, m: &Message, prev: Option<&Message>, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let (new_day, grouped, reply, compact) = row_layout(m, prev, self.app.settings.compact);
         let hovered = self.hover_msg.as_deref() == Some(m.id.as_str());
-        let highlight = self.app.editing.as_ref().or(self.app.reply_to.as_ref()).is_some_and(|x| x.id == m.id);
+        let highlight = self.app.editing.as_ref().or(self.app.reply_to.as_ref()).is_some_and(|x| x.id == m.id) || self.app.is_jump_flash(&m.id);
         // ロールは行ごとに複製せず、色を決める間だけ借りる（ロールの多いサーバーで見えている行の数だけ Vec を作っていた）
         let name_col = m.member.as_ref().and_then(|member| member_role_color(member, self.guild_roles())).unwrap_or(WHITE());
         let mut outer = div().flex().flex_col().w_full();
@@ -494,6 +494,10 @@ impl Root {
             }
             content = content.child(self.message_media(m, cx));
             row = row.child(div().flex().items_start().pl(z(16.0)).pr(z(16.0)).gap(z(16.0)).child(left).child(content));
+        }
+        // コマンドの結果など、自分にだけ見えているメッセージ
+        if m.flags & (1 << 6) != 0 {
+            row = row.child(div().pl(z(if compact { text_x } else { 72.0 })).pr(z(16.0)).child(text("あなただけに表示されています", 12.0, FAINT())));
         }
         if self.app.plugins.translator_enabled() {
             if let Some((_, translated)) = self.app.translator.messages.get(&(m.channel_id.clone(), m.id.clone())).filter(|(original, _)| original == &m.content) {

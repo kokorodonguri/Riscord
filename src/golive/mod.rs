@@ -1,0 +1,400 @@
+//! 画面共有（Discord の Go Live）。自分の画面の配信と、ほかの人の配信の視聴。
+//!
+//! 流れ（配信）: ポータルで画面を選ぶ → ゲートウェイに STREAM_CREATE(op 18) →
+//! STREAM_CREATE / STREAM_SERVER_UPDATE が届く → 配信用のボイス接続（conn.rs）を張って H264 を送る。
+//! 視聴: STREAM_WATCH(op 20) → 同じく 2 つのイベント → 接続して受け取り、デコードして画面に出す。
+//! 止めるときはどちらも STREAM_DELETE(op 19)。
+
+mod conn;
+pub mod media;
+pub mod rtp;
+
+use std::sync::{Arc, Mutex};
+
+use serde_json::{json, Value};
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
+
+use crate::wake::Waker;
+
+/// 視聴中の映像の 1 枚（BGRA）
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
+/// 配信の鍵。サーバーなら guild:{guild}:{channel}:{user}、DM 通話なら call:{channel}:{user}
+pub fn stream_key(guild_id: Option<&str>, channel_id: &str, user_id: &str) -> String {
+    match guild_id {
+        Some(g) => format!("guild:{g}:{channel_id}:{user_id}"),
+        None => format!("call:{channel_id}:{user_id}"),
+    }
+}
+
+/// 鍵から配信者の user_id を取り出す
+pub fn key_user(key: &str) -> Option<&str> {
+    key.rsplit(':').next().filter(|u| !u.is_empty() && u.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// 配信・視聴の段階
+#[derive(Clone, Debug, PartialEq)]
+pub enum Phase {
+    /// 画面を選んでいる・つないでいる
+    Starting,
+    Live,
+    /// 終わった。異常で終わったときは理由
+    Ended(Option<String>),
+}
+
+/// UI に知らせること
+#[derive(Clone, Debug, PartialEq)]
+pub enum StreamEvent {
+    /// 自分の配信
+    Broadcast(Phase),
+    /// 自分の配信を見ている人（user_id）
+    Viewers(Vec<String>),
+    /// 視聴（配信の鍵, 段階）
+    Watch(String, Phase),
+}
+
+/// voice_task から渡すもの
+pub enum Msg {
+    Start,
+    Stop,
+    Watch(String),
+    Unwatch,
+    /// STREAM_CREATE / STREAM_SERVER_UPDATE / STREAM_UPDATE / STREAM_DELETE
+    Gateway(String, Value),
+    Picked(u64, Result<media::Source, String>),
+    Live(u64),
+    Ended(u64, Option<String>),
+}
+
+impl std::fmt::Debug for Msg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Msg::Gateway(t, _) => write!(f, "Gateway({t})"),
+            Msg::Picked(n, r) => write!(f, "Picked({n}, {})", if r.is_ok() { "ok" } else { "err" }),
+            Msg::Live(n) => write!(f, "Live({n})"),
+            Msg::Ended(n, e) => write!(f, "Ended({n}, {e:?})"),
+            Msg::Start => f.write_str("Start"),
+            Msg::Stop => f.write_str("Stop"),
+            Msg::Watch(k) => write!(f, "Watch({k})"),
+            Msg::Unwatch => f.write_str("Unwatch"),
+        }
+    }
+}
+
+/// 接続中のボイス（どこにいるか・session_id）
+pub struct Place<'a> {
+    pub guild_id: Option<&'a str>,
+    pub channel_id: &'a str,
+    pub session_id: &'a str,
+}
+
+struct Session {
+    /// Ended などが古い接続のものでないか見分ける番号
+    id: u64,
+    key: String,
+    rtc_server_id: Option<String>,
+    server: Option<(String, String)>,
+    /// 配信: 選んだ画面（接続を始めるまで持つ）
+    source: Option<media::Source>,
+    /// 配信: まだ画面を選んでいる
+    picking: bool,
+    stop: Option<oneshot::Sender<()>>,
+    started: bool,
+}
+
+impl Session {
+    fn new(id: u64, key: String) -> Self {
+        Session { id, key, rtc_server_id: None, server: None, source: None, picking: false, stop: None, started: false }
+    }
+}
+
+type Callback<T> = Arc<dyn Fn(T) + Send + Sync>;
+
+/// 配信と視聴を 1 つずつ持つ
+pub struct Manager {
+    me: String,
+    gw: UnboundedSender<Value>,
+    emit: Callback<StreamEvent>,
+    back: Callback<Msg>,
+    frame: Arc<Mutex<Option<Frame>>>,
+    waker: Waker,
+    broadcast: Option<Session>,
+    watch: Option<Session>,
+    next_id: u64,
+}
+
+impl Manager {
+    pub fn new(
+        me: String,
+        gw: UnboundedSender<Value>,
+        emit: impl Fn(StreamEvent) + Send + Sync + 'static,
+        back: impl Fn(Msg) + Send + Sync + 'static,
+        frame: Arc<Mutex<Option<Frame>>>,
+        waker: Waker,
+    ) -> Self {
+        Manager { me, gw, emit: Arc::new(emit), back: Arc::new(back), frame, waker, broadcast: None, watch: None, next_id: 1 }
+    }
+
+    fn id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    pub fn handle(&mut self, msg: Msg, place: Option<Place<'_>>) {
+        match msg {
+            Msg::Start => self.start(place),
+            Msg::Stop => self.stop_broadcast(None),
+            Msg::Watch(key) => self.start_watch(key, place),
+            Msg::Unwatch => self.stop_watch(None),
+            Msg::Picked(id, res) => self.picked(id, res, place),
+            Msg::Live(id) => {
+                if self.broadcast.as_ref().is_some_and(|s| s.id == id) {
+                    (self.emit)(StreamEvent::Broadcast(Phase::Live));
+                } else if let Some(s) = self.watch.as_ref().filter(|s| s.id == id) {
+                    (self.emit)(StreamEvent::Watch(s.key.clone(), Phase::Live));
+                }
+            }
+            Msg::Ended(id, err) => {
+                if self.broadcast.as_ref().is_some_and(|s| s.id == id) {
+                    self.stop_broadcast(Some(err.unwrap_or_else(|| "配信が終了しました".into())));
+                } else if self.watch.as_ref().is_some_and(|s| s.id == id) {
+                    self.stop_watch(err);
+                }
+            }
+            Msg::Gateway(t, d) => self.gateway(&t, &d, place),
+        }
+    }
+
+    /// ボイスから抜けたとき
+    pub fn stop_all(&mut self) {
+        self.stop_broadcast(None);
+        self.stop_watch(None);
+    }
+
+    fn start(&mut self, place: Option<Place<'_>>) {
+        if self.broadcast.is_some() {
+            return;
+        }
+        if place.is_none() {
+            (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some("ボイスチャンネルに接続してから画面共有してください".into()))));
+            return;
+        }
+        let id = self.id();
+        let mut s = Session::new(id, String::new());
+        s.picking = true;
+        self.broadcast = Some(s);
+        (self.emit)(StreamEvent::Broadcast(Phase::Starting));
+        let back = self.back.clone();
+        tokio::spawn(async move {
+            let r = media::pick_source().await;
+            back(Msg::Picked(id, r));
+        });
+    }
+
+    fn picked(&mut self, id: u64, res: Result<media::Source, String>, place: Option<Place<'_>>) {
+        let Some(s) = self.broadcast.as_mut().filter(|s| s.id == id && s.picking) else { return };
+        s.picking = false;
+        let source = match res {
+            Ok(src) => src,
+            Err(e) => {
+                self.broadcast = None;
+                (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some(e))));
+                return;
+            }
+        };
+        let Some(p) = place else {
+            self.broadcast = None;
+            (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some("ボイスチャンネルから切断されました".into()))));
+            return;
+        };
+        s.key = stream_key(p.guild_id, p.channel_id, &self.me);
+        s.source = Some(source);
+        let kind = if p.guild_id.is_some() { "guild" } else { "call" };
+        let _ = self.gw.send(json!({ "op": 18, "d": { "type": kind, "guild_id": p.guild_id, "channel_id": p.channel_id, "preferred_region": null } }));
+        let _ = self.gw.send(json!({ "op": 22, "d": { "stream_key": s.key, "paused": false } }));
+    }
+
+    fn start_watch(&mut self, key: String, place: Option<Place<'_>>) {
+        if self.watch.as_ref().is_some_and(|s| s.key == key) {
+            return;
+        }
+        self.stop_watch(None);
+        if place.is_none() {
+            (self.emit)(StreamEvent::Watch(key, Phase::Ended(Some("ボイスチャンネルに接続してから視聴してください".into()))));
+            return;
+        }
+        if key_user(&key) == Some(self.me.as_str()) {
+            return;
+        }
+        let id = self.id();
+        self.watch = Some(Session::new(id, key.clone()));
+        let _ = self.gw.send(json!({ "op": 20, "d": { "stream_key": key } }));
+        (self.emit)(StreamEvent::Watch(key, Phase::Starting));
+    }
+
+    fn stop_broadcast(&mut self, err: Option<String>) {
+        let Some(s) = self.broadcast.take() else { return };
+        if !s.key.is_empty() {
+            let _ = self.gw.send(json!({ "op": 19, "d": { "stream_key": s.key } }));
+        }
+        drop(s);
+        (self.emit)(StreamEvent::Broadcast(Phase::Ended(err)));
+    }
+
+    fn stop_watch(&mut self, err: Option<String>) {
+        let Some(s) = self.watch.take() else { return };
+        let _ = self.gw.send(json!({ "op": 19, "d": { "stream_key": s.key } }));
+        *self.frame.lock().unwrap() = None;
+        (self.emit)(StreamEvent::Watch(s.key.clone(), Phase::Ended(err)));
+    }
+
+    fn gateway(&mut self, t: &str, d: &Value, place: Option<Place<'_>>) {
+        let Some(key) = d["stream_key"].as_str() else { return };
+        let mine = self.broadcast.as_ref().is_some_and(|s| s.key == key);
+        let watching = self.watch.as_ref().is_some_and(|s| s.key == key);
+        if !mine && !watching {
+            return;
+        }
+        match t {
+            "STREAM_CREATE" | "STREAM_UPDATE" => {
+                if mine {
+                    let viewers = d["viewer_ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
+                    (self.emit)(StreamEvent::Viewers(viewers));
+                }
+                if let Some(rtc) = d["rtc_server_id"].as_str() {
+                    let s = if mine { self.broadcast.as_mut() } else { self.watch.as_mut() };
+                    if let Some(s) = s {
+                        s.rtc_server_id = Some(rtc.to_string());
+                    }
+                }
+            }
+            "STREAM_SERVER_UPDATE" => {
+                if let (Some(ep), Some(tok)) = (d["endpoint"].as_str(), d["token"].as_str()) {
+                    let s = if mine { self.broadcast.as_mut() } else { self.watch.as_mut() };
+                    if let Some(s) = s {
+                        s.server = Some((ep.to_string(), tok.to_string()));
+                    }
+                }
+            }
+            "STREAM_DELETE" => {
+                let reason = match d["reason"].as_str() {
+                    Some("user_requested") | None => None,
+                    Some("stream_full") => Some("配信の視聴者が満員です".to_string()),
+                    Some("unauthorized") => Some("この配信を見る権限がありません".to_string()),
+                    Some("stream_ended") => Some("配信が終了しました".to_string()),
+                    Some(r) => Some(format!("配信が終了しました（{r}）")),
+                };
+                // 鍵を空にしてから止める（STREAM_DELETE を送り返さない）
+                if mine {
+                    if let Some(s) = &mut self.broadcast {
+                        s.key.clear();
+                    }
+                    self.stop_broadcast(reason);
+                } else {
+                    let s = self.watch.take();
+                    *self.frame.lock().unwrap() = None;
+                    if let Some(s) = s {
+                        (self.emit)(StreamEvent::Watch(s.key.clone(), Phase::Ended(reason)));
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.try_connect(mine, place);
+    }
+
+    /// 情報がそろったら接続を始める
+    fn try_connect(&mut self, mine: bool, place: Option<Place<'_>>) {
+        let Some(place) = place else { return };
+        let me: u64 = self.me.parse().unwrap_or(0);
+        let s = if mine { self.broadcast.as_mut() } else { self.watch.as_mut() };
+        let Some(s) = s else { return };
+        if s.started {
+            return;
+        }
+        let (Some(rtc), Some((endpoint, token))) = (s.rtc_server_id.clone(), s.server.clone()) else { return };
+        s.started = true;
+        let params = conn::Params { endpoint, token, rtc_server_id: rtc, session_id: place.session_id.to_string(), user_id: me };
+        let role = if mine {
+            let Some(source) = s.source.take() else { return };
+            let q = media::Quality::fit(source.size, 1280, 720, 30);
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            match media::Capture::start(source, q, tx) {
+                Ok(capture) => conn::Role::Broadcast { capture, frames: rx, quality: q },
+                Err(e) => {
+                    self.stop_broadcast(Some(e));
+                    return;
+                }
+            }
+        } else {
+            let streamer = key_user(&s.key).and_then(|u| u.parse().ok()).unwrap_or(0);
+            match media::Decoder::new(self.frame.clone(), self.waker.clone()) {
+                Ok(decoder) => conn::Role::Watch { streamer, decoder },
+                Err(e) => {
+                    self.stop_watch(Some(e));
+                    return;
+                }
+            }
+        };
+        let (stop_tx, stop_rx) = oneshot::channel();
+        s.stop = Some(stop_tx);
+        let (id, back) = (s.id, self.back.clone());
+        tokio::spawn(async move {
+            let b2 = back.clone();
+            let r = conn::run(params, role, move |conn::Report::Live| b2(Msg::Live(id)), stop_rx).await;
+            back(Msg::Ended(id, r.err().map(|e| format!("{e:#}"))));
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_keys() {
+        assert_eq!(stream_key(Some("1"), "2", "3"), "guild:1:2:3");
+        assert_eq!(stream_key(None, "2", "3"), "call:2:3");
+        assert_eq!(key_user("guild:1:2:3"), Some("3"));
+        assert_eq!(key_user("call:2:44"), Some("44"));
+        assert_eq!(key_user("call:2:"), None);
+    }
+
+    #[tokio::test]
+    async fn watch_and_stop_send_gateway_ops() {
+        let (gw, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let mut m = Manager::new("9".into(), gw, move |e| ev.lock().unwrap().push(e), |_| {}, Default::default(), Waker::default());
+        let place = || Some(Place { guild_id: Some("1"), channel_id: "2", session_id: "s" });
+        m.handle(Msg::Watch("guild:1:2:3".into()), place());
+        assert_eq!(rx.try_recv().unwrap()["op"], 20);
+        // 自分の配信は見ない
+        m.handle(Msg::Unwatch, place());
+        assert_eq!(rx.try_recv().unwrap()["op"], 19);
+        m.handle(Msg::Watch("guild:1:2:9".into()), place());
+        assert!(rx.try_recv().is_err());
+        // 配信者が止めた
+        m.handle(Msg::Watch("guild:1:2:3".into()), place());
+        rx.try_recv().unwrap();
+        m.handle(Msg::Gateway("STREAM_DELETE".into(), json!({ "stream_key": "guild:1:2:3", "reason": "stream_ended" })), place());
+        assert!(rx.try_recv().is_err(), "STREAM_DELETE を送り返さない");
+        let ev = events.lock().unwrap();
+        assert_eq!(ev.last(), Some(&StreamEvent::Watch("guild:1:2:3".into(), Phase::Ended(Some("配信が終了しました".into())))));
+    }
+
+    #[test]
+    fn quality_keeps_aspect() {
+        let q = media::Quality::fit(Some((2560, 1440)), 1280, 720, 30);
+        assert_eq!((q.width, q.height), (1280, 720));
+        let q = media::Quality::fit(Some((1000, 1000)), 1280, 720, 30);
+        assert_eq!((q.width, q.height), (720, 720));
+        let q = media::Quality::fit(Some((641, 361)), 1280, 720, 30);
+        assert_eq!((q.width, q.height), (640, 360));
+    }
+}

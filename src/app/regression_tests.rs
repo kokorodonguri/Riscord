@@ -122,7 +122,7 @@ fn repeated_delete_preserves_logged_deleted_message() {
         let mut new = snapshot[0].clone();
         new.id = "100003".into();
         tx.send(Event::MessageCreate(new)).unwrap();
-        tx.send(Event::MessageUpdate { channel_id: "c".into(), id: snapshot[0].id.clone(), content: Some("edited".into()), embeds: None }).unwrap();
+        tx.send(Event::MessageUpdate { channel_id: "c".into(), id: snapshot[0].id.clone(), content: Some("edited".into()), embeds: None, pinned: None }).unwrap();
         tx.send(Event::MessageDelete { channel_id: "c".into(), id: snapshot[1].id.clone() }).unwrap();
         app.poll();
         tx.send(Event::Messages("c".into(), snapshot)).unwrap();
@@ -230,7 +230,7 @@ fn repeated_delete_preserves_logged_deleted_message() {
         app.submit_compose("c".into(), "changed".into());
         let mut response = original.clone();
         response.content = "changed".into();
-        tx.send(Event::MessageUpdate { channel_id: "c".into(), id: original.id, content: Some("newer".into()), embeds: None }).unwrap();
+        tx.send(Event::MessageUpdate { channel_id: "c".into(), id: original.id, content: Some("newer".into()), embeds: None, pinned: None }).unwrap();
         tx.send(Event::ComposeResult { channel_id: "c".into(), result: Ok(Some(response)) }).unwrap();
         app.poll();
         assert_eq!(app.messages["c"][0].content, "newer");
@@ -269,7 +269,7 @@ fn repeated_delete_preserves_logged_deleted_message() {
                 updates.push(VoiceState {
                     user_id: format!("u{n}"), guild_id: Some("g".into()),
                     channel_id: ((batch + i) % 5 != 0).then(|| format!("c{}", (batch + n) % 4)),
-                    self_mute: (batch + i) % 2 == 0, self_deaf: i % 3 == 0, user: None,
+                    self_mute: (batch + i) % 2 == 0, self_deaf: i % 3 == 0, self_stream: false, user: None,
                 });
             }
             tx.send(Event::VoiceStates(updates)).unwrap();
@@ -751,7 +751,7 @@ fn message_revision_advances_only_on_message_changes() {
     tx.send(Event::Status("接続済み".into())).unwrap();
     app.poll();
     assert_eq!(app.msg_rev, r0, "unrelated events must keep the cached row keys");
-    tx.send(Event::MessageUpdate { channel_id: "c".into(), id: "100001".into(), content: Some("edited".into()), embeds: None }).unwrap();
+    tx.send(Event::MessageUpdate { channel_id: "c".into(), id: "100001".into(), content: Some("edited".into()), embeds: None, pinned: None }).unwrap();
     app.poll();
     let r1 = app.msg_rev;
     assert_ne!(r1, r0);

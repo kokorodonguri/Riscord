@@ -55,6 +55,9 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private val settings = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
     @Volatile private var handle = NativeBridge.create()
     private var historyJob: Job? = null
+    private val typingTracker=TypingTracker()
+    private var typingExpiryJob:Job?=null
+    private var typingSendJob:Job?=null
     private var restoreJob: Job? = null
     private var pauseJob: Job? = null
     private val messageCache=mutableMapOf<String,List<JSONObject>>()
@@ -72,7 +75,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                     // イベントが届くまで Rust 側で待つ（届けばすぐ返る）
                     val events = NativeBridge.request(handle, JSONObject().put("op", "poll").put("wait_ms", 25_000)) as? JSONArray
                     val list = events?.objects().orEmpty()
-                    list.forEach { event(it) }
+                    list.forEach { receiveEvent(it) }
                     if (list.isNotEmpty()) delay(50)
                 } catch (e: Exception) { if (e is CancellationException) throw e; delay(1000) }
             }
@@ -194,7 +197,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         }
     }
 
-    private fun event(v: JSONObject) {
+    internal fun receiveEvent(v: JSONObject) {
         val d = v.optJSONObject("d") ?: JSONObject()
         when (v.optString("t")) {
             "CALL_CREATE", "CALL_UPDATE" -> {
@@ -224,12 +227,13 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             "AUTH_EXPIRED" -> if (state.value.me != null) expire(null)
             "CONNECTION" -> state.update { it.copy(connection = d.optString("status")) }
             "READY" -> {
+                subscribeTyping()
                 val entries=d.optJSONArray("guild_settings")?.objects().orEmpty()
                 state.update { it.copy(guildSettings=entries.associateBy { e -> e.nonNull("guild_id") ?: "" }) }
                 // 接続直後は connect() で取得したばかりなので取り直さない
                 if (System.currentTimeMillis() - lastHomeRefresh > 10_000) resync()
             }
-            "RESUMED", "RESYNC" -> resync()
+            "RESUMED", "RESYNC" -> {subscribeTyping();resync()}
             "USER_GUILD_SETTINGS_UPDATE" -> state.update { it.copy(guildSettings=it.guildSettings+((d.nonNull("guild_id") ?: "") to d)) }
             "CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE" -> {
                 val guildId=d.nonNull("guild_id")
@@ -243,9 +247,13 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                     dms=old.dms.map {if(it.optString("id")==channelId) JSONObject(it.toString()).put("last_message_id",d.optString("id")) else it},
                     unreadChannels=if(old.channel?.optString("id")!=channelId && d.optJSONObject("author")?.optString("id")!=old.me?.optString("id")) old.unreadChannels+channelId else old.unreadChannels
                 ) }
+                if(channelId==state.value.channel?.optString("id")) {
+                    typingTracker.remove(d.optJSONObject("author")?.optString("id").orEmpty())
+                    refreshTyping()
+                }
                 notifyMessage(d)
                 if (channelId == state.value.channel?.optString("id")) {
-                    state.update { old -> old.copy(messages = (old.messages.filterNot { it.optString("id") == d.optString("id") } + d).sortedBy { it.optString("id").padStart(20, '0') }, typing = null) }
+                    state.update { old -> old.copy(messages = (old.messages.filterNot { it.optString("id") == d.optString("id") } + d).sortedBy { it.optString("id").padStart(20, '0') }) }
                 }
             }
             "MESSAGE_UPDATE" -> state.update { old -> old.copy(messages = old.messages.map { msg ->
@@ -259,9 +267,53 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                     if (msg.optString("id") != d.optString("message_id")) msg else applyReaction(msg, d.optJSONObject("emoji") ?: JSONObject(), added, mine)
                 }) }
             }
-            "TYPING_START" -> if (d.optString("channel_id") == state.value.channel?.optString("id") && d.optString("user_id") != state.value.me?.optString("id")) {
-                state.update { it.copy(typing = "入力中…") }; viewModelScope.launch { delay(8000); state.update { it.copy(typing = null) } }
+            "TYPING_START" -> {
+                val current=state.value
+                val user=d.optString("user_id")
+                if(d.optString("channel_id")==current.channel?.optString("id")&&user.isNotBlank()&&user!=current.me?.optString("id")) {
+                    val member=d.optJSONObject("member")
+                    val info=member?.optJSONObject("user") ?: d.optJSONObject("user")
+                        ?: current.channel?.optJSONArray("recipients")?.objects()?.firstOrNull {it.optString("id")==user}
+                        ?: current.messages.firstOrNull {it.optJSONObject("author")?.optString("id")==user}?.optJSONObject("author")
+                    val name=member?.nonNull("nick") ?: info?.label() ?: "誰か"
+                    typingTracker.start(user,name)
+                    refreshTyping()
+                }
             }
+        }
+    }
+    private fun refreshTyping() {
+        typingExpiryJob?.cancel()
+        val channel=state.value.channel?.optString("id")
+        state.update {it.copy(typing=if(channel==null) null else typingTracker.label())}
+        if(channel==null) return
+        typingExpiryJob=viewModelScope.launch {
+            while(state.value.channel?.optString("id")==channel) {
+                val wait=typingTracker.nextExpiry() ?: break
+                delay(wait)
+                state.update {it.copy(typing=typingTracker.label())}
+            }
+        }
+    }
+    private fun clearTyping() {
+        typingExpiryJob?.cancel();typingSendJob?.cancel();typingTracker.clear()
+        state.update {it.copy(typing=null)}
+    }
+    private fun subscribeTyping() {
+        if(apiOverride!=null) return
+        val s=state.value
+        val guild=s.guild?.optString("id") ?: return
+        val channel=s.channel?.optString("id") ?: return
+        viewModelScope.launch {
+            try {NativeBridge.request(handle,JSONObject().put("op","subscribe_typing").put("guild",guild).put("channel",channel))}
+            catch(e:Exception) {if(e is CancellationException) throw e}
+        }
+    }
+    private fun notifyTyping(channel:String) {
+        if(state.value.me==null||typingSendJob?.isActive==true||!typingTracker.reserveSend(channel)) return
+        typingSendJob=viewModelScope.launch {
+            try {rest("/channels/$channel/typing","POST")}
+            catch(e:Exception) {if(e is CancellationException) throw e} // Best effort; keep composing on failure.
         }
     }
     private fun resync() = task {
@@ -271,6 +323,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         }
     }
     fun selectGuild(guild: JSONObject?) {
+        clearTyping()
         cacheMessages()
         historyJob?.cancel()
         state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null) }
@@ -285,10 +338,12 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     }
     private fun cacheMessages() {state.value.channel?.optString("id")?.let {messageCache[it]=state.value.messages}}
     fun openChannel(channel: JSONObject) {
+        clearTyping()
         cacheMessages()
         historyJob?.cancel()
         val id=channel.getString("id")
         state.update { it.copy(channel = channel, lastChannelId=id, messages = messageCache[id].orEmpty(), loading = true, hasMore = true, reply = null, editing=null,editDraft="",typing = null, unreadChannels=it.unreadChannels-id) }
+        subscribeTyping()
         historyJob = viewModelScope.launch { try { refreshMessages(channel.getString("id")) } catch(e: Exception) {
             if(e is CancellationException) throw e
             if(e is AuthExpiredException) { expire(e.message); return@launch }
@@ -313,8 +368,12 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if (s.loading || !s.hasMore) return@task
         state.update { it.copy(loading = true) }; refreshMessages(id,s.messages.firstOrNull()?.optString("id"))
     }
-    fun back() { cacheMessages(); historyJob?.cancel(); state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",loading = false) } }
-    fun draft(value: String) { val id=state.value.channel?.optString("id") ?: return; state.update { it.copy(drafts=it.drafts+(id to value)) } }
+    fun back() { clearTyping(); cacheMessages(); historyJob?.cancel(); state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",loading = false) } }
+    fun draft(value: String) {
+        val s=state.value;val id=s.channel?.optString("id") ?: return
+        state.update {it.copy(drafts=it.drafts+(id to value))}
+        if(value.isNotBlank()&&value!=s.drafts[id]) notifyTyping(id)
+    }
     fun reply(message: JSONObject?) { state.update { it.copy(reply = message) } }
     fun send() {
         val s=state.value
@@ -510,6 +569,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         return "/channels/${message.getString("channel_id")}/messages/${message.getString("id")}/reactions/$encoded/@me"
     }
     fun logout() {
+        clearTyping();typingTracker.reset()
         restoreJob?.cancel(); restoreJob=null; pauseJob?.cancel(); pauseJob=null; gatewayPaused=false
         val app=getApplication<Application>()
         app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false); historyJob?.cancel(); messageCache.clear(); store.clear()

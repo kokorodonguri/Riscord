@@ -32,6 +32,7 @@ class MobileUxTest {
     private val store=ViewModelStore()
     private lateinit var model:ChatModel
     private var fixtureMessages=listOf<JSONObject>()
+    private val typingRequests=mutableListOf<String>()
     private val dm=JSONObject("""{"id":"100","type":1,"recipients":[{"id":"2","username":"mika","global_name":"Mika"}]}""")
     private val me=JSONObject("""{"id":"1","username":"riscord","global_name":"テストユーザー"}""")
     private fun message(index:Int,text:String="過去 $index",author:String="2"):JSONObject=JSONObject()
@@ -44,6 +45,7 @@ class MobileUxTest {
             compose.activity.enableEdgeToEdge(statusBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),navigationBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
             compose.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
             model=ChatModel(app,restoreSession=false,apiOverride={path,method,_->
+                if(method=="POST"&&path.endsWith("/typing")) {typingRequests+=path;return@ChatModel JSONObject.NULL}
                 check(method=="GET") {"UI test attempted a network write: $method $path"}
                 when {
                     path.contains("/messages")->JSONArray().apply {fixtureMessages.asReversed().forEach {put(it)}}
@@ -73,6 +75,28 @@ class MobileUxTest {
         val bitmap=requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
         File(directory,"$name.png").outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}
         bitmap.recycle()
+    }
+    @Test fun typingIsSentOnActualEditsAndThrottledWithinABurst() {
+        render();open()
+        Assert.assertTrue(typingRequests.isEmpty())
+        compose.onNodeWithContentDescription("メッセージ入力").performTextInput("a")
+        compose.onNodeWithContentDescription("メッセージ入力").performTextInput("b")
+        compose.onNodeWithContentDescription("メッセージ入力").performTextClearance()
+        compose.waitForIdle()
+        Assert.assertEquals(listOf("/channels/100/typing"),typingRequests)
+    }
+    @Test fun typingNamesAreScopedToTheConversationAndExcludeMe() {
+        render();open()
+        compose.runOnIdle {model.receiveEvent(JSONObject("""{"t":"TYPING_START","d":{"channel_id":"100","user_id":"2"}}"""))}
+        compose.onNodeWithText("Mika が入力中…").assertIsDisplayed()
+        compose.runOnIdle {model.receiveEvent(JSONObject("""{"t":"TYPING_START","d":{"channel_id":"100","user_id":"1"}}"""))}
+        compose.onNodeWithText("Mika が入力中…").assertIsDisplayed()
+        compose.runOnIdle {model.receiveEvent(JSONObject("""{"t":"TYPING_START","d":{"channel_id":"100","user_id":"3","member":{"nick":"別の人"}}}"""))}
+        compose.onNodeWithText("Mika、別の人 が入力中…").assertIsDisplayed()
+        compose.runOnIdle {model.receiveEvent(JSONObject().put("t","MESSAGE_CREATE").put("d",message(3,"送信されたメッセージ")))}
+        compose.onNodeWithText("別の人 が入力中…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("チャンネル一覧に戻る").performClick();open()
+        Assert.assertNull(model.state.value.typing)
     }
     @Test fun draftReplyEditAndBackRemainInTheSameConversation() {
         render();open()

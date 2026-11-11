@@ -7335,12 +7335,16 @@ dependencies = [
 name = "riscord"
 version = "0.2.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "arboard",
+ "ashpd 0.11.1",
  "async-trait",
  "base64 0.22.1",
+ "chacha20poly1305",
  "chrono",
  "cpal",
+ "davey",
  "dirs 6.0.0",
  "emojis",
  "flate2",

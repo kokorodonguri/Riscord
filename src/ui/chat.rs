@@ -46,6 +46,7 @@ impl Root {
     pub fn main_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = self.app.screen_w < 700.0;
         self.app.subscribe_member_list();
+        self.app.tick_search();
         let narrow_members = self.app.screen_w < 900.0;
         let members_shown = if narrow_members { self.app.show_members_narrow } else { self.app.show_members };
         let dm_user = match (&self.app.sel_guild, self.app.current_channel()) {
@@ -125,10 +126,15 @@ impl Root {
         }
         let mut body = div().flex_1().min_h_0().flex().flex_row().relative();
         body = body.child(self.chat_column(members_shown, narrow_members, dm_user.as_ref(), window, cx));
-        if self.app.sel_guild.is_some() && members_shown && !narrow_members {
+        // ピン一覧・検索結果は、メンバー一覧・プロフィールの場所に出す（狭い画面では重ねる）
+        let side = self.app.side != crate::app::SidePanel::None;
+        if side && !narrow_members {
+            body = body.child(self.side_panel(window, cx).w(z(360.0)).flex_none());
+        }
+        if !side && self.app.sel_guild.is_some() && members_shown && !narrow_members {
             body = body.child(self.members_panel(cx).w(z(240.0)).flex_none());
         }
-        if let Some(u) = dm_user.as_ref().filter(|_| !self.app.hide_dm_profile && self.app.screen_w > 980.0) {
+        if let Some(u) = dm_user.as_ref().filter(|_| !side && !self.app.hide_dm_profile && self.app.screen_w > 980.0) {
             let key = net::profile_key(&u.id, None);
             if !self.app.profiles.contains_key(&key) {
                 self.app.profiles.insert(key.clone(), ProfileState::Loading);
@@ -138,7 +144,10 @@ impl Root {
         }
         right = right.child(body);
         // 狭い画面ではチャット幅を縮めず、ヘッダーの下に一覧を重ねる。
-        if self.app.sel_guild.is_some() && members_shown && narrow_members {
+        if side && narrow_members {
+            let w = self.app.screen_w.min(360.0);
+            right = right.child(self.side_panel(window, cx).absolute().right_0().top(z(48.0)).bottom_0().w(z(w)).bg(opaque(BG())));
+        } else if self.app.sel_guild.is_some() && members_shown && narrow_members {
             right = right.child(self.members_panel(cx).absolute().right_0().top(z(48.0)).bottom_0().w(z(240.0)).bg(opaque(BG())).border_l_1().border_color(DIVIDER()));
         }
 
@@ -189,6 +198,7 @@ impl Root {
         v.extend(self.incoming_call(cx));
         v.extend(self.switcher_dialog(cx));
         v.extend(self.delete_dialog(cx));
+        v.extend(self.thread_dialog(cx));
         v.extend(self.leave_dialog(cx));
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
@@ -230,11 +240,17 @@ impl Root {
         if let (None, Some(c)) = (&self.app.sel_guild, &cur) {
             col = col.children(self.call_area(&c.id, cx));
         }
+        col = col.children(self.stream_view(cx));
         // チャット欄だけに敷く背景画像
         let bg = self.app.theme_applied.as_ref().and_then(|t| t.background.clone()).filter(|b| !b.window);
         let mut msgs = div().flex_1().min_h_0().relative().flex().flex_col();
         if let Some(bg) = &bg {
             msgs = msgs.child(background(bg, opaque(CHAT())));
+        }
+        // フォーラムはメッセージの代わりに投稿の一覧
+        if let Some(f) = cur.as_ref().filter(|c| c.is_forum()) {
+            msgs = msgs.child(self.forum_view(f, cx));
+            return col.child(msgs);
         }
         msgs = msgs.child(self.messages_view(prefix, &cname, cx));
         msgs = msgs.children(self.jump_hint(cx));
@@ -282,8 +298,13 @@ impl Root {
 
     /// 開いているチャンネルの一番下（最新のメッセージ）へ飛び、新しいメッセージに付いていく
     pub fn jump_to_latest(&mut self) {
-        let Some(cid) = self.app.sel_channel.as_ref() else { return };
-        if let Some(l) = self.lists.get(cid) {
+        let Some(cid) = self.app.sel_channel.clone() else { return };
+        // 途中だけを出していたら最新を読み直す（届いたら下端に付いていく）
+        if self.app.is_detached(&cid) {
+            self.app.back_to_latest(&cid);
+            return;
+        }
+        if let Some(l) = self.lists.get(&cid) {
             l.state.set_follow_mode(FollowMode::Tail);
         }
     }
@@ -324,6 +345,37 @@ impl Root {
                 })))
                 .child(div().id("video").size(z(32.0)).flex().items_center().justify_center().tooltip(tip("ビデオ通話（未対応）")).child(icon(IconName::Video, 20.0, FAINT().gamma_multiply(0.5))));
         }
+        let search_open = a.side == crate::app::SidePanel::Search;
+        right = right.child(toggle_icon("search_toggle", IconName::Search, search_open).tooltip(tip(if search_open { "検索を閉じる" } else { "検索（Ctrl+F）" })).on_click(cx.listener(|this, _, window, cx| {
+            this.app.toggle_search();
+            if this.app.side == crate::app::SidePanel::Search {
+                this.inp.search.update(cx, |s, cx| s.focus(window, cx));
+            }
+            cx.notify();
+        })));
+        // スレッド: 参加・退出。テキストチャンネル: スレッド一覧
+        if c.is_thread() {
+            let (tid, joined) = (c.id.clone(), a.joined_threads.contains(&c.id));
+            right = right.child(
+                toggle_icon("thread_join", if joined { IconName::LogOut } else { IconName::UserPlus }, false)
+                    .tooltip(tip(if joined { "スレッドから退出" } else { "スレッドに参加" }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.join_thread(&tid, !joined);
+                        cx.notify();
+                    })),
+            );
+        } else if a.sel_guild.is_some() && c.is_text() {
+            let open = a.side == crate::app::SidePanel::Threads;
+            right = right.child(toggle_icon("threads_toggle", IconName::MessagesSquare, open).tooltip(tip(if open { "スレッド一覧を閉じる" } else { "スレッド" })).on_click(cx.listener(|this, _, _, cx| {
+                this.app.toggle_thread_panel();
+                cx.notify();
+            })));
+        }
+        let pins_open = a.side == crate::app::SidePanel::Pins;
+        right = right.child(toggle_icon("pins_toggle", IconName::Pin, pins_open).tooltip(tip(if pins_open { "ピン留めを閉じる" } else { "ピン留めされたメッセージ" })).on_click(cx.listener(|this, _, _, cx| {
+            this.app.toggle_pins();
+            cx.notify();
+        })));
         let loading = a.sel_channel.as_ref().is_some_and(|id| a.pending_message_loads.contains_key(id));
         right = right.child(if loading {
             div().id("reload").size(z(32.0)).flex().items_center().justify_center().tooltip(tip("メッセージを読み込み中")).child(spinner(18.0))
@@ -366,6 +418,36 @@ impl Root {
         head.child(left).child(right)
     }
 
+    /// 視聴中の画面共有（チャット欄の上に出す）
+    fn stream_view(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (key, phase) = self.app.watching.clone()?;
+        let uid = crate::golive::key_user(&key).unwrap_or_default().to_string();
+        let name = self.app.find_user(&uid).map(|u| u.display().to_string()).unwrap_or_else(|| uid.clone());
+        let h = (self.pane_h * 0.55).clamp(180.0, 720.0);
+        let screen = match &self.stream_image {
+            Some(frame) => div().size_full().child(img(frame.clone()).id("stream-frame").size_full().object_fit(ObjectFit::Contain)),
+            None => div().size_full().flex().flex_col().items_center().justify_center().gap(z(10.0)).child(spinner(28.0)).child(text(
+                if phase == crate::golive::Phase::Live { "映像を待っています…" } else { "配信に接続しています…" },
+                14.0,
+                MUTED(),
+            )),
+        };
+        let head = div()
+            .h(z(36.0))
+            .flex_none()
+            .px(z(12.0))
+            .flex()
+            .items_center()
+            .gap(z(8.0))
+            .child(super::sidebar::live_badge())
+            .child(line(format!("{name} の画面"), 14.0, WHITE()).flex_1())
+            .child(icon_button("stream_close", IconName::Close, 28.0).tooltip(tip("視聴をやめる")).on_click(cx.listener(|this, _, _, cx| {
+                this.app.stop_watching();
+                cx.notify();
+            })));
+        Some(div().h(z(h)).flex_none().bg(Color32::BLACK).flex().flex_col().child(head).child(div().flex_1().min_h_0().child(screen)).into_any_element())
+    }
+
     /// DM通話エリア（参加者・呼び出し中の人と、操作ボタン）
     fn call_area(&mut self, cid: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
         let a = &self.app;
@@ -406,6 +488,18 @@ impl Root {
             if let Some(u) = u {
                 face = face.child(text(u.display().to_string(), 12.0, MUTED()));
             }
+            if !ringing && a.is_streaming(id) {
+                face = face.child(super::sidebar::live_badge());
+                if in_call && a.me.as_ref().is_none_or(|m| &m.id != id) {
+                    let uid = id.clone();
+                    let face = face.id(SharedString::from(format!("face{id}"))).cursor_pointer().tooltip(tip("配信を見る")).on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.watch_stream(&uid);
+                        cx.notify();
+                    }));
+                    faces = faces.child(face);
+                    continue;
+                }
+            }
             faces = faces.child(face);
         }
         let cid_s = cid.to_string();
@@ -424,6 +518,15 @@ impl Root {
                     this.app.toggle_deaf();
                     cx.notify();
                 })))
+                .child({
+                    let sharing = a.my_stream.is_some();
+                    round_button("call_screen", if sharing { IconName::MonitorOff } else { IconName::MonitorUp }, if sharing { GREEN() } else { dark }, WHITE())
+                        .tooltip(tip(if sharing { "画面共有を停止" } else { "画面を共有" }))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.app.toggle_stream();
+                            cx.notify();
+                        }))
+                })
                 .child(round_button("call_leave", IconName::PhoneOff, RED(), WHITE()).tooltip(tip("切断")).on_click(cx.listener(|this, _, _, cx| {
                     this.app.leave_voice();
                     cx.notify();
@@ -508,7 +611,7 @@ impl Root {
                             let _ = root.update(cx, |_, cx| cx.notify());
                         }
                     });
-                    self.lists.insert(cid.clone(), MsgList { state, keys, stamp: 0 });
+                    self.lists.insert(cid.clone(), MsgList { state, keys, stamp: 0, detached: false });
                 }
             }
             self.lists.get_mut(&cid).unwrap().stamp = stamp;
@@ -520,6 +623,29 @@ impl Root {
         let near_top = state.logical_scroll_top().item_ix < HISTORY_TRIGGER_ROWS;
         let first = msgs.first().map(|m| m.id.clone());
         let len = msgs.len();
+        // ピン一覧・検索結果から飛んできた: その行（の1つ上）を一番上に出す
+        let target = self.app.scroll_to_message.as_ref().filter(|(c, _)| *c == cid).map(|(_, id)| msgs.iter().position(|m| &m.id == id));
+        if let Some(found) = target {
+            self.app.scroll_to_message = None;
+            if let Some(i) = found {
+                state.scroll_to(ListOffset { item_ix: i, offset_in_item: px(0.0) });
+            }
+        }
+        // 途中だけを出している間は下端に付いていかず、下端に近づいたら続きを読む
+        let detached = self.app.is_detached(&cid);
+        if let Some(l) = self.lists.get_mut(&cid).filter(|l| l.detached != detached) {
+            l.detached = detached;
+            l.state.set_follow_mode(if detached { FollowMode::Normal } else { FollowMode::Tail });
+            if let Some(Some(i)) = target.filter(|_| detached) {
+                l.state.scroll_to(ListOffset { item_ix: i, offset_in_item: px(0.0) });
+            }
+        }
+        if detached && state.logical_scroll_top().item_ix + HISTORY_TRIGGER_ROWS >= n {
+            self.app.load_newer(&cid);
+            if self.app.history.get(&cid).is_some_and(|h| h.newer_retry_at.is_some()) {
+                self.app.repaint_after(std::time::Duration::from_secs(1));
+            }
+        }
         let hist = self.app.history.entry(cid.clone()).or_default();
         let retry_ok = hist.retry_at.is_none_or(|t| std::time::Instant::now() >= t);
         if near_top && !hist.end && hist.pending.is_none() && retry_ok && len < MAX_HISTORY {
@@ -585,15 +711,35 @@ impl Root {
 
     /// 入力欄（返信・編集の帯、送信中の表示、添付、＋メニュー）
     fn compose(&mut self, prefix: &str, cname: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // :名前: を打ちかけなら、入力欄の上に絵文字の候補を出す
+        // :名前: を打ちかけなら、入力欄の上に絵文字の候補を出す。「/名前」ならコマンドの候補
         let suggest = self.emoji_suggest(_window, cx);
+        let cmd_suggest = self.command_suggest(cx);
+        if self.app.cmd_draft.is_none() {
+            self.ensure_cmd_inputs(_window, cx);
+        }
         let a = &self.app;
         let mut col = div().flex_none().bg(CHAT()).px(z(10.0)).pt(z(2.0)).pb(z(10.0)).flex().flex_col();
         let no_access = a.sel_channel.as_ref().is_some_and(|id| a.no_access.contains(id));
         if no_access {
             return col.child(card(INPUT(), DIVIDER(), 8.0).p(z(12.0)).child(text("このチャンネルを見る権限がないため、メッセージを送信できません。", 16.0, MUTED())));
         }
-        col = col.children(suggest);
+        // スレッドのロック・権限・アーカイブ
+        if let Some(c) = a.current_channel().filter(|c| c.is_thread()) {
+            if let Some(reason) = a.thread_block_reason(c) {
+                return col.child(card(INPUT(), DIVIDER(), 8.0).p(z(12.0)).flex().items_center().gap(z(8.0)).child(icon(IconName::Lock, 16.0, MUTED())).child(text(reason, 15.0, MUTED())));
+            }
+            if c.archived() {
+                col = col.child(div().px(z(4.0)).pb(z(4.0)).flex().items_center().gap(z(6.0)).child(icon(IconName::Archive, 14.0, MUTED())).child(text("このスレッドはアーカイブされています。メッセージを送信すると再開します。", 13.0, MUTED())));
+            }
+        }
+        col = col.children(suggest).children(cmd_suggest);
+        if let Some(label) = a.pending_command_label() {
+            col = col.child(div().px(z(4.0)).pb(z(4.0)).flex().items_center().gap(z(8.0)).child(spinner(14.0)).child(text(format!("{label} を実行中…"), 13.0, MUTED())));
+        }
+        // コマンドを選んだら、入力欄の代わりに引数の欄
+        if a.cmd_draft.is_some() {
+            return col.child(self.command_form(_window, cx));
+        }
         if let Some((cid, sub)) = a.sel_channel.as_ref().and_then(|cid| a.compose_submissions.get(cid).map(|s| (cid.clone(), s))) {
             let mut b = div().bg(SIDEBAR()).rounded(z(8.0)).px(z(12.0)).py(z(8.0)).mb(z(4.0)).flex().flex_col().gap(z(6.0));
             if sub.failed {

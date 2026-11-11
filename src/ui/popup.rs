@@ -140,6 +140,26 @@ impl Root {
             this.app.show_toast("メッセージIDをコピーしました");
             cx.notify();
         })));
+        // ピン留めできるのは通常のメッセージ・返信・コマンドの結果だけ
+        let pinnable = !deleted && matches!(m.kind, 0 | 19 | 20 | 23);
+        if pinnable && self.app.can_pin(self.app.sel_guild.as_deref(), &m.channel_id) {
+            let (m1, pinned) = (m.clone(), m.pinned);
+            let (ic, label) = if pinned { (IconName::PinOff, "ピン留めを外す") } else { (IconName::Pin, "メッセージをピン留め") };
+            col = col.child(menu_row("mm_pin", icon(ic, 18.0, TEXT()).into_any_element(), label, false).on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                this.app.set_pinned(&m1, !pinned);
+                cx.notify();
+            })));
+        }
+        if !deleted && self.app.can_create_thread(&m) {
+            let m1 = m.clone();
+            col = col.child(menu_row("mm_thread", icon(IconName::MessagesSquare, 18.0, TEXT()).into_any_element(), "スレッドを作成", false).on_click(cx.listener(move |this, _, window, cx| {
+                close(this);
+                this.app.start_thread_draft(m1.clone());
+                this.inp.thread_name.update(cx, |s, cx| s.focus(window, cx));
+                cx.notify();
+            })));
+        }
         if mine {
             col = col.child(menu_divider());
             let m1 = m.clone();

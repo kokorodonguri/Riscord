@@ -69,7 +69,8 @@ pub enum ApiCall {
     GetReactions { channel_id: String, message_id: String, emoji: String, limit: u32, after: Option<String> },
     ClearReactions { channel_id: String, message_id: String },
     ClearEmojiReactions { channel_id: String, message_id: String, emoji: String },
-    GetPins(String),
+    /// ピン留め一覧（新しい順に最大 limit 件。before は前のページの最後の pinned_at）
+    GetChannelPins { channel_id: String, before: Option<String>, limit: u32 },
     Pin { channel_id: String, message_id: String },
     Unpin { channel_id: String, message_id: String },
     /// 「入力中…」を出す（10秒ほどで消える）
@@ -87,6 +88,9 @@ pub enum ApiCall {
     JoinThread(String),
     LeaveThread(String),
     GetThreadMembers(String),
+    /// チャンネルのスレッド・フォーラムの投稿を探す（ユーザーで使える一覧はこれだけ）。
+    /// query は archived / sort_by / sort_order / limit / offset / tag など
+    SearchThreads { channel_id: String, query: Vec<(String, String)> },
 
     // ---- 投票 ----
     GetPollVoters { channel_id: String, message_id: String, answer_id: u32 },
@@ -167,6 +171,8 @@ pub enum ApiCall {
     GetGuildCommands(String),
     /// DM で使えるスラッシュコマンド
     GetChannelCommands(String),
+    /// 自分のアカウントに入れたアプリのスラッシュコマンド
+    GetUserCommands,
     /// スラッシュコマンドの実行・ボタンの押下など（type / application_id / data / nonce / session_id …）
     Interaction(Value),
 
@@ -280,9 +286,12 @@ impl ApiCall {
             )),
             ClearReactions { channel_id, message_id } => del(format!("/channels/{channel_id}/messages/{message_id}/reactions")),
             ClearEmojiReactions { channel_id, message_id, emoji } => del(format!("/channels/{channel_id}/messages/{message_id}/reactions/{}", encode(emoji))),
-            GetPins(c) => get(format!("/channels/{c}/pins")),
-            Pin { channel_id, message_id } => put(format!("/channels/{channel_id}/pins/{message_id}"), json!({})),
-            Unpin { channel_id, message_id } => del(format!("/channels/{channel_id}/pins/{message_id}")),
+            // /channels/{id}/pins は廃止予定。ページ送りできる /messages/pins を使う
+            GetChannelPins { channel_id, before, limit } => {
+                get(format!("/channels/{channel_id}/messages/pins{}", query(&[("before", some(before)), ("limit", Some(limit.to_string()))])))
+            }
+            Pin { channel_id, message_id } => put(format!("/channels/{channel_id}/messages/pins/{message_id}"), json!({})),
+            Unpin { channel_id, message_id } => del(format!("/channels/{channel_id}/messages/pins/{message_id}")),
             Typing(c) => post(format!("/channels/{c}/typing"), json!({})),
             SearchGuild { guild_id, query } => get(format!("/guilds/{guild_id}/messages/search{}", query_list(query))),
             SearchChannel { channel_id, query } => get(format!("/channels/{channel_id}/messages/search{}", query_list(query))),
@@ -299,6 +308,7 @@ impl ApiCall {
             JoinThread(c) => put(format!("/channels/{c}/thread-members/@me"), json!({})),
             LeaveThread(c) => del(format!("/channels/{c}/thread-members/@me")),
             GetThreadMembers(c) => get(format!("/channels/{c}/thread-members")),
+            SearchThreads { channel_id, query } => get(format!("/channels/{channel_id}/threads/search{}", query_list(query))),
 
             GetPollVoters { channel_id, message_id, answer_id } => get(format!("/channels/{channel_id}/polls/{message_id}/answers/{answer_id}")),
             VotePoll { channel_id, message_id, answer_ids } => put(format!("/channels/{channel_id}/polls/{message_id}/answers/@me"), json!({ "answer_ids": answer_ids.iter().map(|a| a.to_string()).collect::<Vec<_>>() })),
@@ -373,6 +383,7 @@ impl ApiCall {
             GetStickerPacks => get("/sticker-packs".into()),
             GetGuildCommands(g) => get(format!("/guilds/{g}/application-command-index")),
             GetChannelCommands(c) => get(format!("/channels/{c}/application-command-index")),
+            GetUserCommands => get("/users/@me/application-command-index".into()),
             Interaction(b) => post("/interactions".into(), b.clone()),
 
             GetGateway => get("/gateway".into()),
@@ -475,6 +486,7 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "INTERACTION_CREATE",
     "INTERACTION_SUCCESS",
     "INTERACTION_FAILURE",
+    "APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE",
     "STREAM_CREATE",
     "STREAM_SERVER_UPDATE",
     "STREAM_UPDATE",
@@ -495,6 +507,14 @@ mod tests {
         assert_eq!(p, "/channels/5/messages?limit=50&before=9");
         let (_, p, _) = ApiCall::SearchGuild { guild_id: "7".into(), query: vec![("content".into(), "a b&c".into())] }.route();
         assert_eq!(p, "/guilds/7/messages/search?content=a%20b%26c");
+        let (_, p, _) = ApiCall::GetChannelPins { channel_id: "8".into(), before: Some("2026-01-01T00:00:00+00:00".into()), limit: 50 }.route();
+        assert_eq!(p, "/channels/8/messages/pins?before=2026-01-01T00%3A00%3A00%2B00%3A00&limit=50");
+        let (m, p, _) = ApiCall::Pin { channel_id: "8".into(), message_id: "9".into() }.route();
+        assert_eq!((m, p.as_str()), (Method::PUT, "/channels/8/messages/pins/9"));
+        let (m, p, _) = ApiCall::Unpin { channel_id: "8".into(), message_id: "9".into() }.route();
+        assert_eq!((m, p.as_str()), (Method::DELETE, "/channels/8/messages/pins/9"));
+        let (_, p, _) = ApiCall::SearchThreads { channel_id: "8".into(), query: vec![("archived".into(), "false".into()), ("tag".into(), "5".into())] }.route();
+        assert_eq!(p, "/channels/8/threads/search?archived=false&tag=5");
         let (m, p, b) = ApiCall::ModifyGuildSettings { guild_id: "3".into(), settings: json!({ "muted": true }) }.route();
         assert_eq!((m, p.as_str(), b), (Method::PATCH, "/users/@me/guilds/3/settings", Some(json!({ "muted": true }))));
         let (_, p, _) = ApiCall::ModifyChannelSettings { guild_id: None, channel_id: "4".into(), settings: json!({}) }.route();

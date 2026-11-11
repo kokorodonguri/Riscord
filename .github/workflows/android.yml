@@ -32,7 +32,7 @@ jobs:
         run: cargo test -p riscord-core --locked
       - name: Build APK
         working-directory: android
-        run: ./gradlew --no-daemon :app:assembleDebug
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: riscord-android-arm64-debug

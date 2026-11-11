@@ -7,6 +7,7 @@ mod color;
 mod demo;
 mod download;
 mod emoji;
+mod golive;
 mod images;
 mod login;
 mod markdown;

@@ -165,6 +165,11 @@ impl Client {
         self.voice_tx.lock().unwrap().as_ref().ok_or_else(||anyhow::anyhow!("接続されていません"))?.send(command)?;
         Ok(Value::Null)
     }
+    pub fn subscribe_typing(&self, guild: &str, channel: &str) -> Result<Value> {
+        anyhow::ensure!(!guild.is_empty() && guild.bytes().all(|b| b.is_ascii_digit()) && !channel.is_empty() && channel.bytes().all(|b| b.is_ascii_digit()), "無効なチャンネル");
+        self.send_gateway(typing_subscription(guild, channel))?;
+        Ok(Value::Null)
+    }
     pub fn presence(&self, status: &str) -> Result<Value> {
         anyhow::ensure!(valid_status(status), "無効なステータス");
         *self.status.lock().unwrap() = status.into();
@@ -290,6 +295,10 @@ impl Client {
     }
 }
 /// 画面へ渡す形 {t, d} にする。使わない種類は None
+fn typing_subscription(guild: &str, channel: &str) -> Value {
+    json!({"op":37,"d":{"subscriptions":{(guild):{"typing":true,"activities":false,"threads":false,"channels":{(channel):[[0,99]]}}}}})
+}
+
 fn slim_event(mut v: Value) -> Option<Value> {
     let t = v["t"].as_str()?.to_owned();
     let d = v.get_mut("d").map(Value::take).unwrap_or(Value::Null);
@@ -319,6 +328,14 @@ fn text(v: &Value, k: &str) -> String { v[k].as_str().unwrap_or_default().into()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typing_subscription_targets_the_selected_guild_and_channel() {
+        let value=super::typing_subscription("42","99");
+        assert_eq!(value["op"],37);
+        assert_eq!(value["d"]["subscriptions"]["42"]["typing"],true);
+        assert_eq!(value["d"]["subscriptions"]["42"]["channels"]["99"],serde_json::json!([[0,99]]));
+    }
+
     use super::*;
     #[test]
     fn event_overflow_requests_resync_and_drain_consumes_events() {

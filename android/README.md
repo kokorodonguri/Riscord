@@ -21,7 +21,15 @@ Android NDKのLinuxホスト用ツールはx86_64版なので、ARM Linux上で�
 既にライブラリを`app/src/main/jniLibs/arm64-v8a/libriscord_core.so`へ配置した場合のみ、
 `-Priscord.usePrebuiltNative`でRustビルドを省略できます。
 
-## 実機テスト
+## テスト
+
+端末なしで、入力状態の期限更新・複数人の表示・入力通知の送信間隔を確認できます。
+
+```sh
+./gradlew testDebugUnitTest
+```
+
+接続した端末で画面と JNI のテストを実行します。
 
 ```sh
 ./gradlew connectedDebugAndroidTest
@@ -37,6 +45,7 @@ JNIのセッション終了・日本語・絵文字の受け渡し、音声デ�
 - Keystoreによるトークンの暗号化保存とログアウト
 - サーバー・チャンネル・DM一覧、ユーザーIDからのDM開始
 - 履歴・リアルタイム受信・送信・返信・編集・削除・リアクション
+- 相手の名前付き「入力中…」表示、自分の入力開始・継続の通知（入力通知は最大8秒に1回）
 - 画像・埋め込みの表示、ファイル添付（10MBまで）
 - Gatewayのheartbeat、resume、バックオフ再接続
 - 任意の常駐モード、DM・メンションの通知

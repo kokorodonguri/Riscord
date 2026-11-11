@@ -27,7 +27,7 @@ pub enum EmojiRow {
 pub type EmojiKey = (String, Option<String>, u64, bool);
 
 /// 補完中のキー操作
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum AcKey {
     Up,
     Down,

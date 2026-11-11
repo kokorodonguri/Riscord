@@ -1,11 +1,14 @@
 //! 画面（gpui）。状態とロジックは crate::app にあり、ここではそれを描いて操作をつなぐ
 mod chat;
+mod commands;
 mod dialogs;
 mod emoji;
 mod kit;
 mod login;
 mod members;
+mod forum;
 mod message;
+mod panel;
 mod popup;
 mod settings;
 mod sidebar;
@@ -14,6 +17,7 @@ mod split;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
@@ -35,7 +39,8 @@ gpui::assets::icon_assets!(
         ArrowLeft, ArrowRight, AtSign, Download, ChevronDown, ChevronRight, CirclePlus, CircleX, ClipboardPaste, Copy, FileUp, Folder,
         Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, Palette, PanelRight, Pencil, Phone, PhoneOff, Play, Plus, RefreshCw,
         Reply, RotateCw, Search, Settings, Signal, Trash, Upload, User, UserRound, Users, Video, Volume2, X, Check, IdCard,
-        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck
+        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck,
+        Pin, PinOff, ArrowUp, MessagesSquare, Archive, Lock, Tag
     ]
 );
 
@@ -83,6 +88,8 @@ pub struct MsgList {
     pub keys: Vec<u64>,
     /// keys を作ったときの一覧の状態（AppState::msg_rev など）。同じなら keys は作り直さない
     pub stamp: u64,
+    /// 最新とつながっていない一覧を出している（その間は下端に付いていかない）
+    pub detached: bool,
 }
 
 /// 入力欄（gpui-component）。中身は AppState の文字列と同期する
@@ -100,6 +107,13 @@ pub struct Inputs {
     pub bg_image: Entity<InputState>,
     /// 絵文字ピッカーの検索欄
     pub emoji_query: Entity<InputState>,
+    /// メッセージ検索の欄
+    pub search: Entity<InputState>,
+    /// メッセージから作るスレッドの名前
+    pub thread_name: Entity<InputState>,
+    /// フォーラムの新しい投稿の題と本文
+    pub post_title: Entity<InputState>,
+    pub post_body: Entity<TextareaState>,
 }
 
 /// ポップアップ（開いている間だけ出す小さなメニュー）
@@ -126,6 +140,12 @@ pub struct Root {
     pub list_key: (u32, u32, bool),
     pub member_list: ListState,
     pub member_key: (String, u64),
+    /// 右側の枠（ピン一覧・検索結果）の一覧と、作ったときの目印
+    pub side_list: ListState,
+    pub side_key: (u8, String, u64),
+    /// フォーラムの投稿一覧
+    pub forum_list: ListState,
+    pub forum_key: (u8, String, u64),
     /// マウスが乗っているメッセージ（ツールバーを出す）
     pub hover_msg: Option<String>,
     /// スポイラーを押して開いたメッセージ
@@ -139,6 +159,12 @@ pub struct Root {
     pub emoji_rows: Option<(emoji::EmojiKey, Rc<Vec<emoji::EmojiRow>>)>,
     /// :名前: の補完で選んでいる候補（打ちかけの名前, 何番目か）
     pub emoji_ac_sel: (String, usize),
+    /// スラッシュコマンドの候補で選んでいる位置
+    pub cmd_ac_sel: usize,
+    /// コマンドの引数の欄（引数の名前 → 欄）と、作ったときのコマンド
+    pub cmd_inputs: HashMap<String, Entity<InputState>>,
+    pub cmd_subs: Vec<Subscription>,
+    pub cmd_inputs_key: String,
     /// Esc で閉じた補完（: の位置, 名前）。続きを打つまで出さない
     pub emoji_ac_dismissed: Option<(usize, String)>,
     /// プロフィールのポップアップで「ステータス」のサブメニューを開いている
@@ -160,6 +186,8 @@ pub struct Root {
     pub compose_hint: String,
     pub image_preview: Option<String>,
     pub video: Option<crate::video::Player>,
+    /// 視聴中の画面共有の最新の 1 枚
+    pub stream_image: Option<Arc<RenderImage>>,
     /// 進行中のダウンロード（URL, 結果の受け口）。保存先を選んでいる間も含む
     pub downloads: Vec<(String, std::sync::mpsc::Receiver<crate::download::Event>)>,
     /// 分割表示で、もう片方の区画のプロファイル（分割していなければ None）
@@ -169,6 +197,25 @@ pub struct Root {
     /// 右の区画のプロファイルの lock（左はプロセスが起動時に取っている）
     _lock: Option<std::fs::File>,
     _subs: Vec<Subscription>,
+}
+
+impl Root {
+    /// 視聴中の画面共有の新しい 1 枚を画像にする（見ていなければ捨てる）
+    fn poll_stream_image(&mut self) {
+        let frame = self.app.voice.screen.lock().unwrap().take();
+        if self.app.watching.is_none() {
+            if let Some(old) = self.stream_image.take() {
+                crate::images::release(old);
+            }
+            return;
+        }
+        let Some(f) = frame else { return };
+        let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, f.data) else { return };
+        let frame = image::Frame::from_parts(buf, 0, 0, image::Delay::from_saturating_duration(Duration::ZERO));
+        if let Some(old) = self.stream_image.replace(Arc::new(RenderImage::new(vec![frame]))) {
+            crate::images::release(old);
+        }
+    }
 }
 
 thread_local! {
@@ -317,6 +364,10 @@ impl Root {
             bio,
             bg_image: new_input(window, cx, "画像のパスか https:// の URL（空ならテーマの指定）", false),
             emoji_query: new_input(window, cx, "絵文字を検索", false),
+            search: new_input(window, cx, "検索（from: in: has: before: after:）", false),
+            thread_name: new_input(window, cx, "スレッド名", false),
+            post_title: new_input(window, cx, "タイトル", false),
+            post_body: cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).placeholder("本文を入力")),
         };
         let mut subs = vec![
             bind(cx, window, &inp.dm_filter, None, |a| Some(&mut a.dm_filter)),
@@ -326,6 +377,10 @@ impl Root {
             bind(cx, window, &inp.mfa, None, |a| Some(&mut a.login.mfa_code)),
             bind(cx, window, &inp.settings_query, None, |a| Some(&mut a.settings_query)),
             bind(cx, window, &inp.emoji_query, None, |a| Some(&mut a.emoji_query)),
+            bind(cx, window, &inp.search, None, |a| Some(&mut a.search_query)),
+            bind(cx, window, &inp.thread_name, Some(100), |a| Some(&mut a.thread_name)),
+            bind(cx, window, &inp.post_title, Some(100), |a| Some(&mut a.post_title)),
+            bind(cx, window, &inp.post_body, Some(2000), |a| Some(&mut a.post_body)),
             bind(cx, window, &inp.name, Some(st::PROFILE_NAME_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[0])),
             bind(cx, window, &inp.pronouns, Some(st::PROFILE_PRONOUNS_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[1])),
             bind(cx, window, &inp.bio, Some(st::PROFILE_BIO_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[2])),
@@ -338,6 +393,24 @@ impl Root {
             }
             InputEvent::PressEnter { shift: false, .. } => {
                 this.submit_input(window, cx);
+            }
+            _ => {}
+        }));
+        subs.push(cx.subscribe_in(&inp.thread_name, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                this.app.submit_thread_draft();
+                cx.notify();
+            }
+        }));
+        // 検索: 手を止めたら・Enter で探す
+        subs.push(cx.subscribe_in(&inp.search, window, |this: &mut Root, _, ev: &InputEvent, _, cx| match ev {
+            InputEvent::Change => {
+                this.app.search_typed();
+                cx.notify();
+            }
+            InputEvent::PressEnter { .. } => {
+                this.app.run_search();
+                cx.notify();
             }
             _ => {}
         }));
@@ -397,6 +470,10 @@ impl Root {
             lists: HashMap::new(),
             list_key: (0, 0, false),
             member_list: ListState::new(0, ListAlignment::Top, px(400.0)),
+            side_list: ListState::new(0, ListAlignment::Top, px(400.0)),
+            side_key: (0, String::new(), 0),
+            forum_list: ListState::new(0, ListAlignment::Top, px(600.0)),
+            forum_key: (0, String::new(), 0),
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
             revealed: Default::default(),
@@ -405,6 +482,10 @@ impl Root {
             menu_msg: None,
             emoji_rows: None,
             emoji_ac_sel: (String::new(), 0),
+            cmd_ac_sel: 0,
+            cmd_inputs: HashMap::new(),
+            cmd_subs: Vec::new(),
+            cmd_inputs_key: String::new(),
             emoji_ac_dismissed: None,
             status_sub: false,
             sliders: HashMap::new(),
@@ -419,6 +500,7 @@ impl Root {
             compose_hint: String::new(),
             image_preview: None,
             video: None,
+            stream_image: None,
             downloads: Vec::new(),
             other: None,
             split_vertical,
@@ -503,6 +585,13 @@ impl Root {
 
     /// 毎回の描画の前にやること（通信の結果を取り込む・既読・テーマの反映など）
     fn before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // スレッドを作った・投稿した・消えたスレッドから親へ戻る、などで頼まれた移動
+        if let Some(id) = self.app.pending_open.take() {
+            self.open_channel(id);
+        }
+        self.app.ensure_forum();
+        self.app.tick_threads();
+        self.app.tick_commands();
         let vp = window.viewport_size();
         if self.other.is_some() {
             // 色・拡大率はプロセスで1つなので、区画ごとに描く前に自分のものにする
@@ -530,6 +619,7 @@ impl Root {
             video.poll();
             if !video.paused && video.error.is_none() { self.app.repaint_after(Duration::from_millis(250)); }
         }
+        self.poll_stream_image();
         if !self.downloads.is_empty() {
             use std::sync::mpsc::TryRecvError;
             let app = &mut self.app;
@@ -602,6 +692,10 @@ impl Root {
         sync(&self.inp.mfa, &self.app.login.mfa_code, window, cx);
         sync(&self.inp.dm_filter, &self.app.dm_filter, window, cx);
         sync(&self.inp.settings_query, &self.app.settings_query, window, cx);
+        sync(&self.inp.search, &self.app.search_query, window, cx);
+        sync(&self.inp.thread_name, &self.app.thread_name, window, cx);
+        sync(&self.inp.post_title, &self.app.post_title, window, cx);
+        sync(&self.inp.post_body, &self.app.post_body, window, cx);
         if let Some((q, _)) = &self.app.switcher {
             sync(&self.inp.switcher, q, window, cx);
         }
@@ -727,6 +821,10 @@ impl Root {
         if a.reply_to.as_ref().is_some_and(|m| Some(&m.channel_id) != here.as_ref()) {
             a.reply_to = None;
         }
+        // ピン一覧はそのチャンネルのものなので、移ったら閉じる
+        if a.pins.as_ref().is_some_and(|p| Some(&p.channel_id) != here.as_ref()) {
+            a.close_side();
+        }
         if a.upload_channel != a.sel_channel {
             a.uploads.clear();
             a.compose_notice = None;
@@ -796,6 +894,16 @@ impl Root {
             return;
         }
         let m = &k.modifiers;
+        // Ctrl+F: メッセージ検索
+        if m.control && !m.alt && !m.shift && k.key == "f" && self.app.sel_channel.is_some() {
+            if self.app.side != crate::app::SidePanel::Search {
+                self.app.toggle_search();
+            }
+            self.inp.search.update(cx, |s, cx| s.focus(window, cx));
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if m.control && !m.alt && !m.shift && k.key == "k" {
             self.app.switcher = if self.app.switcher.is_some() { None } else { Some((String::new(), 0)) };
             if self.app.switcher.is_some() {
@@ -979,11 +1087,11 @@ impl Render for Root {
             .line_height(relative(1.375))
             .capture_key_down(cx.listener(Self::on_key_capture))
             // :名前: の補完中は、入力欄より先にキーを受け取る（補完していなければ素通し）
-            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveUp, window, cx| this.emoji_ac_key(emoji::AcKey::Up, window, cx)))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveDown, window, cx| this.emoji_ac_key(emoji::AcKey::Down, window, cx)))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::IndentInline, window, cx| this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::Enter, window, cx| this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::Escape, window, cx| this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx)))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveUp, window, cx| if !this.command_ac_key(emoji::AcKey::Up, window, cx) { this.emoji_ac_key(emoji::AcKey::Up, window, cx) }))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveDown, window, cx| if !this.command_ac_key(emoji::AcKey::Down, window, cx) { this.emoji_ac_key(emoji::AcKey::Down, window, cx) }))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::IndentInline, window, cx| if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) { this.emoji_ac_key(emoji::AcKey::Confirm, window, cx) }))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::Enter, window, cx| if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) { this.emoji_ac_key(emoji::AcKey::Confirm, window, cx) }))
+            .capture_action(cx.listener(|this, _: &gpui::base::input::Escape, window, cx| if !this.command_ac_key(emoji::AcKey::Dismiss, window, cx) { this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx) }))
             .on_key_down(cx.listener(Self::on_key_bubble))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, _| this.ptt(&ev.keystroke.key, false)))
             .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, _, cx| {

@@ -125,6 +125,13 @@ impl Overwrite {
 
 pub const ADMINISTRATOR: u64 = 1 << 3;
 pub const VIEW_CHANNEL: u64 = 1 << 10;
+pub const SEND_MESSAGES: u64 = 1 << 11;
+pub const USE_APPLICATION_COMMANDS: u64 = 1 << 31;
+pub const MANAGE_THREADS: u64 = 1 << 34;
+pub const CREATE_PUBLIC_THREADS: u64 = 1 << 35;
+pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
+/// ピン留め（2025 年に MANAGE_MESSAGES から分かれた）
+pub const PIN_MESSAGES: u64 = 1 << 51;
 
 fn bits(s: &str) -> u64 {
     s.parse().unwrap_or(0)
@@ -135,10 +142,15 @@ pub fn base_permissions(guild_id: &str, roles: &[Role], my_roles: &[String]) -> 
     roles.iter().filter(|r| r.id == guild_id || my_roles.contains(&r.id)).fold(0, |p, r| p | bits(&r.permissions))
 }
 
-/// このチャンネルが見えるか（Discord の権限計算: @everyone → ロール → メンバー の順に上書き）
+/// このチャンネルが見えるか
 pub fn can_view(ch: &Channel, guild_id: &str, base: u64, my_roles: &[String], me: &str) -> bool {
+    channel_permissions(ch, guild_id, base, my_roles, me) & VIEW_CHANNEL != 0
+}
+
+/// このチャンネルでの自分の権限（Discord の権限計算: @everyone → ロール → メンバー の順に上書き）。管理者はすべて
+pub fn channel_permissions(ch: &Channel, guild_id: &str, base: u64, my_roles: &[String], me: &str) -> u64 {
     if base & ADMINISTRATOR != 0 {
-        return true;
+        return u64::MAX;
     }
     let mut p = base;
     let ow = &ch.permission_overwrites;
@@ -154,7 +166,7 @@ pub fn can_view(ch: &Channel, guild_id: &str, base: u64, my_roles: &[String], me
     if let Some(o) = ow.iter().find(|o| o.is_member() && o.id == me) {
         p = (p & !bits(&o.deny)) | bits(&o.allow);
     }
-    p & VIEW_CHANNEL != 0
+    p
 }
 
 /// 見えるチャンネルだけ残す。カテゴリは中に見えるチャンネルがあるとき（空のカテゴリは自分が見えるとき）だけ残す
@@ -199,6 +211,52 @@ pub struct Channel {
     pub icon: Option<String>,
     #[serde(default)]
     pub permission_overwrites: Vec<Overwrite>,
+    /// スレッドの状態（スレッドのときだけ）
+    #[serde(default)]
+    pub thread_metadata: Option<ThreadMetadata>,
+    /// フォーラムの投稿に付いたタグ
+    #[serde(default)]
+    pub applied_tags: Vec<String>,
+    /// フォーラムで使えるタグ
+    #[serde(default)]
+    pub available_tags: Vec<ForumTag>,
+    /// スレッドを作った人
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub message_count: Option<u32>,
+    /// 1 << 1 = 固定された投稿、1 << 4 = 投稿にタグが必要
+    #[serde(default)]
+    pub flags: u64,
+}
+
+/// スレッドの状態
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct ThreadMetadata {
+    #[serde(default)]
+    pub archived: bool,
+    /// ロック中はスレッドの管理権限がある人しか書けない
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub archive_timestamp: Option<String>,
+    #[serde(default)]
+    pub auto_archive_duration: Option<u32>,
+}
+
+/// フォーラムのタグ
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct ForumTag {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub emoji_id: Option<String>,
+    #[serde(default)]
+    pub emoji_name: Option<String>,
+    /// 管理者だけが付けられる
+    #[serde(default)]
+    pub moderated: bool,
 }
 
 impl Channel {
@@ -206,6 +264,11 @@ impl Channel {
     pub const CATEGORY: u8 = 4;
     pub const NEWS: u8 = 5;
     pub const VOICE: u8 = 2;
+    pub const NEWS_THREAD: u8 = 10;
+    pub const PUBLIC_THREAD: u8 = 11;
+    pub const PRIVATE_THREAD: u8 = 12;
+    pub const FORUM: u8 = 15;
+    pub const MEDIA: u8 = 16;
 
     pub fn is_text(&self) -> bool {
         matches!(self.kind, Self::TEXT | Self::NEWS)
@@ -213,6 +276,28 @@ impl Channel {
 
     pub fn is_voice(&self) -> bool {
         self.kind == Self::VOICE
+    }
+
+    pub fn is_thread(&self) -> bool {
+        matches!(self.kind, Self::NEWS_THREAD | Self::PUBLIC_THREAD | Self::PRIVATE_THREAD)
+    }
+
+    /// 投稿（スレッド）だけを置くチャンネル
+    pub fn is_forum(&self) -> bool {
+        matches!(self.kind, Self::FORUM | Self::MEDIA)
+    }
+
+    pub fn archived(&self) -> bool {
+        self.thread_metadata.as_ref().is_some_and(|t| t.archived)
+    }
+
+    pub fn locked(&self) -> bool {
+        self.thread_metadata.as_ref().is_some_and(|t| t.locked)
+    }
+
+    /// 投稿にタグが必要
+    pub fn requires_tag(&self) -> bool {
+        self.flags & (1 << 4) != 0
     }
 
     pub fn dm_label(&self) -> String {
@@ -448,6 +533,12 @@ pub struct Message {
     /// 通話の記録（type 3 のときだけ付く）
     #[serde(default)]
     pub call: Option<CallInfo>,
+    /// ピン留めされているか
+    #[serde(default)]
+    pub pinned: bool,
+    /// 1 << 6 = 自分だけに見えている（コマンドの結果など）
+    #[serde(default)]
+    pub flags: u64,
     /// MessageLogger の記録（削除済み・編集前の本文）。Discord からは来ない
     #[serde(skip)]
     pub log: Option<Box<LogMark>>,
@@ -496,6 +587,8 @@ pub struct VoiceState {
     pub channel_id: Option<String>,
     pub self_mute: bool,
     pub self_deaf: bool,
+    /// 画面共有（Go Live）中
+    pub self_stream: bool,
     pub user: Option<User>,
 }
 
@@ -509,6 +602,7 @@ impl VoiceState {
             channel_id: v["channel_id"].as_str().map(String::from),
             self_mute: v["self_mute"].as_bool().unwrap_or(false) || v["mute"].as_bool().unwrap_or(false),
             self_deaf: v["self_deaf"].as_bool().unwrap_or(false) || v["deaf"].as_bool().unwrap_or(false),
+            self_stream: v["self_stream"].as_bool().unwrap_or(false),
             user,
         })
     }
@@ -609,6 +703,17 @@ mod permission_tests {
         // 元々 VIEW_CHANNEL が無くても上書きで許可されれば見える
         let allowed = ch("4", 0, None, serde_json::json!([{ "id": ME, "type": 1, "allow": "1024", "deny": "0" }]));
         assert!(can_view(&allowed, G, 0, &[], ME));
+    }
+
+    #[test]
+    fn channel_permissions_keep_other_bits() {
+        let base = VIEW_CHANNEL | SEND_MESSAGES | PIN_MESSAGES;
+        // ロールでピン留めだけ禁止されたチャンネル
+        let c = ch("1", 0, None, serde_json::json!([{ "id": "r1", "type": 0, "allow": "0", "deny": PIN_MESSAGES.to_string() }]));
+        let p = channel_permissions(&c, G, base, &["r1".into()], ME);
+        assert_eq!(p & PIN_MESSAGES, 0);
+        assert_ne!(p & SEND_MESSAGES, 0);
+        assert_eq!(channel_permissions(&c, G, ADMINISTRATOR, &[], ME), u64::MAX);
     }
 
     #[test]

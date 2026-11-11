@@ -101,6 +101,12 @@ pub enum Cmd {
     VoiceFlags,
     /// 着信を拒否する
     StopRinging(String),
+    /// 画面共有を始める（共有する画面をポータルで選んでもらう）/ やめる
+    StartStream,
+    StopStream,
+    /// 配信を見る（配信の鍵。golive::stream_key）/ 見るのをやめる
+    WatchStream(String),
+    StopWatching,
     /// message_id までを既読にする（公式クライアントなど他の端末にも反映される）
     Ack { channel_id: String, message_id: String },
     /// REST API をどれでも呼ぶ（src/net/rest.rs）。結果は Event::Api { id, .. } で返る
@@ -142,7 +148,7 @@ pub enum Event {
     /// LoadOlder の結果（古い順）。失敗したら None
     OlderMessages { channel_id: String, before: String, messages: Option<Vec<Message>> },
     MessageCreate(Message),
-    MessageUpdate { channel_id: String, id: String, content: Option<String>, embeds: Option<Vec<Embed>> },
+    MessageUpdate { channel_id: String, id: String, content: Option<String>, embeds: Option<Vec<Embed>>, pinned: Option<bool> },
     MessageDelete { channel_id: String, id: String },
     Status(String),
     Error(String),
@@ -155,6 +161,8 @@ pub enum Event {
     ProfileSaved(Result<(), String>),
     VoiceStates(Vec<VoiceState>),
     Voice(VoiceStatus),
+    /// 画面共有（配信・視聴）の状態
+    Stream(crate::golive::StreamEvent),
     /// DM通話の状態（呼び出し中のユーザー）
     Call { channel_id: String, ringing: Vec<String> },
     CallEnded(String),
@@ -174,6 +182,7 @@ enum VoiceMsg {
     Flags,
     State(Value),
     Server(Value),
+    Stream(crate::golive::Msg),
 }
 
 #[derive(Clone)]
@@ -418,7 +427,7 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
     let (gw_tx, gw_rx) = unbounded_channel::<Value>();
     let (v_tx, v_rx) = unbounded_channel::<VoiceMsg>();
     tokio::spawn(gateway_loop(token, tx.clone(), gw_rx, status.clone(), v_tx.clone()));
-    tokio::spawn(voice_task(me_id.clone(), api.clone(), tx.clone(), gw_tx.clone(), v_rx, ctl));
+    tokio::spawn(voice_task(me_id.clone(), api.clone(), tx.clone(), gw_tx.clone(), v_tx.clone(), v_rx, ctl));
 
     {
         let (api, tx) = (api.clone(), tx.clone());
@@ -476,6 +485,10 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
             }
             Cmd::LeaveVoice => Some(VoiceMsg::Leave),
             Cmd::VoiceFlags => Some(VoiceMsg::Flags),
+            Cmd::StartStream => Some(VoiceMsg::Stream(crate::golive::Msg::Start)),
+            Cmd::StopStream => Some(VoiceMsg::Stream(crate::golive::Msg::Stop)),
+            Cmd::WatchStream(key) => Some(VoiceMsg::Stream(crate::golive::Msg::Watch(key.clone()))),
+            Cmd::StopWatching => Some(VoiceMsg::Stream(crate::golive::Msg::Unwatch)),
             _ => None,
         };
         if let Some(m) = vmsg {
@@ -547,7 +560,8 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                         _ => Ok(()),
                     }
                 }
-                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags | Cmd::Gateway(_) => Ok(()),
+                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags | Cmd::Gateway(_)
+                | Cmd::StartStream | Cmd::StopStream | Cmd::WatchStream(_) | Cmd::StopWatching => Ok(()),
                 Cmd::Api { id, call } => {
                     let result = api.call(&call).await.map_err(|e| format!("{e:#}"));
                     tx.send(Event::Api { id, call, result });
@@ -997,6 +1011,7 @@ fn handles(t: &str) -> bool {
     matches!(
         t,
         "READY" | "READY_SUPPLEMENTAL" | "SESSIONS_REPLACE" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
+            | "STREAM_CREATE" | "STREAM_UPDATE" | "STREAM_SERVER_UPDATE" | "STREAM_DELETE"
             | "CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "MESSAGE_CREATE" | "MESSAGE_UPDATE" | "MESSAGE_DELETE"
     ) || rest::FORWARDED_EVENTS.contains(&t)
 }
@@ -1013,8 +1028,9 @@ struct ReadyGuild {
     /// チャンネル・スレッドの ID だけ（read_state のチャンネルがどのサーバーのものか知るため）
     #[serde(default)]
     channels: Vec<IdOnly>,
+    /// 参加中のスレッド（中身ごと。画面のスレッド一覧に使う）
     #[serde(default)]
-    threads: Vec<IdOnly>,
+    threads: Vec<Value>,
     /// 古い形の READY では、自分のメンバー情報がここに入る
     #[serde(default)]
     members: Vec<ReadyMember>,
@@ -1062,6 +1078,9 @@ struct Ready {
     /// guilds と同じ順に、そのサーバーでの自分のメンバー情報
     #[serde(default)]
     merged_members: Vec<Vec<ReadyMember>>,
+    /// スラッシュコマンドの実行で送る（結果のイベントがこのセッションに届く）
+    #[serde(default)]
+    session_id: Value,
 }
 
 /// 文字列のままの d を、使う種類のときだけ解析して dispatch に渡す
@@ -1084,7 +1103,7 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
                 .into_iter()
                 .map(|g| {
                     let members: Vec<Value> = g.members.iter().filter(|m| m.is(&me)).map(member).collect();
-                    json!({ "id": g.id, "voice_states": g.voice_states, "emojis": g.emojis, "channels": ids(&g.channels), "threads": ids(&g.threads), "members": members })
+                    json!({ "id": g.id, "voice_states": g.voice_states, "emojis": g.emojis, "channels": ids(&g.channels), "threads": g.threads, "members": members })
                 })
                 .collect::<Vec<_>>();
             return dispatch(
@@ -1098,6 +1117,7 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
                     "user_settings_proto": r.user_settings_proto,
                     "user": { "id": me },
                     "merged_members": merged,
+                    "session_id": r.session_id,
                 }),
                 tx,
                 v_tx,
@@ -1179,7 +1199,7 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             let mut extra = serde_json::Map::new();
             let me = &d["user"]["id"];
             let is_me = |m: &Value| !me.is_null() && (&m["user_id"] == me || &m["user"]["id"] == me);
-            let (mut my_roles, mut channel_guild) = (serde_json::Map::new(), serde_json::Map::new());
+            let (mut my_roles, mut channel_guild, mut threads) = (serde_json::Map::new(), serde_json::Map::new(), serde_json::Map::new());
             for (i, g) in d["guilds"].as_array().into_iter().flatten().enumerate() {
                 let Some(gid) = g["id"].as_str() else { continue };
                 let merged = d["merged_members"][i].as_array().into_iter().flatten();
@@ -1191,12 +1211,21 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                         channel_guild.insert(cid.into(), gid.into());
                     }
                 }
+                if g["threads"].as_array().is_some_and(|t| !t.is_empty()) {
+                    threads.insert(gid.into(), g["threads"].clone());
+                }
             }
             if !my_roles.is_empty() {
                 extra.insert("my_roles".into(), Value::Object(my_roles));
             }
             if !channel_guild.is_empty() {
                 extra.insert("channel_guild".into(), Value::Object(channel_guild));
+            }
+            if !threads.is_empty() {
+                extra.insert("threads".into(), Value::Object(threads));
+            }
+            if let Some(sid) = d["session_id"].as_str() {
+                extra.insert("session_id".into(), sid.into());
             }
             for k in ["user_guild_settings", "read_state", "relationships", "user_settings_proto"] {
                 if let Some(v) = d.get_mut(k).map(Value::take).filter(|v| !v.is_null()) {
@@ -1286,6 +1315,9 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
         "VOICE_SERVER_UPDATE" => {
             let _ = v_tx.send(VoiceMsg::Server(d));
         }
+        "STREAM_CREATE" | "STREAM_UPDATE" | "STREAM_SERVER_UPDATE" | "STREAM_DELETE" => {
+            let _ = v_tx.send(VoiceMsg::Stream(crate::golive::Msg::Gateway(t.to_string(), d)));
+        }
         "CALL_CREATE" | "CALL_UPDATE" => {
             let Some(cid) = d["channel_id"].as_str() else { return };
             let ringing = d["ringing"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect();
@@ -1309,7 +1341,9 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             if let (Some(cid), Some(id)) = (d["channel_id"].as_str().map(String::from), d["id"].as_str().map(String::from)) {
                 let content = d["content"].as_str().map(String::from);
                 let embeds = d.get_mut("embeds").and_then(|e| serde_json::from_value(e.take()).ok());
-                tx.send(Event::MessageUpdate { channel_id: cid, id, content, embeds });
+                // ピン留め・解除でも MESSAGE_UPDATE が届く（本文は付かない）
+                let pinned = d["pinned"].as_bool();
+                tx.send(Event::MessageUpdate { channel_id: cid, id, content, embeds, pinned });
             }
         }
         "MESSAGE_DELETE" => {
@@ -1352,10 +1386,28 @@ async fn voice_task(
     api: Api,
     tx: Tx,
     gw_tx: UnboundedSender<Value>,
+    v_tx: UnboundedSender<VoiceMsg>,
     mut rx: UnboundedReceiver<VoiceMsg>,
     ctl: Arc<VoiceCtl>,
 ) {
     let mut session: Option<VoiceSession> = None;
+    let mut stream = {
+        let (tx, ctl2) = (tx.clone(), ctl.clone());
+        let waker = crate::wake::Waker::new(move |d| match d {
+            None => ctl2.waker().wake(),
+            Some(d) => ctl2.waker().wake_after(d),
+        });
+        crate::golive::Manager::new(
+            me_id.clone(),
+            gw_tx.clone(),
+            move |e| tx.send(Event::Stream(e)),
+            move |m| {
+                let _ = v_tx.send(VoiceMsg::Stream(m));
+            },
+            ctl.screen.clone(),
+            waker,
+        )
+    };
     let mut session_id: Option<String> = None;
     let mut target: Option<Target> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(20));
@@ -1370,7 +1422,17 @@ async fn voice_task(
             }
         };
         match msg {
+            VoiceMsg::Stream(m) => {
+                let place = match (&target, &session_id) {
+                    (Some(t), Some(sid)) if t.connected => {
+                        Some(crate::golive::Place { guild_id: t.guild_id.as_deref(), channel_id: &t.channel_id, session_id: sid })
+                    }
+                    _ => None,
+                };
+                stream.handle(m, place);
+            }
             VoiceMsg::Join { guild_id, channel_id, ring } => {
+                stream.stop_all();
                 if let Some(s) = &mut session {
                     s.leave();
                 }
@@ -1379,6 +1441,7 @@ async fn voice_task(
                 target = Some(Target { guild_id, channel_id, ring, connected: false });
             }
             VoiceMsg::Leave => {
+                stream.stop_all();
                 if let Some(t) = target.take() {
                     let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
                 }
@@ -1400,6 +1463,7 @@ async fn voice_task(
                 match d["channel_id"].as_str() {
                     // 他の端末で抜けた・切断された
                     None => {
+                        stream.stop_all();
                         if target.take().is_some() {
                             if let Some(s) = &mut session {
                                 s.leave();
@@ -1411,6 +1475,8 @@ async fn voice_task(
                     Some(cid) => {
                         if let Some(t) = &mut target {
                             if t.channel_id != cid {
+                                // 配信は元のチャンネルのものなので止める
+                                stream.stop_all();
                                 t.channel_id = cid.to_string();
                                 if t.connected {
                                     tx.send(Event::Voice(VoiceStatus::Connected {
@@ -1441,6 +1507,7 @@ async fn voice_task(
                         }
                     }
                     Err(e) => {
+                        stream.stop_all();
                         tx.send(Event::Voice(VoiceStatus::Error(format!("{e:#}"))));
                         let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
                         target = None;
@@ -1987,7 +2054,7 @@ mod tests {
         let (t, d) = split_payload(v);
         dispatch(&t, d, &s.tx, &s.v_tx);
         match s.rx.try_recv().unwrap() {
-            Event::MessageUpdate { channel_id, id, content, embeds } => {
+            Event::MessageUpdate { channel_id, id, content, embeds, .. } => {
                 assert_eq!((channel_id.as_str(), id.as_str(), content.as_deref()), ("1", "2", Some("x")));
                 assert_eq!(embeds.unwrap()[0].url.as_deref(), Some("u"));
             }
@@ -2203,7 +2270,7 @@ mod tests {
             Event::Call { channel_id, ringing } => format!("Call({channel_id}, {ringing:?})"),
             Event::CallEnded(c) => format!("CallEnded({c})"),
             Event::MessageCreate(m) => format!("MessageCreate({m:?})"),
-            Event::MessageUpdate { channel_id, id, content, embeds } => format!("MessageUpdate({channel_id}, {id}, {content:?}, {embeds:?})"),
+            Event::MessageUpdate { channel_id, id, content, embeds, .. } => format!("MessageUpdate({channel_id}, {id}, {content:?}, {embeds:?})"),
             Event::MessageDelete { channel_id, id } => format!("MessageDelete({channel_id}, {id})"),
             Event::AuthFailed => "AuthFailed".into(),
             _ => "other".into(),

@@ -160,7 +160,8 @@ pub struct Root {
     pub compose_hint: String,
     pub image_preview: Option<String>,
     pub video: Option<crate::video::Player>,
-    pub download: Option<std::sync::mpsc::Receiver<crate::download::Event>>,
+    /// 進行中のダウンロード（URL, 結果の受け口）。保存先を選んでいる間も含む
+    pub downloads: Vec<(String, std::sync::mpsc::Receiver<crate::download::Event>)>,
     /// 分割表示で、もう片方の区画のプロファイル（分割していなければ None）
     pub other: Option<Option<String>>,
     split_vertical: Rc<Cell<bool>>,
@@ -418,7 +419,7 @@ impl Root {
             compose_hint: String::new(),
             image_preview: None,
             video: None,
-            download: None,
+            downloads: Vec::new(),
             other: None,
             split_vertical,
             pane_h: 0.0,
@@ -529,16 +530,19 @@ impl Root {
             video.poll();
             if !video.paused && video.error.is_none() { self.app.repaint_after(Duration::from_millis(250)); }
         }
-        if let Some(download) = &self.download {
-            let events: Vec<_> = download.try_iter().collect();
-            for event in events {
-                match event {
-                    crate::download::Event::Started => self.app.show_toast("ダウンロードしています…"),
-                    crate::download::Event::Finished(path) => { self.download = None; self.app.show_toast(&format!("保存しました: {}", path.display())); },
-                    crate::download::Event::Failed(error) => { self.download = None; self.app.show_toast(&error); },
-                    crate::download::Event::Cancelled => self.download = None,
+        if !self.downloads.is_empty() {
+            use std::sync::mpsc::TryRecvError;
+            let app = &mut self.app;
+            // 終わったもの（保存した・失敗した・やめた）と、何も言わずに止まったものは外す
+            self.downloads.retain(|(_, rx)| loop {
+                match rx.try_recv() {
+                    Ok(crate::download::Event::Started) => app.show_toast("ダウンロードしています…"),
+                    Ok(crate::download::Event::Finished(path)) => { app.show_toast(&format!("保存しました: {}", path.display())); break false; }
+                    Ok(crate::download::Event::Failed(error)) => { app.show_toast(&error); break false; }
+                    Ok(crate::download::Event::Cancelled) | Err(TryRecvError::Disconnected) => break false,
+                    Err(TryRecvError::Empty) => break true,
                 }
-            }
+            });
         }
         let clicked = self.app.notify_clicked.lock().unwrap().take();
         if let Some((gid, cid)) = clicked {
@@ -927,13 +931,14 @@ impl Root {
         }
     }
 
-    /// 動画・画像を保存する（保存先を選ぶダイアログを出す）。一度に1つだけ
+    /// 動画・画像を保存する（保存先を選ぶダイアログを出す）。いくつでも並べて保存できる。
+    /// 同じものを保存している最中（保存先を選んでいる間も）は、続けて押しても何もしない（ダイアログを二重に出さない）
     pub fn start_download(&mut self, url: String, filename: String, kind: crate::download::Kind) {
-        if self.download.is_none() {
-            self.download = Some(crate::download::start(url, filename, kind, self.app.waker.clone()));
-        } else {
-            self.app.show_toast("別のファイルをダウンロード中です");
+        if self.downloads.iter().any(|(u, _)| *u == url) {
+            return;
         }
+        let rx = crate::download::start(url.clone(), filename, kind, self.app.waker.clone());
+        self.downloads.push((url, rx));
     }
 
     /// テーマで「ウィンドウ全体」に敷く背景画像

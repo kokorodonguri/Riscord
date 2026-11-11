@@ -18,7 +18,7 @@ const SETTINGS_TABS: [(&str, IconName); 6] =
 const SETTINGS_ORDER: [usize; 6] = [0, 4, 1, 2, 3, 5];
 /// 設定検索で各ページに含まれる項目を探すための見出し
 const SETTINGS_SECTIONS: [&[&str]; 6] = [
-    &["アカウント情報", "アクティビティ", "トークン", "別のアカウント", "バージョン"],
+    &["アカウント情報", "アクティビティ", "別のアカウント", "バージョン"],
     &["表示サイズ", "メッセージ表示"],
     &["デバイス", "音量", "入力モード", "入力感度"],
     &["テーマ", "背景画像", "色の調整"],
@@ -556,24 +556,6 @@ impl Root {
                 ))
                 .into_any_element(),
         );
-        let path = self.app.token_path();
-        let saved = path.exists();
-        // OS ごとに実際の保存場所を出す（Windows/macOS は ~/.config ではない）
-        let desc = if saved { format!("このPCに保存されています ({})", path.display()) } else { "このPCには保存されていません".into() };
-        pages.push(
-            section(2, "トークン")
-                .child(row(
-                    "保存したトークン",
-                    Some(desc),
-                    div().when(saved, |d| {
-                        d.child(button("delete_token", "削除", true).on_click(cx.listener(move |this, _, _, cx| {
-                            let _ = std::fs::remove_file(this.app.token_path());
-                            cx.notify();
-                        })))
-                    }),
-                ))
-                .into_any_element(),
-        );
         let state = match crate::update::status() {
             crate::update::Status::Off => "自動アップデートは無効です（開発中のビルド・対応していない環境など）".to_string(),
             crate::update::Status::Checking => "新しい版を確認しています…".into(),
@@ -583,7 +565,7 @@ impl Root {
             crate::update::Status::Failed(e) => format!("更新できませんでした: {e}"),
         };
         pages.push(self.profiles_section(cx));
-        pages.push(section(4, "バージョン").child(row(format!("Riscord v{}", crate::update::current_version()), Some(state), div())).into_any_element());
+        pages.push(section(3, "バージョン").child(row(format!("Riscord v{}", crate::update::current_version()), Some(state), div())).into_any_element());
         pages
     }
 
@@ -591,7 +573,7 @@ impl Root {
     fn profiles_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
         use crate::profile;
         let current = self.app.profile.clone();
-        let mut s = section(3, "別のアカウント").child(
+        let mut s = section(2, "別のアカウント").child(
             text("「横に並べる」で、このウィンドウを左右に分けて2つのアカウントを同時に使えます。別のウィンドウで開くこともできます。どれも同時にログインしたまま使え、通話にもそれぞれ入れます。", 15.0, MUTED()).mb(z(16.0)),
         );
         let names: Vec<Option<String>> = std::iter::once(None).chain(profile::list().into_iter().map(Some)).collect();

@@ -119,7 +119,11 @@ impl Shell {
             let other = (profiles.len() > 1).then(|| profiles[1 - i].clone());
             p.update(cx, |r, cx| {
                 r.other = other;
-                // 幅が変わるので、行の高さを測り直してもらう
+                // 色・拡大率はプロセスで1つなので、分割を閉じたら残った区画が自分のものに戻す
+                // （戻さないと右の区画のテーマのまま残り、同じテーマを選び直しても「適用済み」で変わらない）
+                r.app.apply_theme(true);
+                super::set_zoom(r.app.settings.zoom);
+                // 幅が変わるので、行の高さを測り直してもらう（gpui-component の部品の色もここで塗り直す）
                 r.app.theme_dirty = true;
                 cx.notify();
             });

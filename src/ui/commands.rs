@@ -79,10 +79,21 @@ impl Root {
         let q = self.app.command_query()?.to_string();
         let hits = self.command_hits()?;
         let loading = self.app.command_index.values().any(|i| i.loading);
+        let failed = self.app.command_index.values().any(|i| i.retry_at.is_some());
         let mut col = div().mb(z(4.0)).p(z(6.0)).bg(SIDEBAR()).border_1().border_color(BORDER()).rounded(z(8.0)).flex().flex_col().gap(z(1.0));
         col = col.child(div().px(z(6.0)).pb(z(4.0)).child(medium(format!("「/{q}」に一致するコマンド"), 12.0, MUTED())));
         if hits.is_empty() {
-            return Some(col.child(div().px(z(6.0)).py(z(6.0)).flex().items_center().gap(z(8.0)).when(loading, |d| d.child(spinner(14.0))).child(text(if loading { "コマンドを読み込み中…" } else { "使えるコマンドがありません" }, 13.0, MUTED()))));
+            return Some(col.child(div().px(z(6.0)).py(z(6.0)).flex().items_center().gap(z(8.0)).when(loading, |d| d.child(spinner(14.0))).child(text(
+                if loading {
+                    "コマンドを読み込み中…"
+                } else if failed {
+                    "コマンドを読み込めませんでした。しばらくしてから「/」を入力し直してください"
+                } else {
+                    "使えるコマンドがありません"
+                },
+                13.0,
+                MUTED(),
+            ))));
         }
         let sel = self.cmd_ac_sel.min(hits.len() - 1);
         for (i, c) in hits.into_iter().enumerate() {

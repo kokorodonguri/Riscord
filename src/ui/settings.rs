@@ -820,7 +820,7 @@ impl Root {
                 else if item.kind == "input" && !item.action.is_empty() {
                     let key = (id.clone(), item.action.clone());
                     let input = self.plugin_inputs.entry(key).or_insert_with(|| super::new_input(window, cx, &item.label, false)).clone();
-                    page = page.child(div().mt(z(10.0)).child(text(item.label, 14.0, TEXT())).child(div().bg(INPUT()).px(z(6.0)).child(Input::new(&input).appearance(false).h(z(36.0)))));
+                    page = page.child(div().mt(z(10.0)).child(text(item.label, 14.0, TEXT())).child(div().mt(z(6.0)).bg(INPUT()).border_1().border_color(BORDER()).rounded(z(8.0)).px(z(6.0)).child(Input::new(&input).appearance(false).h(z(36.0)))));
                 }
             }
             if id == "message-logger" {

@@ -99,7 +99,18 @@ pub struct CommandIndex {
     pub commands: Vec<AppCommand>,
     pub loaded_at: Option<std::time::Instant>,
     pub loading: bool,
+    /// 読めない場所（権限がない・Bot でない相手の DM など）。読み直さない
     pub failed: bool,
+    /// 通信の失敗などで読めなかった。この時刻を過ぎたら読み直す
+    pub retry_at: Option<std::time::Instant>,
+}
+
+/// 一時的な失敗のあと、読み直すまでの間
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Discord に断られた（4xx）失敗か。"GET /path: 403 Forbidden ..." の形の理由から読む
+fn is_client_error(e: &str) -> bool {
+    e.split(": ").any(|p| p.len() >= 3 && p.starts_with('4') && p.as_bytes()[..3].iter().all(u8::is_ascii_digit))
 }
 
 /// 入力中のコマンド
@@ -251,7 +262,8 @@ impl App {
         ] {
             let ix = self.command_index.entry(key).or_default();
             let fresh = ix.loaded_at.is_some_and(|t| t.elapsed() < INDEX_TTL);
-            if !ix.loading && !fresh && !ix.failed {
+            let waiting = ix.retry_at.is_some_and(|t| t > std::time::Instant::now());
+            if !ix.loading && !fresh && !ix.failed && !waiting {
                 ix.loading = true;
                 calls.push(call);
             }
@@ -269,11 +281,17 @@ impl App {
                 ix.commands = parse_index(&v);
                 ix.loaded_at = Some(std::time::Instant::now());
                 ix.failed = false;
+                ix.retry_at = None;
             }
             Err(e) => {
                 eprintln!("コマンドの一覧を読めませんでした: {e}");
-                // 403（DM の相手が Bot でないなど）は読み直さない
-                ix.failed = true;
+                // 403（DM の相手が Bot でないなど）は読み直さない。通信の失敗などは少し待って読み直す
+                if is_client_error(&e) {
+                    ix.failed = true;
+                    ix.retry_at = None;
+                } else {
+                    ix.retry_at = Some(std::time::Instant::now() + RETRY_AFTER);
+                }
             }
         }
     }
@@ -573,6 +591,20 @@ mod tests {
         app.session_id = Some("sess".into());
         app.roles.insert("g".into(), vec![Role { id: "r9".into(), name: "mod".into(), color: 0, position: 0, hoist: false, permissions: "0".into() }]);
         (app, tx, rx)
+    }
+
+    #[test]
+    fn index_failure_retries_only_when_not_refused() {
+        assert!(is_client_error("GET /guilds/1/application-command-index: 403 Forbidden {}"));
+        assert!(!is_client_error("GET /guilds/1/application-command-index: 502 Bad Gateway"));
+        assert!(!is_client_error("error sending request for url (https://discord.com/api/v9/x)"));
+        let (mut app, _tx, _rx) = harness();
+        app.on_commands_loaded("u".into(), Err("error sending request".into()));
+        assert!(!app.command_index["u"].failed && app.command_index["u"].retry_at.is_some(), "a network failure is retried later");
+        app.on_commands_loaded("u".into(), Err("GET /users/@me/application-command-index: 403 Forbidden".into()));
+        assert!(app.command_index["u"].failed && app.command_index["u"].retry_at.is_none(), "a refusal is not retried");
+        app.on_commands_loaded("u".into(), Ok(index()));
+        assert!(app.command_index["u"].retry_at.is_none() && !app.command_index["u"].failed);
     }
 
     #[test]

@@ -2817,8 +2817,17 @@ impl App {
                     self.show_toast(&err);
                 }
             }
-            StreamEvent::Broadcast(p) => self.my_stream = Some(p),
-            StreamEvent::Viewers(v) => self.stream_viewers = v,
+            // やめた後に届いた古い通知で「共有中」に戻さない
+            StreamEvent::Broadcast(p) => {
+                if self.my_stream.is_some() {
+                    self.my_stream = Some(p);
+                }
+            }
+            StreamEvent::Viewers(v) => {
+                if self.my_stream.is_some() {
+                    self.stream_viewers = v;
+                }
+            }
             StreamEvent::Watch(key, Phase::Ended(err)) => {
                 if self.watching.as_ref().is_some_and(|(k, _)| *k == key) {
                     self.watching = None;
@@ -2827,7 +2836,14 @@ impl App {
                     self.show_toast(&err);
                 }
             }
-            StreamEvent::Watch(key, p) => self.watching = Some((key, p)),
+            // 今見ようとしている配信の通知だけ反映する（やめた・切り替えた後の古い通知は捨てる）
+            StreamEvent::Watch(key, p) => {
+                if let Some((k, phase)) = &mut self.watching {
+                    if *k == key {
+                        *phase = p;
+                    }
+                }
+            }
         }
     }
 
@@ -2849,6 +2865,9 @@ impl App {
             self.show_toast("配信を見るには、そのボイスチャンネルに接続してください");
             return;
         };
+        if self.me.as_ref().is_some_and(|m| m.id == user_id) {
+            return;
+        }
         let key = crate::golive::stream_key(guild.as_deref(), &channel, user_id);
         if self.watching.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
@@ -2947,6 +2966,9 @@ impl App {
     }
 
     pub fn save_profile(&mut self) {
+        if self.profile_saving {
+            return;
+        }
         let Some(d) = &self.profile_draft else { return };
         let changed = |i: usize| (d.fields[i].trim() != d.base[i].trim()).then(|| d.fields[i].trim().to_string());
         let avatar = match &d.avatar {

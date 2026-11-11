@@ -425,7 +425,7 @@ impl Root {
         let name = self.app.find_user(&uid).map(|u| u.display().to_string()).unwrap_or_else(|| uid.clone());
         let h = (self.pane_h * 0.55).clamp(180.0, 720.0);
         let screen = match &self.stream_image {
-            Some(frame) => div().size_full().child(img(frame.clone()).id("stream-frame").size_full().object_fit(ObjectFit::Contain)),
+            Some((_, frame)) => div().size_full().child(img(frame.clone()).id("stream-frame").size_full().object_fit(ObjectFit::Contain)),
             None => div().size_full().flex().flex_col().items_center().justify_center().gap(z(10.0)).child(spinner(28.0)).child(text(
                 if phase == crate::golive::Phase::Live { "映像を待っています…" } else { "配信に接続しています…" },
                 14.0,
@@ -439,7 +439,8 @@ impl Root {
             .flex()
             .items_center()
             .gap(z(8.0))
-            .child(super::sidebar::live_badge())
+            // 映像が届く前は LIVE を出さない（つながっていないのに配信中に見えないように）
+            .when(phase == crate::golive::Phase::Live, |d| d.child(super::sidebar::live_badge()))
             .child(line(format!("{name} の画面"), 14.0, WHITE()).flex_1())
             .child(icon_button("stream_close", IconName::Close, 28.0).tooltip(tip("視聴をやめる")).on_click(cx.listener(|this, _, _, cx| {
                 this.app.stop_watching();
@@ -537,7 +538,8 @@ impl Root {
                 cx.notify();
             })))
         };
-        Some(div().h(z(230.0)).flex_none().bg(CALL_BG()).flex().flex_col().items_center().pt(z(36.0)).gap(z(28.0)).child(faces).child(buttons).into_any_element())
+        // 高さは中身に合わせる（LIVE 表示が付くとボタンが下にはみ出すため）
+        Some(div().min_h(z(230.0)).flex_none().bg(CALL_BG()).flex().flex_col().items_center().pt(z(36.0)).pb(z(24.0)).gap(z(28.0)).child(faces).child(buttons).into_any_element())
     }
 
     /// メッセージ一覧（仮想スクロール。見えている行だけ描く）

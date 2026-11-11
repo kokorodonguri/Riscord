@@ -40,7 +40,7 @@ gpui::assets::icon_assets!(
         Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, Palette, PanelRight, Pencil, Phone, PhoneOff, Play, Plus, RefreshCw,
         Reply, RotateCw, Search, Settings, Signal, Trash, Upload, User, UserRound, Users, Video, Volume2, X, Check, IdCard,
         LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck,
-        Pin, PinOff, ArrowUp, MessagesSquare, Archive, Lock, Tag
+        Pin, PinOff, ArrowUp, MessagesSquare, Archive, Lock, Tag, MonitorUp, MonitorOff, FaceSlightlySmiling
     ]
 );
 
@@ -186,8 +186,8 @@ pub struct Root {
     pub compose_hint: String,
     pub image_preview: Option<String>,
     pub video: Option<crate::video::Player>,
-    /// 視聴中の画面共有の最新の 1 枚
-    pub stream_image: Option<Arc<RenderImage>>,
+    /// 視聴中の画面共有の最新の 1 枚（どの配信の映像か, 画像）
+    pub stream_image: Option<(String, Arc<RenderImage>)>,
     /// 進行中のダウンロード（URL, 結果の受け口）。保存先を選んでいる間も含む
     pub downloads: Vec<(String, std::sync::mpsc::Receiver<crate::download::Event>)>,
     /// 分割表示で、もう片方の区画のプロファイル（分割していなければ None）
@@ -203,16 +203,17 @@ impl Root {
     /// 視聴中の画面共有の新しい 1 枚を画像にする（見ていなければ捨てる）
     fn poll_stream_image(&mut self) {
         let frame = self.app.voice.screen.lock().unwrap().take();
-        if self.app.watching.is_none() {
-            if let Some(old) = self.stream_image.take() {
+        let key = self.app.watching.as_ref().map(|(k, _)| k.as_str());
+        // 視聴をやめた・別の人の配信に切り替えたら、前の映像は出さない
+        if self.stream_image.as_ref().is_some_and(|(k, _)| Some(k.as_str()) != key) {
+            if let Some((_, old)) = self.stream_image.take() {
                 crate::images::release(old);
             }
-            return;
         }
-        let Some(f) = frame else { return };
+        let (Some(key), Some(f)) = (key, frame) else { return };
         let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, f.data) else { return };
         let frame = image::Frame::from_parts(buf, 0, 0, image::Delay::from_saturating_duration(Duration::ZERO));
-        if let Some(old) = self.stream_image.replace(Arc::new(RenderImage::new(vec![frame]))) {
+        if let Some((_, old)) = self.stream_image.replace((key.to_string(), Arc::new(RenderImage::new(vec![frame])))) {
             crate::images::release(old);
         }
     }

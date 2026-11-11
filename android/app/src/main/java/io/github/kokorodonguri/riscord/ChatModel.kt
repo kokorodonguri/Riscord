@@ -21,6 +21,7 @@ fun JSONObject.channelLabel(): String = optString("name").takeIf { it.isNotBlank
 /** 無料アカウントで送れる添付の上限（Rust 側の UPLOAD_LIMIT と同じ） */
 const val UPLOAD_LIMIT=10L*1024*1024
 private const val INCOMING_CALL_NOTIFICATION=30
+private const val CHANNEL_LOAD_ERROR="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。"
 
 data class PendingAttachment(val uri:android.net.Uri,val name:String,val size:Long)
 data class ChatState(
@@ -33,7 +34,7 @@ data class ChatState(
     val me: JSONObject? = null, val guilds: List<JSONObject> = emptyList(),
     val channels: List<JSONObject> = emptyList(), val dms: List<JSONObject> = emptyList(),
     val guild: JSONObject? = null, val channel: JSONObject? = null,
-    val messages: List<JSONObject> = emptyList(), val loading: Boolean = false,
+    val messages: List<JSONObject> = emptyList(), val loading: Boolean = false, val channelLoadFailed:Boolean=false,
     val sending: Boolean = false, val error: String? = null, val connection: String = "未接続",
     val ticket: String? = null, val qr: JSONObject? = null, val loginBusy: Boolean = false,
     val drafts: Map<String, String> = emptyMap(), val reply: JSONObject? = null,
@@ -68,6 +69,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private var foreground = false
     private var gatewayPaused = false
     private var lastHomeRefresh = 0L
+    private var homeRefreshVersion = 0L
     init {
         state.update { it.copy(status=settings.getString("status","online") ?: "online") }
         if(restoreSession) restoreJob = viewModelScope.launch { restore() }
@@ -182,12 +184,26 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         logout()
         state.update { it.copy(error = message ?: "ログインの有効期限が切れました。もう一度ログインしてください。") }
     }
-    private suspend fun refreshHome() = coroutineScope {
-        val guilds = async { (rest("/users/@me/guilds") as JSONArray).objects() }
-        val dms = async { (rest("/users/@me/channels") as JSONArray).objects() }
-        val gs = guilds.await(); val ds = dms.await()
-        lastHomeRefresh = System.currentTimeMillis()
-        state.update { it.copy(guilds = gs, dms = ds) }
+    private suspend fun refreshHome() {
+        val session=handle
+        val owner=state.value.me?.optString("id")
+        val version=++homeRefreshVersion
+        fun current()=session==handle && owner!=null && owner==state.value.me?.optString("id") && version==homeRefreshVersion
+        try {
+            val (gs,ds)=coroutineScope {
+                val guilds = async { (rest("/users/@me/guilds") as JSONArray).objects() }
+                val dms = async { (rest("/users/@me/channels") as JSONArray).objects() }
+                guilds.await() to dms.await()
+            }
+            currentCoroutineContext().ensureActive()
+            if(current()) {
+                lastHomeRefresh = System.currentTimeMillis()
+                state.update { it.copy(guilds = gs, dms = ds) }
+            }
+        } catch(e:CancellationException) {throw e}
+        catch(e:Exception) {
+            if(current()) throw e
+        }
     }
 
     /** 画面を閉じていて常駐も通話もしていないときは、少し待ってから Gateway を切る */
@@ -253,7 +269,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             "CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE" -> {
                 val guildId=d.nonNull("guild_id")
                 if (guildId == null) task { refreshHome() }
-                else state.value.guild?.takeIf { it.optString("id")==guildId }?.let { guild -> task { loadChannels(guild) } }
+                else state.value.guild?.takeIf { it.optString("id")==guildId }?.let(::refreshChannels)
             }
             "MESSAGE_CREATE" -> {
                 val channelId=d.optString("channel_id")
@@ -333,8 +349,10 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     }
     private fun resync() = task {
         if (state.value.me != null) {
+            val session=handle
+            val owner=state.value.me?.optString("id")
             refreshHome()
-            state.value.channel?.let { refreshMessages(it.getString("id")) }
+            if(session==handle && owner==state.value.me?.optString("id")) state.value.channel?.let { refreshMessages(it.getString("id")) }
         }
     }
     fun selectGuild(guild: JSONObject?) {
@@ -342,16 +360,25 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         cacheMessages()
         historyJob?.cancel()
         channelsJob?.cancel()
-        state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null, loading = guild != null) }
-        if (guild != null) channelsJob=viewModelScope.launch {
+        state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null, loading = guild != null,channelLoadFailed=false,error=if(it.error==CHANNEL_LOAD_ERROR) null else it.error) }
+        if (guild != null) refreshChannels(guild)
+    }
+    private fun refreshChannels(guild:JSONObject) {
+        channelsJob?.cancel()
+        state.update {it.copy(channelLoadFailed=false,loading=if(it.channel==null) true else it.loading,error=if(it.error==CHANNEL_LOAD_ERROR) null else it.error)}
+        channelsJob=viewModelScope.launch {
             try { loadChannels(guild) }
             catch (e: CancellationException) { throw e }
             catch (e: AuthExpiredException) { expire(e.message) }
             catch (e: Exception) {
-                if(state.value.guild?.optString("id")==guild.optString("id") && state.value.channel==null)
-                    state.update { it.copy(loading=false,error="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。") }
+                if(state.value.guild?.optString("id")==guild.optString("id"))
+                    state.update { it.copy(loading=if(it.channel==null) false else it.loading,channelLoadFailed=true,error=if(it.channel==null && it.channels.isEmpty()) it.error else CHANNEL_LOAD_ERROR) }
             }
         }
+    }
+    fun retryChannels() {
+        val s=state.value
+        if(s.channel==null && !s.loading && s.channelLoadFailed) s.guild?.let(::refreshChannels)
     }
     private suspend fun loadChannels(guild: JSONObject) {
         val channels = (rest("/guilds/${guild.getString("id")}/channels") as JSONArray).objects().sortedBy { it.optInt("position") }
@@ -405,12 +432,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val guild=state.value.guild
         state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",loading = guild!=null && it.channels.isEmpty()) }
         if(guild!=null && state.value.channels.isEmpty() && channelsJob?.isActive!=true) {
-            channelsJob=viewModelScope.launch {
-                try {loadChannels(guild)}
-                catch(e: CancellationException) {throw e}
-                catch(e: AuthExpiredException) {expire(e.message)}
-                catch(e: Exception) {if(state.value.guild?.optString("id")==guild.optString("id") && state.value.channel==null) state.update {it.copy(loading=false,error="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。")} }
-            }
+            refreshChannels(guild)
         }
     }
     fun draft(value: String) {
@@ -567,6 +589,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val userId=s.me?.optString("id") ?: return
         state.update { it.copy(profileSaving=true,profileError=null) }
         profileJob=viewModelScope.launch {
+            var savedAny=false
             try {
                 if(name!=s.me?.label()) {
                     val me=rest("/users/@me","PATCH",JSONObject().put("global_name",name)) as JSONObject
@@ -574,12 +597,14 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                     check(me.optString("id")==userId)
                     if(state.value.me?.optString("id")!=userId) return@launch
                     state.update { it.copy(me=me) }
+                    savedAny=true
                 }
                 if(bio!=s.profile.optString("bio").takeUnless {it=="null"}.orEmpty()) {
                     rest("/users/@me/profile","PATCH",JSONObject().put("bio",bio))
                     currentCoroutineContext().ensureActive()
                     if(state.value.me?.optString("id")!=userId) return@launch
                     state.update { it.copy(profile=JSONObject(it.profile.toString()).put("bio",bio)) }
+                    savedAny=true
                 }
                 if(status!=s.status) {
                     NativeBridge.request(handle,JSONObject().put("op","presence").put("status",status))
@@ -587,12 +612,13 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                     if(state.value.me?.optString("id")!=userId) return@launch
                     settings.edit().putString("status",status).apply()
                     state.update { it.copy(status=status) }
+                    savedAny=true
                 }
                 if(state.value.me?.optString("id")==userId) {state.update {it.copy(profileSaving=false)};onSaved()}
             } catch(e: CancellationException) { throw e }
             catch(e: AuthExpiredException) { expire(e.message) }
             catch(e: Exception) {
-                if(state.value.me?.optString("id")==userId) state.update {it.copy(profileSaving=false,profileError="一部の変更を保存できませんでした。内容を確認して再試行してください。")}
+                if(state.value.me?.optString("id")==userId) state.update {it.copy(profileSaving=false,profileError=if(savedAny) "一部の変更を保存できませんでした。内容を確認して再試行してください。" else "プロフィールを保存できませんでした。内容を確認して再試行してください。")}
             }
         }
     }

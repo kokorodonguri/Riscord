@@ -73,6 +73,9 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                         if(s.guild==null) FilledIconButton(onClick={newDm=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.size(48.dp),colors=IconButtonDefaults.filledIconButtonColors(containerColor=MobileAccent)) {MobileIcon(Glyph.Plus,"新しいDM",tint=Color.White)}
                     }
                     if(s.loading) LinearProgressIndicator(Modifier.fillMaxWidth(),color=MobileAccent)
+                    if(s.guild!=null && s.channelLoadFailed && s.channels.isNotEmpty() && !s.loading) {
+                        TextButton(onClick=model::retryChannels,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text("チャンネルを再読み込み")}
+                    }
                     val dms=s.dms.sortedByDescending {it.optString("last_message_id").padStart(20,'0')}.filter {it.channelLabel().contains(query,true)}
                     val sections=channelSections(s.channels,query)
                     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(start=8.dp,end=8.dp,bottom=12.dp),state=rememberSaveable(s.guild?.optString("id"),saver=LazyListState.Saver) {LazyListState()}) {
@@ -117,7 +120,13 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                                     }
                                 }
                             }
-                            if(sections.isEmpty()&&!s.loading) item {HomeEmpty(if(query.isBlank()) "チャンネルがありません" else "チャンネルが見つかりません",if(query.isBlank()) "サーバーを切り替えてください" else "別の名前で検索してください")}
+                            if(sections.isEmpty()&&!s.loading) item {
+                                if(s.channelLoadFailed && s.channels.isEmpty()) Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=36.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                                    Text("チャンネルを読み込めませんでした",fontWeight=FontWeight.SemiBold,fontSize=16.sp)
+                                    Text("通信状態を確認して再試行してください。",color=MobileMuted,fontSize=13.sp)
+                                    TextButton(onClick=model::retryChannels) {Text("再読み込み")}
+                                } else HomeEmpty(if(query.isBlank()) "チャンネルがありません" else "チャンネルが見つかりません",if(query.isBlank()) "サーバーを切り替えてください" else "別の名前で検索してください")
+                            }
                         }
                     }
                 }

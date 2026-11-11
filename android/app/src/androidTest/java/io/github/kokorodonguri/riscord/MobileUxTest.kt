@@ -78,6 +78,159 @@ class MobileUxTest {
         File(directory,"$name.png").outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}
         bitmap.recycle()
     }
+    @Test fun olderHomeRefreshCannotOverwriteANewerResult() {
+        val oldGuilds=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val oldDms=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var guildCalls=0;var dmCalls=0
+        restHandler={path,_,_->when(path) {
+            "/users/@me/guilds" -> if(++guildCalls==1) oldGuilds.await() else JSONArray().put(JSONObject().put("id","20").put("name","新しいサーバー"))
+            "/users/@me/channels" -> if(++dmCalls==1) oldDms.await() else JSONArray().put(JSONObject().put("id","200").put("name","新しいDM"))
+            else -> error("unexpected request: $path")
+        }}
+        render()
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {guildCalls==1 && dmCalls==1}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.guilds.singleOrNull()?.optString("id")=="20"}
+        oldGuilds.complete(JSONArray().put(JSONObject().put("id","10").put("name","古いサーバー")))
+        oldDms.complete(JSONArray().put(JSONObject().put("id","100").put("name","古いDM")))
+        compose.waitForIdle()
+        Assert.assertEquals("20",model.state.value.guilds.single().optString("id"))
+        Assert.assertEquals("200",model.state.value.dms.single().optString("id"))
+        compose.onNodeWithContentDescription("新しいサーバー").assertIsDisplayed()
+        compose.onNodeWithText("新しいDM").assertIsDisplayed()
+        screenshot("home-refresh")
+    }
+    @Test fun homeRefreshFromAnotherAccountIsDiscarded() {
+        val guilds=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val dms=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var requests=0
+        restHandler={path,_,_->requests++;when(path) {
+            "/users/@me/guilds" -> guilds.await()
+            "/users/@me/channels" -> dms.await()
+            else -> error("unexpected request: $path")
+        }}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {requests==2}
+        compose.runOnUiThread {model.state.value=ChatState(me=JSONObject().put("id","2"))}
+        guilds.complete(JSONArray().put(JSONObject().put("id","10")))
+        dms.complete(JSONArray().put(JSONObject().put("id","100")))
+        compose.waitForIdle()
+        Assert.assertTrue(model.state.value.guilds.isEmpty())
+        Assert.assertTrue(model.state.value.dms.isEmpty())
+    }
+    @Test fun anOlderFailedHomeRefreshDoesNotShowAnErrorAfterSuccess() {
+        val old=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var calls=0
+        restHandler={path,_,_->
+            if(path=="/users/@me/guilds") {
+                if(++calls==1) old.await() else JSONArray().put(JSONObject().put("id","20"))
+            } else JSONArray()
+        }
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {calls==1}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.guilds.singleOrNull()?.optString("id")=="20"}
+        old.completeExceptionally(java.io.IOException("old request failed"))
+        compose.waitForIdle()
+        Assert.assertNull(model.state.value.error)
+    }
+    @Test fun currentHomeRefreshFailureIsReported() {
+        restHandler={_,_,_->throw java.io.IOException("offline")}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.error!=null}
+        Assert.assertTrue(model.state.value.error!!.contains("再試行"))
+    }
+    @Test fun olderChannelUpdateCannotOverwriteANewerResult() {
+        val old=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val guild=JSONObject().put("id","9").put("name","サーバー")
+        var calls=0
+        restHandler={path,_,_->
+            check(path=="/guilds/9/channels")
+            when(++calls) {
+                1 -> JSONArray().put(JSONObject().put("id","1").put("name","初期"))
+                2 -> old.await()
+                else -> JSONArray().put(JSONObject().put("id","3").put("name","新しい"))
+            }
+        }
+        compose.runOnUiThread {model.selectGuild(guild)}
+        compose.waitUntil(5000) {!model.state.value.loading}
+        val event=JSONObject().put("t","CHANNEL_UPDATE").put("d",JSONObject().put("guild_id","9"))
+        compose.runOnUiThread {model.receiveEvent(event)}
+        compose.waitUntil(5000) {calls==2}
+        compose.runOnUiThread {model.receiveEvent(event)}
+        compose.waitUntil(5000) {model.state.value.channels.singleOrNull()?.optString("id")=="3"}
+        old.complete(JSONArray().put(JSONObject().put("id","2").put("name","古い")))
+        compose.waitForIdle()
+        Assert.assertEquals("3",model.state.value.channels.single().optString("id"))
+    }
+    @Test fun failedChannelUpdateReleasesTheInitialLoadingState() {
+        val initial=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val guild=JSONObject().put("id","9").put("name","サーバー")
+        var calls=0
+        restHandler={_,_,_->if(++calls==1) initial.await() else throw java.io.IOException("offline")}
+        compose.runOnUiThread {model.selectGuild(guild)}
+        compose.waitUntil(5000) {calls==1 && model.state.value.loading}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","CHANNEL_UPDATE").put("d",JSONObject().put("guild_id","9")))}
+        compose.waitUntil(5000) {calls==2 && !model.state.value.loading}
+        Assert.assertTrue(model.state.value.channelLoadFailed)
+        initial.complete(JSONArray().put(JSONObject().put("id","1")))
+        compose.waitForIdle()
+        Assert.assertTrue(model.state.value.channels.isEmpty())
+    }
+    @Test fun channelLoadFailureShowsRetryInsteadOfAnEmptyServer() {
+        val retry=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        val guild=JSONObject().put("id","9").put("name","サーバー")
+        var calls=0
+        restHandler={path,_,_->
+            check(path=="/guilds/9/channels")
+            if(++calls==1) throw java.io.IOException("offline") else retry.await()
+        }
+        render()
+        compose.runOnUiThread {model.selectGuild(guild)}
+        compose.waitUntil(5000) {calls==1 && !model.state.value.loading}
+        screenshot("channel-load-failure-before")
+        compose.onNodeWithText("チャンネルがありません").assertDoesNotExist()
+        compose.onNodeWithText("チャンネルを読み込めませんでした").assertIsDisplayed()
+        screenshot("channel-load-failure-after")
+        compose.onNodeWithText("再読み込み").performClick()
+        compose.waitUntil(5000) {calls==2 && model.state.value.loading}
+        compose.onNodeWithText("再読み込み").assertDoesNotExist()
+        retry.complete(JSONArray().put(JSONObject().put("id","11").put("name","雑談").put("type",0)))
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithText("雑談").assertIsDisplayed()
+    }
+    @Test fun anEmptyChannelListIsNotShownAsAnError() {
+        restHandler={_,_,_->JSONArray()}
+        render()
+        compose.runOnUiThread {model.selectGuild(JSONObject().put("id","9").put("name","サーバー"))}
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithText("チャンネルがありません").assertIsDisplayed()
+        compose.onNodeWithText("再読み込み").assertDoesNotExist()
+    }
+    @Test fun failedChannelRefreshKeepsTheCachedListAndCanRetry() {
+        val retry=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var calls=0
+        restHandler={_,_,_->when(++calls) {
+            1 -> JSONArray().put(JSONObject().put("id","11").put("name","元のチャンネル").put("type",0))
+            2 -> throw java.io.IOException("offline")
+            else -> retry.await()
+        }}
+        render()
+        compose.runOnUiThread {model.selectGuild(JSONObject().put("id","9").put("name","サーバー"))}
+        compose.waitUntil(5000) {model.state.value.channels.isNotEmpty() && !model.state.value.loading}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","CHANNEL_UPDATE").put("d",JSONObject().put("guild_id","9")))}
+        compose.waitUntil(5000) {model.state.value.channelLoadFailed}
+        compose.onNodeWithText("元のチャンネル").assertIsDisplayed()
+        compose.onNodeWithText("チャンネルを再読み込み").performClick()
+        compose.waitUntil(5000) {calls==3 && model.state.value.loading}
+        compose.onNodeWithText("チャンネルを再読み込み").assertDoesNotExist()
+        retry.complete(JSONArray().put(JSONObject().put("id","12").put("name","更新後").put("type",0)))
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithText("更新後").assertIsDisplayed()
+        compose.onNodeWithText("元のチャンネル").assertDoesNotExist()
+        Assert.assertNull(model.state.value.error)
+    }
     @Test fun switchingToDmCancelsGuildLoadingAndIgnoresTheOldResult() {
         val gate=kotlinx.coroutines.CompletableDeferred<JSONArray>()
         val guild=JSONObject("""{"id":"9","name":"遅いサーバー"}""")
@@ -149,6 +302,7 @@ class MobileUxTest {
         compose.waitUntil(5000) {!model.state.value.profileSaving}
         Assert.assertEquals("新しい名前",model.state.value.me?.label())
         Assert.assertEquals("元の紹介",model.state.value.profile?.optString("bio"))
+        Assert.assertTrue(model.state.value.profileError!!.startsWith("一部の変更"))
         Assert.assertTrue(model.state.value.profileError!!.contains("再試行"))
         Assert.assertFalse(model.state.value.profileError!!.contains("private"))
         Assert.assertEquals(0,saved)
@@ -186,7 +340,7 @@ class MobileUxTest {
         compose.onNodeWithText("保存中…").assertIsDisplayed().assertIsNotEnabled()
         gate.completeExceptionally(java.io.IOException("private diagnostic"))
         compose.waitUntil(5000) {!model.state.value.profileSaving}
-        compose.onNodeWithText("一部の変更を保存できませんでした。内容を確認して再試行してください。").assertIsDisplayed()
+        compose.onNodeWithText("プロフィールを保存できませんでした。内容を確認して再試行してください。").assertIsDisplayed()
         compose.onNode(hasSetTextAction() and hasText("新しい名前")).assertIsDisplayed()
         screenshot("profile-save-error")
         compose.onNodeWithText("保存").performClick()
@@ -254,6 +408,7 @@ class MobileUxTest {
         compose.onNodeWithText("編集",useUnmergedTree=true).performClick()
         compose.onNodeWithContentDescription("メッセージ入力").assertTextContains("自分のメッセージ")
         compose.onNodeWithContentDescription("編集をキャンセル").performClick()
+        compose.waitForIdle()
         Assert.assertEquals("下書きを残す",model.state.value.drafts["100"])
         compose.onNodeWithContentDescription("メッセージ入力").assertTextContains("下書きを残す")
         screenshot("reply-edit-draft")
@@ -262,22 +417,23 @@ class MobileUxTest {
         compose.onNodeWithContentDescription("メッセージ入力").assertTextContains("下書きを残す")
     }
     @Test fun newMessagesAndOlderHistoryDoNotMoveTheReader() {
-        fixtureMessages=(51..100).map {message(it)}
+        fun history(range:IntRange)=range.map {message(it,author=if(it%2==0) "1" else "2")}
+        fixtureMessages=history(51..100)
         render();open()
         compose.onNodeWithText("過去 100").assertIsDisplayed()
-        compose.onNodeWithContentDescription("メッセージ履歴").performScrollToNode(hasText("過去 70"))
-        val before=compose.onNodeWithText("過去 70").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
-        compose.runOnIdle {fixtureMessages=(1..50).map {message(it)};model.older()}
+        compose.onNodeWithContentDescription("メッセージ履歴").performScrollToNode(hasText("過去 60"))
+        val before=compose.onNodeWithText("過去 60").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+        compose.runOnIdle {fixtureMessages=history(1..50);model.older()}
         compose.waitUntil(5000) {model.state.value.messages.size==100&&!model.state.value.loading}
-        val after=compose.onNodeWithText("過去 70").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+        val after=compose.onNodeWithText("過去 60").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
         Assert.assertEquals(before,after,2f)
         compose.onNodeWithContentDescription("チャンネル一覧に戻る").performClick()
-        compose.runOnIdle {fixtureMessages=(51..100).map {message(it)}}
+        compose.runOnIdle {fixtureMessages=history(51..100)}
         open()
-        compose.onNodeWithText("過去 70").assertIsDisplayed()
+        compose.onNodeWithText("過去 60").assertIsDisplayed()
         compose.runOnIdle {model.state.value=model.state.value.copy(messages=model.state.value.messages+message(101,"新しいメッセージ"))}
         compose.waitForIdle()
-        compose.onNodeWithText("過去 70").assertIsDisplayed()
+        compose.onNodeWithText("過去 60").assertIsDisplayed()
         screenshot("reading-history")
         compose.onNodeWithContentDescription("最新のメッセージへ").performClick()
         compose.waitForIdle()

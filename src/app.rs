@@ -1384,6 +1384,9 @@ pub struct App {
     pub channel_draft: Option<ChannelDraft>,
     /// このサーバーでの自分のプロフィールを編集する画面
     pub guild_profile: Option<GuildProfileEdit>,
+    /// サーバーブーストの状況と、取得中の要求（リクエスト ID → サーバー）
+    pub guild_boost: HashMap<String, guild_boost::BoostStatus>,
+    pub boost_requests: HashMap<u64, String>,
     /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
     pub member_action_confirm: Option<String>,
     pub member_action_pending: Option<(u64, &'static str)>,
@@ -3002,6 +3005,10 @@ impl App {
             self.soundboard_result(id, result);
             return;
         }
+        if self.is_boost_request(id) {
+            self.boost_result(id, result);
+            return;
+        }
         if self.is_guild_profile_request(id) {
             self.guild_profile_result(id, result);
             return;
@@ -3510,6 +3517,9 @@ impl App {
                 self.role_admin_event(guild_id);
             }
             return;
+        }
+        if t == "GUILD_UPDATE" {
+            self.on_guild_update_boost(&d);
         }
         if t == "GUILD_UPDATE" {
             if let Some(guild_id) = d["id"].as_str() {
@@ -5191,6 +5201,7 @@ mod authors;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;
+mod guild_boost;
 mod guild_profile;
 pub use guild_profile::{GuildProfileEdit, BIO_MAX, NICK_MAX, PRONOUNS_MAX};
 mod official_folders;

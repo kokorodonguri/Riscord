@@ -458,6 +458,23 @@ impl Root {
             )
         };
 
+        // ブーストの状況（表示だけ）
+        col = col.child(
+            div()
+                .h(z(32.0))
+                .px(z(10.0))
+                .flex()
+                .items_center()
+                .gap(z(10.0))
+                .child(icon(IconName::Info, 18.0, MUTED()))
+                .child(
+                    line(self.app.boost_label(&gid), 14.0, MUTED())
+                        .flex_1()
+                        .min_w_0(),
+                ),
+        );
+        col = col.child(menu_divider());
+
         // 招待・設定・作成
         let g1 = gid.clone();
         col = col.child(

@@ -35,7 +35,11 @@ pub enum Status {
     Checking,
     UpToDate,
     /// main がこのビルドより進んでいる。commits は新しい順
-    Behind { ahead_by: u32, commits: Vec<Commit>, compare_url: String },
+    Behind {
+        ahead_by: u32,
+        commits: Vec<Commit>,
+        compare_url: String,
+    },
     /// 比べられない（GitHub にないコミットからのビルドなど）
     Unknown(String),
     Failed(String),
@@ -90,7 +94,10 @@ pub fn start(waker: &Waker) {
         let waker = waker.clone();
         std::thread::spawn(move || {
             set(Status::Checking, &waker);
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => return set(Status::Failed(e.to_string()), &waker),
             };
@@ -117,14 +124,18 @@ async fn fetch() -> Result<Status> {
         .connect_timeout(Duration::from_secs(10))
         .build()?;
     let res = http
-        .get(format!("https://api.github.com/repos/{REPO}/compare/{BUILD}...{BRANCH}"))
+        .get(format!(
+            "https://api.github.com/repos/{REPO}/compare/{BUILD}...{BRANCH}"
+        ))
         .header("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(30))
         .send()
         .await?;
     // 404 = GitHub にないコミット（まだプッシュしていない手元のビルドなど）
     if matches!(res.status().as_u16(), 404 | 422) {
-        return Ok(Status::Unknown("このビルドのコミットは GitHub にありません".into()));
+        return Ok(Status::Unknown(
+            "このビルドのコミットは GitHub にありません".into(),
+        ));
     }
     parse_compare(&res.error_for_status()?.text().await?)
 }
@@ -167,13 +178,27 @@ fn parse_compare(json: &str) -> Result<Status> {
         .rev()
         .take(SHOW)
         .map(|r| Commit {
-            title: r.commit.message.lines().next().unwrap_or_default().to_string(),
-            date: r.commit.author.map(|a| a.date.chars().take(10).collect()).unwrap_or_default(),
+            title: r
+                .commit
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            date: r
+                .commit
+                .author
+                .map(|a| a.date.chars().take(10).collect())
+                .unwrap_or_default(),
             sha: r.sha,
             url: r.html_url,
         })
         .collect();
-    Ok(Status::Behind { ahead_by: c.ahead_by, commits, compare_url: c.html_url })
+    Ok(Status::Behind {
+        ahead_by: c.ahead_by,
+        commits,
+        compare_url: c.html_url,
+    })
 }
 
 #[cfg(test)]
@@ -189,7 +214,8 @@ mod tests {
 
     #[test]
     fn identical_is_up_to_date() {
-        let json = r#"{"status":"identical","ahead_by":0,"behind_by":0,"html_url":"u","commits":[]}"#;
+        let json =
+            r#"{"status":"identical","ahead_by":0,"behind_by":0,"html_url":"u","commits":[]}"#;
         assert_eq!(parse_compare(json).unwrap(), Status::UpToDate);
         let json = r#"{"status":"behind","ahead_by":0,"behind_by":2,"html_url":"u","commits":[]}"#;
         assert_eq!(parse_compare(json).unwrap(), Status::UpToDate);
@@ -202,7 +228,14 @@ mod tests {
             raw("aaa", "old one"),
             raw("bbb", "new one\n\ndetails")
         );
-        let Status::Behind { ahead_by, commits, compare_url } = parse_compare(&json).unwrap() else { panic!() };
+        let Status::Behind {
+            ahead_by,
+            commits,
+            compare_url,
+        } = parse_compare(&json).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(ahead_by, 2);
         assert_eq!(compare_url, "https://github.com/cmp");
         assert_eq!(commits[0].sha, "bbb");
@@ -213,15 +246,26 @@ mod tests {
 
     #[test]
     fn diverged_counts_as_behind() {
-        let json = format!(r#"{{"status":"diverged","ahead_by":1,"behind_by":1,"html_url":"u","commits":[{}]}}"#, raw("ccc", "x"));
-        assert!(matches!(parse_compare(&json).unwrap(), Status::Behind { ahead_by: 1, .. }));
+        let json = format!(
+            r#"{{"status":"diverged","ahead_by":1,"behind_by":1,"html_url":"u","commits":[{}]}}"#,
+            raw("ccc", "x")
+        );
+        assert!(matches!(
+            parse_compare(&json).unwrap(),
+            Status::Behind { ahead_by: 1, .. }
+        ));
     }
 
     #[test]
     fn badge_until_seen_and_again_for_newer() {
         let behind = |sha: &str| Status::Behind {
             ahead_by: 1,
-            commits: vec![Commit { sha: sha.into(), title: String::new(), date: String::new(), url: String::new() }],
+            commits: vec![Commit {
+                sha: sha.into(),
+                title: String::new(),
+                date: String::new(),
+                url: String::new(),
+            }],
             compare_url: String::new(),
         };
         *STATUS.lock().unwrap() = behind("a");

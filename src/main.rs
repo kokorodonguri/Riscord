@@ -23,13 +23,16 @@ mod theme;
 mod translator;
 mod ui;
 mod update;
-mod voice;
 mod video;
+mod voice;
 mod wake;
 
 fn main() {
     if !profile::acquire() {
-        eprintln!("{} の Riscord はもう開いています", profile::label(profile::name()));
+        eprintln!(
+            "{} の Riscord はもう開いています",
+            profile::label(profile::name())
+        );
         return;
     }
     ui::run();

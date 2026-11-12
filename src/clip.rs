@@ -37,24 +37,38 @@ pub fn clipboard_image() -> Option<Result<Upload, String>> {
         return Some(Err("クリップボードの画像を読み込めませんでした。".into()));
     }
     let name = format!("image-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-    Some(Ok(Upload { thumb: Some(thumb_texture(&rgba)), name, data: png }))
+    Some(Ok(Upload {
+        thumb: Some(thumb_texture(&rgba)),
+        name,
+        data: png,
+    }))
 }
 
 /// ファイルを読み込む。画像ならサムネイルも作る
 pub fn load_file(path: &Path) -> Result<Upload, String> {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
     let data = std::fs::read(path).map_err(|e| {
         eprintln!("{} を読めません: {e}", path.display());
         format!("「{name}」を読み込めませんでした。ファイルを確認して、もう一度お試しください。")
     })?;
-    let thumb = image::load_from_memory(&data).ok().map(|img| thumb_texture(&img.to_rgba8()));
+    let thumb = image::load_from_memory(&data)
+        .ok()
+        .map(|img| thumb_texture(&img.to_rgba8()));
     Ok(Upload { name, data, thumb })
 }
 
 fn thumb_texture(img: &image::RgbaImage) -> Arc<gpui::RenderImage> {
     // 縦横比を保って THUMB に収める
-    let k = (THUMB as f32 / img.width().max(1) as f32).min(THUMB as f32 / img.height().max(1) as f32).min(1.0);
-    let (w, h) = (((img.width() as f32 * k) as u32).max(1), ((img.height() as f32 * k) as u32).max(1));
+    let k = (THUMB as f32 / img.width().max(1) as f32)
+        .min(THUMB as f32 / img.height().max(1) as f32)
+        .min(1.0);
+    let (w, h) = (
+        ((img.width() as f32 * k) as u32).max(1),
+        ((img.height() as f32 * k) as u32).max(1),
+    );
     crate::images::render_image(image::imageops::thumbnail(img, w, h))
 }
 
@@ -80,7 +94,10 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' && i + 2 < b.len() {
-            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
                 out.push(v);
                 i += 3;
                 continue;
@@ -99,7 +116,11 @@ mod tests {
     #[test]
     fn dropping_upload_releases_its_thumbnail() {
         let thumbnail = crate::images::render_image(image::RgbaImage::new(1, 1));
-        let upload = Upload { name: "test.png".into(), data: vec![], thumb: Some(thumbnail.clone()) };
+        let upload = Upload {
+            name: "test.png".into(),
+            data: vec![],
+            thumb: Some(thumbnail.clone()),
+        };
         drop(upload);
         assert!(crate::images::release_queued(&thumbnail));
     }

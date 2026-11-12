@@ -45,7 +45,11 @@ impl Kind {
 pub fn name_from_url(url: &str) -> String {
     let rest = url.split(['?', '#']).next().unwrap_or("");
     // ホスト名をファイル名にしないよう、スキーム://ホスト の後ろだけを見る
-    let path = rest.split_once("://").map_or(rest, |(_, r)| r).split_once('/').map_or("", |(_, p)| p);
+    let path = rest
+        .split_once("://")
+        .map_or(rest, |(_, r)| r)
+        .split_once('/')
+        .map_or("", |(_, p)| p);
     path.rsplit('/').next().unwrap_or("").to_string()
 }
 
@@ -146,9 +150,11 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
             file.write_all(&chunk)
                 .map_err(|_| format!("{what}を保存できませんでした"))?;
         }
-        file.flush().map_err(|_| format!("{what}を保存できませんでした"))?;
+        file.flush()
+            .map_err(|_| format!("{what}を保存できませんでした"))?;
         drop(file);
-        std::fs::rename(&path, destination).map_err(|_| "保存先へ移動できませんでした".to_string())?;
+        std::fs::rename(&path, destination)
+            .map_err(|_| "保存先へ移動できませんでした".to_string())?;
         Ok::<(), String>(())
     }
     .await;
@@ -217,8 +223,14 @@ mod tests {
     }
     #[test]
     fn file_name_is_taken_from_url_path() {
-        assert_eq!(name_from_url("https://cdn.example.com/a/b/cat.png?ex=1&is=2"), "cat.png");
-        assert_eq!(name_from_url("https://example.com/photo.jpg#x"), "photo.jpg");
+        assert_eq!(
+            name_from_url("https://cdn.example.com/a/b/cat.png?ex=1&is=2"),
+            "cat.png"
+        );
+        assert_eq!(
+            name_from_url("https://example.com/photo.jpg#x"),
+            "photo.jpg"
+        );
         assert_eq!(name_from_url("https://example.com/"), "");
         assert_eq!(name_from_url("https://example.com"), "");
     }

@@ -125,12 +125,16 @@ impl VoiceCtl {
 
 pub fn input_devices() -> Vec<String> {
     let host = cpal::default_host();
-    host.input_devices().map(|it| it.filter_map(|d| dev_name(&d)).collect()).unwrap_or_default()
+    host.input_devices()
+        .map(|it| it.filter_map(|d| dev_name(&d)).collect())
+        .unwrap_or_default()
 }
 
 pub fn output_devices() -> Vec<String> {
     let host = cpal::default_host();
-    host.output_devices().map(|it| it.filter_map(|d| dev_name(&d)).collect()).unwrap_or_default()
+    host.output_devices()
+        .map(|it| it.filter_map(|d| dev_name(&d)).collect())
+        .unwrap_or_default()
 }
 
 fn dev_name(d: &cpal::Device) -> Option<String> {
@@ -140,13 +144,21 @@ fn dev_name(d: &cpal::Device) -> Option<String> {
 fn find_device(input: bool, name: Option<&str>) -> Option<cpal::Device> {
     let host = cpal::default_host();
     if let Some(name) = name {
-        let found = if input { host.input_devices().ok() } else { host.output_devices().ok() }
-            .and_then(|mut it| it.find(|d| dev_name(d).as_deref() == Some(name)));
+        let found = if input {
+            host.input_devices().ok()
+        } else {
+            host.output_devices().ok()
+        }
+        .and_then(|mut it| it.find(|d| dev_name(d).as_deref() == Some(name)));
         if found.is_some() {
             return found;
         }
     }
-    if input { host.default_input_device() } else { host.default_output_device() }
+    if input {
+        host.default_input_device()
+    } else {
+        host.default_output_device()
+    }
 }
 
 // ---- 共有バッファ ----
@@ -181,7 +193,12 @@ struct Resampler {
 
 impl Resampler {
     fn new(from: u32, to: u32, ch: usize) -> Self {
-        Resampler { ch, step: from as f64 / to as f64, pos: 0.0, prev: vec![0.0; ch] }
+        Resampler {
+            ch,
+            step: from as f64 / to as f64,
+            pos: 0.0,
+            prev: vec![0.0; ch],
+        }
     }
     fn run(&mut self, input: &[f32], out: &mut Vec<f32>) {
         if (self.step - 1.0).abs() < 1e-9 {
@@ -195,7 +212,11 @@ impl Resampler {
             let i = self.pos.floor() as isize - 1;
             let t = (self.pos - self.pos.floor()) as f32;
             for c in 0..ch {
-                let a = if i < 0 { self.prev[c] } else { input[i as usize * ch + c] };
+                let a = if i < 0 {
+                    self.prev[c]
+                } else {
+                    input[i as usize * ch + c]
+                };
                 let b = input[(i + 1) as usize * ch + c];
                 out.push(a + (b - a) * t);
             }
@@ -255,16 +276,24 @@ impl AudioIo {
             f32_store(&ctl.level, 0.0);
             ctl.vad_open.store(false, Relaxed);
         });
-        AudioIo { stop, thread: Some(thread) }
+        AudioIo {
+            stop,
+            thread: Some(thread),
+        }
     }
 }
 
-fn open_streams(ctl: &Arc<VoiceCtl>, mic: &Arc<Ring>, out: Option<&Arc<Ring>>) -> Result<Vec<cpal::Stream>> {
+fn open_streams(
+    ctl: &Arc<VoiceCtl>,
+    mic: &Arc<Ring>,
+    out: Option<&Arc<Ring>>,
+) -> Result<Vec<cpal::Stream>> {
     let mut streams = Vec::new();
 
     // マイク
     let in_name = ctl.input_device.lock().unwrap().clone();
-    let dev = find_device(true, in_name.as_deref()).ok_or_else(|| anyhow!("入力デバイスがありません"))?;
+    let dev =
+        find_device(true, in_name.as_deref()).ok_or_else(|| anyhow!("入力デバイスがありません"))?;
     let cfg = dev.default_input_config()?;
     let ch = cfg.channels() as usize;
     let fmt = cfg.sample_format();
@@ -278,10 +307,15 @@ fn open_streams(ctl: &Arc<VoiceCtl>, mic: &Arc<Ring>, out: Option<&Arc<Ring>>) -
         let gain = f32_load(&ctl2.in_gain);
         st.clear();
         to_stereo(data, ch, &mut st);
-        st.iter_mut().for_each(|s| *s = (*s * gain).clamp(-1.0, 1.0));
+        st.iter_mut()
+            .for_each(|s| *s = (*s * gain).clamp(-1.0, 1.0));
         rsd.clear();
         rs.run(&st, &mut rsd);
-        let rms = if rsd.is_empty() { 0.0 } else { (rsd.iter().map(|s| s * s).sum::<f32>() / rsd.len() as f32).sqrt() };
+        let rms = if rsd.is_empty() {
+            0.0
+        } else {
+            (rsd.iter().map(|s| s * s).sum::<f32>() / rsd.len() as f32).sqrt()
+        };
         let prev = f32_load(&ctl2.level);
         f32_store(&ctl2.level, rms.max(prev * 0.85));
         if rms >= f32_load(&ctl2.vad_threshold) {
@@ -295,7 +329,9 @@ fn open_streams(ctl: &Arc<VoiceCtl>, mic: &Arc<Ring>, out: Option<&Arc<Ring>>) -
     };
     let err = |e| eprintln!("audio input: {e}");
     let s = match fmt {
-        cpal::SampleFormat::F32 => dev.build_input_stream::<f32, _, _>(config, move |d, _| on_input(d), err, None)?,
+        cpal::SampleFormat::F32 => {
+            dev.build_input_stream::<f32, _, _>(config, move |d, _| on_input(d), err, None)?
+        }
         cpal::SampleFormat::I16 => {
             let mut tmp = Vec::new();
             dev.build_input_stream::<i16, _, _>(
@@ -317,7 +353,8 @@ fn open_streams(ctl: &Arc<VoiceCtl>, mic: &Arc<Ring>, out: Option<&Arc<Ring>>) -
     // スピーカー
     if let Some(out) = out {
         let out_name = ctl.output_device.lock().unwrap().clone();
-        let dev = find_device(false, out_name.as_deref()).ok_or_else(|| anyhow!("出力デバイスがありません"))?;
+        let dev = find_device(false, out_name.as_deref())
+            .ok_or_else(|| anyhow!("出力デバイスがありません"))?;
         let cfg = dev.default_output_config()?;
         let ch = cfg.channels() as usize;
         let fmt = cfg.sample_format();
@@ -350,7 +387,11 @@ fn open_streams(ctl: &Arc<VoiceCtl>, mic: &Arc<Ring>, out: Option<&Arc<Ring>>) -
                 } else {
                     (0.0, 0.0)
                 };
-                let (l, r) = if deaf { (0.0, 0.0) } else { (l * gain, r * gain) };
+                let (l, r) = if deaf {
+                    (0.0, 0.0)
+                } else {
+                    (l * gain, r * gain)
+                };
                 for c in 0..ch {
                     write(f * ch + c, if c % 2 == 0 { l } else { r });
                 }
@@ -391,7 +432,9 @@ pub struct MicTest {
 
 impl MicTest {
     pub fn start(ctl: Arc<VoiceCtl>) -> MicTest {
-        MicTest { _io: AudioIo::start(ctl, Arc::new(Ring::default()), None) }
+        MicTest {
+            _io: AudioIo::start(ctl, Arc::new(Ring::default()), None),
+        }
     }
 }
 
@@ -411,9 +454,18 @@ impl Read for MicSource {
         let mut b = self.ring.buf.lock().unwrap();
         if b.is_empty() {
             // 少しだけ待つ。来なければ無音で埋めて止まらないようにする
-            b = self.ring.cv.wait_timeout(b, Duration::from_millis(25)).unwrap().0;
+            b = self
+                .ring
+                .cv
+                .wait_timeout(b, Duration::from_millis(25))
+                .unwrap()
+                .0;
         }
-        let n = if b.is_empty() { want } else { b.len().min(want) };
+        let n = if b.is_empty() {
+            want
+        } else {
+            b.len().min(want)
+        };
         for i in 0..n {
             let s = b.pop_front().unwrap_or(0.0);
             out[i * 4..i * 4 + 4].copy_from_slice(&s.to_le_bytes());
@@ -464,7 +516,9 @@ impl EventHandler for Receiver {
                 talking.clear();
                 let users = self.users.lock().unwrap();
                 for (ssrc, data) in &t.speaking {
-                    let Some(pcm) = &data.decoded_voice else { continue };
+                    let Some(pcm) = &data.decoded_voice else {
+                        continue;
+                    };
                     let mut energy = 0f32;
                     for (m, &s) in mix.iter_mut().zip(pcm.iter()) {
                         let v = s as f32 / 32768.0;
@@ -512,13 +566,19 @@ pub struct VoiceSession {
 
 impl VoiceSession {
     pub fn new(ctl: Arc<VoiceCtl>) -> Self {
-        let config = Config::default()
-            .decode_mode(DecodeMode::Decode(DecodeConfig::new(Channels::Stereo, SbRate::Hz48000)));
+        let config = Config::default().decode_mode(DecodeMode::Decode(DecodeConfig::new(
+            Channels::Stereo,
+            SbRate::Hz48000,
+        )));
         let mut driver = Driver::new(config);
         let mic = Arc::new(Ring::default());
         let out = Arc::new(Ring::default());
         let users = Arc::new(Mutex::new(HashMap::new()));
-        for ev in [CoreEvent::SpeakingStateUpdate, CoreEvent::VoiceTick, CoreEvent::ClientDisconnect] {
+        for ev in [
+            CoreEvent::SpeakingStateUpdate,
+            CoreEvent::VoiceTick,
+            CoreEvent::ClientDisconnect,
+        ] {
             driver.add_global_event(
                 SbEvent::Core(ev),
                 Receiver {
@@ -530,7 +590,14 @@ impl VoiceSession {
             );
         }
         driver.mute(true);
-        VoiceSession { driver, ctl, mic, out, io: None, muted: true }
+        VoiceSession {
+            driver,
+            ctl,
+            mic,
+            out,
+            io: None,
+            muted: true,
+        }
     }
 
     /// guild_id が無い（DM通話）ときは channel_id をサーバーIDとして使う
@@ -543,8 +610,13 @@ impl VoiceSession {
         token: &str,
         user_id: &str,
     ) -> Result<()> {
-        let id = |s: &str| -> Result<NonZeroU64> { s.parse::<NonZeroU64>().map_err(|_| anyhow!("不正なID {s}")) };
-        let endpoint = endpoint.trim_start_matches("wss://").trim_end_matches('/').to_string();
+        let id = |s: &str| -> Result<NonZeroU64> {
+            s.parse::<NonZeroU64>().map_err(|_| anyhow!("不正なID {s}"))
+        };
+        let endpoint = endpoint
+            .trim_start_matches("wss://")
+            .trim_end_matches('/')
+            .to_string();
         let info = ConnectionInfo {
             channel_id: id(channel_id)?.into(),
             endpoint,
@@ -557,9 +629,20 @@ impl VoiceSession {
         self.mic.clear();
         self.out.clear();
         if self.io.is_none() {
-            self.io = Some(AudioIo::start(self.ctl.clone(), self.mic.clone(), Some(self.out.clone())));
+            self.io = Some(AudioIo::start(
+                self.ctl.clone(),
+                self.mic.clone(),
+                Some(self.out.clone()),
+            ));
         }
-        let input: Input = RawAdapter::new(MicSource { ring: self.mic.clone() }, RATE, 2).into();
+        let input: Input = RawAdapter::new(
+            MicSource {
+                ring: self.mic.clone(),
+            },
+            RATE,
+            2,
+        )
+        .into();
         self.driver.play_only_input(input);
         self.muted = true;
         self.driver.mute(true);
@@ -601,7 +684,9 @@ mod tests {
     #[ignore]
     fn bench_resampler() {
         for rate in [48_000, 44_100] {
-            let input: Vec<f32> = (0..(rate as usize / 50 * 2)).map(|i| ((i % 100) as f32 / 50.0) - 1.0).collect();
+            let input: Vec<f32> = (0..(rate as usize / 50 * 2))
+                .map(|i| ((i % 100) as f32 / 50.0) - 1.0)
+                .collect();
             let mut resampler = Resampler::new(rate, RATE, 2);
             let mut output = Vec::with_capacity(FRAME * 2);
             let start = Instant::now();
@@ -610,7 +695,10 @@ mod tests {
                 resampler.run(std::hint::black_box(&input), &mut output);
                 std::hint::black_box(&output);
             }
-            println!("resample {rate} Hz, 20 ms stereo: {:.3} µs/frame", start.elapsed().as_secs_f64() * 100.0);
+            println!(
+                "resample {rate} Hz, 20 ms stereo: {:.3} µs/frame",
+                start.elapsed().as_secs_f64() * 100.0
+            );
         }
     }
 
@@ -619,7 +707,11 @@ mod tests {
     fn bench_voice_mix() {
         for speakers in [1, 10, 50] {
             let pcm: Vec<Vec<i16>> = (0..speakers)
-                .map(|speaker| (0..FRAME).map(|i| ((i * 17 + speaker * 97) % 16_000) as i16).collect())
+                .map(|speaker| {
+                    (0..FRAME)
+                        .map(|i| ((i * 17 + speaker * 97) % 16_000) as i16)
+                        .collect()
+                })
                 .collect();
             let mut mix = vec![0.0_f32; FRAME];
             let start = Instant::now();
@@ -636,10 +728,12 @@ mod tests {
                 }
                 std::hint::black_box(&mix);
             }
-            println!("mix {speakers} speakers, 20 ms stereo: {:.3} µs/tick", start.elapsed().as_secs_f64() * 1000.0);
+            println!(
+                "mix {speakers} speakers, 20 ms stereo: {:.3} µs/tick",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
-
 
     #[test]
     fn resample_identity_and_ratio() {

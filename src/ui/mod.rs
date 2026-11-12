@@ -3,10 +3,10 @@ mod chat;
 mod commands;
 mod dialogs;
 mod emoji;
+mod forum;
 mod kit;
 mod login;
 mod members;
-mod forum;
 mod message;
 mod panel;
 mod popup;
@@ -17,8 +17,8 @@ mod split;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt as _;
@@ -36,11 +36,67 @@ pub use kit::*;
 gpui::assets::icon_assets!(
     ExtraIcons,
     [
-        ArrowLeft, ArrowRight, AtSign, Download, ChevronDown, ChevronRight, CirclePlus, CircleX, ClipboardPaste, Copy, FileUp, Folder,
-        Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, Palette, PanelRight, Pencil, Phone, PhoneOff, Play, Plus, RefreshCw,
-        Reply, RotateCw, Search, Settings, Signal, Trash, Upload, User, UserRound, Users, Video, Volume2, X, Check, IdCard,
-        LogOut, Info, TriangleAlert, Paperclip, SignalHigh, File, Bell, BellOff, UserPlus, CheckCheck,
-        Pin, PinOff, ArrowUp, MessagesSquare, Archive, Lock, Tag, MonitorUp, MonitorOff, FaceSlightlySmiling
+        ArrowLeft,
+        ArrowRight,
+        AtSign,
+        Download,
+        ChevronDown,
+        ChevronRight,
+        CirclePlus,
+        CircleX,
+        ClipboardPaste,
+        Copy,
+        FileUp,
+        Folder,
+        Hash,
+        HeadphoneOff,
+        Headphones,
+        Menu,
+        Mic,
+        MicOff,
+        Palette,
+        PanelRight,
+        Pencil,
+        Phone,
+        PhoneOff,
+        Play,
+        Plus,
+        RefreshCw,
+        Reply,
+        RotateCw,
+        Search,
+        Settings,
+        Signal,
+        Trash,
+        Upload,
+        User,
+        UserRound,
+        Users,
+        Video,
+        Volume2,
+        X,
+        Check,
+        IdCard,
+        LogOut,
+        Info,
+        TriangleAlert,
+        Paperclip,
+        SignalHigh,
+        File,
+        Bell,
+        BellOff,
+        UserPlus,
+        CheckCheck,
+        Pin,
+        PinOff,
+        ArrowUp,
+        MessagesSquare,
+        Archive,
+        Lock,
+        Tag,
+        MonitorUp,
+        MonitorOff,
+        FaceSlightlySmiling
     ]
 );
 
@@ -63,22 +119,29 @@ impl AssetSource for AppAssets {
 }
 
 pub fn run() {
-    gpui::application().with_assets(AppAssets).run(|cx: &mut App| {
-        gpui::init(cx);
-        let bounds = Bounds::centered(None, size(px(1200.0), px(760.0)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(320.0), px(400.0))),
-            app_id: Some("riscord".into()),
-            titlebar: Some(TitlebarOptions { title: Some("Riscord".into()), ..Default::default() }),
-            ..Default::default()
-        };
-        let opened = gpui::open_window(options, cx, |window, cx| cx.new(|cx| split::Shell::new(window, cx)));
-        if let Err(e) = opened {
-            eprintln!("ウィンドウを開けませんでした: {e}");
-            cx.quit();
-        }
-    });
+    gpui::application()
+        .with_assets(AppAssets)
+        .run(|cx: &mut App| {
+            gpui::init(cx);
+            let bounds = Bounds::centered(None, size(px(1200.0), px(760.0)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(320.0), px(400.0))),
+                app_id: Some("riscord".into()),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Riscord".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let opened = gpui::open_window(options, cx, |window, cx| {
+                cx.new(|cx| split::Shell::new(window, cx))
+            });
+            if let Err(e) = opened {
+                eprintln!("ウィンドウを開けませんでした: {e}");
+                cx.quit();
+            }
+        });
 }
 
 /// 1チャンネル分のメッセージ一覧（gpui の list が高さを測り、スクロール位置を保つ）
@@ -205,15 +268,31 @@ impl Root {
         let frame = self.app.voice.screen.lock().unwrap().take();
         let key = self.app.watching.as_ref().map(|(k, _)| k.as_str());
         // 視聴をやめた・別の人の配信に切り替えたら、前の映像は出さない
-        if self.stream_image.as_ref().is_some_and(|(k, _)| Some(k.as_str()) != key) {
+        if self
+            .stream_image
+            .as_ref()
+            .is_some_and(|(k, _)| Some(k.as_str()) != key)
+        {
             if let Some((_, old)) = self.stream_image.take() {
                 crate::images::release(old);
             }
         }
-        let (Some(key), Some(f)) = (key, frame) else { return };
-        let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, f.data) else { return };
-        let frame = image::Frame::from_parts(buf, 0, 0, image::Delay::from_saturating_duration(Duration::ZERO));
-        if let Some((_, old)) = self.stream_image.replace((key.to_string(), Arc::new(RenderImage::new(vec![frame])))) {
+        let (Some(key), Some(f)) = (key, frame) else {
+            return;
+        };
+        let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, f.data) else {
+            return;
+        };
+        let frame = image::Frame::from_parts(
+            buf,
+            0,
+            0,
+            image::Delay::from_saturating_duration(Duration::ZERO),
+        );
+        if let Some((_, old)) = self
+            .stream_image
+            .replace((key.to_string(), Arc::new(RenderImage::new(vec![frame]))))
+        {
             crate::images::release(old);
         }
     }
@@ -231,7 +310,12 @@ pub enum PaneEvent {
 
 impl EventEmitter<PaneEvent> for Root {}
 
-fn new_input(window: &mut Window, cx: &mut Context<Root>, placeholder: &str, masked: bool) -> Entity<InputState> {
+fn new_input(
+    window: &mut Window,
+    cx: &mut Context<Root>,
+    placeholder: &str,
+    masked: bool,
+) -> Entity<InputState> {
     let p = placeholder.to_string();
     cx.new(|cx| InputState::new(window, cx).placeholder(p).masked(masked))
 }
@@ -244,29 +328,38 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
     limit: Option<usize>,
     field: fn(&mut AppState) -> Option<&mut String>,
 ) -> Subscription {
-    cx.subscribe_in(e, window, move |this: &mut Root, state, ev: &InputEvent, window, cx| {
-        if let InputEvent::Change = ev {
-            let mut v = state.read(cx).value().to_string();
-            if let Some(l) = limit {
-                if v.chars().count() > l {
-                    v = v.chars().take(l).collect();
-                    let v2 = v.clone();
-                    state.update(cx, |s, cx| s.set_value(v2, window, cx));
+    cx.subscribe_in(
+        e,
+        window,
+        move |this: &mut Root, state, ev: &InputEvent, window, cx| {
+            if let InputEvent::Change = ev {
+                let mut v = state.read(cx).value().to_string();
+                if let Some(l) = limit {
+                    if v.chars().count() > l {
+                        v = v.chars().take(l).collect();
+                        let v2 = v.clone();
+                        state.update(cx, |s, cx| s.set_value(v2, window, cx));
+                    }
                 }
+                if let Some(f) = field(&mut this.app) {
+                    *f = v;
+                }
+                cx.notify();
             }
-            if let Some(f) = field(&mut this.app) {
-                *f = v;
-            }
-            cx.notify();
-        }
-    })
+        },
+    )
 }
 
 /// 文字列が（ロジック側で）変わっていたら入力欄に写す。
 /// 日本語入力の変換中は、入力欄の中身に未確定の文字が入っているのに変更の通知（InputEvent::Change）が来ないので、
 /// 食い違って見えても写さない（写すと変換が消え、複数行の欄ではカーソルが先頭に戻る）。
 /// 写したらカーソルは末尾に置く（続きを打てるように）
-fn sync<M: gpui::component::input::InputModeKind + 'static>(e: &Entity<gpui::base::input::InputBaseState<M>>, s: &str, window: &mut Window, cx: &mut App) {
+fn sync<M: gpui::component::input::InputModeKind + 'static>(
+    e: &Entity<gpui::base::input::InputBaseState<M>>,
+    s: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     use gpui::EntityInputHandler as _;
     if e.read(cx).value().as_ref() == s {
         return;
@@ -284,7 +377,10 @@ fn sync<M: gpui::component::input::InputModeKind + 'static>(e: &Entity<gpui::bas
 fn default_family() -> SharedString {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Ok(o) = std::process::Command::new("fc-match").args(["-f", "%{family[0]}", "sans:lang=ja"]).output() {
+        if let Ok(o) = std::process::Command::new("fc-match")
+            .args(["-f", "%{family[0]}", "sans:lang=ja"])
+            .output()
+        {
             if let Ok(s) = String::from_utf8(o.stdout) {
                 if !s.trim().is_empty() {
                     return s.trim().to_string().into();
@@ -305,7 +401,14 @@ fn default_family() -> SharedString {
 
 impl Root {
     /// profile = この区画のアカウントのプロファイル。primary = ウィンドウの最初の区画
-    fn new(window: &mut Window, cx: &mut Context<Self>, profile: Option<String>, primary: bool, lock: Option<std::fs::File>, split_vertical: Rc<Cell<bool>>) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        profile: Option<String>,
+        primary: bool,
+        lock: Option<std::fs::File>,
+        split_vertical: Rc<Cell<bool>>,
+    ) -> Self {
         // 別スレッドからの「描き直して」を受け取る。急がないものは期限までにまとめて1回にする
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<Option<Duration>>();
         let waker = Waker::new(move |d| {
@@ -333,7 +436,10 @@ impl Root {
                     }
                     Some(d) => {
                         let at = Instant::now() + d;
-                        if deadline.get().is_some_and(|t| t <= at && t > Instant::now()) {
+                        if deadline
+                            .get()
+                            .is_some_and(|t| t <= at && t > Instant::now())
+                        {
                             continue;
                         }
                         deadline.set(Some(at));
@@ -352,8 +458,16 @@ impl Root {
         })
         .detach();
 
-        let compose = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 12).submit_on_enter(true));
-        let bio = cx.new(|cx| TextareaState::new(window, cx).auto_grow(4, 8).placeholder("自分について書いてみましょう"));
+        let compose = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, 12)
+                .submit_on_enter(true)
+        });
+        let bio = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(4, 8)
+                .placeholder("自分について書いてみましょう")
+        });
         let inp = Inputs {
             compose,
             dm_filter: new_input(window, cx, "会話を検索", false),
@@ -365,101 +479,164 @@ impl Root {
             name: new_input(window, cx, "", false),
             pronouns: new_input(window, cx, "代名詞を追加", false),
             bio,
-            bg_image: new_input(window, cx, "画像のパスか https:// の URL（空ならテーマの指定）", false),
+            bg_image: new_input(
+                window,
+                cx,
+                "画像のパスか https:// の URL（空ならテーマの指定）",
+                false,
+            ),
             emoji_query: new_input(window, cx, "絵文字を検索", false),
             search: new_input(window, cx, "検索（from: in: has: before: after:）", false),
             thread_name: new_input(window, cx, "スレッド名", false),
             post_title: new_input(window, cx, "タイトル", false),
-            post_body: cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).placeholder("本文を入力")),
+            post_body: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(3, 10)
+                    .placeholder("本文を入力")
+            }),
         };
         let mut subs = vec![
             bind(cx, window, &inp.dm_filter, None, |a| Some(&mut a.dm_filter)),
-            bind(cx, window, &inp.switcher, None, |a| a.switcher.as_mut().map(|s| &mut s.0)),
+            bind(cx, window, &inp.switcher, None, |a| {
+                a.switcher.as_mut().map(|s| &mut s.0)
+            }),
             bind(cx, window, &inp.email, None, |a| Some(&mut a.login.email)),
-            bind(cx, window, &inp.password, None, |a| Some(&mut a.login.password)),
+            bind(cx, window, &inp.password, None, |a| {
+                Some(&mut a.login.password)
+            }),
             bind(cx, window, &inp.mfa, None, |a| Some(&mut a.login.mfa_code)),
-            bind(cx, window, &inp.settings_query, None, |a| Some(&mut a.settings_query)),
-            bind(cx, window, &inp.emoji_query, None, |a| Some(&mut a.emoji_query)),
+            bind(cx, window, &inp.settings_query, None, |a| {
+                Some(&mut a.settings_query)
+            }),
+            bind(cx, window, &inp.emoji_query, None, |a| {
+                Some(&mut a.emoji_query)
+            }),
             bind(cx, window, &inp.search, None, |a| Some(&mut a.search_query)),
-            bind(cx, window, &inp.thread_name, Some(100), |a| Some(&mut a.thread_name)),
-            bind(cx, window, &inp.post_title, Some(100), |a| Some(&mut a.post_title)),
-            bind(cx, window, &inp.post_body, Some(2000), |a| Some(&mut a.post_body)),
-            bind(cx, window, &inp.name, Some(st::PROFILE_NAME_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[0])),
-            bind(cx, window, &inp.pronouns, Some(st::PROFILE_PRONOUNS_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[1])),
-            bind(cx, window, &inp.bio, Some(st::PROFILE_BIO_MAX), |a| a.profile_draft.as_mut().map(|d| &mut d.fields[2])),
+            bind(cx, window, &inp.thread_name, Some(100), |a| {
+                Some(&mut a.thread_name)
+            }),
+            bind(cx, window, &inp.post_title, Some(100), |a| {
+                Some(&mut a.post_title)
+            }),
+            bind(cx, window, &inp.post_body, Some(2000), |a| {
+                Some(&mut a.post_body)
+            }),
+            bind(cx, window, &inp.name, Some(st::PROFILE_NAME_MAX), |a| {
+                a.profile_draft.as_mut().map(|d| &mut d.fields[0])
+            }),
+            bind(
+                cx,
+                window,
+                &inp.pronouns,
+                Some(st::PROFILE_PRONOUNS_MAX),
+                |a| a.profile_draft.as_mut().map(|d| &mut d.fields[1]),
+            ),
+            bind(cx, window, &inp.bio, Some(st::PROFILE_BIO_MAX), |a| {
+                a.profile_draft.as_mut().map(|d| &mut d.fields[2])
+            }),
         ];
         // 入力欄: 文字を写すほか、Enter で送信する
-        subs.push(cx.subscribe_in(&inp.compose, window, |this: &mut Root, state, ev: &InputEvent, window, cx| match ev {
-            InputEvent::Change => {
-                this.app.input = state.read(cx).value().to_string();
-                cx.notify();
-            }
-            InputEvent::PressEnter { shift: false, .. } => {
-                this.submit_input(window, cx);
-            }
-            _ => {}
-        }));
-        subs.push(cx.subscribe_in(&inp.thread_name, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
-            if let InputEvent::PressEnter { .. } = ev {
-                this.app.submit_thread_draft();
-                cx.notify();
-            }
-        }));
-        // 検索: 手を止めたら・Enter で探す
-        subs.push(cx.subscribe_in(&inp.search, window, |this: &mut Root, _, ev: &InputEvent, _, cx| match ev {
-            InputEvent::Change => {
-                this.app.search_typed();
-                cx.notify();
-            }
-            InputEvent::PressEnter { .. } => {
-                this.app.run_search();
-                cx.notify();
-            }
-            _ => {}
-        }));
-        subs.push(cx.subscribe_in(&inp.emoji_query, window, |this: &mut Root, _, ev: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = ev {
-                this.pick_first_emoji(window, cx);
-            }
-        }));
-        // 背景画像の欄は、入力を終えたときに保存する
-        subs.push(cx.subscribe_in(&inp.bg_image, window, |this: &mut Root, state, ev: &InputEvent, _, cx| match ev {
-            InputEvent::Change => {
-                let v = state.read(cx).value().to_string();
-                this.app.settings.background.image = Some(v).filter(|s| !s.is_empty());
-                cx.notify();
-            }
-            InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                this.app.save_settings();
-                this.app.apply_theme(false);
-                cx.notify();
-            }
-            _ => {}
-        }));
-        // ログイン画面の Enter
-        for e in [&inp.email, &inp.password, &inp.mfa] {
-            subs.push(cx.subscribe_in(e, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.login_submit(cx);
-                }
-            }));
-        }
-        subs.push(cx.subscribe_in(&inp.switcher, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
-            if let InputEvent::Change = ev {
-                if let Some(s) = this.app.switcher.as_mut() {
-                    s.1 = 0;
-                }
-                cx.notify();
-            }
-        }));
-        subs.push(cx.subscribe_in(&inp.dm_filter, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
-            if let InputEvent::Blur = ev {
-                if this.app.dm_filter.trim().is_empty() {
-                    this.app.dm_search = false;
+        subs.push(cx.subscribe_in(
+            &inp.compose,
+            window,
+            |this: &mut Root, state, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => {
+                    this.app.input = state.read(cx).value().to_string();
                     cx.notify();
                 }
-            }
-        }));
+                InputEvent::PressEnter { shift: false, .. } => {
+                    this.submit_input(window, cx);
+                }
+                _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &inp.thread_name,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.app.submit_thread_draft();
+                    cx.notify();
+                }
+            },
+        ));
+        // 検索: 手を止めたら・Enter で探す
+        subs.push(cx.subscribe_in(
+            &inp.search,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, _, cx| match ev {
+                InputEvent::Change => {
+                    this.app.search_typed();
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => {
+                    this.app.run_search();
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &inp.emoji_query,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.pick_first_emoji(window, cx);
+                }
+            },
+        ));
+        // 背景画像の欄は、入力を終えたときに保存する
+        subs.push(cx.subscribe_in(
+            &inp.bg_image,
+            window,
+            |this: &mut Root, state, ev: &InputEvent, _, cx| match ev {
+                InputEvent::Change => {
+                    let v = state.read(cx).value().to_string();
+                    this.app.settings.background.image = Some(v).filter(|s| !s.is_empty());
+                    cx.notify();
+                }
+                InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                    this.app.save_settings();
+                    this.app.apply_theme(false);
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
+        // ログイン画面の Enter
+        for e in [&inp.email, &inp.password, &inp.mfa] {
+            subs.push(
+                cx.subscribe_in(e, window, |this: &mut Root, _, ev: &InputEvent, _, cx| {
+                    if let InputEvent::PressEnter { .. } = ev {
+                        this.login_submit(cx);
+                    }
+                }),
+            );
+        }
+        subs.push(cx.subscribe_in(
+            &inp.switcher,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::Change = ev {
+                    if let Some(s) = this.app.switcher.as_mut() {
+                        s.1 = 0;
+                    }
+                    cx.notify();
+                }
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &inp.dm_filter,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::Blur = ev {
+                    if this.app.dm_filter.trim().is_empty() {
+                        this.app.dm_search = false;
+                        cx.notify();
+                    }
+                }
+            },
+        ));
         // ウィンドウを閉じたときの控えの保存は split::Shell が区画ごとに行う
         let app = AppState::new(waker, profile);
         set_zoom(app.settings.zoom);
@@ -524,25 +701,37 @@ impl Root {
     fn apply_fonts(&mut self, cx: &mut Context<Self>) {
         let want = self.app.theme_applied.as_ref().and_then(|t| t.font.clone());
         match want {
-            Some(path) if self.theme_font.as_ref().map(|f| &f.0) != Some(&path) => match std::fs::read(&path) {
-                Ok(bytes) => {
-                    let before: std::collections::HashSet<String> = cx.text_system().all_font_names().into_iter().collect();
-                    if cx.text_system().add_fonts(vec![bytes.into()]).is_ok() {
-                        let family = cx.text_system().all_font_names().into_iter().find(|n| !before.contains(n));
-                        if let Some(f) = family {
-                            self.theme_font = Some((path, f.into()));
+            Some(path) if self.theme_font.as_ref().map(|f| &f.0) != Some(&path) => {
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let before: std::collections::HashSet<String> =
+                            cx.text_system().all_font_names().into_iter().collect();
+                        if cx.text_system().add_fonts(vec![bytes.into()]).is_ok() {
+                            let family = cx
+                                .text_system()
+                                .all_font_names()
+                                .into_iter()
+                                .find(|n| !before.contains(n));
+                            if let Some(f) = family {
+                                self.theme_font = Some((path, f.into()));
+                            }
                         }
                     }
+                    Err(e) => {
+                        self.app.theme_error = Some(format!("フォント {}: {e}", path.display()))
+                    }
                 }
-                Err(e) => self.app.theme_error = Some(format!("フォント {}: {e}", path.display())),
-            },
+            }
             Some(_) => {}
             None => self.theme_font = None,
         }
     }
 
     pub fn family(&self) -> SharedString {
-        self.theme_font.as_ref().map(|f| f.1.clone()).unwrap_or_else(|| self.font_family.clone())
+        self.theme_font
+            .as_ref()
+            .map(|f| f.1.clone())
+            .unwrap_or_else(|| self.font_family.clone())
     }
 
     /// gpui-component の部品（入力欄・スライダーなど）の色をテーマに合わせる
@@ -608,19 +797,40 @@ impl Root {
         let vertical = split && self.split_vertical.get();
         let width = f32::from(vp.width);
         let height = f32::from(vp.height);
-        self.app.screen_w = if split && !vertical { (width - split::DIVIDER).max(0.0) / 2.0 } else { width } / zoom();
-        self.pane_h = (if vertical { (height - split::DIVIDER).max(0.0) / 2.0 } else { height }) / zoom()
+        self.app.screen_w = if split && !vertical {
+            (width - split::DIVIDER).max(0.0) / 2.0
+        } else {
+            width
+        } / zoom();
+        self.pane_h = (if vertical {
+            (height - split::DIVIDER).max(0.0) / 2.0
+        } else {
+            height
+        }) / zoom()
             - if split { split::HEADER_H } else { 0.0 };
         self.pane_h = self.pane_h.max(0.0);
-        if self.app.theme_watch.as_ref().is_some_and(|rx| rx.try_iter().count() > 0) {
+        if self
+            .app
+            .theme_watch
+            .as_ref()
+            .is_some_and(|rx| rx.try_iter().count() > 0)
+        {
             self.app.apply_theme(true);
         }
         self.app.window_focused = self.pane_active(window, cx);
         self.app.poll();
-        if self.video.as_ref().is_some_and(|v| self.app.sel_channel.as_deref() != Some(v.channel.as_str())) { self.video = None; }
+        if self
+            .video
+            .as_ref()
+            .is_some_and(|v| self.app.sel_channel.as_deref() != Some(v.channel.as_str()))
+        {
+            self.video = None;
+        }
         if let Some(video) = &mut self.video {
             video.poll();
-            if !video.paused && video.error.is_none() { self.app.repaint_after(Duration::from_millis(250)); }
+            if !video.paused && video.error.is_none() {
+                self.app.repaint_after(Duration::from_millis(250));
+            }
         }
         self.poll_stream_image();
         if !self.downloads.is_empty() {
@@ -629,10 +839,20 @@ impl Root {
             // 終わったもの（保存した・失敗した・やめた）と、何も言わずに止まったものは外す
             self.downloads.retain(|(_, rx)| loop {
                 match rx.try_recv() {
-                    Ok(crate::download::Event::Started) => app.show_toast("ダウンロードしています…"),
-                    Ok(crate::download::Event::Finished(path)) => { app.show_toast(&format!("保存しました: {}", path.display())); break false; }
-                    Ok(crate::download::Event::Failed(error)) => { app.show_toast(&error); break false; }
-                    Ok(crate::download::Event::Cancelled) | Err(TryRecvError::Disconnected) => break false,
+                    Ok(crate::download::Event::Started) => {
+                        app.show_toast("ダウンロードしています…")
+                    }
+                    Ok(crate::download::Event::Finished(path)) => {
+                        app.show_toast(&format!("保存しました: {}", path.display()));
+                        break false;
+                    }
+                    Ok(crate::download::Event::Failed(error)) => {
+                        app.show_toast(&error);
+                        break false;
+                    }
+                    Ok(crate::download::Event::Cancelled) | Err(TryRecvError::Disconnected) => {
+                        break false
+                    }
                     Err(TryRecvError::Empty) => break true,
                 }
             });
@@ -675,7 +895,11 @@ impl Root {
             cx.drop_image(img, Some(window));
         }
         // 行の高さに効く設定が変わったら測り直す
-        let key = (self.app.settings.font_size.to_bits(), zoom().to_bits(), self.app.settings.compact);
+        let key = (
+            self.app.settings.font_size.to_bits(),
+            zoom().to_bits(),
+            self.app.settings.compact,
+        );
         if key != self.list_key {
             self.list_key = key;
             for l in self.lists.values() {
@@ -694,7 +918,12 @@ impl Root {
         sync(&self.inp.password, &self.app.login.password, window, cx);
         sync(&self.inp.mfa, &self.app.login.mfa_code, window, cx);
         sync(&self.inp.dm_filter, &self.app.dm_filter, window, cx);
-        sync(&self.inp.settings_query, &self.app.settings_query, window, cx);
+        sync(
+            &self.inp.settings_query,
+            &self.app.settings_query,
+            window,
+            cx,
+        );
         sync(&self.inp.search, &self.app.search_query, window, cx);
         sync(&self.inp.thread_name, &self.app.thread_name, window, cx);
         sync(&self.inp.post_title, &self.app.post_title, window, cx);
@@ -710,7 +939,11 @@ impl Root {
         if self.app.focus_input {
             self.app.focus_input = false;
             if self.app.in_home()
-                && self.app.sel_channel.as_ref().is_some_and(|id| !self.app.no_access.contains(id))
+                && self
+                    .app
+                    .sel_channel
+                    .as_ref()
+                    .is_some_and(|id| !self.app.no_access.contains(id))
                 && !self.app.settings_open
                 && self.app.switcher.is_none()
                 && self.app.pending_delete.is_none()
@@ -737,7 +970,8 @@ impl Root {
 
     /// ウィンドウが前にあり、分割表示ならこの区画を操作中か（既読・通知の判断に使う）
     pub fn pane_active(&self, window: &Window, cx: &App) -> bool {
-        window.is_window_active() && (self.other.is_none() || self.focus.contains_focused(window, cx))
+        window.is_window_active()
+            && (self.other.is_none() || self.focus.contains_focused(window, cx))
     }
 
     fn window_title(&self) -> String {
@@ -747,7 +981,13 @@ impl Root {
                 .guilds
                 .iter()
                 .find(|g| &g.id == gid)
-                .map(|g| format!("#{} - {} - Discord", c.name.as_deref().unwrap_or_default(), g.name))
+                .map(|g| {
+                    format!(
+                        "#{} - {} - Discord",
+                        c.name.as_deref().unwrap_or_default(),
+                        g.name
+                    )
+                })
                 .unwrap_or_else(|| "Discord".into()),
             (Some(c), None) => format!("@{} - Discord", c.dm_label()),
             (None, _) => "Discord".into(),
@@ -769,7 +1009,11 @@ impl Root {
             // 送っても Discord に断られるので、送らずに入力を残して知らせる
             a.compose_notice = Some((format!("本文は{limit}文字までです（いま{len}文字）。{}文字減らすか、分けて送ってください。", len - limit), Instant::now()));
             a.repaint_after(st::COMPOSE_NOTICE_TTL);
-        } else if a.sel_channel.as_ref().is_some_and(|cid| !a.compose_submissions.contains_key(cid)) {
+        } else if a
+            .sel_channel
+            .as_ref()
+            .is_some_and(|cid| !a.compose_submissions.contains_key(cid))
+        {
             let content = std::mem::take(&mut a.input);
             if !content.trim().is_empty() || a.editing.is_some() || !a.uploads.is_empty() {
                 if let Some(cid) = a.sel_channel.clone() {
@@ -793,7 +1037,12 @@ impl Root {
     pub fn edit_last(&mut self) {
         let a = &mut self.app;
         let me = a.me.as_ref().map(|u| u.id.clone());
-        let last = a.sel_channel.as_ref().and_then(|c| a.messages.get(c)).and_then(|l| l.iter().rev().find(|m| Some(&m.author.id) == me.as_ref())).cloned();
+        let last = a
+            .sel_channel
+            .as_ref()
+            .and_then(|c| a.messages.get(c))
+            .and_then(|l| l.iter().rev().find(|m| Some(&m.author.id) == me.as_ref()))
+            .cloned();
         if let Some(m) = last {
             a.input = crate::emoji::shorten(&m.content).0;
             a.editing = Some(m);
@@ -817,15 +1066,24 @@ impl Root {
     fn after_nav(&mut self) {
         let a = &mut self.app;
         let here = a.sel_channel.clone();
-        if a.editing.as_ref().is_some_and(|m| Some(&m.channel_id) != here.as_ref()) {
+        if a.editing
+            .as_ref()
+            .is_some_and(|m| Some(&m.channel_id) != here.as_ref())
+        {
             a.editing = None;
             a.input.clear();
         }
-        if a.reply_to.as_ref().is_some_and(|m| Some(&m.channel_id) != here.as_ref()) {
+        if a.reply_to
+            .as_ref()
+            .is_some_and(|m| Some(&m.channel_id) != here.as_ref())
+        {
             a.reply_to = None;
         }
         // ピン一覧はそのチャンネルのものなので、移ったら閉じる
-        if a.pins.as_ref().is_some_and(|p| Some(&p.channel_id) != here.as_ref()) {
+        if a.pins
+            .as_ref()
+            .is_some_and(|p| Some(&p.channel_id) != here.as_ref())
+        {
             a.close_side();
         }
         if a.upload_channel != a.sel_channel {
@@ -841,7 +1099,11 @@ impl Root {
     pub fn navigate(&mut self, back: bool) {
         let a = &mut self.app;
         let before = (a.sel_guild.clone(), a.sel_channel.clone());
-        let (from, to) = if back { (&mut a.nav_back, &mut a.nav_fwd) } else { (&mut a.nav_fwd, &mut a.nav_back) };
+        let (from, to) = if back {
+            (&mut a.nav_back, &mut a.nav_fwd)
+        } else {
+            (&mut a.nav_fwd, &mut a.nav_back)
+        };
         if let Some((g, c)) = from.pop() {
             to.push(before);
             a.select(g, c);
@@ -908,7 +1170,11 @@ impl Root {
             return;
         }
         if m.control && !m.alt && !m.shift && k.key == "k" {
-            self.app.switcher = if self.app.switcher.is_some() { None } else { Some((String::new(), 0)) };
+            self.app.switcher = if self.app.switcher.is_some() {
+                None
+            } else {
+                Some((String::new(), 0))
+            };
             if self.app.switcher.is_some() {
                 self.inp.switcher.update(cx, |s, cx| s.focus(window, cx));
             }
@@ -948,7 +1214,10 @@ impl Root {
             match k.key.as_str() {
                 "enter" => {
                     if let Some(m) = self.app.pending_delete.take() {
-                        self.app.send(crate::net::Cmd::Delete { channel_id: m.channel_id, id: m.id });
+                        self.app.send(crate::net::Cmd::Delete {
+                            channel_id: m.channel_id,
+                            id: m.id,
+                        });
                     }
                 }
                 "escape" => self.app.pending_delete = None,
@@ -975,7 +1244,11 @@ impl Root {
                     let order = self.app.sidebar_order();
                     if !order.is_empty() {
                         let d = if k.key == "up" { -1 } else { 1 };
-                        let i = self.app.sel_channel.as_ref().and_then(|c| order.iter().position(|x| x == c));
+                        let i = self
+                            .app
+                            .sel_channel
+                            .as_ref()
+                            .and_then(|c| order.iter().position(|x| x == c));
                         let n = match i {
                             Some(i) => (i as i32 + d).clamp(0, order.len() as i32 - 1) as usize,
                             None => 0,
@@ -989,9 +1262,21 @@ impl Root {
             cx.notify();
             return;
         }
-        let compose_focused = self.inp.compose.read(cx).focus_handle(cx).is_focused(window);
+        let compose_focused = self
+            .inp
+            .compose
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
         // Shift+L: 最新のメッセージへ。案内が出ているときだけで、入力中の文字の L は打てるようにする
-        if m.shift && !m.control && !m.alt && !m.platform && k.key.eq_ignore_ascii_case("l") && self.scrolled_up() && (!compose_focused || self.app.input.is_empty()) {
+        if m.shift
+            && !m.control
+            && !m.alt
+            && !m.platform
+            && k.key.eq_ignore_ascii_case("l")
+            && self.scrolled_up()
+            && (!compose_focused || self.app.input.is_empty())
+        {
             self.jump_to_latest();
             cx.stop_propagation();
             cx.notify();
@@ -1003,7 +1288,11 @@ impl Root {
                 self.cancel_compose();
                 cx.stop_propagation();
                 cx.notify();
-            } else if k.key == "up" && !m.modified() && self.app.input.is_empty() && self.app.editing.is_none() {
+            } else if k.key == "up"
+                && !m.modified()
+                && self.app.input.is_empty()
+                && self.app.editing.is_none()
+            {
                 self.edit_last();
                 cx.stop_propagation();
                 cx.notify();
@@ -1017,14 +1306,23 @@ impl Root {
         if !a.in_home() || a.settings_open || a.switcher.is_some() || a.pending_delete.is_some() {
             return;
         }
-        if !self.focus.is_focused(window) || !a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) {
+        if !self.focus.is_focused(window)
+            || !a
+                .sel_channel
+                .as_ref()
+                .is_some_and(|id| !a.no_access.contains(id))
+        {
             return;
         }
         let k = &ev.keystroke;
         if k.modifiers.control || k.modifiers.alt {
             return;
         }
-        if let Some(ch) = k.key_char.as_ref().filter(|c| !c.chars().any(char::is_control)) {
+        if let Some(ch) = k
+            .key_char
+            .as_ref()
+            .filter(|c| !c.chars().any(char::is_control))
+        {
             self.app.input.push_str(ch);
             self.app.focus_input = true;
             cx.notify();
@@ -1037,7 +1335,10 @@ impl Root {
         if !s.ptt || self.app.binding_ptt {
             return;
         }
-        if s.ptt_key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(key)) {
+        if s.ptt_key
+            .as_deref()
+            .is_some_and(|k| k.eq_ignore_ascii_case(key))
+        {
             self.app.voice.ptt_down.store(down, Relaxed);
         }
     }
@@ -1054,7 +1355,12 @@ impl Root {
 
     /// テーマで「ウィンドウ全体」に敷く背景画像
     fn window_background(&self) -> Option<AnyElement> {
-        let bg = self.app.theme_applied.as_ref().and_then(|t| t.background.as_ref()).filter(|b| b.window)?;
+        let bg = self
+            .app
+            .theme_applied
+            .as_ref()
+            .and_then(|t| t.background.as_ref())
+            .filter(|b| b.window)?;
         Some(background(bg, opaque(BG())).into_any_element())
     }
 }
@@ -1069,7 +1375,14 @@ pub fn background(bg: &crate::theme::BackgroundImage, dim: Color32) -> Div {
     // 地の色の上に、見え具合ぶんだけ透かした画像を置く（= 画像に地の色を重ねて暗くしたのと同じ）
     let d = div().absolute().inset_0().bg(dim);
     match loaded(&bg.uri) {
-        Some(i) => d.child(img(i).absolute().inset_0().size_full().object_fit(ObjectFit::Cover).opacity(bg.opacity)),
+        Some(i) => d.child(
+            img(i)
+                .absolute()
+                .inset_0()
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .opacity(bg.opacity),
+        ),
         None => d,
     }
 }
@@ -1077,7 +1390,11 @@ pub fn background(bg: &crate::theme::BackgroundImage, dim: Color32) -> Div {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.before_render(window, cx);
-        let content = if !self.app.in_home() { self.login_view(window, cx).into_any_element() } else { self.main_view(window, cx).into_any_element() };
+        let content = if !self.app.in_home() {
+            self.login_view(window, cx).into_any_element()
+        } else {
+            self.main_view(window, cx).into_any_element()
+        };
         div()
             .id("root")
             .track_focus(&self.focus)
@@ -1090,28 +1407,71 @@ impl Render for Root {
             .line_height(relative(1.375))
             .capture_key_down(cx.listener(Self::on_key_capture))
             // :名前: の補完中は、入力欄より先にキーを受け取る（補完していなければ素通し）
-            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveUp, window, cx| if !this.command_ac_key(emoji::AcKey::Up, window, cx) { this.emoji_ac_key(emoji::AcKey::Up, window, cx) }))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::MoveDown, window, cx| if !this.command_ac_key(emoji::AcKey::Down, window, cx) { this.emoji_ac_key(emoji::AcKey::Down, window, cx) }))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::IndentInline, window, cx| if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) { this.emoji_ac_key(emoji::AcKey::Confirm, window, cx) }))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::Enter, window, cx| if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) { this.emoji_ac_key(emoji::AcKey::Confirm, window, cx) }))
-            .capture_action(cx.listener(|this, _: &gpui::base::input::Escape, window, cx| if !this.command_ac_key(emoji::AcKey::Dismiss, window, cx) { this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx) }))
+            .capture_action(
+                cx.listener(|this, _: &gpui::base::input::MoveUp, window, cx| {
+                    if !this.command_ac_key(emoji::AcKey::Up, window, cx) {
+                        this.emoji_ac_key(emoji::AcKey::Up, window, cx)
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &gpui::base::input::MoveDown, window, cx| {
+                    if !this.command_ac_key(emoji::AcKey::Down, window, cx) {
+                        this.emoji_ac_key(emoji::AcKey::Down, window, cx)
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &gpui::base::input::IndentInline, window, cx| {
+                    if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) {
+                        this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &gpui::base::input::Enter, window, cx| {
+                    if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) {
+                        this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &gpui::base::input::Escape, window, cx| {
+                    if !this.command_ac_key(emoji::AcKey::Dismiss, window, cx) {
+                        this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx)
+                    }
+                }),
+            )
             .on_key_down(cx.listener(Self::on_key_bubble))
-            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, _| this.ptt(&ev.keystroke.key, false)))
-            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, _, cx| {
-                if this.app.in_home() && !this.app.settings_open {
-                    this.navigate(true);
-                    cx.notify();
-                }
-            }))
-            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, _, cx| {
-                if this.app.in_home() && !this.app.settings_open {
-                    this.navigate(false);
-                    cx.notify();
-                }
-            }))
+            .capture_key_up(
+                cx.listener(|this, ev: &KeyUpEvent, _, _| this.ptt(&ev.keystroke.key, false)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, _, cx| {
+                    if this.app.in_home() && !this.app.settings_open {
+                        this.navigate(true);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, _, cx| {
+                    if this.app.in_home() && !this.app.settings_open {
+                        this.navigate(false);
+                        cx.notify();
+                    }
+                }),
+            )
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let a = &this.app;
-                if a.in_home() && a.sel_channel.as_ref().is_some_and(|id| !a.no_access.contains(id)) && a.editing.is_none() {
+                if a.in_home()
+                    && a.sel_channel
+                        .as_ref()
+                        .is_some_and(|id| !a.no_access.contains(id))
+                    && a.editing.is_none()
+                {
                     this.app.attach_paths(paths.paths().to_vec());
                     cx.notify();
                 }

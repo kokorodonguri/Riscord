@@ -17,7 +17,11 @@ impl Inflater {
     pub(crate) const MAX_MESSAGE: usize = 64 << 20;
 
     pub(crate) fn new() -> Self {
-        Inflater { z: flate2::Decompress::new(true), buf: Vec::new(), out: Vec::new() }
+        Inflater {
+            z: flate2::Decompress::new(true),
+            buf: Vec::new(),
+            out: Vec::new(),
+        }
     }
 
     /// 受け取ったバイナリを足し、1件そろったら展開した JSON 文字列を返す
@@ -43,7 +47,12 @@ impl Inflater {
         let mut input = &self.buf[..];
         loop {
             if self.out.len() == self.out.capacity() {
-                let target = self.out.capacity().saturating_mul(2).max(64 * 1024).min(limit + 1);
+                let target = self
+                    .out
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(64 * 1024)
+                    .min(limit + 1);
                 if target == limit + 1 {
                     // 上限判定の1バイトのために、確保容量をさらに倍増させない。
                     self.out.reserve_exact(target - self.out.len());
@@ -52,7 +61,8 @@ impl Inflater {
                 }
             }
             let (in0, out0) = (self.z.total_in(), self.z.total_out());
-            self.z.decompress_vec(input, &mut self.out, flate2::FlushDecompress::Sync)?;
+            self.z
+                .decompress_vec(input, &mut self.out, flate2::FlushDecompress::Sync)?;
             let used = (self.z.total_in() - in0) as usize;
             let made = self.z.total_out() - out0;
             if self.out.len() > limit {

@@ -49,7 +49,10 @@ pub fn token_owner(token: &str) -> Option<String> {
     use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
     use base64::Engine as _;
     let head = token.trim().split('.').next()?.trim_end_matches('=');
-    let bytes = STANDARD_NO_PAD.decode(head).or_else(|_| URL_SAFE_NO_PAD.decode(head)).ok()?;
+    let bytes = STANDARD_NO_PAD
+        .decode(head)
+        .or_else(|_| URL_SAFE_NO_PAD.decode(head))
+        .ok()?;
     let id = String::from_utf8(bytes).ok()?;
     (!id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
 }
@@ -69,15 +72,43 @@ pub fn load(profile: Option<&str>, token: &str) -> Option<Snapshot> {
         }
     };
     let owner = token_owner(token)?;
-    (s.version == VERSION && s.owner == owner && s.me.as_ref().is_some_and(|m| m.id == owner)).then_some(s)
+    (s.version == VERSION && s.owner == owner && s.me.as_ref().is_some_and(|m| m.id == owner))
+        .then_some(s)
 }
 
 /// 同時に2つ書いて壊さないように
 static WRITE: Mutex<()> = Mutex::new(());
+static GENERATIONS: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, u64>>> =
+    std::sync::OnceLock::new();
+
+pub fn generation(profile: Option<&str>) -> u64 {
+    *GENERATIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .get(&path(profile))
+        .unwrap_or(&0)
+}
+
+pub fn write_if_current(
+    profile: Option<&str>,
+    bytes: &[u8],
+    generation: u64,
+) -> std::io::Result<()> {
+    let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    if self::generation(profile) != generation {
+        return Ok(());
+    }
+    write_unlocked(profile, bytes)
+}
 
 /// 一時ファイルに書いてから置き換える（途中で落ちても前の控えが残る）
 pub fn write(profile: Option<&str>, bytes: &[u8]) -> std::io::Result<()> {
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    write_unlocked(profile, bytes)
+}
+
+fn write_unlocked(profile: Option<&str>, bytes: &[u8]) -> std::io::Result<()> {
     let p = path(profile);
     std::fs::create_dir_all(p.parent().unwrap())?;
     let tmp = p.with_extension("json.tmp");
@@ -101,7 +132,11 @@ pub fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 /// ログアウト・ログイン失敗のとき。会話の控えを残さない
 pub fn remove(profile: Option<&str>) {
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = std::fs::remove_file(path(profile));
+    let p = path(profile);
+    let mut generations = GENERATIONS.get_or_init(Default::default).lock().unwrap();
+    let generation = generations.entry(p.clone()).or_default();
+    *generation = generation.wrapping_add(1);
+    let _ = std::fs::remove_file(p);
 }
 
 /// アイコンの控えがこれより多くなったら、古いものから捨てる
@@ -110,7 +145,9 @@ const KEEP_IMAGES: usize = 2000;
 
 /// アイコンの控えを上限まで減らす（起動時に裏で1回）
 pub fn prune_images() {
-    let Ok(dir) = std::fs::read_dir(image_dir()) else { return };
+    let Ok(dir) = std::fs::read_dir(image_dir()) else {
+        return;
+    };
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = dir
         .filter_map(|e| e.ok())
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
@@ -121,5 +158,23 @@ pub fn prune_images() {
     files.sort();
     for (_, p) in &files[..files.len() - KEEP_IMAGES] {
         let _ = std::fs::remove_file(p);
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    #[test]
+    fn removal_invalidates_queued_writes() {
+        let profile = Some("cache-generation-test");
+        let old = generation(profile);
+        write_if_current(profile, b"old", old).unwrap();
+        remove(profile);
+        write_if_current(profile, b"stale", old).unwrap();
+        assert!(!path(profile).exists());
+        write_if_current(profile, b"new", generation(profile)).unwrap();
+        assert_eq!(std::fs::read(path(profile)).unwrap(), b"new");
+        remove(profile);
     }
 }

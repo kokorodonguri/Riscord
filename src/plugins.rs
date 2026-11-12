@@ -332,11 +332,17 @@ impl Plugins {
         self.revision = self.revision.wrapping_add(1);
         if on {
             for plugin in &mut self.entries {
-                if !enabled.contains(&plugin.manifest.id) { enabled.push(plugin.manifest.id.clone()); }
-                if !plugin.running() { plugin.start(&self.data_root); }
+                if !enabled.contains(&plugin.manifest.id) {
+                    enabled.push(plugin.manifest.id.clone());
+                }
+                if !plugin.running() {
+                    plugin.start(&self.data_root);
+                }
             }
         } else {
-            for plugin in &mut self.entries { plugin.stop(); }
+            for plugin in &mut self.entries {
+                plugin.stop();
+            }
             enabled.clear();
             self.selected = None;
         }
@@ -540,7 +546,10 @@ impl Plugins {
     }
     /// MessageLogger が動いていれば、その記録の条件
     pub fn logger_options(&mut self) -> Option<crate::message_log::Options> {
-        let p = self.entries.iter_mut().find(|p| p.manifest.id == "message-logger")?;
+        let p = self
+            .entries
+            .iter_mut()
+            .find(|p| p.manifest.id == "message-logger")?;
         let result = p.runtime.as_ref()?.call("logger_options", ());
         match result {
             Ok(Value::Table(t)) => Some(crate::message_log::Options {
@@ -555,7 +564,9 @@ impl Plugins {
         }
     }
     pub fn logger_enabled(&self) -> bool {
-        self.entries.iter().any(|p| p.manifest.id == "message-logger" && p.running())
+        self.entries
+            .iter()
+            .any(|p| p.manifest.id == "message-logger" && p.running())
     }
     pub fn transform(&mut self, name: &str, content: &str, channel: &str) -> String {
         let mut content = content.to_owned();
@@ -699,7 +710,10 @@ impl Plugin {
     }
     pub fn has_page(&self) -> bool {
         self.runtime.as_ref().is_some_and(|runtime| {
-            runtime.lua.globals().raw_get::<Table>("__plugin")
+            runtime
+                .lua
+                .globals()
+                .raw_get::<Table>("__plugin")
                 .and_then(|callbacks| callbacks.raw_get::<Value>("page"))
                 .is_ok_and(|value| matches!(value, Value::Function(_)))
         })
@@ -779,7 +793,14 @@ mod tests {
     fn set_all_starts_stops_and_preserves_running_plugin_state() {
         let mut plugins = Plugins::default();
         for id in ["first", "second"] {
-            let manifest = Manifest { id: id.into(), name: id.into(), version: "1".into(), description: String::new(), api: 1, entry: "main.lua".into() };
+            let manifest = Manifest {
+                id: id.into(),
+                name: id.into(),
+                version: "1".into(),
+                description: String::new(),
+                api: 1,
+                entry: "main.lua".into(),
+            };
             plugins.entries.push(Plugin { manifest, error: None, runtime: None, path: PathBuf::new(), bundled_source: Some("local count = 0; return {start=function() count=count+1 end, page=function() return count end}") });
         }
         let mut enabled = vec!["missing".to_string()];

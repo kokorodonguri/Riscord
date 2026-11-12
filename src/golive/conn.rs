@@ -30,8 +30,15 @@ pub struct Params {
 }
 
 pub enum Role {
-    Broadcast { capture: Capture, frames: mpsc::Receiver<Encoded>, quality: Quality },
-    Watch { streamer: u64, decoder: Decoder },
+    Broadcast {
+        capture: Capture,
+        frames: mpsc::Receiver<Encoded>,
+        quality: Quality,
+    },
+    Watch {
+        streamer: u64,
+        decoder: Decoder,
+    },
 }
 
 /// 接続の様子を UI に知らせる
@@ -40,7 +47,8 @@ pub enum Report {
     Live,
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Dave {
     session: Option<DaveSession>,
@@ -57,8 +65,12 @@ impl Dave {
         match NonZeroU16::new(self.version) {
             Some(v) => {
                 let r = match &mut self.session {
-                    Some(s) => s.reinit(v, self.user_id, self.channel_id, None).map_err(|e| format!("{e:?}")),
-                    None => DaveSession::new(v, self.user_id, self.channel_id, None).map(|s| self.session = Some(s)).map_err(|e| format!("{e:?}")),
+                    Some(s) => s
+                        .reinit(v, self.user_id, self.channel_id, None)
+                        .map_err(|e| format!("{e:?}")),
+                    None => DaveSession::new(v, self.user_id, self.channel_id, None)
+                        .map(|s| self.session = Some(s))
+                        .map_err(|e| format!("{e:?}")),
                 };
                 if let Err(e) = r {
                     eprintln!("DAVE を初期化できません: {e}");
@@ -78,7 +90,9 @@ impl Dave {
     }
 
     fn execute(&mut self, id: u16) {
-        let Some(new) = self.pending.remove(&id) else { return };
+        let Some(new) = self.pending.remove(&id) else {
+            return;
+        };
         let old = self.version;
         self.version = new;
         if id > 0 && old == 0 && new != 0 {
@@ -101,7 +115,8 @@ fn binary(op: u8, data: &[u8]) -> Vec<u8> {
 }
 
 async fn send_json(ws: &mut Ws, op: u8, d: Value) -> Result<()> {
-    ws.send(WsMsg::Text(json!({ "op": op, "d": d }).to_string().into())).await?;
+    ws.send(WsMsg::Text(json!({ "op": op, "d": d }).to_string().into()))
+        .await?;
     Ok(())
 }
 
@@ -114,9 +129,24 @@ fn codecs() -> Value {
 }
 
 /// 接続して、stop が来るまで送受信を続ける
-pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut stop: oneshot::Receiver<()>) -> Result<()> {
-    let url = format!("wss://{}/?v=8", p.endpoint.trim_start_matches("wss://").trim_end_matches('/'));
-    let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(&url)).await.context("配信サーバーへの接続がタイムアウトしました")??;
+pub async fn run(
+    p: Params,
+    mut role: Role,
+    report: impl Fn(Report) + Send,
+    mut stop: oneshot::Receiver<()>,
+) -> Result<()> {
+    let url = format!(
+        "wss://{}/?v=8",
+        p.endpoint
+            .trim_start_matches("wss://")
+            .trim_end_matches('/')
+    );
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .context("配信サーバーへの接続がタイムアウトしました")??;
     send_json(
         &mut ws,
         0,
@@ -132,8 +162,19 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     )
     .await?;
 
-    let dave_channel = p.rtc_server_id.parse::<u64>().map_err(|_| anyhow!("不正な rtc_server_id"))?.saturating_sub(1);
-    let mut dave = Dave { session: None, version: 0, pending: HashMap::new(), users: HashSet::from([p.user_id]), user_id: p.user_id, channel_id: dave_channel };
+    let dave_channel = p
+        .rtc_server_id
+        .parse::<u64>()
+        .map_err(|_| anyhow!("不正な rtc_server_id"))?
+        .saturating_sub(1);
+    let mut dave = Dave {
+        session: None,
+        version: 0,
+        pending: HashMap::new(),
+        users: HashSet::from([p.user_id]),
+        user_id: p.user_id,
+        channel_id: dave_channel,
+    };
     let mut seq_ack: i64 = -1;
     let mut early: Vec<Value> = Vec::new();
 
@@ -141,7 +182,10 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     let mut hello: Option<f64> = None;
     let mut ready: Option<Value> = None;
     while hello.is_none() || ready.is_none() {
-        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.context("配信サーバーの応答がありません")?.ok_or_else(|| anyhow!("配信サーバーが切断しました"))??;
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .context("配信サーバーの応答がありません")?
+            .ok_or_else(|| anyhow!("配信サーバーが切断しました"))??;
         match msg {
             WsMsg::Text(t) => {
                 let v: Value = serde_json::from_str(&t)?;
@@ -161,14 +205,33 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     let ready = ready.unwrap();
     debug(format_args!("Ready: {}", ready));
     let hb_every = Duration::from_secs_f64(hello.unwrap().max(1000.0) / 1000.0);
-    let ssrc = ready["ssrc"].as_u64().ok_or_else(|| anyhow!("ssrc がありません"))? as u32;
+    let ssrc = ready["ssrc"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("ssrc がありません"))? as u32;
     let stream = &ready["streams"][0];
-    let video_ssrc = stream["ssrc"].as_u64().map(|v| v as u32).unwrap_or(ssrc + 1);
-    let rtx_ssrc = stream["rtx_ssrc"].as_u64().map(|v| v as u32).unwrap_or(ssrc + 2);
-    let ip: IpAddr = ready["ip"].as_str().ok_or_else(|| anyhow!("ip がありません"))?.parse()?;
-    let port = ready["port"].as_u64().ok_or_else(|| anyhow!("port がありません"))? as u16;
-    let modes: Vec<String> = ready["modes"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect();
-    let mode = rtp::choose_mode(&modes).ok_or_else(|| anyhow!("対応している暗号方式がありません: {modes:?}"))?;
+    let video_ssrc = stream["ssrc"]
+        .as_u64()
+        .map(|v| v as u32)
+        .unwrap_or(ssrc + 1);
+    let rtx_ssrc = stream["rtx_ssrc"]
+        .as_u64()
+        .map(|v| v as u32)
+        .unwrap_or(ssrc + 2);
+    let ip: IpAddr = ready["ip"]
+        .as_str()
+        .ok_or_else(|| anyhow!("ip がありません"))?
+        .parse()?;
+    let port = ready["port"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("port がありません"))? as u16;
+    let modes: Vec<String> = ready["modes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str().map(String::from))
+        .collect();
+    let mode = rtp::choose_mode(&modes)
+        .ok_or_else(|| anyhow!("対応している暗号方式がありません: {modes:?}"))?;
 
     // ---- UDP と IP 探索 ----
     let udp = UdpSocket::bind(if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).await?;
@@ -181,7 +244,9 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     let (my_ip, my_port) = 'found: {
         for _ in 0..5 {
             udp.send(&disc).await?;
-            if let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(1), udp.recv(&mut buf)).await {
+            if let Ok(Ok(n)) =
+                tokio::time::timeout(Duration::from_secs(1), udp.recv(&mut buf)).await
+            {
                 if n >= 74 && u16::from_be_bytes([buf[0], buf[1]]) == 2 {
                     let raw = &buf[8..72];
                     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
@@ -196,7 +261,10 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
 
     // ---- Session Description を待つ ----
     let cipher = loop {
-        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.context("暗号鍵が届きません")?.ok_or_else(|| anyhow!("配信サーバーが切断しました"))??;
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .context("暗号鍵が届きません")?
+            .ok_or_else(|| anyhow!("配信サーバーが切断しました"))??;
         match msg {
             WsMsg::Text(t) => {
                 let v: Value = serde_json::from_str(&t)?;
@@ -205,8 +273,16 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
                 }
                 if v["op"].as_u64() == Some(4) {
                     let d = &v["d"];
-                    debug(format_args!("Session Description: mode={} video_codec={} dave={}", d["mode"], d["video_codec"], d["dave_protocol_version"]));
-                    let key: Vec<u8> = d["secret_key"].as_array().into_iter().flatten().filter_map(|b| b.as_u64().map(|b| b as u8)).collect();
+                    debug(format_args!(
+                        "Session Description: mode={} video_codec={} dave={}",
+                        d["mode"], d["video_codec"], d["dave_protocol_version"]
+                    ));
+                    let key: Vec<u8> = d["secret_key"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|b| b.as_u64().map(|b| b as u8))
+                        .collect();
                     let m = d["mode"].as_str().unwrap_or(mode);
                     if let Some(c) = d["video_codec"].as_str() {
                         if !c.eq_ignore_ascii_case("H264") {
@@ -237,7 +313,11 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     let mut live = false;
     let mut stats = WatchStats::default();
     match &mut role {
-        Role::Broadcast { quality: q, capture, .. } => {
+        Role::Broadcast {
+            quality: q,
+            capture,
+            ..
+        } => {
             send_json(
                 &mut ws,
                 12,
@@ -251,14 +331,24 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
                 }),
             )
             .await?;
-            send_json(&mut ws, 5, json!({ "speaking": 2, "delay": 0, "ssrc": ssrc })).await?;
+            send_json(
+                &mut ws,
+                5,
+                json!({ "speaking": 2, "delay": 0, "ssrc": ssrc }),
+            )
+            .await?;
             capture.force_keyframe();
             // 視聴者がいない間は DAVE の鍵がそろわず何も送らないが、配信としては始まっている
             live = true;
             report(Report::Live);
         }
         Role::Watch { .. } => {
-            send_json(&mut ws, 12, json!({ "audio_ssrc": ssrc, "video_ssrc": 0, "rtx_ssrc": 0, "streams": [] })).await?;
+            send_json(
+                &mut ws,
+                12,
+                json!({ "audio_ssrc": ssrc, "video_ssrc": 0, "rtx_ssrc": 0, "streams": [] }),
+            )
+            .await?;
             send_json(&mut ws, 15, json!({ "any": 100 })).await?;
         }
     }
@@ -465,7 +555,10 @@ impl WatchStats {
             return if self.other_pt.is_empty() {
                 "配信の映像が届きません（配信サーバーから映像が来ていません）".into()
             } else {
-                format!("配信の映像が H264 ではないため表示できません（payload type {:?}）", self.other_pt)
+                format!(
+                    "配信の映像が H264 ではないため表示できません（payload type {:?}）",
+                    self.other_pt
+                )
             };
         }
         if self.transport_fail >= self.rtp {
@@ -488,13 +581,25 @@ async fn recv_frame(role: &mut Role) -> Option<Encoded> {
     }
 }
 
-async fn handle_json(ws: &mut Ws, dave: &mut Dave, v: &Value, role: &mut Role, streamer_video: &mut Option<u32>) -> Result<()> {
+async fn handle_json(
+    ws: &mut Ws,
+    dave: &mut Dave,
+    v: &Value,
+    role: &mut Role,
+    streamer_video: &mut Option<u32>,
+) -> Result<()> {
     let d = &v["d"];
     debug(format_args!("op {}: {}", v["op"], d));
     match v["op"].as_u64() {
         // CLIENTS_CONNECT
         Some(11) => {
-            dave.users.extend(d["user_ids"].as_array().into_iter().flatten().filter_map(|u| u.as_str()?.parse::<u64>().ok()));
+            dave.users.extend(
+                d["user_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|u| u.as_str()?.parse::<u64>().ok()),
+            );
             if let Role::Broadcast { capture, .. } = role {
                 // 視聴者が来たらすぐ映るようにキーフレームを出す
                 capture.force_keyframe();
@@ -555,7 +660,13 @@ async fn handle_binary(ws: &mut Ws, dave: &mut Dave, b: &[u8], seq_ack: &mut i64
     let op = b[2];
     let body = &b[3..];
     debug(format_args!("binary op {op} ({} bytes)", body.len()));
-    let transition = |body: &[u8]| if body.len() >= 2 { u16::from_be_bytes([body[0], body[1]]) } else { 0 };
+    let transition = |body: &[u8]| {
+        if body.len() >= 2 {
+            u16::from_be_bytes([body[0], body[1]])
+        } else {
+            0
+        }
+    };
     match op {
         // MLS_EXTERNAL_SENDER
         25 => {
@@ -567,9 +678,16 @@ async fn handle_binary(ws: &mut Ws, dave: &mut Dave, b: &[u8], seq_ack: &mut i64
         }
         // MLS_PROPOSALS
         27 if !body.is_empty() => {
-            let op_type = if body[0] == 0 { ProposalsOperationType::APPEND } else { ProposalsOperationType::REVOKE };
+            let op_type = if body[0] == 0 {
+                ProposalsOperationType::APPEND
+            } else {
+                ProposalsOperationType::REVOKE
+            };
             let users: Vec<u64> = dave.users.iter().copied().collect();
-            let res = dave.session.as_mut().map(|s| s.process_proposals(op_type, &body[1..], Some(&users)));
+            let res = dave
+                .session
+                .as_mut()
+                .map(|s| s.process_proposals(op_type, &body[1..], Some(&users)));
             match res {
                 Some(Ok(Some(cw))) => {
                     let mut data = cw.commit;

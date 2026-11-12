@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use crate::model::{self, Channel, Embed, Guild, Member, Message, Presence, ProfileData, Role, User, VoiceState};
+use crate::model::{
+    self, Channel, Embed, Guild, Member, Message, Presence, ProfileData, Role, User, VoiceState,
+};
 use crate::voice::{VoiceCtl, VoiceSession};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,11 +18,14 @@ use std::sync::{Arc, Mutex};
 mod inflate;
 mod rest;
 use inflate::Inflater;
-pub use rest::ApiCall;
 #[allow(unused_imports)]
 pub use rest::encode;
+pub use rest::ApiCall;
 #[allow(unused_imports)]
-pub use rest::{call_connect, request_guild_members, stream_create, stream_delete, stream_set_paused, stream_watch};
+pub use rest::{
+    call_connect, request_guild_members, stream_create, stream_delete, stream_set_paused,
+    stream_watch,
+};
 
 impl Api {
     /// ApiCall を実行して、返ってきた JSON（本文がなければ Null）を返す
@@ -77,48 +82,94 @@ pub enum Cmd {
     LoadGuildChannels(String),
     /// メンバー一覧のうち、見えている範囲だけを購読する（公式クライアントと同じ op 37）。
     /// ranges は [先頭, 末尾] の組（例: [[0, 99], [100, 199]]）
-    SubscribeMembers { guild_id: String, channel_id: String, ranges: Vec<[u32; 2]> },
+    SubscribeMembers {
+        guild_id: String,
+        channel_id: String,
+        ranges: Vec<[u32; 2]>,
+    },
     LoadMessages(String),
     /// before より古いメッセージを読み足す（上へスクロールしたとき）
-    LoadOlder { channel_id: String, before: String },
+    LoadOlder {
+        channel_id: String,
+        before: String,
+    },
     /// reply_to = 返信先のメッセージID
     /// files = 添付ファイル（名前, 中身）
-    Send { channel_id: String, content: String, reply_to: Option<String>, files: Vec<(String, Vec<u8>)> },
-    Edit { channel_id: String, id: String, content: String },
-    Delete { channel_id: String, id: String },
-    LoadSticker { id: String, format: u8 },
+    Send {
+        channel_id: String,
+        content: String,
+        reply_to: Option<String>,
+        files: Vec<(String, Vec<u8>)>,
+    },
+    Edit {
+        channel_id: String,
+        id: String,
+        content: String,
+    },
+    Delete {
+        channel_id: String,
+        id: String,
+    },
+    LoadSticker {
+        id: String,
+        format: u8,
+    },
     /// online / idle / dnd / invisible
     SetStatus(String),
     /// アクティビティに「Riscord をプレイ中」を出すか
     SetActivity(bool),
-    LoadProfile { user_id: String, guild_id: Option<String> },
+    LoadProfile {
+        user_id: String,
+        guild_id: Option<String>,
+    },
     /// 自分のプロフィールを変える。None は変えない。空の文字列は消す。avatar は Some(None) で削除、Some(Some(data URI)) で変更
-    UpdateProfile { global_name: Option<String>, pronouns: Option<String>, bio: Option<String>, avatar: Option<Option<String>> },
+    UpdateProfile {
+        global_name: Option<String>,
+        pronouns: Option<String>,
+        bio: Option<String>,
+        avatar: Option<Option<String>>,
+    },
     /// ボイスチャンネル / DM通話に入る。ring=true なら相手を呼び出す
-    JoinVoice { guild_id: Option<String>, channel_id: String, ring: bool },
+    JoinVoice {
+        guild_id: Option<String>,
+        channel_id: String,
+        ring: bool,
+    },
     LeaveVoice,
     /// ミュート・スピーカーミュートが変わったのを Discord に伝える
     VoiceFlags,
     /// 着信を拒否する
     StopRinging(String),
     /// 画面共有を始める（共有する画面をポータルで選んでもらう）/ やめる
-    StartStream,
+    StartStream(crate::golive::media::QualityPreset),
     StopStream,
     /// 配信を見る（配信の鍵。golive::stream_key）/ 見るのをやめる
     WatchStream(String),
     StopWatching,
     /// message_id までを既読にする（公式クライアントなど他の端末にも反映される）
-    Ack { channel_id: String, message_id: String },
+    Ack {
+        channel_id: String,
+        message_id: String,
+    },
     /// REST API をどれでも呼ぶ（src/net/rest.rs）。結果は Event::Api { id, .. } で返る
-    Api { id: u64, call: ApiCall },
+    Api {
+        id: u64,
+        call: ApiCall,
+    },
     /// ゲートウェイにそのまま送る（{"op": …, "d": …}。rest.rs の request_guild_members などで作る）
     Gateway(Value),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum VoiceStatus {
-    Connecting { guild_id: Option<String>, channel_id: String },
-    Connected { guild_id: Option<String>, channel_id: String },
+    Connecting {
+        guild_id: Option<String>,
+        channel_id: String,
+    },
+    Connected {
+        guild_id: Option<String>,
+        channel_id: String,
+    },
     Disconnected,
     Error(String),
 }
@@ -129,34 +180,64 @@ pub enum Event {
     LoginFailed,
     MessagesFailed(String),
     /// 既読通知が Discord に届かなかった。古い失敗が新しい通知を消さないよう ID を含める。
-    AckFailed { channel_id: String, message_id: String },
-    ComposeResult { channel_id: String, result: Result<Option<Message>, ()> },
+    AckFailed {
+        channel_id: String,
+        message_id: String,
+    },
+    ComposeResult {
+        channel_id: String,
+        result: Result<Option<Message>, ()>,
+    },
     /// 送信・編集が Discord に断られた（確実に届いていない）。理由を添えて ComposeResult の直前に送る
-    ComposeRejected { channel_id: String, reason: String },
+    ComposeRejected {
+        channel_id: String,
+        reason: String,
+    },
     Guilds(Vec<Guild>),
     Dms(Vec<Channel>),
     GuildChannels(String, Vec<Channel>),
     GuildRoles(String, Vec<Role>),
     GuildMembers(String, Vec<Member>),
     /// メンバー一覧の差分（GUILD_MEMBER_LIST_UPDATE）。メンバーの中身は GuildMembers で別に送る
-    MemberList { guild_id: String, list_id: String, groups: Vec<(String, u32)>, ops: Vec<ListOp> },
+    MemberList {
+        guild_id: String,
+        list_id: String,
+        groups: Vec<(String, u32)>,
+        ops: Vec<ListOp>,
+    },
     /// 一からつながった（READY）。購読などはやり直しになる
     GatewayReady,
     Messages(String, Vec<Message>),
     /// このチャンネルを見る権限がない
     NoAccess(String),
     /// LoadOlder の結果（古い順）。失敗したら None
-    OlderMessages { channel_id: String, before: String, messages: Option<Vec<Message>> },
+    OlderMessages {
+        channel_id: String,
+        before: String,
+        messages: Option<Vec<Message>>,
+    },
     MessageCreate(Message),
-    MessageUpdate { channel_id: String, id: String, content: Option<String>, embeds: Option<Vec<Embed>>, pinned: Option<bool> },
-    MessageDelete { channel_id: String, id: String },
+    MessageUpdate {
+        channel_id: String,
+        id: String,
+        content: Option<String>,
+        embeds: Option<Vec<Embed>>,
+        pinned: Option<bool>,
+    },
+    MessageDelete {
+        channel_id: String,
+        id: String,
+    },
     Status(String),
     Error(String),
     Sticker(String, Result<crate::sticker::Frames, String>),
     Presences(Vec<(String, Presence)>),
     /// 自分の見え方（Discord が全セッションをまとめたもの。アクティビティを含む）
     OwnPresence(Presence),
-    Profile { key: String, result: Result<ProfileData, String> },
+    Profile {
+        key: String,
+        result: Result<ProfileData, String>,
+    },
     /// UpdateProfile の結果。失敗したら利用者向けの理由
     ProfileSaved(Result<(), String>),
     VoiceStates(Vec<VoiceState>),
@@ -164,12 +245,22 @@ pub enum Event {
     /// 画面共有（配信・視聴）の状態
     Stream(crate::golive::StreamEvent),
     /// DM通話の状態（呼び出し中のユーザー）
-    Call { channel_id: String, ringing: Vec<String> },
+    Call {
+        channel_id: String,
+        ringing: Vec<String>,
+    },
     CallEnded(String),
     /// Cmd::Api の結果。失敗したら理由
-    Api { id: u64, call: ApiCall, result: Result<Value, String> },
+    Api {
+        id: u64,
+        call: ApiCall,
+        result: Result<Value, String>,
+    },
     /// 個別に扱っていないゲートウェイのイベント（rest::FORWARDED_EVENTS）。t は種類、d は中身
-    Gateway { t: String, d: Value },
+    Gateway {
+        t: String,
+        d: Value,
+    },
     /// READY のうち、自分の設定まわり（user_guild_settings / read_state / relationships / user_settings_proto）
     ReadyExtra(Value),
     /// サーバーごとのカスタム絵文字（READY）
@@ -177,7 +268,11 @@ pub enum Event {
 }
 
 enum VoiceMsg {
-    Join { guild_id: Option<String>, channel_id: String, ring: bool },
+    Join {
+        guild_id: Option<String>,
+        channel_id: String,
+        ring: bool,
+    },
     Leave,
     Flags,
     State(Value),
@@ -217,18 +312,34 @@ pub enum ListItem {
 /// メンバー一覧への変更（Discord が送ってくる順に当てる）
 #[derive(Clone, Debug, PartialEq)]
 pub enum ListOp {
-    Sync { range: [u32; 2], items: Vec<ListItem> },
-    Insert { index: usize, item: ListItem },
-    Update { index: usize, item: ListItem },
-    Delete { index: usize },
-    Invalidate { range: [u32; 2] },
+    Sync {
+        range: [u32; 2],
+        items: Vec<ListItem>,
+    },
+    Insert {
+        index: usize,
+        item: ListItem,
+    },
+    Update {
+        index: usize,
+        item: ListItem,
+    },
+    Delete {
+        index: usize,
+    },
+    Invalidate {
+        range: [u32; 2],
+    },
 }
 
 fn member_subscription(guild_id: &str, channel_id: &str, ranges: &[[u32; 2]]) -> Value {
     let mut channels = serde_json::Map::new();
     channels.insert(channel_id.to_string(), json!(ranges));
     let mut subs = serde_json::Map::new();
-    subs.insert(guild_id.to_string(), json!({ "typing": true, "activities": true, "threads": true, "channels": channels }));
+    subs.insert(
+        guild_id.to_string(),
+        json!({ "typing": true, "activities": true, "threads": true, "channels": channels }),
+    );
     json!({ "op": 37, "d": { "subscriptions": subs } })
 }
 
@@ -249,7 +360,10 @@ pub fn spawn(
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
     let tx = Tx { tx: ev_tx, ctx };
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio");
         rt.block_on(run(token, status, tx, cmd_rx, ctl));
     });
     (cmd_tx, ev_rx)
@@ -266,6 +380,21 @@ struct Api {
     roles: Arc<Mutex<HashMap<String, (std::time::Instant, Vec<Role>)>>>,
     /// /users/@me/guilds が返した、サーバーごとの自分の権限（見えるチャンネルを絞るのに使う）
     guild_perms: Arc<Mutex<HashMap<String, u64>>>,
+    limits: Arc<ApiLimits>,
+}
+
+struct ApiLimits {
+    concurrent: tokio::sync::Semaphore,
+    cooldown: tokio::sync::Mutex<tokio::time::Instant>,
+}
+
+impl Default for ApiLimits {
+    fn default() -> Self {
+        Self {
+            concurrent: tokio::sync::Semaphore::new(8),
+            cooldown: tokio::sync::Mutex::new(tokio::time::Instant::now()),
+        }
+    }
 }
 
 /// 1回に取るメッセージ数（API の上限は 100）。これより少なく返ってきたらチャンネルの始まり
@@ -276,11 +405,17 @@ const ROLE_CACHE_TTL: Duration = Duration::from_secs(300);
 impl Api {
     fn cached_roles(&self, guild_id: &str) -> Option<Vec<Role>> {
         let cache = self.roles.lock().unwrap();
-        cache.get(guild_id).filter(|(at, _)| at.elapsed() < ROLE_CACHE_TTL).map(|(_, r)| r.clone())
+        cache
+            .get(guild_id)
+            .filter(|(at, _)| at.elapsed() < ROLE_CACHE_TTL)
+            .map(|(_, r)| r.clone())
     }
 
     fn store_roles(&self, guild_id: &str, roles: &[Role]) {
-        self.roles.lock().unwrap().insert(guild_id.to_string(), (std::time::Instant::now(), roles.to_vec()));
+        self.roles.lock().unwrap().insert(
+            guild_id.to_string(),
+            (std::time::Instant::now(), roles.to_vec()),
+        );
     }
 }
 
@@ -288,7 +423,9 @@ impl Api {
 fn retry_delay(value: &Value) -> Result<Duration> {
     let seconds = match value.get("retry_after") {
         None | Some(Value::Null) => 1.0,
-        Some(v) => v.as_f64().ok_or_else(|| anyhow::anyhow!("invalid retry_after"))?,
+        Some(v) => v
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("invalid retry_after"))?,
     };
     if !seconds.is_finite() || !(0.0..=86_400.0).contains(&seconds) {
         bail!("invalid retry_after");
@@ -297,7 +434,12 @@ fn retry_delay(value: &Value) -> Result<Duration> {
 }
 
 impl Api {
-    async fn request(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<reqwest::Response> {
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<reqwest::Response> {
         self.request_with(method, path, |req| match body {
             Some(b) => req.json(b),
             None => req,
@@ -312,34 +454,69 @@ impl Api {
         path: &str,
         build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        loop {
+        const MAX_RETRIES: usize = 3;
+        let _permit =
+            tokio::time::timeout(Duration::from_secs(120), self.limits.concurrent.acquire())
+                .await??;
+        for attempt in 0..=MAX_RETRIES {
+            tokio::time::timeout(Duration::from_secs(120), async {
+                loop {
+                    let until = *self.limits.cooldown.lock().await;
+                    if until <= tokio::time::Instant::now() {
+                        break;
+                    }
+                    tokio::time::sleep_until(until).await;
+                }
+            })
+            .await?;
             #[cfg(test)]
             let base = self.base_url.as_deref().unwrap_or(API);
             #[cfg(not(test))]
             let base = API;
-            let req = build(self.http.request(method.clone(), format!("{base}{path}")).header(AUTHORIZATION, &self.token));
+            let req = build(
+                self.http
+                    .request(method.clone(), format!("{base}{path}"))
+                    .header(AUTHORIZATION, &self.token),
+            );
             let r = req.send().await?;
             match r.status() {
                 StatusCode::TOO_MANY_REQUESTS => {
+                    if attempt == MAX_RETRIES {
+                        bail!("Discord のレート制限: 再試行回数を超えました");
+                    }
                     let v: Value = r.json().await.unwrap_or_default();
-                    tokio::time::sleep(retry_delay(&v)?).await;
+                    let delay = retry_delay(&v)?;
+                    if delay > Duration::from_secs(120) {
+                        bail!("Discord のレート制限: 待機時間が長すぎます");
+                    }
+                    let mut until = self.limits.cooldown.lock().await;
+                    *until = (*until).max(tokio::time::Instant::now() + delay);
                 }
                 StatusCode::UNAUTHORIZED => return Err(anyhow::Error::msg(UnauthorizedMarker)),
                 s if !s.is_success() => {
                     let text = r.text().await.unwrap_or_default();
-                    return Err(anyhow::Error::new(HttpError { status: s.as_u16(), text: format!("{method} {path}: {s} {text}") }));
+                    return Err(anyhow::Error::new(HttpError {
+                        status: s.as_u16(),
+                        text: format!("{method} {path}: {s} {text}"),
+                    }));
                 }
                 _ => return Ok(r),
             }
         }
+        unreachable!()
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        Ok(self.request(reqwest::Method::GET, path, None).await?.json().await?)
+        Ok(self
+            .request(reqwest::Method::GET, path, None)
+            .await?
+            .json()
+            .await?)
     }
 
     async fn post(&self, path: &str, body: &Value) -> Result<()> {
-        self.request(reqwest::Method::POST, path, Some(body)).await?;
+        self.request(reqwest::Method::POST, path, Some(body))
+            .await?;
         Ok(())
     }
 
@@ -374,12 +551,18 @@ impl std::error::Error for HttpError {}
 /// 通信が途中で切れたなど、届いたか分からないときは None
 pub fn compose_reject_reason(e: &anyhow::Error) -> Option<String> {
     let h = e.downcast_ref::<HttpError>()?;
-    let body: Value = h.text.find('{').and_then(|i| serde_json::from_str(&h.text[i..]).ok()).unwrap_or_default();
+    let body: Value = h
+        .text
+        .find('{')
+        .and_then(|i| serde_json::from_str(&h.text[i..]).ok())
+        .unwrap_or_default();
     let code = body["code"].as_u64().unwrap_or(0);
     let raw = body.to_string();
     Some(match (h.status, code) {
         (413, _) | (_, 40005) => "ファイルが大きすぎます".into(),
-        (_, 50035) if raw.contains("BASE_TYPE_MAX_LENGTH") || raw.contains("\"content\"") => "本文が長すぎます".into(),
+        (_, 50035) if raw.contains("BASE_TYPE_MAX_LENGTH") || raw.contains("\"content\"") => {
+            "本文が長すぎます".into()
+        }
         (_, 50006) => "空のメッセージは送信できません".into(),
         (_, 20016) => "低速モード中です。しばらく待ってから送ってください".into(),
         (_, 50007) => "相手がDMを受け付けていません".into(),
@@ -390,7 +573,8 @@ pub fn compose_reject_reason(e: &anyhow::Error) -> Option<String> {
 }
 
 fn is_forbidden(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<HttpError>().is_some_and(|h| h.status == 403)
+    e.downcast_ref::<HttpError>()
+        .is_some_and(|h| h.status == 403)
 }
 
 fn is_unauthorized(e: &anyhow::Error) -> bool {
@@ -406,9 +590,23 @@ fn api_client(connect_timeout: Duration, read_timeout: Duration) -> Result<reqwe
         .build()?)
 }
 
-async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedReceiver<Cmd>, ctl: Arc<VoiceCtl>) {
+async fn run(
+    token: String,
+    status: MyPresence,
+    tx: Tx,
+    mut cmd_rx: UnboundedReceiver<Cmd>,
+    ctl: Arc<VoiceCtl>,
+) {
     let http = api_client(Duration::from_secs(15), Duration::from_secs(30)).expect("http client");
-    let api = Api { #[cfg(test)] base_url: None, http, token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
+    let api = Api {
+        #[cfg(test)]
+        base_url: None,
+        http,
+        token: token.clone(),
+        roles: Default::default(),
+        guild_perms: Default::default(),
+        limits: Default::default(),
+    };
 
     let me_id;
     match api.get::<User>("/users/@me").await {
@@ -426,8 +624,22 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
     let status = Arc::new(Mutex::new(status));
     let (gw_tx, gw_rx) = unbounded_channel::<Value>();
     let (v_tx, v_rx) = unbounded_channel::<VoiceMsg>();
-    tokio::spawn(gateway_loop(token, tx.clone(), gw_rx, status.clone(), v_tx.clone()));
-    tokio::spawn(voice_task(me_id.clone(), api.clone(), tx.clone(), gw_tx.clone(), v_tx.clone(), v_rx, ctl));
+    tokio::spawn(gateway_loop(
+        token,
+        tx.clone(),
+        gw_rx,
+        status.clone(),
+        v_tx.clone(),
+    ));
+    tokio::spawn(voice_task(
+        me_id.clone(),
+        api.clone(),
+        tx.clone(),
+        gw_tx.clone(),
+        v_tx.clone(),
+        v_rx,
+        ctl,
+    ));
 
     {
         let (api, tx) = (api.clone(), tx.clone());
@@ -475,17 +687,30 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
             let _ = gw_tx.send(v.clone());
             continue;
         }
-        if let Cmd::SubscribeMembers { guild_id, channel_id, ranges } = &cmd {
+        if let Cmd::SubscribeMembers {
+            guild_id,
+            channel_id,
+            ranges,
+        } = &cmd
+        {
             let _ = gw_tx.send(member_subscription(guild_id, channel_id, ranges));
             continue;
         }
         let vmsg = match &cmd {
-            Cmd::JoinVoice { guild_id, channel_id, ring } => {
-                Some(VoiceMsg::Join { guild_id: guild_id.clone(), channel_id: channel_id.clone(), ring: *ring })
-            }
+            Cmd::JoinVoice {
+                guild_id,
+                channel_id,
+                ring,
+            } => Some(VoiceMsg::Join {
+                guild_id: guild_id.clone(),
+                channel_id: channel_id.clone(),
+                ring: *ring,
+            }),
             Cmd::LeaveVoice => Some(VoiceMsg::Leave),
             Cmd::VoiceFlags => Some(VoiceMsg::Flags),
-            Cmd::StartStream => Some(VoiceMsg::Stream(crate::golive::Msg::Start)),
+            Cmd::StartStream(quality) => {
+                Some(VoiceMsg::Stream(crate::golive::Msg::Start(*quality)))
+            }
             Cmd::StopStream => Some(VoiceMsg::Stream(crate::golive::Msg::Stop)),
             Cmd::WatchStream(key) => Some(VoiceMsg::Stream(crate::golive::Msg::Watch(key.clone()))),
             Cmd::StopWatching => Some(VoiceMsg::Stream(crate::golive::Msg::Unwatch)),
@@ -512,7 +737,9 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                     let filter = match (&roles, &member) {
                         (Ok(roles), Ok(member)) => {
                             let known = api.guild_perms.lock().unwrap().get(&gid).copied();
-                            let base = known.unwrap_or_else(|| model::base_permissions(&gid, roles, &member.roles));
+                            let base = known.unwrap_or_else(|| {
+                                model::base_permissions(&gid, roles, &member.roles)
+                            });
                             Some((base, member.roles.clone()))
                         }
                         _ => None,
@@ -523,13 +750,18 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                     }
                     channels.map(|c| {
                         let c = match filter {
-                            Some((base, my_roles)) => model::visible_channels(c, &gid, base, &my_roles, &me),
+                            Some((base, my_roles)) => {
+                                model::visible_channels(c, &gid, base, &my_roles, &me)
+                            }
                             None => c,
                         };
                         tx.send(Event::GuildChannels(gid, c))
                     })
                 }
-                Cmd::LoadMessages(cid) => match api.get::<Vec<Message>>(&format!("/channels/{cid}/messages?limit={HISTORY_PAGE}")).await {
+                Cmd::LoadMessages(cid) => match api
+                    .get::<Vec<Message>>(&format!("/channels/{cid}/messages?limit={HISTORY_PAGE}"))
+                    .await
+                {
                     Ok(mut m) => {
                         m.reverse();
                         tx.send(Event::Messages(cid, m));
@@ -547,79 +779,144 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
                     }
                 },
                 Cmd::LoadOlder { channel_id, before } => {
-                    let r = api.get::<Vec<Message>>(&format!("/channels/{channel_id}/messages?before={before}&limit={HISTORY_PAGE}")).await;
+                    let r = api
+                        .get::<Vec<Message>>(&format!(
+                            "/channels/{channel_id}/messages?before={before}&limit={HISTORY_PAGE}"
+                        ))
+                        .await;
                     let messages = match &r {
                         Ok(m) => Some(m.iter().rev().cloned().collect()),
                         // 履歴を読む権限がない：取り直さず、ここまでとする
                         Err(e) if is_forbidden(e) => Some(Vec::new()),
                         Err(_) => None,
                     };
-                    tx.send(Event::OlderMessages { channel_id, before, messages });
+                    tx.send(Event::OlderMessages {
+                        channel_id,
+                        before,
+                        messages,
+                    });
                     match r {
                         Err(e) if !is_forbidden(&e) => Err(e),
                         _ => Ok(()),
                     }
                 }
-                Cmd::SubscribeMembers { .. } | Cmd::SetStatus(_) | Cmd::SetActivity(_) | Cmd::JoinVoice { .. } | Cmd::LeaveVoice | Cmd::VoiceFlags | Cmd::Gateway(_)
-                | Cmd::StartStream | Cmd::StopStream | Cmd::WatchStream(_) | Cmd::StopWatching => Ok(()),
+                Cmd::SubscribeMembers { .. }
+                | Cmd::SetStatus(_)
+                | Cmd::SetActivity(_)
+                | Cmd::JoinVoice { .. }
+                | Cmd::LeaveVoice
+                | Cmd::VoiceFlags
+                | Cmd::Gateway(_)
+                | Cmd::StartStream(_)
+                | Cmd::StopStream
+                | Cmd::WatchStream(_)
+                | Cmd::StopWatching => Ok(()),
                 Cmd::Api { id, call } => {
                     let result = api.call(&call).await.map_err(|e| format!("{e:#}"));
                     tx.send(Event::Api { id, call, result });
                     Ok(())
                 }
-                Cmd::Ack { channel_id, message_id } => {
-                    send_ack(&api, &tx, channel_id, message_id).await
-                }
+                Cmd::Ack {
+                    channel_id,
+                    message_id,
+                } => send_ack(&api, &tx, channel_id, message_id).await,
                 Cmd::StopRinging(cid) => {
-                    api.post(&format!("/channels/{cid}/call/stop-ringing"), &json!({ "recipients": null })).await
+                    api.post(
+                        &format!("/channels/{cid}/call/stop-ringing"),
+                        &json!({ "recipients": null }),
+                    )
+                    .await
                 }
-                Cmd::UpdateProfile { global_name, pronouns, bio, avatar } => {
-                    let result = update_profile(&api, &tx, global_name, pronouns, bio, avatar).await;
+                Cmd::UpdateProfile {
+                    global_name,
+                    pronouns,
+                    bio,
+                    avatar,
+                } => {
+                    let result =
+                        update_profile(&api, &tx, global_name, pronouns, bio, avatar).await;
                     tx.send(Event::ProfileSaved(result));
                     Ok(())
                 }
                 Cmd::LoadProfile { user_id, guild_id } => {
                     let key = profile_key(&user_id, guild_id.as_deref());
-                    let result = load_profile(&api, &user_id, guild_id.as_deref()).await.map_err(|e| format!("{e:#}"));
+                    let result = load_profile(&api, &user_id, guild_id.as_deref())
+                        .await
+                        .map_err(|e| format!("{e:#}"));
                     tx.send(Event::Profile { key, result });
                     Ok(())
                 }
                 Cmd::LoadSticker { id, format } => {
-                    let r = load_sticker(&api.http, &id, format).await.map_err(|e| format!("{e:#}"));
+                    let r = load_sticker(&api.http, &id, format)
+                        .await
+                        .map_err(|e| format!("{e:#}"));
                     tx.send(Event::Sticker(id, r));
                     Ok(())
                 }
-                Cmd::Send { channel_id, content, reply_to, files } => {
+                Cmd::Send {
+                    channel_id,
+                    content,
+                    reply_to,
+                    files,
+                } => {
                     let mut body = json!({ "content": content, "nonce": nonce(), "tts": false });
                     if let Some(id) = reply_to {
-                        body["message_reference"] = json!({ "channel_id": channel_id, "message_id": id });
+                        body["message_reference"] =
+                            json!({ "channel_id": channel_id, "message_id": id });
                     }
                     let path = format!("/channels/{channel_id}/messages");
                     let response = if files.is_empty() {
                         api.request(reqwest::Method::POST, &path, Some(&body)).await
                     } else {
-                        body["attachments"] = files.iter().enumerate().map(|(i, (name, _))| json!({ "id": i, "filename": name })).collect();
+                        body["attachments"] = files
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (name, _))| json!({ "id": i, "filename": name }))
+                            .collect();
                         let payload = body.to_string();
-                        api.request_with(reqwest::Method::POST, &path, |req| req.multipart(upload_form(&payload, &files))).await
+                        api.request_with(reqwest::Method::POST, &path, |req| {
+                            req.multipart(upload_form(&payload, &files))
+                        })
+                        .await
                     };
                     let result = match response {
                         Ok(response) => Ok(response.json::<Message>().await.ok()),
                         Err(e) => {
                             eprintln!("メッセージ送信失敗: {e:#}");
-                            if let Some(reason) = compose_reject_reason(&e) { tx.send(Event::ComposeRejected { channel_id: channel_id.clone(), reason }); }
+                            if let Some(reason) = compose_reject_reason(&e) {
+                                tx.send(Event::ComposeRejected {
+                                    channel_id: channel_id.clone(),
+                                    reason,
+                                });
+                            }
                             Err(())
                         }
                     };
                     tx.send(Event::ComposeResult { channel_id, result });
                     Ok(())
                 }
-                Cmd::Edit { channel_id, id, content } => {
-                    let response = api.request(reqwest::Method::PATCH, &format!("/channels/{channel_id}/messages/{id}"), Some(&json!({ "content": content }))).await;
+                Cmd::Edit {
+                    channel_id,
+                    id,
+                    content,
+                } => {
+                    let response = api
+                        .request(
+                            reqwest::Method::PATCH,
+                            &format!("/channels/{channel_id}/messages/{id}"),
+                            Some(&json!({ "content": content })),
+                        )
+                        .await;
                     let result = match response {
                         Ok(response) => Ok(response.json::<Message>().await.ok()),
                         Err(e) => {
                             eprintln!("メッセージ編集失敗: {e:#}");
-                            if let Some(reason) = compose_reject_reason(&e) { tx.send(Event::ComposeRejected { channel_id: channel_id.clone(), reason }); }
+                            if let Some(reason) = compose_reject_reason(&e) {
+                                tx.send(Event::ComposeRejected {
+                                    channel_id: channel_id.clone(),
+                                    reason,
+                                });
+                            }
                             Err(())
                         }
                     };
@@ -636,21 +933,38 @@ async fn run(token: String, status: MyPresence, tx: Tx, mut cmd_rx: UnboundedRec
 }
 
 async fn delete_message(api: &Api, tx: &Tx, channel_id: String, id: String) -> Result<()> {
-    api.delete(&format!("/channels/{channel_id}/messages/{id}")).await?;
+    api.delete(&format!("/channels/{channel_id}/messages/{id}"))
+        .await?;
     tx.send(Event::MessageDelete { channel_id, id });
     Ok(())
 }
 
 async fn send_ack(api: &Api, tx: &Tx, channel_id: String, message_id: String) -> Result<()> {
-    let result = api.post(&format!("/channels/{channel_id}/messages/{message_id}/ack"), &json!({ "token": null })).await;
+    let result = api
+        .post(
+            &format!("/channels/{channel_id}/messages/{message_id}/ack"),
+            &json!({ "token": null }),
+        )
+        .await;
     if result.is_err() {
-        tx.send(Event::AckFailed { channel_id, message_id });
+        tx.send(Event::AckFailed {
+            channel_id,
+            message_id,
+        });
     }
     result
 }
 
-async fn load_sticker(http: &reqwest::Client, id: &str, format: u8) -> Result<crate::sticker::Frames> {
-    let r = http.get(crate::sticker::url(id, format)).send().await?.error_for_status()?;
+async fn load_sticker(
+    http: &reqwest::Client,
+    id: &str,
+    format: u8,
+) -> Result<crate::sticker::Frames> {
+    let r = http
+        .get(crate::sticker::url(id, format))
+        .send()
+        .await?
+        .error_for_status()?;
     let bytes = r.bytes().await?;
     Ok(tokio::task::spawn_blocking(move || crate::sticker::decode(format, &bytes)).await??)
 }
@@ -670,10 +984,15 @@ async fn load_profile(api: &Api, user_id: &str, guild_id: Option<&str>) -> Resul
     let gp = &v["guild_member_profile"];
     let gm = &v["guild_member"];
     let mut p = ProfileData {
-        bio: str_of(&gp["bio"]).or_else(|| str_of(&up["bio"])).or_else(|| str_of(&v["user"]["bio"])),
+        bio: str_of(&gp["bio"])
+            .or_else(|| str_of(&up["bio"]))
+            .or_else(|| str_of(&v["user"]["bio"])),
         pronouns: str_of(&gp["pronouns"]).or_else(|| str_of(&up["pronouns"])),
         banner: str_of(&v["user"]["banner"]),
-        accent_color: v["user"]["accent_color"].as_u64().or_else(|| up["accent_color"].as_u64()).map(|c| c as u32),
+        accent_color: v["user"]["accent_color"]
+            .as_u64()
+            .or_else(|| up["accent_color"].as_u64())
+            .map(|c| c as u32),
         nick: str_of(&gm["nick"]),
         joined_at: str_of(&gm["joined_at"]),
         roles: Vec::new(),
@@ -682,7 +1001,10 @@ async fn load_profile(api: &Api, user_id: &str, guild_id: Option<&str>) -> Resul
     if let (Some(g), Some(ids)) = (guild_id, gm["roles"].as_array()) {
         let all = match api.cached_roles(g) {
             Some(r) => Ok(r),
-            None => api.get::<Vec<Role>>(&format!("/guilds/{g}/roles")).await.inspect(|r| api.store_roles(g, r)),
+            None => api
+                .get::<Vec<Role>>(&format!("/guilds/{g}/roles"))
+                .await
+                .inspect(|r| api.store_roles(g, r)),
         };
         if let Ok(all) = all {
             let mut roles: Vec<(i64, String, u32)> = all
@@ -709,13 +1031,27 @@ async fn update_profile(
 ) -> std::result::Result<(), String> {
     let mut user = serde_json::Map::new();
     if let Some(n) = global_name {
-        user.insert("global_name".into(), if n.is_empty() { Value::Null } else { Value::String(n) });
+        user.insert(
+            "global_name".into(),
+            if n.is_empty() {
+                Value::Null
+            } else {
+                Value::String(n)
+            },
+        );
     }
     if let Some(a) = avatar {
         user.insert("avatar".into(), a.map_or(Value::Null, Value::String));
     }
     if !user.is_empty() {
-        let r = api.request(reqwest::Method::PATCH, "/users/@me", Some(&Value::Object(user))).await.map_err(|e| profile_error_text(&e))?;
+        let r = api
+            .request(
+                reqwest::Method::PATCH,
+                "/users/@me",
+                Some(&Value::Object(user)),
+            )
+            .await
+            .map_err(|e| profile_error_text(&e))?;
         if let Ok(u) = r.json::<User>().await {
             tx.send(Event::Me(u));
         }
@@ -728,7 +1064,13 @@ async fn update_profile(
         profile.insert("bio".into(), Value::String(b));
     }
     if !profile.is_empty() {
-        api.request(reqwest::Method::PATCH, "/users/@me/profile", Some(&Value::Object(profile))).await.map_err(|e| profile_error_text(&e))?;
+        api.request(
+            reqwest::Method::PATCH,
+            "/users/@me/profile",
+            Some(&Value::Object(profile)),
+        )
+        .await
+        .map_err(|e| profile_error_text(&e))?;
     }
     Ok(())
 }
@@ -756,14 +1098,20 @@ pub fn profile_error_text(e: &anyhow::Error) -> String {
 fn upload_form(payload: &str, files: &[(String, Vec<u8>)]) -> reqwest::multipart::Form {
     let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
     for (i, (name, data)) in files.iter().enumerate() {
-        form = form.part(format!("files[{i}]"), reqwest::multipart::Part::bytes(data.clone()).file_name(name.clone()));
+        form = form.part(
+            format!("files[{i}]"),
+            reqwest::multipart::Part::bytes(data.clone()).file_name(name.clone()),
+        );
     }
     form
 }
 
 fn nonce() -> String {
     const EPOCH: u64 = 1_420_070_400_000;
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
     ((ms - EPOCH) << 22).to_string()
 }
 
@@ -775,8 +1123,17 @@ fn presence_payload(p: &MyPresence) -> Value {
 fn presence_data(p: &MyPresence) -> Value {
     // 経過時間が「〜分間プレイ中」と出るよう、起動した時刻を開始時刻にする（再接続しても数え直さない）
     static STARTED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    let start = *STARTED.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64);
-    let activities = if p.activity { json!([{ "name": "Riscord", "type": 0, "timestamps": { "start": start } }]) } else { json!([]) };
+    let start = *STARTED.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    });
+    let activities = if p.activity {
+        json!([{ "name": "Riscord", "type": 0, "timestamps": { "start": start } }])
+    } else {
+        json!([])
+    };
     json!({ "status": p.status, "since": 0, "activities": activities, "afk": false })
 }
 
@@ -791,7 +1148,17 @@ async fn gateway_loop(
     let mut failures: u32 = 0;
     loop {
         let mut ready = false;
-        let end = gateway_once(&token, &tx, &mut out, &status, &v_tx, &mut session, &mut ready).await.unwrap_or_else(|e| {
+        let end = gateway_once(
+            &token,
+            &tx,
+            &mut out,
+            &status,
+            &v_tx,
+            &mut session,
+            &mut ready,
+        )
+        .await
+        .unwrap_or_else(|e| {
             eprintln!("ゲートウェイ切断: {e:#}");
             GatewayEnd::Resume
         });
@@ -812,7 +1179,10 @@ async fn gateway_loop(
             GatewayEnd::Resume => reconnect_delay(failures),
         };
         failures = failures.saturating_add(1);
-        tx.send(Status(format!("接続が切れました。{}秒後に再接続します…", wait.as_secs().max(1))));
+        tx.send(Status(format!(
+            "接続が切れました。{}秒後に再接続します…",
+            wait.as_secs().max(1)
+        )));
         tokio::time::sleep(wait).await;
     }
 }
@@ -847,7 +1217,9 @@ fn reconnect_delay(failures: u32) -> Duration {
 fn close_action(code: u16) -> GatewayEnd {
     match code {
         4004 => GatewayEnd::Fatal("トークンが無効です。ログインし直してください。".into()),
-        4010..=4014 => GatewayEnd::Fatal(format!("Discord に接続を断られました（{code}）。再接続を止めました。")),
+        4010..=4014 => GatewayEnd::Fatal(format!(
+            "Discord に接続を断られました（{code}）。再接続を止めました。"
+        )),
         // 連番が合わない・セッションの期限切れ: 再開はできない
         4007 | 4009 => GatewayEnd::Reidentify,
         _ => GatewayEnd::Resume,
@@ -892,7 +1264,11 @@ async fn gateway_once_at(
     // 再開できるときは READY で教わった接続先へ（同じ接続の設定を付ける）
     let resume = session.id.clone().zip(session.seq);
     let url = match (&resume, &session.resume_url) {
-        (Some(_), Some(base)) => format!("{}/?{}", base.trim_end_matches('/'), gateway.split_once('?').map_or("", |q| q.1)),
+        (Some(_), Some(base)) => format!(
+            "{}/?{}",
+            base.trim_end_matches('/'),
+            gateway.split_once('?').map_or("", |q| q.1)
+        ),
         _ => gateway.to_string(),
     };
     let (ws, _) = tokio_tungstenite::connect_async(url.as_str()).await?;
@@ -901,10 +1277,12 @@ async fn gateway_once_at(
 
     let hello = loop {
         match read.next().await {
-            Some(Ok(m @ (WsMsg::Text(_) | WsMsg::Binary(_)))) => match decode_frame(&m, &mut inflater)? {
-                Some(v) => break v,
-                None => continue,
-            },
+            Some(Ok(m @ (WsMsg::Text(_) | WsMsg::Binary(_)))) => {
+                match decode_frame(&m, &mut inflater)? {
+                    Some(v) => break v,
+                    None => continue,
+                }
+            }
             Some(Ok(_)) => continue,
             Some(Err(e)) => return Err(e.into()),
             None => bail!("helloを受信する前に切断"),
@@ -917,7 +1295,9 @@ async fn gateway_once_at(
 
     let first = match &resume {
         // 途中から再開する（切れていた間のイベントは Discord が送り直す）
-        Some((id, seq)) => json!({ "op": 6, "d": { "token": token, "session_id": id, "seq": seq } }),
+        Some((id, seq)) => {
+            json!({ "op": 6, "d": { "token": token, "session_id": id, "seq": seq } })
+        }
         None => json!({
             "op": 2,
             "d": {
@@ -1010,9 +1390,24 @@ fn split_payload(mut v: Value) -> (String, Value) {
 fn handles(t: &str) -> bool {
     matches!(
         t,
-        "READY" | "READY_SUPPLEMENTAL" | "SESSIONS_REPLACE" | "GUILD_MEMBERS_CHUNK" | "GUILD_MEMBER_LIST_UPDATE" | "PRESENCE_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE"
-            | "STREAM_CREATE" | "STREAM_UPDATE" | "STREAM_SERVER_UPDATE" | "STREAM_DELETE"
-            | "CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "MESSAGE_CREATE" | "MESSAGE_UPDATE" | "MESSAGE_DELETE"
+        "READY"
+            | "READY_SUPPLEMENTAL"
+            | "SESSIONS_REPLACE"
+            | "GUILD_MEMBERS_CHUNK"
+            | "GUILD_MEMBER_LIST_UPDATE"
+            | "PRESENCE_UPDATE"
+            | "VOICE_STATE_UPDATE"
+            | "VOICE_SERVER_UPDATE"
+            | "STREAM_CREATE"
+            | "STREAM_UPDATE"
+            | "STREAM_SERVER_UPDATE"
+            | "STREAM_DELETE"
+            | "CALL_CREATE"
+            | "CALL_UPDATE"
+            | "CALL_DELETE"
+            | "MESSAGE_CREATE"
+            | "MESSAGE_UPDATE"
+            | "MESSAGE_DELETE"
     ) || rest::FORWARDED_EVENTS.contains(&t)
 }
 
@@ -1084,11 +1479,18 @@ struct Ready {
 }
 
 /// 文字列のままの d を、使う種類のときだけ解析して dispatch に渡す
-fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
+fn dispatch_raw(
+    t: &str,
+    d: Option<&serde_json::value::RawValue>,
+    tx: &Tx,
+    v_tx: &UnboundedSender<VoiceMsg>,
+) {
     if !handles(t) {
         return;
     }
-    let Some(raw) = d else { return dispatch(t, Value::Null, tx, v_tx) };
+    let Some(raw) = d else {
+        return dispatch(t, Value::Null, tx, v_tx);
+    };
     if t == "READY" {
         // READY はサーバーのチャンネル・ロールなどで大きいので、使う所だけの小さい形にしてから渡す。
         // 想定外の形なら従来どおり全体を解析する
@@ -1096,7 +1498,11 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
             let me = r.user.map(|u| u.id).unwrap_or_default();
             // 自分のメンバー情報だけ残す（dispatch がロールを読む）
             let member = |m: &ReadyMember| json!({ "user_id": me, "roles": m.roles });
-            let merged: Vec<Value> = r.merged_members.iter().map(|ms| Value::Array(ms.iter().filter(|m| m.is(&me)).map(member).collect())).collect();
+            let merged: Vec<Value> = r
+                .merged_members
+                .iter()
+                .map(|ms| Value::Array(ms.iter().filter(|m| m.is(&me)).map(member).collect()))
+                .collect();
             let ids = |v: &[IdOnly]| v.iter().map(|c| json!({ "id": c.id })).collect::<Vec<_>>();
             let guilds = r
                 .guilds
@@ -1130,16 +1536,28 @@ fn dispatch_raw(t: &str, d: Option<&serde_json::value::RawValue>, tx: &Tx, v_tx:
 }
 
 fn parse_presence(v: &Value) -> Option<(String, Presence)> {
-    let id = v["user_id"].as_str().or_else(|| v["user"]["id"].as_str())?.to_string();
+    let id = v["user_id"]
+        .as_str()
+        .or_else(|| v["user"]["id"].as_str())?
+        .to_string();
     let status = v["status"].as_str().unwrap_or("offline").to_string();
-    Some((id, Presence { status, activity: activity_text(&v["activities"]) }))
+    Some((
+        id,
+        Presence {
+            status,
+            activity: activity_text(&v["activities"]),
+        },
+    ))
 }
 
 /// カスタムステータスを優先し、なければ最初のアクティビティを文にする
 fn activity_text(acts: &Value) -> Option<String> {
     let acts = acts.as_array()?;
     if let Some(c) = acts.iter().find(|a| a["type"] == 4) {
-        let emoji = c["emoji"]["name"].as_str().filter(|_| c["emoji"]["id"].is_null()).unwrap_or("");
+        let emoji = c["emoji"]["name"]
+            .as_str()
+            .filter(|_| c["emoji"]["id"].is_null())
+            .unwrap_or("");
         let state = c["state"].as_str().unwrap_or("");
         let text = format!("{emoji} {state}").trim().to_string();
         if !text.is_empty() {
@@ -1165,9 +1583,16 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
         // 自分のセッション一覧。"all" が Discord がまとめた自分の見え方（ほかの人に見えている状態とアクティビティ）
         "SESSIONS_REPLACE" => {
             let list = d.as_array().map(Vec::as_slice).unwrap_or_default();
-            if let Some(s) = list.iter().find(|s| s["session_id"] == "all").or(list.first()) {
+            if let Some(s) = list
+                .iter()
+                .find(|s| s["session_id"] == "all")
+                .or(list.first())
+            {
                 let status = s["status"].as_str().unwrap_or("online").to_string();
-                tx.send(Event::OwnPresence(Presence { status, activity: activity_text(&s["activities"]) }));
+                tx.send(Event::OwnPresence(Presence {
+                    status,
+                    activity: activity_text(&s["activities"]),
+                }));
             }
         }
         "READY" => {
@@ -1175,16 +1600,31 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             let mut vs = Vec::new();
             for g in d["guilds"].as_array().into_iter().flatten() {
                 let gid = g["id"].as_str();
-                vs.extend(g["voice_states"].as_array().into_iter().flatten().filter_map(|v| VoiceState::parse(v, gid)));
+                vs.extend(
+                    g["voice_states"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| VoiceState::parse(v, gid)),
+                );
             }
             if !vs.is_empty() {
                 tx.send(Event::VoiceStates(vs));
             }
             // カスタム絵文字（ピッカーと :名前: の変換に使う）
             let mut emojis = Vec::new();
-            for g in d.get_mut("guilds").and_then(Value::as_array_mut).into_iter().flatten() {
-                let Some(gid) = g["id"].as_str().map(String::from) else { continue };
-                let Some(list) = g.get_mut("emojis").map(Value::take) else { continue };
+            for g in d
+                .get_mut("guilds")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                let Some(gid) = g["id"].as_str().map(String::from) else {
+                    continue;
+                };
+                let Some(list) = g.get_mut("emojis").map(Value::take) else {
+                    continue;
+                };
                 if let Ok(list) = serde_json::from_value::<Vec<model::Emoji>>(list) {
                     emojis.push((gid, list));
                 }
@@ -1192,21 +1632,41 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             if emojis.iter().any(|(_, l)| !l.is_empty()) {
                 tx.send(Event::GuildEmojis(emojis));
             }
-            let list: Vec<_> = d["presences"].as_array().into_iter().flatten().filter_map(parse_presence).collect();
+            let list: Vec<_> = d["presences"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(parse_presence)
+                .collect();
             if !list.is_empty() {
                 tx.send(Event::Presences(list));
             }
             let mut extra = serde_json::Map::new();
             let me = &d["user"]["id"];
-            let is_me = |m: &Value| !me.is_null() && (&m["user_id"] == me || &m["user"]["id"] == me);
-            let (mut my_roles, mut channel_guild, mut threads) = (serde_json::Map::new(), serde_json::Map::new(), serde_json::Map::new());
+            let is_me =
+                |m: &Value| !me.is_null() && (&m["user_id"] == me || &m["user"]["id"] == me);
+            let (mut my_roles, mut channel_guild, mut threads) = (
+                serde_json::Map::new(),
+                serde_json::Map::new(),
+                serde_json::Map::new(),
+            );
             for (i, g) in d["guilds"].as_array().into_iter().flatten().enumerate() {
-                let Some(gid) = g["id"].as_str() else { continue };
+                let Some(gid) = g["id"].as_str() else {
+                    continue;
+                };
                 let merged = d["merged_members"][i].as_array().into_iter().flatten();
-                if let Some(m) = merged.chain(g["members"].as_array().into_iter().flatten()).find(|m| is_me(m)) {
+                if let Some(m) = merged
+                    .chain(g["members"].as_array().into_iter().flatten())
+                    .find(|m| is_me(m))
+                {
                     my_roles.insert(gid.into(), m["roles"].clone());
                 }
-                for c in g["channels"].as_array().into_iter().flatten().chain(g["threads"].as_array().into_iter().flatten()) {
+                for c in g["channels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .chain(g["threads"].as_array().into_iter().flatten())
+                {
                     if let Some(cid) = c["id"].as_str() {
                         channel_guild.insert(cid.into(), gid.into());
                     }
@@ -1227,7 +1687,12 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             if let Some(sid) = d["session_id"].as_str() {
                 extra.insert("session_id".into(), sid.into());
             }
-            for k in ["user_guild_settings", "read_state", "relationships", "user_settings_proto"] {
+            for k in [
+                "user_guild_settings",
+                "read_state",
+                "relationships",
+                "user_settings_proto",
+            ] {
                 if let Some(v) = d.get_mut(k).map(Value::take).filter(|v| !v.is_null()) {
                     extra.insert(k.into(), v);
                 }
@@ -1239,7 +1704,12 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
         "READY_SUPPLEMENTAL" => {
             let mp = &d["merged_presences"];
             let friends = mp["friends"].as_array().into_iter().flatten();
-            let guilds = mp["guilds"].as_array().into_iter().flatten().filter_map(|g| g.as_array()).flatten();
+            let guilds = mp["guilds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|g| g.as_array())
+                .flatten();
             let list: Vec<_> = friends.chain(guilds).filter_map(parse_presence).collect();
             tx.send(Event::Presences(list));
         }
@@ -1251,21 +1721,36 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                     tx.send(Event::GuildMembers(gid, members));
                 }
                 if let Some(presences) = d["presences"].as_array() {
-                    tx.send_lazy(Event::Presences(presences.iter().filter_map(parse_presence).collect()));
+                    tx.send_lazy(Event::Presences(
+                        presences.iter().filter_map(parse_presence).collect(),
+                    ));
                 }
             }
         }
         "GUILD_MEMBER_LIST_UPDATE" => {
-            let Some(guild_id) = d["guild_id"].as_str().map(String::from) else { return };
+            let Some(guild_id) = d["guild_id"].as_str().map(String::from) else {
+                return;
+            };
             let list_id = d["id"].as_str().unwrap_or("").to_string();
-            let groups = d["groups"].as_array().into_iter().flatten()
-                .filter_map(|g| Some((g["id"].as_str()?.to_string(), g["count"].as_u64().unwrap_or(0) as u32)))
+            let groups = d["groups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|g| {
+                    Some((
+                        g["id"].as_str()?.to_string(),
+                        g["count"].as_u64().unwrap_or(0) as u32,
+                    ))
+                })
                 .collect();
             let mut members = Vec::new();
             let mut presences = Vec::new();
             let mut item = |v: &mut Value| -> Option<ListItem> {
                 if let Some(g) = v.get("group") {
-                    return Some(ListItem::Group(g["id"].as_str()?.to_string(), g["count"].as_u64().unwrap_or(0) as u32));
+                    return Some(ListItem::Group(
+                        g["id"].as_str()?.to_string(),
+                        g["count"].as_u64().unwrap_or(0) as u32,
+                    ));
                 }
                 let m = v.get_mut("member")?;
                 if let Some(p) = m.get("presence").and_then(parse_presence) {
@@ -1276,19 +1761,31 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                 members.push(member);
                 Some(ListItem::Member(id))
             };
-            let range = |v: &Value| -> [u32; 2] { [v[0].as_u64().unwrap_or(0) as u32, v[1].as_u64().unwrap_or(0) as u32] };
+            let range = |v: &Value| -> [u32; 2] {
+                [
+                    v[0].as_u64().unwrap_or(0) as u32,
+                    v[1].as_u64().unwrap_or(0) as u32,
+                ]
+            };
             let mut ops = Vec::new();
             for op in d["ops"].as_array_mut().into_iter().flatten() {
                 let index = op["index"].as_u64().unwrap_or(0) as usize;
                 let parsed = match op["op"].as_str().unwrap_or("") {
                     "SYNC" => Some(ListOp::Sync {
                         range: range(&op["range"]),
-                        items: op["items"].as_array_mut().into_iter().flatten().filter_map(&mut item).collect(),
+                        items: op["items"]
+                            .as_array_mut()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(&mut item)
+                            .collect(),
                     }),
                     "INSERT" => item(&mut op["item"]).map(|item| ListOp::Insert { index, item }),
                     "UPDATE" => item(&mut op["item"]).map(|item| ListOp::Update { index, item }),
                     "DELETE" => Some(ListOp::Delete { index }),
-                    "INVALIDATE" => Some(ListOp::Invalidate { range: range(&op["range"]) }),
+                    "INVALIDATE" => Some(ListOp::Invalidate {
+                        range: range(&op["range"]),
+                    }),
                     _ => None,
                 };
                 ops.extend(parsed);
@@ -1299,7 +1796,12 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             if !presences.is_empty() {
                 tx.send_lazy(Event::Presences(presences));
             }
-            tx.send(Event::MemberList { guild_id, list_id, groups, ops });
+            tx.send(Event::MemberList {
+                guild_id,
+                list_id,
+                groups,
+                ops,
+            });
         }
         "PRESENCE_UPDATE" => {
             if let Some(p) = parse_presence(&d) {
@@ -1316,13 +1818,31 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             let _ = v_tx.send(VoiceMsg::Server(d));
         }
         "STREAM_CREATE" | "STREAM_UPDATE" | "STREAM_SERVER_UPDATE" | "STREAM_DELETE" => {
-            let _ = v_tx.send(VoiceMsg::Stream(crate::golive::Msg::Gateway(t.to_string(), d)));
+            let _ = v_tx.send(VoiceMsg::Stream(crate::golive::Msg::Gateway(
+                t.to_string(),
+                d,
+            )));
         }
         "CALL_CREATE" | "CALL_UPDATE" => {
-            let Some(cid) = d["channel_id"].as_str() else { return };
-            let ringing = d["ringing"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect();
-            tx.send(Event::Call { channel_id: cid.into(), ringing });
-            let vs: Vec<_> = d["voice_states"].as_array().into_iter().flatten().filter_map(|v| VoiceState::parse(v, None)).collect();
+            let Some(cid) = d["channel_id"].as_str() else {
+                return;
+            };
+            let ringing = d["ringing"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect();
+            tx.send(Event::Call {
+                channel_id: cid.into(),
+                ringing,
+            });
+            let vs: Vec<_> = d["voice_states"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| VoiceState::parse(v, None))
+                .collect();
             if !vs.is_empty() {
                 tx.send(Event::VoiceStates(vs));
             }
@@ -1338,23 +1858,40 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             }
         }
         "MESSAGE_UPDATE" => {
-            if let (Some(cid), Some(id)) = (d["channel_id"].as_str().map(String::from), d["id"].as_str().map(String::from)) {
+            if let (Some(cid), Some(id)) = (
+                d["channel_id"].as_str().map(String::from),
+                d["id"].as_str().map(String::from),
+            ) {
                 let content = d["content"].as_str().map(String::from);
-                let embeds = d.get_mut("embeds").and_then(|e| serde_json::from_value(e.take()).ok());
+                let embeds = d
+                    .get_mut("embeds")
+                    .and_then(|e| serde_json::from_value(e.take()).ok());
                 // ピン留め・解除でも MESSAGE_UPDATE が届く（本文は付かない）
                 let pinned = d["pinned"].as_bool();
-                tx.send(Event::MessageUpdate { channel_id: cid, id, content, embeds, pinned });
+                tx.send(Event::MessageUpdate {
+                    channel_id: cid,
+                    id,
+                    content,
+                    embeds,
+                    pinned,
+                });
             }
         }
         "MESSAGE_DELETE" => {
             if let (Some(cid), Some(id)) = (d["channel_id"].as_str(), d["id"].as_str()) {
-                tx.send(Event::MessageDelete { channel_id: cid.into(), id: id.into() });
+                tx.send(Event::MessageDelete {
+                    channel_id: cid.into(),
+                    id: id.into(),
+                });
             }
         }
         // ここに種類を足したら handles() にも足す（足さないと dispatch_raw が解析せずに捨てる）
         t if rest::FORWARDED_EVENTS.contains(&t) => {
             // 画面ではまだ使っていないものも多いので、急がず届ける
-            tx.send_lazy(Event::Gateway { t: t.to_string(), d });
+            tx.send_lazy(Event::Gateway {
+                t: t.to_string(),
+                d,
+            });
         }
         _ => {}
     }
@@ -1424,21 +1961,39 @@ async fn voice_task(
         match msg {
             VoiceMsg::Stream(m) => {
                 let place = match (&target, &session_id) {
-                    (Some(t), Some(sid)) if t.connected => {
-                        Some(crate::golive::Place { guild_id: t.guild_id.as_deref(), channel_id: &t.channel_id, session_id: sid })
-                    }
+                    (Some(t), Some(sid)) if t.connected => Some(crate::golive::Place {
+                        guild_id: t.guild_id.as_deref(),
+                        channel_id: &t.channel_id,
+                        session_id: sid,
+                    }),
                     _ => None,
                 };
                 stream.handle(m, place);
             }
-            VoiceMsg::Join { guild_id, channel_id, ring } => {
+            VoiceMsg::Join {
+                guild_id,
+                channel_id,
+                ring,
+            } => {
                 stream.stop_all();
                 if let Some(s) = &mut session {
                     s.leave();
                 }
-                let _ = gw_tx.send(voice_state_payload(guild_id.as_deref(), Some(&channel_id), &ctl));
-                tx.send(Event::Voice(VoiceStatus::Connecting { guild_id: guild_id.clone(), channel_id: channel_id.clone() }));
-                target = Some(Target { guild_id, channel_id, ring, connected: false });
+                let _ = gw_tx.send(voice_state_payload(
+                    guild_id.as_deref(),
+                    Some(&channel_id),
+                    &ctl,
+                ));
+                tx.send(Event::Voice(VoiceStatus::Connecting {
+                    guild_id: guild_id.clone(),
+                    channel_id: channel_id.clone(),
+                }));
+                target = Some(Target {
+                    guild_id,
+                    channel_id,
+                    ring,
+                    connected: false,
+                });
             }
             VoiceMsg::Leave => {
                 stream.stop_all();
@@ -1452,7 +2007,11 @@ async fn voice_task(
             }
             VoiceMsg::Flags => {
                 if let Some(t) = &target {
-                    let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), Some(&t.channel_id), &ctl));
+                    let _ = gw_tx.send(voice_state_payload(
+                        t.guild_id.as_deref(),
+                        Some(&t.channel_id),
+                        &ctl,
+                    ));
                 }
             }
             VoiceMsg::State(d) => {
@@ -1491,14 +2050,29 @@ async fn voice_task(
             }
             VoiceMsg::Server(d) => {
                 let Some(t) = &mut target else { continue };
-                let (Some(endpoint), Some(token), Some(sid)) = (d["endpoint"].as_str(), d["token"].as_str(), &session_id) else {
+                let (Some(endpoint), Some(token), Some(sid)) =
+                    (d["endpoint"].as_str(), d["token"].as_str(), &session_id)
+                else {
                     continue;
                 };
                 let s = session.get_or_insert_with(|| VoiceSession::new(ctl.clone()));
-                match s.connect(t.guild_id.as_deref(), &t.channel_id, endpoint, sid, token, &me_id).await {
+                match s
+                    .connect(
+                        t.guild_id.as_deref(),
+                        &t.channel_id,
+                        endpoint,
+                        sid,
+                        token,
+                        &me_id,
+                    )
+                    .await
+                {
                     Ok(()) => {
                         t.connected = true;
-                        tx.send(Event::Voice(VoiceStatus::Connected { guild_id: t.guild_id.clone(), channel_id: t.channel_id.clone() }));
+                        tx.send(Event::Voice(VoiceStatus::Connected {
+                            guild_id: t.guild_id.clone(),
+                            channel_id: t.channel_id.clone(),
+                        }));
                         if std::mem::take(&mut t.ring) {
                             let path = format!("/channels/{}/call/ring", t.channel_id);
                             if let Err(e) = api.post(&path, &json!({ "recipients": null })).await {
@@ -1525,25 +2099,47 @@ mod tests {
     #[tokio::test]
     async fn delete_notifies_only_after_http_success() {
         use std::io::{Read, Write};
-        for (status, success) in [("204 No Content", true), ("500 Internal Server Error", false)] {
+        for (status, success) in [
+            ("204 No Content", true),
+            ("500 Internal Server Error", false),
+        ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let server = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
-                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut request = [0; 2048];
                 let n = socket.read(&mut request).unwrap();
-                assert!(String::from_utf8_lossy(&request[..n]).starts_with("DELETE /channels/c/messages/m HTTP/1.1\r\n"));
-                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                assert!(String::from_utf8_lossy(&request[..n])
+                    .starts_with("DELETE /channels/c/messages/m HTTP/1.1\r\n"));
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
             });
-            let api = Api { base_url: Some(format!("http://{addr}")), http: reqwest::Client::builder().no_proxy().build().unwrap(), token: "test".into(), roles: Default::default(), guild_perms: Default::default() };
+            let api = Api {
+                base_url: Some(format!("http://{addr}")),
+                http: reqwest::Client::builder().no_proxy().build().unwrap(),
+                token: "test".into(),
+                roles: Default::default(),
+                guild_perms: Default::default(),
+                limits: Default::default(),
+            };
             let (sender, events) = std::sync::mpsc::channel();
-            let tx = Tx { tx: sender, ctx: crate::wake::Waker::default() };
+            let tx = Tx {
+                tx: sender,
+                ctx: crate::wake::Waker::default(),
+            };
             let result = delete_message(&api, &tx, "c".into(), "m".into()).await;
             server.join().unwrap();
             assert_eq!(result.is_ok(), success);
             if success {
-                assert!(matches!(events.try_recv(), Ok(Event::MessageDelete { channel_id, id }) if channel_id == "c" && id == "m"));
+                assert!(
+                    matches!(events.try_recv(), Ok(Event::MessageDelete { channel_id, id }) if channel_id == "c" && id == "m")
+                );
             } else {
                 assert!(events.try_recv().is_err());
             }
@@ -1553,26 +2149,50 @@ mod tests {
     #[tokio::test]
     async fn ack_http_error_notifies_backend_and_success_does_not() {
         use std::io::{Read, Write};
-        for (status, fails) in [("500 Internal Server Error", true), ("204 No Content", false)] {
+        for (status, fails) in [
+            ("500 Internal Server Error", true),
+            ("204 No Content", false),
+        ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let server = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
-                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut request = [0; 2048];
                 let n = socket.read(&mut request).unwrap();
                 let request = String::from_utf8_lossy(&request[..n]);
-                assert!(request.starts_with("POST /channels/c/messages/m/ack HTTP/1.1\r\n"), "{request}");
-                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                assert!(
+                    request.starts_with("POST /channels/c/messages/m/ack HTTP/1.1\r\n"),
+                    "{request}"
+                );
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
             });
-            let api = Api { base_url: Some(format!("http://{addr}")), http: reqwest::Client::builder().no_proxy().build().unwrap(), token: "test".into(), roles: Default::default(), guild_perms: Default::default() };
+            let api = Api {
+                base_url: Some(format!("http://{addr}")),
+                http: reqwest::Client::builder().no_proxy().build().unwrap(),
+                token: "test".into(),
+                roles: Default::default(),
+                guild_perms: Default::default(),
+                limits: Default::default(),
+            };
             let (sender, events) = std::sync::mpsc::channel();
-            let tx = Tx { tx: sender, ctx: crate::wake::Waker::default() };
+            let tx = Tx {
+                tx: sender,
+                ctx: crate::wake::Waker::default(),
+            };
             let result = send_ack(&api, &tx, "c".into(), "m".into()).await;
             server.join().unwrap();
             assert_eq!(result.is_err(), fails);
             if fails {
-                assert!(matches!(events.try_recv(), Ok(Event::AckFailed { channel_id, message_id }) if channel_id == "c" && message_id == "m"));
+                assert!(
+                    matches!(events.try_recv(), Ok(Event::AckFailed { channel_id, message_id }) if channel_id == "c" && message_id == "m")
+                );
             } else {
                 assert!(events.try_recv().is_err());
             }
@@ -1598,8 +2218,14 @@ mod tests {
     #[test]
     fn rate_limit_delay_validates_untrusted_values() {
         assert_eq!(retry_delay(&json!({})).unwrap(), Duration::from_secs(1));
-        assert_eq!(retry_delay(&json!({ "retry_after": 1.5 })).unwrap(), Duration::from_millis(1500));
-        assert_eq!(retry_delay(&json!({ "retry_after": 0 })).unwrap(), Duration::from_millis(100));
+        assert_eq!(
+            retry_delay(&json!({ "retry_after": 1.5 })).unwrap(),
+            Duration::from_millis(1500)
+        );
+        assert_eq!(
+            retry_delay(&json!({ "retry_after": 0 })).unwrap(),
+            Duration::from_millis(100)
+        );
         for invalid in [json!(-1), json!(1e100), json!("bad"), json!([])] {
             assert!(retry_delay(&json!({ "retry_after": invalid })).is_err());
         }
@@ -1632,13 +2258,22 @@ mod tests {
         ]);
         dispatch("SESSIONS_REPLACE", d, &s.tx, &s.v_tx);
         let events: Vec<Event> = s.rx.try_iter().collect();
-        assert!(matches!(&events[..], [Event::OwnPresence(p)] if p.status == "online" && p.activity.as_deref() == Some("プレイ中: Riscord")));
+        assert!(
+            matches!(&events[..], [Event::OwnPresence(p)] if p.status == "online" && p.activity.as_deref() == Some("プレイ中: Riscord"))
+        );
     }
 
     fn sink() -> Sink {
         let (tx, rx) = std::sync::mpsc::channel();
         let (v_tx, _) = unbounded_channel();
-        Sink { tx: Tx { tx, ctx: crate::wake::Waker::default() }, rx, v_tx }
+        Sink {
+            tx: Tx {
+                tx,
+                ctx: crate::wake::Waker::default(),
+            },
+            rx,
+            v_tx,
+        }
     }
 
     /// Discord と同じく、1接続で1つの圧縮文脈から Sync フラッシュで区切って送る
@@ -1649,11 +2284,16 @@ mod tests {
                 let mut out = Vec::with_capacity(m.len() + 1024);
                 let mut input = m.as_bytes();
                 loop {
-                    if out.len() == out.capacity() { out.reserve(64 * 1024); }
+                    if out.len() == out.capacity() {
+                        out.reserve(64 * 1024);
+                    }
                     let before = z.total_in();
-                    z.compress_vec(input, &mut out, flate2::FlushCompress::Sync).unwrap();
+                    z.compress_vec(input, &mut out, flate2::FlushCompress::Sync)
+                        .unwrap();
                     input = &input[(z.total_in() - before) as usize..];
-                    if input.is_empty() && out.len() < out.capacity() { break; }
+                    if input.is_empty() && out.len() < out.capacity() {
+                        break;
+                    }
                 }
                 out
             })
@@ -1675,10 +2315,18 @@ mod tests {
         let mut inf = Inflater::new();
         for (i, (f, m)) in frames.iter().zip(&msgs).enumerate() {
             // 分割受信: 途中までは None、最後の断片で1件そろう
-            let parts: Vec<&[u8]> = if i % 2 == 1 { f.chunks(f.len() / 3 + 1).collect() } else { vec![&f[..]] };
+            let parts: Vec<&[u8]> = if i % 2 == 1 {
+                f.chunks(f.len() / 3 + 1).collect()
+            } else {
+                vec![&f[..]]
+            };
             for (k, part) in parts.iter().enumerate() {
                 let r = inf.push(part).unwrap().map(String::from);
-                if k + 1 < parts.len() { assert!(r.is_none()); } else { assert_eq!(r.as_deref(), Some(m.as_str())); }
+                if k + 1 < parts.len() {
+                    assert!(r.is_none());
+                } else {
+                    assert_eq!(r.as_deref(), Some(m.as_str()));
+                }
             }
         }
         // 大きいメッセージの後は作業領域を取り直している
@@ -1691,12 +2339,18 @@ mod tests {
     #[test]
     fn decode_frame_text_and_binary() {
         let mut inf = Inflater::new();
-        let v = decode_frame(&WsMsg::Text(r#"{"op":11}"#.into()), &mut inf).unwrap().unwrap();
+        let v = decode_frame(&WsMsg::Text(r#"{"op":11}"#.into()), &mut inf)
+            .unwrap()
+            .unwrap();
         assert_eq!(v["op"], 11);
         let f = zlib_stream(&[r#"{"op":10,"d":{"heartbeat_interval":5}}"#.to_string()]).remove(0);
-        let v = decode_frame(&WsMsg::Binary(f.into()), &mut inf).unwrap().unwrap();
+        let v = decode_frame(&WsMsg::Binary(f.into()), &mut inf)
+            .unwrap()
+            .unwrap();
         assert_eq!(v["d"]["heartbeat_interval"], 5);
-        assert!(decode_frame(&WsMsg::Ping(Vec::new().into()), &mut inf).unwrap().is_none());
+        assert!(decode_frame(&WsMsg::Ping(Vec::new().into()), &mut inf)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1704,10 +2358,14 @@ mod tests {
         let text = json!({"op": 0, "d": "x".repeat(2_000_000)}).to_string();
         let frames = zlib_stream(&[text, r#"{"op":11}"#.into()]);
         let mut inflater = Inflater::new();
-        let first = decode_frame(&WsMsg::Binary(frames[0].clone().into()), &mut inflater).unwrap().unwrap();
+        let first = decode_frame(&WsMsg::Binary(frames[0].clone().into()), &mut inflater)
+            .unwrap()
+            .unwrap();
         assert_eq!(first["d"].as_str().unwrap().len(), 2_000_000);
         assert_eq!(inflater.out.capacity(), 0);
-        let next = decode_frame(&WsMsg::Binary(frames[1].clone().into()), &mut inflater).unwrap().unwrap();
+        let next = decode_frame(&WsMsg::Binary(frames[1].clone().into()), &mut inflater)
+            .unwrap()
+            .unwrap();
         assert_eq!(next["op"], 11);
     }
 
@@ -1715,23 +2373,40 @@ mod tests {
     fn decode_frame_releases_large_invalid_json_and_continues() {
         let frames = zlib_stream(&["x".repeat(2_000_000), r#"{"op":11}"#.into()]);
         let mut inflater = Inflater::new();
-        assert!(decode_frame(&WsMsg::Binary(frames[0].clone().into()), &mut inflater).unwrap().is_none());
+        assert!(
+            decode_frame(&WsMsg::Binary(frames[0].clone().into()), &mut inflater)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(inflater.out.capacity(), 0);
-        let next = decode_frame(&WsMsg::Binary(frames[1].clone().into()), &mut inflater).unwrap().unwrap();
+        let next = decode_frame(&WsMsg::Binary(frames[1].clone().into()), &mut inflater)
+            .unwrap()
+            .unwrap();
         assert_eq!(next["op"], 11);
     }
 
     #[test]
     fn zlib_stream_decodes_independent_python_vectors() {
         // Python zlib.compressobj(), Z_SYNC_FLUSH; second packet reuses the first context.
-        let first = [120,156,170,86,202,47,80,178,50,52,208,81,74,81,178,170,86,202,72,77,44,42,73,74,77,44,137,207,204,43,73,45,42,75,204,81,178,50,49,53,48,48,168,173,5,0,0,0,255,255];
-        let second = [170,134,168,52,172,5,0,0,0,255,255];
+        let first = [
+            120, 156, 170, 86, 202, 47, 80, 178, 50, 52, 208, 81, 74, 81, 178, 170, 86, 202, 72,
+            77, 44, 42, 73, 74, 77, 44, 137, 207, 204, 43, 73, 45, 42, 75, 204, 81, 178, 50, 49,
+            53, 48, 48, 168, 173, 5, 0, 0, 0, 255, 255,
+        ];
+        let second = [170, 134, 168, 52, 172, 5, 0, 0, 0, 255, 255];
         for _ in 0..2 {
             let mut inf = Inflater::new();
-            for (packet, expected) in [(&first[..], r#"{"op":10,"d":{"heartbeat_interval":45000}}"#), (&second[..], r#"{"op":11}"#)] {
+            for (packet, expected) in [
+                (&first[..], r#"{"op":10,"d":{"heartbeat_interval":45000}}"#),
+                (&second[..], r#"{"op":11}"#),
+            ] {
                 for (i, byte) in packet.iter().enumerate() {
                     let got = inf.push(std::slice::from_ref(byte)).unwrap();
-                    if i + 1 == packet.len() { assert_eq!(got, Some(expected)); } else { assert!(got.is_none()); }
+                    if i + 1 == packet.len() {
+                        assert_eq!(got, Some(expected));
+                    } else {
+                        assert!(got.is_none());
+                    }
                 }
             }
         }
@@ -1739,7 +2414,10 @@ mod tests {
 
     #[test]
     fn compressed_websocket_frames_work_after_reconnect() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             for _ in 0..2 {
                 let (client_io, server_io) = tokio::io::duplex(4096);
@@ -1775,7 +2453,10 @@ mod tests {
         let text = "a".repeat(128);
         let packet = zlib_stream(&[text.clone()]).remove(0);
         let mut exact = Inflater::new();
-        assert_eq!(exact.push_with_limit(&packet, 128).unwrap(), Some(text.as_str()));
+        assert_eq!(
+            exact.push_with_limit(&packet, 128).unwrap(),
+            Some(text.as_str())
+        );
         let mut expanded = Inflater::new();
         assert!(expanded.push_with_limit(&packet, 127).is_err());
         let mut compressed = Inflater::new();
@@ -1786,7 +2467,9 @@ mod tests {
     #[test]
     fn zlib_stream_continues_after_output_buffer_boundaries() {
         let messages: Vec<String> = [65_535, 65_536, 65_537, 131_072, 1]
-            .into_iter().map(|len| "x".repeat(len)).collect();
+            .into_iter()
+            .map(|len| "x".repeat(len))
+            .collect();
         let packets = zlib_stream(&messages);
         let mut inflater = Inflater::new();
         for (packet, expected) in packets.iter().zip(&messages) {
@@ -1797,12 +2480,14 @@ mod tests {
     #[test]
     fn zlib_stream_releases_large_input_buffer_after_decoding() {
         let mut seed = 0x12345678u32;
-        let text: String = (0..2_500_000).map(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            char::from(b'!' + (seed % 90) as u8)
-        }).collect();
+        let text: String = (0..2_500_000)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                char::from(b'!' + (seed % 90) as u8)
+            })
+            .collect();
         let packet = zlib_stream(std::slice::from_ref(&text)).remove(0);
         assert!(packet.len() > Inflater::KEEP);
         let mut inflater = Inflater::new();
@@ -1842,7 +2527,10 @@ mod tests {
     #[test]
     #[ignore]
     fn live_gateway_hello() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let (ws, _) = tokio_tungstenite::connect_async(GATEWAY).await.unwrap();
             let (mut write, mut read) = ws.split();
@@ -1851,11 +2539,15 @@ mod tests {
             let hello = loop {
                 let m = read.next().await.unwrap().unwrap();
                 binary |= matches!(m, WsMsg::Binary(_));
-                if let Some(v) = decode_frame(&m, &mut inf).unwrap() { break v; }
+                if let Some(v) = decode_frame(&m, &mut inf).unwrap() {
+                    break v;
+                }
             };
             let _ = write.send(WsMsg::Close(None)).await;
             println!("LIVE binary={binary} hello={hello}");
-            assert!(binary && hello["op"] == 10 && hello["d"]["heartbeat_interval"].as_u64().is_some());
+            assert!(
+                binary && hello["op"] == 10 && hello["d"]["heartbeat_interval"].as_u64().is_some()
+            );
         });
     }
 
@@ -1868,16 +2560,29 @@ mod tests {
         let comp: usize = frames.iter().map(Vec::len).sum();
         let mut inf = Inflater::new();
         let t = std::time::Instant::now();
-        for f in &frames { assert_eq!(inf.push(f).unwrap().unwrap().len(), text.len()); }
-        println!("ZLIB {} KB -> {} KB/件 ({:.1}%), 展開 {:.3} ms/件", text.len() / 1024, comp / 20 / 1024, comp as f64 / 20.0 / text.len() as f64 * 100.0, t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+        for f in &frames {
+            assert_eq!(inf.push(f).unwrap().unwrap().len(), text.len());
+        }
+        println!(
+            "ZLIB {} KB -> {} KB/件 ({:.1}%), 展開 {:.3} ms/件",
+            text.len() / 1024,
+            comp / 20 / 1024,
+            comp as f64 / 20.0 / text.len() as f64 * 100.0,
+            t.elapsed().as_secs_f64() * 1000.0 / 20.0
+        );
     }
 
     #[test]
     #[ignore]
     fn bench_large_decode_buffer_release() {
         let large = json!({"op": 0, "d": "x".repeat(2_000_000)}).to_string();
-        let messages: Vec<String> = (0..20).flat_map(|_| [large.clone(), r#"{"op":11}"#.into()]).collect();
-        let frames: Vec<WsMsg> = zlib_stream(&messages).into_iter().map(|f| WsMsg::Binary(f.into())).collect();
+        let messages: Vec<String> = (0..20)
+            .flat_map(|_| [large.clone(), r#"{"op":11}"#.into()])
+            .collect();
+        let frames: Vec<WsMsg> = zlib_stream(&messages)
+            .into_iter()
+            .map(|f| WsMsg::Binary(f.into()))
+            .collect();
         for early_release in [false, true, true, false] {
             let mut inf = Inflater::new();
             let start = std::time::Instant::now();
@@ -1887,11 +2592,20 @@ mod tests {
                     decode_frame(frame, &mut inf).unwrap().unwrap()
                 } else if let WsMsg::Binary(bytes) = frame {
                     serde_json::from_str(inf.push(bytes).unwrap().unwrap()).unwrap()
-                } else { unreachable!() };
+                } else {
+                    unreachable!()
+                };
                 std::hint::black_box(value);
-                if i % 2 == 0 { retained = inf.out.capacity(); }
+                if i % 2 == 0 {
+                    retained = inf.out.capacity();
+                }
             }
-            println!("{}: {:.3} ms/pair, retained after large={} bytes", if early_release { "early" } else { "previous" }, start.elapsed().as_secs_f64() * 50.0, retained);
+            println!(
+                "{}: {:.3} ms/pair, retained after large={} bytes",
+                if early_release { "early" } else { "previous" },
+                start.elapsed().as_secs_f64() * 50.0,
+                retained
+            );
         }
     }
 
@@ -1904,16 +2618,26 @@ mod tests {
         encoder.write_all(input.as_bytes()).unwrap();
         let gzip = encoder.finish().unwrap();
         let plain_start = std::time::Instant::now();
-        for _ in 0..200 { std::hint::black_box(serde_json::from_slice::<Value>(input.as_bytes()).unwrap()); }
+        for _ in 0..200 {
+            std::hint::black_box(serde_json::from_slice::<Value>(input.as_bytes()).unwrap());
+        }
         let plain_ms = plain_start.elapsed().as_secs_f64() * 5.0;
         let start = std::time::Instant::now();
         for _ in 0..200 {
             let mut output = Vec::new();
-            flate2::read::GzDecoder::new(gzip.as_slice()).read_to_end(&mut output).unwrap();
+            flate2::read::GzDecoder::new(gzip.as_slice())
+                .read_to_end(&mut output)
+                .unwrap();
             assert_eq!(output, input.as_bytes());
             std::hint::black_box(serde_json::from_slice::<Value>(&output).unwrap());
         }
-        println!("gzip JSON: {} -> {} bytes, plain parse {:.3} ms, decode+parse {:.3} ms", input.len(), gzip.len(), plain_ms, start.elapsed().as_secs_f64() * 5.0);
+        println!(
+            "gzip JSON: {} -> {} bytes, plain parse {:.3} ms, decode+parse {:.3} ms",
+            input.len(),
+            gzip.len(),
+            plain_ms,
+            start.elapsed().as_secs_f64() * 5.0
+        );
     }
 
     /// 保存済みトークンで実際の REST を測る。gzip なし／ありのクライアントを交互に呼んで同じ条件で比べる
@@ -1921,11 +2645,36 @@ mod tests {
     #[test]
     #[ignore]
     fn live_rest_bench() {
-        let token = std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token")).unwrap().trim().to_string();
+        let token =
+            std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token"))
+                .unwrap()
+                .trim()
+                .to_string();
         let ua = "Mozilla/5.0 (X11; Linux x86_64) riscord/0.1";
-        let plain = Api { base_url: None, http: reqwest::Client::builder().user_agent(ua).no_gzip().build().unwrap(), token: token.clone(), roles: Default::default(), guild_perms: Default::default() };
-        let gzip = Api { base_url: None, http: reqwest::Client::builder().user_agent(ua).build().unwrap(), token, roles: Default::default(), guild_perms: Default::default() };
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let plain = Api {
+            base_url: None,
+            http: reqwest::Client::builder()
+                .user_agent(ua)
+                .no_gzip()
+                .build()
+                .unwrap(),
+            token: token.clone(),
+            roles: Default::default(),
+            guild_perms: Default::default(),
+            limits: Default::default(),
+        };
+        let gzip = Api {
+            base_url: None,
+            http: reqwest::Client::builder().user_agent(ua).build().unwrap(),
+            token,
+            roles: Default::default(),
+            guild_perms: Default::default(),
+            limits: Default::default(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let guilds: Vec<Guild> = gzip.get("/users/@me/guilds").await.unwrap();
             let dms: Vec<Channel> = gzip.get("/users/@me/channels").await.unwrap();
@@ -1940,25 +2689,44 @@ mod tests {
             let stat = |v: &mut Vec<f64>| {
                 v.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let n = v.len();
-                format!("平均 {:6.1} p50 {:6.1} p95 {:6.1} p99 {:6.1}", v.iter().sum::<f64>() / n as f64, v[n / 2], v[(n * 95 / 100).min(n - 1)], v[(n * 99 / 100).min(n - 1)])
+                format!(
+                    "平均 {:6.1} p50 {:6.1} p95 {:6.1} p99 {:6.1}",
+                    v.iter().sum::<f64>() / n as f64,
+                    v[n / 2],
+                    v[(n * 95 / 100).min(n - 1)],
+                    v[(n * 99 / 100).min(n - 1)]
+                )
             };
             let (mut all_p, mut all_g) = (Vec::new(), Vec::new());
             for (name, path) in &paths {
                 let (mut vp, mut vg) = (Vec::new(), Vec::new());
                 for i in 0..20 {
-                    let order: [(&Api, bool); 2] = if i % 2 == 0 { [(&plain, false), (&gzip, true)] } else { [(&gzip, true), (&plain, false)] };
+                    let order: [(&Api, bool); 2] = if i % 2 == 0 {
+                        [(&plain, false), (&gzip, true)]
+                    } else {
+                        [(&gzip, true), (&plain, false)]
+                    };
                     for (api, gz) in order {
                         let t = std::time::Instant::now();
                         let r = api.request(reqwest::Method::GET, path, None).await.unwrap();
                         let _ = r.bytes().await.unwrap();
                         let ms = t.elapsed().as_secs_f64() * 1000.0;
-                        if gz { vg.push(ms) } else { vp.push(ms) }
+                        if gz {
+                            vg.push(ms)
+                        } else {
+                            vp.push(ms)
+                        }
                         tokio::time::sleep(Duration::from_millis(300)).await;
                     }
                 }
                 all_p.extend(vp.iter().copied());
                 all_g.extend(vg.iter().copied());
-                println!("REST {name:<15} gzipなし {}\n     {:<15} gzipあり {}", stat(&mut vp), "", stat(&mut vg));
+                println!(
+                    "REST {name:<15} gzipなし {}\n     {:<15} gzipあり {}",
+                    stat(&mut vp),
+                    "",
+                    stat(&mut vg)
+                );
             }
             println!("REST 全体 gzipなし n={} {}", all_p.len(), stat(&mut all_p));
             println!("REST 全体 gzipあり n={} {}", all_g.len(), stat(&mut all_g));
@@ -1977,13 +2745,21 @@ mod tests {
             let m = read.next().await.unwrap().unwrap();
             wire += m.len();
             let tp = std::time::Instant::now();
-            let Some(v) = decode_frame(&m, &mut inf).unwrap() else { continue };
+            let Some(v) = decode_frame(&m, &mut inf).unwrap() else {
+                continue;
+            };
             parse_ms += tp.elapsed().as_secs_f64() * 1000.0;
-            json_bytes += match &m { WsMsg::Text(t) => t.len(), _ => inf.out.len() };
+            json_bytes += match &m {
+                WsMsg::Text(t) => t.len(),
+                _ => inf.out.len(),
+            };
             if !identified {
                 let identify = json!({ "op": 2, "d": { "token": token, "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
                     "presence": { "status": "invisible", "since": 0, "activities": [], "afk": false }, "compress": false } });
-                write.send(WsMsg::Text(identify.to_string().into())).await.unwrap();
+                write
+                    .send(WsMsg::Text(identify.to_string().into()))
+                    .await
+                    .unwrap();
                 identified = true;
             }
             if v["t"] == "READY" {
@@ -1998,9 +2774,16 @@ mod tests {
     #[test]
     #[ignore]
     fn live_gateway_ready() {
-        let token = std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token")).unwrap().trim().to_string();
+        let token =
+            std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token"))
+                .unwrap()
+                .trim()
+                .to_string();
         let plain_url = "wss://gateway.discord.gg/?v=10&encoding=json";
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             for i in 0..2 {
                 for (name, url) in if i == 0 { [("圧縮なし", plain_url), ("zlib-stream", GATEWAY)] } else { [("zlib-stream", GATEWAY), ("圧縮なし", plain_url)] } {
@@ -2014,20 +2797,49 @@ mod tests {
 
     #[test]
     fn role_cache_expires() {
-        let api = Api { base_url: None, http: reqwest::Client::new(), token: String::new(), roles: Default::default(), guild_perms: Default::default() };
-        let role = Role { id: "1".into(), name: "mod".into(), color: 0xff0000, position: 3, hoist: false, permissions: String::new() };
+        let api = Api {
+            base_url: None,
+            http: reqwest::Client::new(),
+            token: String::new(),
+            roles: Default::default(),
+            guild_perms: Default::default(),
+            limits: Default::default(),
+        };
+        let role = Role {
+            id: "1".into(),
+            name: "mod".into(),
+            color: 0xff0000,
+            position: 3,
+            hoist: false,
+            permissions: String::new(),
+        };
         assert!(api.cached_roles("g").is_none());
         api.store_roles("g", std::slice::from_ref(&role));
         assert_eq!(api.cached_roles("g").unwrap()[0].name, "mod");
         // 期限切れは使わない
-        api.roles.lock().unwrap().get_mut("g").unwrap().0 -= ROLE_CACHE_TTL + Duration::from_secs(1);
+        api.roles.lock().unwrap().get_mut("g").unwrap().0 -=
+            ROLE_CACHE_TTL + Duration::from_secs(1);
         assert!(api.cached_roles("g").is_none());
     }
 
     #[test]
     fn role_cache_keeps_guilds_separate_and_replaces_entries() {
-        let api = Api { base_url: None, http: reqwest::Client::new(), token: String::new(), roles: Default::default(), guild_perms: Default::default() };
-        let role = |name: &str| Role { id: "1".into(), name: name.into(), color: 0, position: 0, hoist: false, permissions: String::new() };
+        let api = Api {
+            base_url: None,
+            http: reqwest::Client::new(),
+            token: String::new(),
+            roles: Default::default(),
+            guild_perms: Default::default(),
+            limits: Default::default(),
+        };
+        let role = |name: &str| Role {
+            id: "1".into(),
+            name: name.into(),
+            color: 0,
+            position: 0,
+            hoist: false,
+            permissions: String::new(),
+        };
         api.store_roles("a", &[role("old")]);
         api.store_roles("b", &[role("other")]);
         api.store_roles("a", &[role("new")]);
@@ -2043,8 +2855,12 @@ mod tests {
         let (t, d) = split_payload(v);
         dispatch(&t, d, &s.tx, &s.v_tx);
         let evs: Vec<Event> = s.rx.try_iter().collect();
-        assert!(matches!(&evs[0], Event::GuildMembers(g, m) if g == "42" && m.len() == 1000 && m[999].user.as_ref().unwrap().id == "10999"));
-        assert!(matches!(&evs[1], Event::Presences(p) if p.len() == 1000 && p[0].1.activity.as_deref() == Some("プレイ中: game")));
+        assert!(
+            matches!(&evs[0], Event::GuildMembers(g, m) if g == "42" && m.len() == 1000 && m[999].user.as_ref().unwrap().id == "10999")
+        );
+        assert!(
+            matches!(&evs[1], Event::Presences(p) if p.len() == 1000 && p[0].1.activity.as_deref() == Some("プレイ中: game"))
+        );
     }
 
     #[test]
@@ -2054,8 +2870,17 @@ mod tests {
         let (t, d) = split_payload(v);
         dispatch(&t, d, &s.tx, &s.v_tx);
         match s.rx.try_recv().unwrap() {
-            Event::MessageUpdate { channel_id, id, content, embeds, .. } => {
-                assert_eq!((channel_id.as_str(), id.as_str(), content.as_deref()), ("1", "2", Some("x")));
+            Event::MessageUpdate {
+                channel_id,
+                id,
+                content,
+                embeds,
+                ..
+            } => {
+                assert_eq!(
+                    (channel_id.as_str(), id.as_str(), content.as_deref()),
+                    ("1", "2", Some("x"))
+                );
                 assert_eq!(embeds.unwrap()[0].url.as_deref(), Some("u"));
             }
             _ => panic!(),
@@ -2075,7 +2900,10 @@ mod tests {
             json!(null),
             json!([1, 2]),
         ] {
-            let expected = (value["t"].as_str().unwrap_or("").to_string(), value["d"].clone());
+            let expected = (
+                value["t"].as_str().unwrap_or("").to_string(),
+                value["d"].clone(),
+            );
             assert_eq!(split_payload(value), expected);
         }
     }
@@ -2107,7 +2935,10 @@ mod tests {
     fn member_list_subscribes_by_range_and_parses_updates() {
         let sub = member_subscription("10", "20", &[[0, 99], [100, 199]]);
         assert_eq!(sub["op"], 37, "全員を取る op 8 ではなく、範囲の購読");
-        assert_eq!(sub["d"]["subscriptions"]["10"]["channels"]["20"], json!([[0, 99], [100, 199]]));
+        assert_eq!(
+            sub["d"]["subscriptions"]["10"]["channels"]["20"],
+            json!([[0, 99], [100, 199]])
+        );
         let s = sink();
         let d = json!({
             "guild_id": "10", "id": "everyone", "member_count": 3, "online_count": 2,
@@ -2125,14 +2956,40 @@ mod tests {
         });
         dispatch("GUILD_MEMBER_LIST_UPDATE", d, &s.tx, &s.v_tx);
         let events: Vec<Event> = s.rx.try_iter().collect();
-        assert!(events.iter().any(|e| matches!(e, Event::GuildMembers(g, m) if g == "10" && m.len() == 2)));
-        assert!(events.iter().any(|e| matches!(e, Event::Presences(p) if p.len() == 1)));
-        let Some(Event::MemberList { guild_id, list_id, groups, ops }) = events.into_iter().find(|e| matches!(e, Event::MemberList { .. })) else { panic!("一覧の差分") };
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::GuildMembers(g, m) if g == "10" && m.len() == 2)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Presences(p) if p.len() == 1)));
+        let Some(Event::MemberList {
+            guild_id,
+            list_id,
+            groups,
+            ops,
+        }) = events
+            .into_iter()
+            .find(|e| matches!(e, Event::MemberList { .. }))
+        else {
+            panic!("一覧の差分")
+        };
         assert_eq!((guild_id.as_str(), list_id.as_str()), ("10", "everyone"));
-        assert_eq!(groups, vec![("online".to_string(), 2), ("offline".to_string(), 1)]);
-        assert_eq!(ops[0], ListOp::Sync { range: [0, 99], items: vec![
-            ListItem::Group("online".into(), 2), ListItem::Member("1".into()), ListItem::Member("2".into()), ListItem::Group("offline".into(), 1),
-        ] });
+        assert_eq!(
+            groups,
+            vec![("online".to_string(), 2), ("offline".to_string(), 1)]
+        );
+        assert_eq!(
+            ops[0],
+            ListOp::Sync {
+                range: [0, 99],
+                items: vec![
+                    ListItem::Group("online".into(), 2),
+                    ListItem::Member("1".into()),
+                    ListItem::Member("2".into()),
+                    ListItem::Group("offline".into(), 1),
+                ]
+            }
+        );
         assert_eq!(ops[1], ListOp::Delete { index: 2 });
         assert_eq!(ops[2], ListOp::Invalidate { range: [100, 199] });
     }
@@ -2142,11 +2999,21 @@ mod tests {
         // 1, 2, 4 … 秒と延び、60 秒で止まる（揺らぎは 1 秒未満）
         for (n, secs) in [(0, 1), (1, 2), (2, 4), (5, 32), (6, 60), (20, 60)] {
             let d = reconnect_delay(n).as_millis() as u64;
-            assert!(d >= secs * 1000 && d < secs * 1000 + 1000, "{n} 回目: {d}ms");
+            assert!(
+                d >= secs * 1000 && d < secs * 1000 + 1000,
+                "{n} 回目: {d}ms"
+            );
         }
-        assert!(matches!(close_action(4004), GatewayEnd::Fatal(_)), "トークン無効はやめる");
+        assert!(
+            matches!(close_action(4004), GatewayEnd::Fatal(_)),
+            "トークン無効はやめる"
+        );
         assert!(matches!(close_action(4014), GatewayEnd::Fatal(_)));
-        assert_eq!(close_action(4009), GatewayEnd::Reidentify, "セッション期限切れは一から");
+        assert_eq!(
+            close_action(4009),
+            GatewayEnd::Reidentify,
+            "セッション期限切れは一から"
+        );
         assert_eq!(close_action(4007), GatewayEnd::Reidentify);
         assert_eq!(close_action(4000), GatewayEnd::Resume, "その他は再開を試す");
         assert_eq!(close_action(1006), GatewayEnd::Resume);
@@ -2154,21 +3021,41 @@ mod tests {
 
     #[test]
     fn gateway_rejects_zero_heartbeat_interval() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("ws://{}", listener.local_addr().unwrap());
             let server = tokio::spawn(async move {
                 let (sock, _) = listener.accept().await.unwrap();
                 let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
-                ws.send(WsMsg::Text(r#"{"op":10,"d":{"heartbeat_interval":0}}"#.into())).await.unwrap();
+                ws.send(WsMsg::Text(
+                    r#"{"op":10,"d":{"heartbeat_interval":0}}"#.into(),
+                ))
+                .await
+                .unwrap();
             });
             let s = sink();
             let (_out_tx, mut out) = unbounded_channel();
-            let status = Mutex::new(MyPresence { status: "online".into(), activity: true });
+            let status = Mutex::new(MyPresence {
+                status: "online".into(),
+                activity: true,
+            });
             let mut session = GatewaySession::default();
             let mut ready = false;
-            let result = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready).await;
+            let result = gateway_once_at(
+                &base,
+                "tok",
+                &s.tx,
+                &mut out,
+                &status,
+                &s.v_tx,
+                &mut session,
+                &mut ready,
+            )
+            .await;
             assert!(result.is_err());
             assert!(!ready);
             server.await.unwrap();
@@ -2178,7 +3065,10 @@ mod tests {
     #[test]
     fn gateway_resumes_session_and_handles_invalid_session() {
         // 本物の代わりに手元で WebSocket サーバーを立て、READY → 切断 → RESUME の流れを確かめる
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("ws://{}", listener.local_addr().unwrap());
@@ -2230,34 +3120,80 @@ mod tests {
 
     #[test]
     fn presence_shows_riscord_activity_only_when_enabled() {
-        let on = presence_payload(&MyPresence { status: "idle".into(), activity: true });
+        let on = presence_payload(&MyPresence {
+            status: "idle".into(),
+            activity: true,
+        });
         assert_eq!(on["op"], 3);
         assert_eq!(on["d"]["status"], "idle");
         assert_eq!(on["d"]["activities"][0]["name"], "Riscord");
         assert_eq!(on["d"]["activities"][0]["type"], 0, "プレイ中");
-        assert!(on["d"]["activities"][0]["timestamps"]["start"].as_u64().unwrap() > 0);
-        let again = presence_payload(&MyPresence { status: "online".into(), activity: true });
-        assert_eq!(again["d"]["activities"][0]["timestamps"], on["d"]["activities"][0]["timestamps"], "開始時刻は変わらない");
-        let off = presence_payload(&MyPresence { status: "online".into(), activity: false });
+        assert!(
+            on["d"]["activities"][0]["timestamps"]["start"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let again = presence_payload(&MyPresence {
+            status: "online".into(),
+            activity: true,
+        });
+        assert_eq!(
+            again["d"]["activities"][0]["timestamps"], on["d"]["activities"][0]["timestamps"],
+            "開始時刻は変わらない"
+        );
+        let off = presence_payload(&MyPresence {
+            status: "online".into(),
+            activity: false,
+        });
         assert_eq!(off["d"]["activities"], json!([]));
     }
 
     #[test]
     fn profile_errors_are_explained() {
-        let err = |status: u16, body: &str| anyhow::Error::new(HttpError { status, text: format!("PATCH /users/@me: {status} {body}") });
-        assert!(profile_error_text(&err(400, r#"{"captcha_key": ["captcha-required"]}"#)).contains("CAPTCHA"));
-        assert!(profile_error_text(&err(400, r#"{"code": 50035, "errors": {"avatar": {"_errors": [{"code": "AVATAR_RATE_LIMIT"}]}}}"#)).contains("アバターの変更が多すぎます"));
-        assert!(profile_error_text(&err(400, r#"{"code": 50035, "errors": {"bio": {}}}"#)).contains("受け付けてもらえません"));
+        let err = |status: u16, body: &str| {
+            anyhow::Error::new(HttpError {
+                status,
+                text: format!("PATCH /users/@me: {status} {body}"),
+            })
+        };
+        assert!(
+            profile_error_text(&err(400, r#"{"captcha_key": ["captcha-required"]}"#))
+                .contains("CAPTCHA")
+        );
+        assert!(profile_error_text(&err(
+            400,
+            r#"{"code": 50035, "errors": {"avatar": {"_errors": [{"code": "AVATAR_RATE_LIMIT"}]}}}"#
+        ))
+        .contains("アバターの変更が多すぎます"));
+        assert!(
+            profile_error_text(&err(400, r#"{"code": 50035, "errors": {"bio": {}}}"#))
+                .contains("受け付けてもらえません")
+        );
         assert!(profile_error_text(&anyhow::anyhow!("timeout")).contains("通信状態"));
     }
 
     #[test]
     fn compose_rejections_are_explained() {
-        let err = |status: u16, body: &str| anyhow::Error::new(HttpError { status, text: format!("POST /channels/1/messages: {status} {body}") });
-        assert_eq!(compose_reject_reason(&err(413, "")).as_deref(), Some("ファイルが大きすぎます"));
+        let err = |status: u16, body: &str| {
+            anyhow::Error::new(HttpError {
+                status,
+                text: format!("POST /channels/1/messages: {status} {body}"),
+            })
+        };
+        assert_eq!(
+            compose_reject_reason(&err(413, "")).as_deref(),
+            Some("ファイルが大きすぎます")
+        );
         assert_eq!(compose_reject_reason(&err(400, r#"{"code": 50035, "errors": {"content": {"_errors": [{"code": "BASE_TYPE_MAX_LENGTH"}]}}}"#)).as_deref(), Some("本文が長すぎます"));
-        assert_eq!(compose_reject_reason(&err(403, r#"{"code": 50013}"#)).as_deref(), Some("このチャンネルで送信する権限がありません"));
-        assert!(compose_reject_reason(&err(500, "")).is_none(), "サーバー側の失敗は届いたか分からない");
+        assert_eq!(
+            compose_reject_reason(&err(403, r#"{"code": 50013}"#)).as_deref(),
+            Some("このチャンネルで送信する権限がありません")
+        );
+        assert!(
+            compose_reject_reason(&err(500, "")).is_none(),
+            "サーバー側の失敗は届いたか分からない"
+        );
         assert!(compose_reject_reason(&anyhow::anyhow!("timeout")).is_none());
     }
 
@@ -2267,10 +3203,19 @@ mod tests {
             Event::VoiceStates(v) => format!("VoiceStates({v:?})"),
             Event::Presences(p) => format!("Presences({p:?})"),
             Event::GuildMembers(g, m) => format!("GuildMembers({g}, {m:?})"),
-            Event::Call { channel_id, ringing } => format!("Call({channel_id}, {ringing:?})"),
+            Event::Call {
+                channel_id,
+                ringing,
+            } => format!("Call({channel_id}, {ringing:?})"),
             Event::CallEnded(c) => format!("CallEnded({c})"),
             Event::MessageCreate(m) => format!("MessageCreate({m:?})"),
-            Event::MessageUpdate { channel_id, id, content, embeds, .. } => format!("MessageUpdate({channel_id}, {id}, {content:?}, {embeds:?})"),
+            Event::MessageUpdate {
+                channel_id,
+                id,
+                content,
+                embeds,
+                ..
+            } => format!("MessageUpdate({channel_id}, {id}, {content:?}, {embeds:?})"),
             Event::MessageDelete { channel_id, id } => format!("MessageDelete({channel_id}, {id})"),
             Event::AuthFailed => "AuthFailed".into(),
             _ => "other".into(),
@@ -2282,7 +3227,10 @@ mod tests {
     fn ready_extracts_my_roles_and_channel_guilds() {
         let (tx, rx) = std::sync::mpsc::channel();
         let (v_tx, _v_rx) = unbounded_channel();
-        let tx = Tx { tx, ctx: crate::wake::Waker::default() };
+        let tx = Tx {
+            tx,
+            ctx: crate::wake::Waker::default(),
+        };
         let ready = json!({
             "user": { "id": "me" },
             "guilds": [
@@ -2294,7 +3242,13 @@ mod tests {
         });
         let raw = serde_json::value::RawValue::from_string(ready.to_string()).unwrap();
         dispatch_raw("READY", Some(&raw), &tx, &v_tx);
-        let extra = rx.try_iter().find_map(|e| match e { Event::ReadyExtra(v) => Some(v), _ => None }).unwrap();
+        let extra = rx
+            .try_iter()
+            .find_map(|e| match e {
+                Event::ReadyExtra(v) => Some(v),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(extra["my_roles"], json!({ "g1": ["r1"], "g2": ["r2"] }));
         assert_eq!(extra["channel_guild"], json!({ "c1": "g1", "t1": "g1" }));
         assert_eq!(extra["read_state"]["entries"][0]["mention_count"], 1);
@@ -2304,21 +3258,33 @@ mod tests {
         let run = |raw: bool| {
             let (tx, rx) = std::sync::mpsc::channel();
             let (v_tx, mut v_rx) = unbounded_channel();
-            let tx = Tx { tx, ctx: crate::wake::Waker::default() };
+            let tx = Tx {
+                tx,
+                ctx: crate::wake::Waker::default(),
+            };
             let (seq, op) = if raw {
                 let f: GatewayFrame = serde_json::from_str(text).unwrap();
-                if f.op.as_u64() == Some(0) { dispatch_raw(f.t.as_str().unwrap_or(""), f.d.as_deref(), &tx, &v_tx); }
+                if f.op.as_u64() == Some(0) {
+                    dispatch_raw(f.t.as_str().unwrap_or(""), f.d.as_deref(), &tx, &v_tx);
+                }
                 (f.s.as_i64(), f.op.as_u64())
             } else {
                 let v: Value = serde_json::from_str(text).unwrap();
                 let (seq, op) = (v["s"].as_i64(), v["op"].as_u64());
-                if op == Some(0) { let (t, d) = split_payload(v); dispatch(&t, d, &tx, &v_tx); }
+                if op == Some(0) {
+                    let (t, d) = split_payload(v);
+                    dispatch(&t, d, &tx, &v_tx);
+                }
                 (seq, op)
             };
             let events = rx.try_iter().map(|e| describe(&e)).collect();
             let mut voice = Vec::new();
             while let Ok(m) = v_rx.try_recv() {
-                voice.push(match m { VoiceMsg::State(v) => format!("State({v})"), VoiceMsg::Server(v) => format!("Server({v})"), _ => "other".into() });
+                voice.push(match m {
+                    VoiceMsg::State(v) => format!("State({v})"),
+                    VoiceMsg::Server(v) => format!("Server({v})"),
+                    _ => "other".into(),
+                });
             }
             (seq, op, events, voice)
         };
@@ -2332,7 +3298,9 @@ mod tests {
         let presence = json!({ "user": { "id": "7" }, "status": "idle", "activities": [{ "type": 4, "state": "休憩中", "emoji": { "name": "☕" } }, { "type": 0, "name": "game" }] });
         let guild = |id: Value, voice: Option<Value>| {
             let mut g = json!({ "id": id, "name": "g", "channels": [{ "id": "1", "name": "general", "type": 0, "permission_overwrites": [] }], "roles": [{ "id": "1", "name": "@everyone" }], "emojis": [], "member_count": 5 });
-            if let Some(v) = voice { g["voice_states"] = v; }
+            if let Some(v) = voice {
+                g["voice_states"] = v;
+            }
             g
         };
         let frames = [
@@ -2392,7 +3360,11 @@ mod tests {
         let typing = json!({ "op": 0, "s": 2, "t": "TYPING_START", "d": { "channel_id": "300", "guild_id": "1", "user_id": "7", "timestamp": 1, "member": { "user": { "id": "7", "username": "seven", "avatar": "0123456789abcdef" }, "roles": ["1", "2"], "nick": null, "joined_at": "2024-01-01T00:00:00+00:00" } } }).to_string();
         let chunk = members_chunk().to_string();
         let s = sink();
-        for (name, text, n) in [("READY", &ready, 20), ("TYPING_START", &typing, 20000), ("GUILD_MEMBERS_CHUNK", &chunk, 100)] {
+        for (name, text, n) in [
+            ("READY", &ready, 20),
+            ("TYPING_START", &typing, 20000),
+            ("GUILD_MEMBERS_CHUNK", &chunk, 100),
+        ] {
             for raw in [false, true, false, true] {
                 let start = std::time::Instant::now();
                 for _ in 0..n {
@@ -2406,7 +3378,12 @@ mod tests {
                     }
                     s.rx.try_iter().for_each(drop);
                 }
-                println!("{name:<20} ({:5} KB) {}: {:.4} ms/件", text.len() / 1024, if raw { "dispatch_raw" } else { "Value全体  " }, start.elapsed().as_secs_f64() * 1000.0 / n as f64);
+                println!(
+                    "{name:<20} ({:5} KB) {}: {:.4} ms/件",
+                    text.len() / 1024,
+                    if raw { "dispatch_raw" } else { "Value全体  " },
+                    start.elapsed().as_secs_f64() * 1000.0 / n as f64
+                );
             }
         }
     }
@@ -2417,9 +3394,19 @@ mod tests {
     #[test]
     #[ignore]
     fn live_gateway_event_mix() {
-        let token = std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token")).unwrap().trim().to_string();
-        let secs: u64 = std::env::var("LIVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let token =
+            std::fs::read_to_string(dirs::config_dir().unwrap().join("riscord").join("token"))
+                .unwrap()
+                .trim()
+                .to_string();
+        let secs: u64 = std::env::var("LIVE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let texts: Vec<String> = rt.block_on(async {
             let (ws, _) = tokio_tungstenite::connect_async(GATEWAY).await.unwrap();
             let (mut write, mut read) = ws.split();
@@ -2455,12 +3442,19 @@ mod tests {
         let mut kinds: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
         for t in &texts {
             let v: Value = serde_json::from_str(t).unwrap();
-            let k = v["t"].as_str().map(String::from).unwrap_or_else(|| format!("op{}", v["op"]));
+            let k = v["t"]
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| format!("op{}", v["op"]));
             let e = kinds.entry(k).or_default();
             e.0 += 1;
             e.1 += t.len();
         }
-        println!("LIVE {secs} 秒で {} 件・{} KB", texts.len(), texts.iter().map(String::len).sum::<usize>() / 1024);
+        println!(
+            "LIVE {secs} 秒で {} 件・{} KB",
+            texts.len(),
+            texts.iter().map(String::len).sum::<usize>() / 1024
+        );
         for (k, (n, b)) in &kinds {
             println!("  {k:<28} {n:6} 件 {:8} KB 使う={}", b / 1024, handles(k));
         }
@@ -2470,14 +3464,23 @@ mod tests {
             for t in &texts {
                 if raw {
                     let f: GatewayFrame = serde_json::from_str(t).unwrap();
-                    if f.op.as_u64() == Some(0) { dispatch_raw(f.t.as_str().unwrap_or(""), f.d.as_deref(), &s.tx, &s.v_tx); }
+                    if f.op.as_u64() == Some(0) {
+                        dispatch_raw(f.t.as_str().unwrap_or(""), f.d.as_deref(), &s.tx, &s.v_tx);
+                    }
                 } else {
                     let v: Value = serde_json::from_str(t).unwrap();
-                    if v["op"].as_u64() == Some(0) { let (t, d) = split_payload(v); dispatch(&t, d, &s.tx, &s.v_tx); }
+                    if v["op"].as_u64() == Some(0) {
+                        let (t, d) = split_payload(v);
+                        dispatch(&t, d, &s.tx, &s.v_tx);
+                    }
                 }
                 s.rx.try_iter().for_each(drop);
             }
-            println!("LIVE 全件の解析+dispatch {}: {:.2} ms", if raw { "dispatch_raw" } else { "Value全体  " }, start.elapsed().as_secs_f64() * 1000.0);
+            println!(
+                "LIVE 全件の解析+dispatch {}: {:.2} ms",
+                if raw { "dispatch_raw" } else { "Value全体  " },
+                start.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
 }

@@ -31,11 +31,20 @@ pub fn sorted_page(mut list: Vec<Message>) -> Vec<Message> {
 
 impl App {
     /// そのメッセージのところへ移る（必要ならサーバー・チャンネルも移る）
-    pub fn jump_to_message(&mut self, guild_id: Option<String>, channel_id: String, message_id: String) {
+    pub fn jump_to_message(
+        &mut self,
+        guild_id: Option<String>,
+        channel_id: String,
+        message_id: String,
+    ) {
         if self.sel_channel.as_deref() != Some(channel_id.as_str()) {
             self.select(guild_id, Some(channel_id.clone()));
         }
-        self.jump = Some(Jump { channel_id, message_id, around: false });
+        self.jump = Some(Jump {
+            channel_id,
+            message_id,
+            around: false,
+        });
         self.resolve_jump();
     }
 
@@ -51,7 +60,9 @@ impl App {
         if self.pending_message_loads.contains_key(&j.channel_id) {
             return;
         }
-        let Some(list) = self.messages.get(&j.channel_id) else { return };
+        let Some(list) = self.messages.get(&j.channel_id) else {
+            return;
+        };
         if list.iter().any(|m| m.id == j.message_id) {
             let j = self.jump.take().unwrap();
             self.jump_flash = Some((j.message_id.clone(), std::time::Instant::now()));
@@ -66,13 +77,21 @@ impl App {
             return;
         }
         j.around = true;
-        let call = ApiCall::GetMessages { channel_id: j.channel_id.clone(), before: None, after: None, around: Some(j.message_id.clone()), limit: net::HISTORY_PAGE as u32 };
+        let call = ApiCall::GetMessages {
+            channel_id: j.channel_id.clone(),
+            before: None,
+            after: None,
+            around: Some(j.message_id.clone()),
+            limit: net::HISTORY_PAGE as u32,
+        };
         self.send(Cmd::Api { id: 0, call });
     }
 
     /// 飛んだ先の行を目立たせているか
     pub fn is_jump_flash(&self, id: &str) -> bool {
-        self.jump_flash.as_ref().is_some_and(|(m, at)| m == id && at.elapsed() < JUMP_FLASH)
+        self.jump_flash
+            .as_ref()
+            .is_some_and(|(m, at)| m == id && at.elapsed() < JUMP_FLASH)
     }
 
     /// 最新とつながっていない一覧を出しているか
@@ -81,12 +100,22 @@ impl App {
     }
 
     /// 前後を読んだ結果
-    pub(super) fn on_around_loaded(&mut self, channel_id: String, message_id: String, result: Result<serde_json::Value, String>) {
-        let waiting = self.jump.as_ref().is_some_and(|j| j.channel_id == channel_id && j.message_id == message_id && j.around);
+    pub(super) fn on_around_loaded(
+        &mut self,
+        channel_id: String,
+        message_id: String,
+        result: Result<serde_json::Value, String>,
+    ) {
+        let waiting = self
+            .jump
+            .as_ref()
+            .is_some_and(|j| j.channel_id == channel_id && j.message_id == message_id && j.around);
         if !waiting {
             return;
         }
-        let list = match result.map(|v| serde_json::from_value::<Vec<Message>>(v).map_err(|e| e.to_string())) {
+        let list = match result
+            .map(|v| serde_json::from_value::<Vec<Message>>(v).map_err(|e| e.to_string()))
+        {
             Ok(Ok(list)) => sorted_page(list),
             Ok(Err(e)) | Err(e) => {
                 eprintln!("メッセージの前後を読めませんでした: {e}");
@@ -107,7 +136,13 @@ impl App {
             _ => true,
         };
         if newer {
-            self.history.insert(channel_id.clone(), History { newer: true, ..Default::default() });
+            self.history.insert(
+                channel_id.clone(),
+                History {
+                    newer: true,
+                    ..Default::default()
+                },
+            );
             self.stale_channels.remove(&channel_id);
             if let Some(old) = self.messages.insert(channel_id, list) {
                 if old.iter().any(|m| !m.sticker_items.is_empty()) {
@@ -127,34 +162,65 @@ impl App {
 
     /// つながっていない一覧の下端に近づいたら、続きを読む
     pub fn load_newer(&mut self, channel_id: &str) {
-        let Some(h) = self.history.get_mut(channel_id) else { return };
-        if !h.newer || h.pending_newer.is_some() || h.newer_retry_at.is_some_and(|t| std::time::Instant::now() < t) {
+        let Some(h) = self.history.get_mut(channel_id) else {
+            return;
+        };
+        if !h.newer
+            || h.pending_newer.is_some()
+            || h.newer_retry_at
+                .is_some_and(|t| std::time::Instant::now() < t)
+        {
             return;
         }
-        let Some(last) = self.messages.get(channel_id).and_then(|l| l.last()).map(|m| m.id.clone()) else { return };
+        let Some(last) = self
+            .messages
+            .get(channel_id)
+            .and_then(|l| l.last())
+            .map(|m| m.id.clone())
+        else {
+            return;
+        };
         h.pending_newer = Some(last.clone());
         h.newer_retry_at = None;
-        let call = ApiCall::GetMessages { channel_id: channel_id.to_string(), before: None, after: Some(last), around: None, limit: net::HISTORY_PAGE as u32 };
+        let call = ApiCall::GetMessages {
+            channel_id: channel_id.to_string(),
+            before: None,
+            after: Some(last),
+            around: None,
+            limit: net::HISTORY_PAGE as u32,
+        };
         self.send(Cmd::Api { id: 0, call });
     }
 
-    pub(super) fn on_newer_loaded(&mut self, channel_id: String, after: String, result: Result<serde_json::Value, String>) {
-        let Some(h) = self.history.get_mut(&channel_id) else { return };
+    pub(super) fn on_newer_loaded(
+        &mut self,
+        channel_id: String,
+        after: String,
+        result: Result<serde_json::Value, String>,
+    ) {
+        let Some(h) = self.history.get_mut(&channel_id) else {
+            return;
+        };
         if h.pending_newer.as_deref() != Some(after.as_str()) {
             return;
         }
         h.pending_newer = None;
-        let page = match result.map(|v| serde_json::from_value::<Vec<Message>>(v).map_err(|e| e.to_string())) {
+        let page = match result
+            .map(|v| serde_json::from_value::<Vec<Message>>(v).map_err(|e| e.to_string()))
+        {
             Ok(Ok(p)) => sorted_page(p),
             Ok(Err(e)) | Err(e) => {
                 eprintln!("続きのメッセージを読めませんでした: {e}");
-                h.newer_retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                h.newer_retry_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
                 self.repaint_after(std::time::Duration::from_secs(5));
                 return;
             }
         };
         h.newer = page.len() >= net::HISTORY_PAGE;
-        let Some(list) = self.messages.get_mut(&channel_id) else { return };
+        let Some(list) = self.messages.get_mut(&channel_id) else {
+            return;
+        };
         // 待っている間に一覧が入れ替わっていたら捨てる
         if list.last().map(|m| m.id.as_str()) != Some(after.as_str()) {
             if let Some(h) = self.history.get_mut(&channel_id) {
@@ -201,25 +267,47 @@ mod tests {
     }
 
     /// 頼んだコマンドを覗ける App（チャンネル c に 100000.. のメッセージ n 件）
-    fn harness(n: usize) -> (App, std::sync::mpsc::Sender<Event>, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
+    fn harness(
+        n: usize,
+    ) -> (
+        App,
+        std::sync::mpsc::Sender<Event>,
+        tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    ) {
         let mut app = App::default();
         let (tx, ev) = std::sync::mpsc::channel();
         let (cmd, rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });
-        app.messages.insert("c".into(), (0..n).map(|i| msg(&(100000 + i).to_string())).collect());
+        app.messages.insert(
+            "c".into(),
+            (0..n).map(|i| msg(&(100000 + i).to_string())).collect(),
+        );
         app.touch_channel("c");
         app.sel_channel = Some("c".into());
-        app.dms.push(serde_json::from_value(serde_json::json!({ "id": "c", "type": 1, "last_message_id": "900000" })).unwrap());
+        app.dms.push(
+            serde_json::from_value(
+                serde_json::json!({ "id": "c", "type": 1, "last_message_id": "900000" }),
+            )
+            .unwrap(),
+        );
         (app, tx, rx)
     }
 
     fn api(call: ApiCall, v: serde_json::Value) -> Event {
-        Event::Api { id: 0, call, result: Ok(v) }
+        Event::Api {
+            id: 0,
+            call,
+            result: Ok(v),
+        }
     }
 
     fn page(ids: std::ops::Range<u64>) -> serde_json::Value {
         // Discord は新しい順で返す
-        serde_json::Value::Array(ids.rev().map(|i| serde_json::to_value(msg(&i.to_string())).unwrap()).collect())
+        serde_json::Value::Array(
+            ids.rev()
+                .map(|i| serde_json::to_value(msg(&i.to_string())).unwrap())
+                .collect(),
+        )
     }
 
     #[test]
@@ -236,7 +324,13 @@ mod tests {
         let (mut app, tx, mut rx) = harness(10);
         app.jump_to_message(None, "c".into(), "500025".into());
         let call = match rx.try_recv().unwrap() {
-            Cmd::Api { call: call @ ApiCall::GetMessages { around: Some(_), .. }, .. } => call,
+            Cmd::Api {
+                call:
+                    call @ ApiCall::GetMessages {
+                        around: Some(_), ..
+                    },
+                ..
+            } => call,
             _ => panic!("前後の読み込みを頼んでいない"),
         };
         tx.send(api(call, page(500000..500050))).unwrap();
@@ -251,7 +345,10 @@ mod tests {
         // 下へ読み進めて最新まで届いたら、つながった扱いに戻る
         app.load_newer("c");
         let call = match rx.try_recv().unwrap() {
-            Cmd::Api { call: call @ ApiCall::GetMessages { after: Some(_), .. }, .. } => call,
+            Cmd::Api {
+                call: call @ ApiCall::GetMessages { after: Some(_), .. },
+                ..
+            } => call,
             _ => panic!("続きを頼んでいない"),
         };
         tx.send(api(call, page(500050..500060))).unwrap();
@@ -263,14 +360,27 @@ mod tests {
     #[test]
     fn back_to_latest_reloads_and_reattaches() {
         let (mut app, tx, mut rx) = harness(10);
-        app.history.insert("c".into(), History { newer: true, ..Default::default() });
+        app.history.insert(
+            "c".into(),
+            History {
+                newer: true,
+                ..Default::default()
+            },
+        );
         app.back_to_latest("c");
         assert!(matches!(rx.try_recv().unwrap(), Cmd::LoadMessages(c) if c == "c"));
-        tx.send(Event::Messages("c".into(), vec![msg("900000")])).unwrap();
+        tx.send(Event::Messages("c".into(), vec![msg("900000")]))
+            .unwrap();
         app.poll();
         assert!(!app.is_detached("c"));
         // つながっていない一覧は控えに書かない
-        app.history.insert("c".into(), History { newer: true, ..Default::default() });
+        app.history.insert(
+            "c".into(),
+            History {
+                newer: true,
+                ..Default::default()
+            },
+        );
         assert!(app.is_detached("c"));
     }
 
@@ -278,11 +388,16 @@ mod tests {
     fn missing_jump_target_is_reported() {
         let (mut app, tx, mut rx) = harness(10);
         app.jump_to_message(None, "c".into(), "700000".into());
-        let Cmd::Api { call, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { call, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(api(call, page(600000..600010))).unwrap();
         app.poll();
         assert!(app.jump.is_none());
-        assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("見つかりません")));
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|(t, _)| t.contains("見つかりません")));
     }
 
     #[test]

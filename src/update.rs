@@ -67,7 +67,12 @@ fn set(s: Status, waker: &Waker) {
 
 /// 配布しているすべての (OS, CPU)。.github/workflows/release.yml の asset と一致していることをテストで確かめる
 #[cfg(test)]
-const TARGETS: [(&str, &str); 4] = [("windows", "x86_64"), ("windows", "aarch64"), ("linux", "x86_64"), ("linux", "aarch64")];
+const TARGETS: [(&str, &str); 4] = [
+    ("windows", "x86_64"),
+    ("windows", "aarch64"),
+    ("linux", "x86_64"),
+    ("linux", "aarch64"),
+];
 
 /// 配布物の名前（その OS・CPU 向けのものがなければ None）
 fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
@@ -86,7 +91,10 @@ fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
 fn asset_names() -> Vec<&'static str> {
     let os = std::env::consts::OS;
     let mut names = Vec::new();
-    for arch in [native_arch(), Some(std::env::consts::ARCH)].into_iter().flatten() {
+    for arch in [native_arch(), Some(std::env::consts::ARCH)]
+        .into_iter()
+        .flatten()
+    {
         if let Some(name) = asset_for(os, arch) {
             if !names.contains(&name) {
                 names.push(name);
@@ -185,7 +193,10 @@ pub fn start(waker: &Waker) {
         let waker = waker.clone();
         std::thread::spawn(move || {
             set(Status::Checking, &waker);
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => return set(Status::Failed(e.to_string()), &waker),
             };
@@ -255,11 +266,25 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
         .to_ascii_lowercase();
 
     set(Status::Downloading(version.clone()), waker);
-    let bytes = http.get(&asset.browser_download_url).timeout(Duration::from_secs(600)).send().await?.error_for_status()?.bytes().await?;
+    let bytes = http
+        .get(&asset.browser_download_url)
+        .timeout(Duration::from_secs(600))
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
     if bytes.len() as u64 != asset.size {
-        bail!("ダウンロードしたサイズが合いません（{} / {} バイト）", bytes.len(), asset.size);
+        bail!(
+            "ダウンロードしたサイズが合いません（{} / {} バイト）",
+            bytes.len(),
+            asset.size
+        );
     }
-    let got: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let got: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if got != want {
         bail!("ダウンロードしたファイルの SHA-256 が合いません");
     }
@@ -298,7 +323,12 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
 
 fn notify_ready(version: &str) {
     let body = format!("{version} に更新しました。再起動すると新しい版になります。");
-    if let Err(e) = notify_rust::Notification::new().appname("Riscord").summary("Riscord を更新しました").body(&body).show() {
+    if let Err(e) = notify_rust::Notification::new()
+        .appname("Riscord")
+        .summary("Riscord を更新しました")
+        .body(&body)
+        .show()
+    {
         eprintln!("通知を出せませんでした: {e}");
     }
 }
@@ -342,9 +372,15 @@ mod tests {
     #[test]
     fn asset_names_match_release_workflow() {
         let yml = include_str!("../.github/workflows/release.yml");
-        let mut in_workflow: Vec<&str> =
-            yml.lines().filter_map(|l| l.trim().strip_prefix("asset: ")).map(str::trim).collect();
-        let mut in_code: Vec<&str> = TARGETS.iter().map(|(os, arch)| asset_for(os, arch).unwrap()).collect();
+        let mut in_workflow: Vec<&str> = yml
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("asset: "))
+            .map(str::trim)
+            .collect();
+        let mut in_code: Vec<&str> = TARGETS
+            .iter()
+            .map(|(os, arch)| asset_for(os, arch).unwrap())
+            .collect();
         in_workflow.sort();
         in_code.sort();
         assert_eq!(in_workflow, in_code);

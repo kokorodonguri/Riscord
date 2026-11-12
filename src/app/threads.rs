@@ -58,16 +58,38 @@ fn parse_thread_page(v: &serde_json::Value) -> Result<ThreadPage, Option<f64>> {
         return Err(Some(v["retry_after"].as_f64().unwrap_or(2.0)));
     }
     let list = v["threads"].as_array().ok_or(None)?;
-    let threads = list.iter().filter_map(|t| serde_json::from_value::<Channel>(t.clone()).ok()).collect();
-    let firsts = v["first_messages"].as_array().into_iter().flatten().filter_map(|m| serde_json::from_value::<Message>(m.clone()).ok()).collect();
+    let threads = list
+        .iter()
+        .filter_map(|t| serde_json::from_value::<Channel>(t.clone()).ok())
+        .collect();
+    let firsts = v["first_messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| serde_json::from_value::<Message>(m.clone()).ok())
+        .collect();
     // 自分が参加しているスレッド
-    let joined = v["members"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(String::from)).collect();
-    Ok((threads, firsts, v["has_more"].as_bool().unwrap_or(false), joined))
+    let joined = v["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["id"].as_str().map(String::from))
+        .collect();
+    Ok((
+        threads,
+        firsts,
+        v["has_more"].as_bool().unwrap_or(false),
+        joined,
+    ))
 }
 
 /// 投稿の最後の動き（新しい順に並べる）
 pub fn thread_activity(c: &Channel) -> u64 {
-    c.last_message_id.as_deref().or(Some(c.id.as_str())).and_then(|s| s.parse().ok()).unwrap_or(0)
+    c.last_message_id
+        .as_deref()
+        .or(Some(c.id.as_str()))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 impl App {
@@ -78,7 +100,10 @@ impl App {
             Some(x) => *x = t.clone(),
             None => list.push(t.clone()),
         }
-        for v in [self.forum.as_mut(), self.thread_panel.as_mut()].into_iter().flatten() {
+        for v in [self.forum.as_mut(), self.thread_panel.as_mut()]
+            .into_iter()
+            .flatten()
+        {
             if let Some(x) = v.items.iter_mut().find(|x| x.id == t.id) {
                 *x = t.clone();
                 v.rev += 1;
@@ -91,7 +116,10 @@ impl App {
             l.retain(|t| t.id != id);
         }
         self.joined_threads.remove(id);
-        for v in [self.forum.as_mut(), self.thread_panel.as_mut()].into_iter().flatten() {
+        for v in [self.forum.as_mut(), self.thread_panel.as_mut()]
+            .into_iter()
+            .flatten()
+        {
             v.items.retain(|t| t.id != id);
             v.rev += 1;
         }
@@ -101,7 +129,8 @@ impl App {
     pub fn sidebar_threads(&self, guild_id: &str) -> HashMap<&str, Vec<&Channel>> {
         let mut out: HashMap<&str, Vec<&Channel>> = HashMap::new();
         for t in self.threads.get(guild_id).into_iter().flatten() {
-            let show = (self.joined_threads.contains(&t.id) && !t.archived()) || self.sel_channel.as_deref() == Some(t.id.as_str());
+            let show = (self.joined_threads.contains(&t.id) && !t.archived())
+                || self.sel_channel.as_deref() == Some(t.id.as_str());
             if let (true, Some(p)) = (show, t.parent_id.as_deref()) {
                 out.entry(p).or_default().push(t);
             }
@@ -115,7 +144,9 @@ impl App {
     /// READY・GUILD_CREATE のスレッド（参加中のものには member が付く）
     pub(super) fn load_guild_threads(&mut self, guild_id: &str, list: &serde_json::Value) {
         for t in list.as_array().into_iter().flatten() {
-            let Ok(c) = serde_json::from_value::<Channel>(t.clone()) else { continue };
+            let Ok(c) = serde_json::from_value::<Channel>(t.clone()) else {
+                continue;
+            };
             if !t["member"].is_null() {
                 self.joined_threads.insert(c.id.clone());
             }
@@ -129,14 +160,25 @@ impl App {
         let gid = d["guild_id"].as_str().unwrap_or_default().to_string();
         match t {
             "THREAD_CREATE" | "THREAD_UPDATE" => {
-                let Ok(c) = serde_json::from_value::<Channel>(d.clone()) else { return };
-                if !d["member"].is_null() || (t == "THREAD_CREATE" && d["newly_created"] == true && c.owner_id.as_deref() == Some(me.as_str())) {
+                let Ok(c) = serde_json::from_value::<Channel>(d.clone()) else {
+                    return;
+                };
+                if !d["member"].is_null()
+                    || (t == "THREAD_CREATE"
+                        && d["newly_created"] == true
+                        && c.owner_id.as_deref() == Some(me.as_str()))
+                {
                     self.joined_threads.insert(c.id.clone());
                 }
                 // 開いているフォーラムに新しい投稿が来たら先頭に足す
                 if t == "THREAD_CREATE" {
-                    if let Some(f) = self.forum.as_mut().filter(|f| c.parent_id.as_deref() == Some(f.channel_id.as_str()) && !f.archived) {
-                        let fits = f.tag.as_ref().is_none_or(|tag| c.applied_tags.contains(tag));
+                    if let Some(f) = self.forum.as_mut().filter(|f| {
+                        c.parent_id.as_deref() == Some(f.channel_id.as_str()) && !f.archived
+                    }) {
+                        let fits = f
+                            .tag
+                            .as_ref()
+                            .is_none_or(|tag| c.applied_tags.contains(tag));
                         if fits && !f.items.iter().any(|x| x.id == c.id) {
                             f.items.insert(0, c.clone());
                             f.rev += 1;
@@ -160,7 +202,9 @@ impl App {
             }
             "THREAD_LIST_SYNC" => {
                 // channel_ids があればその親の分だけ、無ければサーバー全体の一覧が届いた
-                let parents: Option<Vec<&str>> = d["channel_ids"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect());
+                let parents: Option<Vec<&str>> = d["channel_ids"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect());
                 if let Some(l) = self.threads.get_mut(&gid) {
                     l.retain(|t| match &parents {
                         Some(p) => !t.parent_id.as_deref().is_some_and(|x| p.contains(&x)),
@@ -177,14 +221,25 @@ impl App {
                 }
             }
             "THREAD_MEMBER_UPDATE" => {
-                if let Some(id) = d["id"].as_str().filter(|_| d["user_id"].as_str().is_none_or(|u| u == me)) {
+                if let Some(id) = d["id"]
+                    .as_str()
+                    .filter(|_| d["user_id"].as_str().is_none_or(|u| u == me))
+                {
                     self.joined_threads.insert(id.to_string());
                 }
             }
             "THREAD_MEMBERS_UPDATE" => {
                 let Some(id) = d["id"].as_str() else { return };
-                let added = d["added_members"].as_array().into_iter().flatten().any(|m| m["user_id"].as_str() == Some(me.as_str()));
-                let removed = d["removed_member_ids"].as_array().into_iter().flatten().any(|m| m.as_str() == Some(me.as_str()));
+                let added = d["added_members"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|m| m["user_id"].as_str() == Some(me.as_str()));
+                let removed = d["removed_member_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|m| m.as_str() == Some(me.as_str()));
                 if added {
                     self.joined_threads.insert(id.to_string());
                 } else if removed {
@@ -205,7 +260,11 @@ impl App {
             return;
         }
         let gid = self.sel_guild.clone().unwrap_or_default();
-        self.forum = Some(ThreadsView { channel_id: c.id, guild_id: gid, ..Default::default() });
+        self.forum = Some(ThreadsView {
+            channel_id: c.id,
+            guild_id: gid,
+            ..Default::default()
+        });
         self.post_draft = None;
         self.load_threads(true, false);
     }
@@ -216,20 +275,32 @@ impl App {
             self.close_side();
             return;
         }
-        let Some(cid) = self.sel_channel.clone() else { return };
+        let Some(cid) = self.sel_channel.clone() else {
+            return;
+        };
         self.close_side();
         self.side = SidePanel::Threads;
-        self.thread_panel = Some(ThreadsView { channel_id: cid, guild_id: self.sel_guild.clone().unwrap_or_default(), ..Default::default() });
+        self.thread_panel = Some(ThreadsView {
+            channel_id: cid,
+            guild_id: self.sel_guild.clone().unwrap_or_default(),
+            ..Default::default()
+        });
         self.load_threads(false, false);
     }
 
     fn view_mut(&mut self, forum: bool) -> Option<&mut ThreadsView> {
-        if forum { self.forum.as_mut() } else { self.thread_panel.as_mut() }
+        if forum {
+            self.forum.as_mut()
+        } else {
+            self.thread_panel.as_mut()
+        }
     }
 
     /// 一覧を読む（more = 続きのページ）
     pub fn load_threads(&mut self, forum: bool, more: bool) {
-        let Some(v) = self.view_mut(forum) else { return };
+        let Some(v) = self.view_mut(forum) else {
+            return;
+        };
         if v.loading || (more && !v.has_more) {
             return;
         }
@@ -253,7 +324,10 @@ impl App {
         if let Some(t) = &v.tag {
             query.push(("tag".into(), t.clone()));
         }
-        let call = ApiCall::SearchThreads { channel_id: v.channel_id.clone(), query };
+        let call = ApiCall::SearchThreads {
+            channel_id: v.channel_id.clone(),
+            query,
+        };
         let id = self.api(call);
         if let Some(v) = self.view_mut(forum) {
             v.request = id;
@@ -261,8 +335,15 @@ impl App {
     }
 
     /// タグで絞る・アーカイブ済みに切り替える
-    pub fn set_thread_filter(&mut self, forum: bool, tag: Option<Option<String>>, archived: Option<bool>) {
-        let Some(v) = self.view_mut(forum) else { return };
+    pub fn set_thread_filter(
+        &mut self,
+        forum: bool,
+        tag: Option<Option<String>>,
+        archived: Option<bool>,
+    ) {
+        let Some(v) = self.view_mut(forum) else {
+            return;
+        };
         if let Some(t) = tag {
             v.tag = t;
         }
@@ -277,7 +358,10 @@ impl App {
     pub fn tick_threads(&mut self) {
         let now = std::time::Instant::now();
         for forum in [true, false] {
-            if let Some(v) = self.view_mut(forum).filter(|v| v.retry_at.is_some_and(|t| now >= t)) {
+            if let Some(v) = self
+                .view_mut(forum)
+                .filter(|v| v.retry_at.is_some_and(|t| now >= t))
+            {
                 v.retry_at = None;
                 v.loading = false;
                 // 同じページをもう一度
@@ -300,7 +384,10 @@ impl App {
             return;
         };
         let parsed = result.as_ref().map(parse_thread_page);
-        let gid = self.view_mut(forum).map(|v| v.guild_id.clone()).unwrap_or_default();
+        let gid = self
+            .view_mut(forum)
+            .map(|v| v.guild_id.clone())
+            .unwrap_or_default();
         if let Ok(Ok((threads, _, _, joined))) = &parsed {
             self.joined_threads.extend(joined.iter().cloned());
             // 開けるよう、知っているスレッドにも入れておく
@@ -308,13 +395,16 @@ impl App {
                 self.upsert_thread(&gid, t.clone());
             }
         }
-        let Some(v) = self.view_mut(forum) else { return };
+        let Some(v) = self.view_mut(forum) else {
+            return;
+        };
         v.rev += 1;
         match parsed {
             Ok(Ok((threads, firsts, has_more, _))) => {
                 v.loading = false;
                 let have: HashSet<String> = v.items.iter().map(|t| t.id.clone()).collect();
-                v.items.extend(threads.into_iter().filter(|t| !have.contains(&t.id)));
+                v.items
+                    .extend(threads.into_iter().filter(|t| !have.contains(&t.id)));
                 for m in firsts {
                     v.first_messages.insert(m.channel_id.clone(), m);
                 }
@@ -347,11 +437,20 @@ impl App {
     }
 
     pub fn join_thread(&mut self, id: &str, join: bool) {
-        let call = if join { ApiCall::JoinThread(id.to_string()) } else { ApiCall::LeaveThread(id.to_string()) };
+        let call = if join {
+            ApiCall::JoinThread(id.to_string())
+        } else {
+            ApiCall::LeaveThread(id.to_string())
+        };
         self.api(call);
     }
 
-    pub(super) fn on_thread_join_result(&mut self, id: String, join: bool, result: Result<serde_json::Value, String>) {
+    pub(super) fn on_thread_join_result(
+        &mut self,
+        id: String,
+        join: bool,
+        result: Result<serde_json::Value, String>,
+    ) {
         match result {
             Ok(_) => {
                 if join {
@@ -364,7 +463,14 @@ impl App {
             }
             Err(e) => {
                 eprintln!("スレッドの参加・退出に失敗しました: {e}");
-                self.show_toast(&api_error_text(&e, if join { "スレッドに参加できませんでした" } else { "スレッドから退出できませんでした" }));
+                self.show_toast(&api_error_text(
+                    &e,
+                    if join {
+                        "スレッドに参加できませんでした"
+                    } else {
+                        "スレッドから退出できませんでした"
+                    },
+                ));
             }
         }
     }
@@ -387,23 +493,49 @@ impl App {
 
     /// メッセージからスレッドを作れるか
     pub fn can_create_thread(&self, m: &Message) -> bool {
-        let Some(c) = self.current_channel() else { return false };
+        let Some(c) = self.current_channel() else {
+            return false;
+        };
         if self.sel_guild.is_none() || !c.is_text() || m.kind != 0 && m.kind != 19 {
             return false;
         }
-        self.channel_perms(self.sel_guild.as_deref(), &c.id).is_none_or(|p| p & model::CREATE_PUBLIC_THREADS != 0)
+        self.channel_perms(self.sel_guild.as_deref(), &c.id)
+            .is_none_or(|p| p & model::CREATE_PUBLIC_THREADS != 0)
     }
 
     pub fn start_thread_draft(&mut self, m: Message) {
         // 名前の初期値は本文の頭（Discord と同じく 100 文字まで）
-        let name: String = m.content.lines().next().unwrap_or("").chars().take(40).collect();
-        self.thread_name = if name.trim().is_empty() { "新しいスレッド".into() } else { name };
-        self.thread_draft = Some(ThreadDraft { message: m, name: String::new(), sending: false, error: None });
+        let name: String = m
+            .content
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(40)
+            .collect();
+        self.thread_name = if name.trim().is_empty() {
+            "新しいスレッド".into()
+        } else {
+            name
+        };
+        self.thread_draft = Some(ThreadDraft {
+            message: m,
+            name: String::new(),
+            sending: false,
+            error: None,
+        });
     }
 
     pub fn submit_thread_draft(&mut self) {
-        let name = self.thread_name.trim().chars().take(100).collect::<String>();
-        let Some(d) = self.thread_draft.as_mut().filter(|d| !d.sending) else { return };
+        let name = self
+            .thread_name
+            .trim()
+            .chars()
+            .take(100)
+            .collect::<String>();
+        let Some(d) = self.thread_draft.as_mut().filter(|d| !d.sending) else {
+            return;
+        };
         if name.is_empty() {
             d.error = Some("スレッド名を入力してください".into());
             return;
@@ -419,8 +551,15 @@ impl App {
         self.api(call);
     }
 
-    pub(super) fn on_thread_created(&mut self, from_message: bool, result: Result<serde_json::Value, String>) {
-        let t = result.as_ref().ok().and_then(|v| serde_json::from_value::<Channel>(v.clone()).ok());
+    pub(super) fn on_thread_created(
+        &mut self,
+        from_message: bool,
+        result: Result<serde_json::Value, String>,
+    ) {
+        let t = result
+            .as_ref()
+            .ok()
+            .and_then(|v| serde_json::from_value::<Channel>(v.clone()).ok());
         match (t, result) {
             (Some(t), _) => {
                 self.joined_threads.insert(t.id.clone());
@@ -436,7 +575,11 @@ impl App {
             (None, r) => {
                 let e = r.err().unwrap_or_else(|| "応答を読めませんでした".into());
                 eprintln!("スレッドを作れませんでした: {e}");
-                let text = if from_message { "スレッドを作成できませんでした" } else { "投稿できませんでした" };
+                let text = if from_message {
+                    "スレッドを作成できませんでした"
+                } else {
+                    "投稿できませんでした"
+                };
                 let msg = api_error_text(&e, text);
                 if from_message {
                     if let Some(d) = self.thread_draft.as_mut() {
@@ -453,9 +596,16 @@ impl App {
 
     /// フォーラムに投稿する
     pub fn submit_post(&mut self) {
-        let Some(forum) = self.current_channel().filter(|c| c.is_forum()).cloned() else { return };
-        let (title, body) = (self.post_title.trim().to_string(), self.post_body.trim().to_string());
-        let Some(d) = self.post_draft.as_mut().filter(|d| !d.sending) else { return };
+        let Some(forum) = self.current_channel().filter(|c| c.is_forum()).cloned() else {
+            return;
+        };
+        let (title, body) = (
+            self.post_title.trim().to_string(),
+            self.post_body.trim().to_string(),
+        );
+        let Some(d) = self.post_draft.as_mut().filter(|d| !d.sending) else {
+            return;
+        };
         d.error = if title.is_empty() {
             Some("タイトルを入力してください".into())
         } else if body.is_empty() {
@@ -474,7 +624,10 @@ impl App {
             "applied_tags": d.tags,
             "message": { "content": body },
         });
-        self.api(ApiCall::CreateThread { channel_id: forum.id, body });
+        self.api(ApiCall::CreateThread {
+            channel_id: forum.id,
+            body,
+        });
     }
 }
 
@@ -486,12 +639,18 @@ mod tests {
         serde_json::json!({ "id": id, "type": 11, "guild_id": "g", "parent_id": parent, "name": format!("t{id}"), "thread_metadata": { "archived": archived, "locked": false } })
     }
 
-    fn harness() -> (App, std::sync::mpsc::Sender<Event>, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
+    fn harness() -> (
+        App,
+        std::sync::mpsc::Sender<Event>,
+        tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    ) {
         let mut app = App::default();
         let (tx, ev) = std::sync::mpsc::channel();
         let (cmd, rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });
-        app.me = Some(serde_json::from_value(serde_json::json!({ "id": "me", "username": "me" })).unwrap());
+        app.me = Some(
+            serde_json::from_value(serde_json::json!({ "id": "me", "username": "me" })).unwrap(),
+        );
         app.sel_guild = Some("g".into());
         app.channels.insert("g".into(), vec![
             serde_json::from_value(serde_json::json!({ "id": "c", "type": 0, "name": "一般" })).unwrap(),
@@ -505,22 +664,47 @@ mod tests {
         let (mut app, tx, _rx) = harness();
         let mut joined = thread("1", "c", false);
         joined["member"] = serde_json::json!({ "user_id": "me" });
-        tx.send(Event::Gateway { t: "THREAD_CREATE".into(), d: joined }).unwrap();
-        tx.send(Event::Gateway { t: "THREAD_CREATE".into(), d: thread("2", "c", false) }).unwrap();
+        tx.send(Event::Gateway {
+            t: "THREAD_CREATE".into(),
+            d: joined,
+        })
+        .unwrap();
+        tx.send(Event::Gateway {
+            t: "THREAD_CREATE".into(),
+            d: thread("2", "c", false),
+        })
+        .unwrap();
         app.poll();
         let side = app.sidebar_threads("g");
-        assert_eq!(side["c"].iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["1"]);
+        assert_eq!(
+            side["c"].iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["1"]
+        );
         // アーカイブされたら出さない
-        tx.send(Event::Gateway { t: "THREAD_UPDATE".into(), d: thread("1", "c", true) }).unwrap();
+        tx.send(Event::Gateway {
+            t: "THREAD_UPDATE".into(),
+            d: thread("1", "c", true),
+        })
+        .unwrap();
         app.poll();
         assert!(app.sidebar_threads("g").is_empty());
         // 一覧の同期で置き換わる
         tx.send(Event::Gateway { t: "THREAD_LIST_SYNC".into(), d: serde_json::json!({ "guild_id": "g", "channel_ids": ["c"], "threads": [thread("3", "c", false)], "members": [{ "id": "3", "user_id": "me" }] }) }).unwrap();
         app.poll();
-        assert_eq!(app.threads["g"].iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["3"]);
+        assert_eq!(
+            app.threads["g"]
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["3"]
+        );
         assert!(app.joined_threads.contains("3"));
         // 退出したら出さない
-        tx.send(Event::Gateway { t: "THREAD_MEMBERS_UPDATE".into(), d: serde_json::json!({ "id": "3", "guild_id": "g", "removed_member_ids": ["me"] }) }).unwrap();
+        tx.send(Event::Gateway {
+            t: "THREAD_MEMBERS_UPDATE".into(),
+            d: serde_json::json!({ "id": "3", "guild_id": "g", "removed_member_ids": ["me"] }),
+        })
+        .unwrap();
         app.poll();
         assert!(!app.joined_threads.contains("3"));
     }
@@ -528,7 +712,10 @@ mod tests {
     #[test]
     fn opened_thread_is_a_normal_channel() {
         let (mut app, _tx, _rx) = harness();
-        app.upsert_thread("g", serde_json::from_value(thread("9", "c", false)).unwrap());
+        app.upsert_thread(
+            "g",
+            serde_json::from_value(thread("9", "c", false)).unwrap(),
+        );
         app.open_channel("9".into());
         let c = app.current_channel().unwrap();
         assert!(c.is_thread());
@@ -541,12 +728,22 @@ mod tests {
         app.open_channel("f".into());
         // 開いたチャンネルの読み込み（フォーラムには無いが、今まで通り頼む）は読み飛ばす
         while let Ok(c) = rx.try_recv() {
-            if let Cmd::Api { id, call: call @ ApiCall::SearchThreads { .. } } = c {
+            if let Cmd::Api {
+                id,
+                call: call @ ApiCall::SearchThreads { .. },
+            } = c
+            {
                 panic!("まだ頼んでいない {id} {call:?}");
             }
         }
         app.ensure_forum();
-        let Cmd::Api { id, call: ApiCall::SearchThreads { channel_id, query } } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api {
+            id,
+            call: ApiCall::SearchThreads { channel_id, query },
+        } = rx.try_recv().unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(channel_id, "f");
         assert!(query.contains(&("archived".into(), "false".into())));
         let first = serde_json::json!({ "id": "100", "channel_id": "p1", "author": { "id": "u", "username": "u" }, "content": "本文", "timestamp": "2026-01-01T00:00:00+00:00" });
@@ -558,8 +755,17 @@ mod tests {
         assert!(f.has_more);
         // タグで絞ると先頭から読み直す
         app.set_thread_filter(true, Some(Some("t1".into())), None);
-        let Cmd::Api { call: ApiCall::SearchThreads { query, .. }, .. } = rx.try_recv().unwrap() else { panic!() };
-        assert!(query.contains(&("tag".into(), "t1".into())) && query.contains(&("offset".into(), "0".into())));
+        let Cmd::Api {
+            call: ApiCall::SearchThreads { query, .. },
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!()
+        };
+        assert!(
+            query.contains(&("tag".into(), "t1".into()))
+                && query.contains(&("offset".into(), "0".into()))
+        );
         assert!(app.forum.as_ref().unwrap().items.is_empty());
     }
 
@@ -571,7 +777,13 @@ mod tests {
         let c: Channel = serde_json::from_value(t).unwrap();
         assert!(app.thread_block_reason(&c).unwrap().contains("ロック"));
         // オーナーは管理できる
-        app.guilds.push(Guild { id: "g".into(), name: "g".into(), icon: None, permissions: None, owner: true });
+        app.guilds.push(Guild {
+            id: "g".into(),
+            name: "g".into(),
+            icon: None,
+            permissions: None,
+            owner: true,
+        });
         app.upsert_thread("g", c.clone());
         assert!(app.thread_block_reason(&c).is_none());
     }

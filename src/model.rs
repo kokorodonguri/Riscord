@@ -86,7 +86,10 @@ pub struct Member {
 
 impl Member {
     pub fn display(&self) -> &str {
-        self.nick.as_deref().or_else(|| self.user.as_ref().map(User::display)).unwrap_or("")
+        self.nick
+            .as_deref()
+            .or_else(|| self.user.as_ref().map(User::display))
+            .unwrap_or("")
     }
 }
 
@@ -139,7 +142,10 @@ fn bits(s: &str) -> u64 {
 
 /// サーバー全体での自分の権限を @everyone と自分のロールから出す
 pub fn base_permissions(guild_id: &str, roles: &[Role], my_roles: &[String]) -> u64 {
-    roles.iter().filter(|r| r.id == guild_id || my_roles.contains(&r.id)).fold(0, |p, r| p | bits(&r.permissions))
+    roles
+        .iter()
+        .filter(|r| r.id == guild_id || my_roles.contains(&r.id))
+        .fold(0, |p, r| p | bits(&r.permissions))
 }
 
 /// このチャンネルが見えるか
@@ -148,7 +154,13 @@ pub fn can_view(ch: &Channel, guild_id: &str, base: u64, my_roles: &[String], me
 }
 
 /// このチャンネルでの自分の権限（Discord の権限計算: @everyone → ロール → メンバー の順に上書き）。管理者はすべて
-pub fn channel_permissions(ch: &Channel, guild_id: &str, base: u64, my_roles: &[String], me: &str) -> u64 {
+pub fn channel_permissions(
+    ch: &Channel,
+    guild_id: &str,
+    base: u64,
+    my_roles: &[String],
+    me: &str,
+) -> u64 {
     if base & ADMINISTRATOR != 0 {
         return u64::MAX;
     }
@@ -158,7 +170,10 @@ pub fn channel_permissions(ch: &Channel, guild_id: &str, base: u64, my_roles: &[
         p = (p & !bits(&o.deny)) | bits(&o.allow);
     }
     let (mut allow, mut deny) = (0, 0);
-    for o in ow.iter().filter(|o| !o.is_member() && my_roles.contains(&o.id)) {
+    for o in ow
+        .iter()
+        .filter(|o| !o.is_member() && my_roles.contains(&o.id))
+    {
         allow |= bits(&o.allow);
         deny |= bits(&o.deny);
     }
@@ -170,8 +185,17 @@ pub fn channel_permissions(ch: &Channel, guild_id: &str, base: u64, my_roles: &[
 }
 
 /// 見えるチャンネルだけ残す。カテゴリは中に見えるチャンネルがあるとき（空のカテゴリは自分が見えるとき）だけ残す
-pub fn visible_channels(channels: Vec<Channel>, guild_id: &str, base: u64, my_roles: &[String], me: &str) -> Vec<Channel> {
-    let ok: Vec<bool> = channels.iter().map(|c| can_view(c, guild_id, base, my_roles, me)).collect();
+pub fn visible_channels(
+    channels: Vec<Channel>,
+    guild_id: &str,
+    base: u64,
+    my_roles: &[String],
+    me: &str,
+) -> Vec<Channel> {
+    let ok: Vec<bool> = channels
+        .iter()
+        .map(|c| can_view(c, guild_id, base, my_roles, me))
+        .collect();
     let keep: Vec<bool> = channels
         .iter()
         .zip(&ok)
@@ -179,7 +203,11 @@ pub fn visible_channels(channels: Vec<Channel>, guild_id: &str, base: u64, my_ro
             if c.kind != Channel::CATEGORY {
                 return v;
             }
-            let mut children = channels.iter().zip(&ok).filter(|(x, _)| x.parent_id.as_deref() == Some(c.id.as_str())).peekable();
+            let mut children = channels
+                .iter()
+                .zip(&ok)
+                .filter(|(x, _)| x.parent_id.as_deref() == Some(c.id.as_str()))
+                .peekable();
             if children.peek().is_none() {
                 v
             } else {
@@ -187,7 +215,11 @@ pub fn visible_channels(channels: Vec<Channel>, guild_id: &str, base: u64, my_ro
             }
         })
         .collect();
-    channels.into_iter().zip(keep).filter_map(|(c, k)| k.then_some(c)).collect()
+    channels
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(c, k)| k.then_some(c))
+        .collect()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -279,7 +311,10 @@ impl Channel {
     }
 
     pub fn is_thread(&self) -> bool {
-        matches!(self.kind, Self::NEWS_THREAD | Self::PUBLIC_THREAD | Self::PRIVATE_THREAD)
+        matches!(
+            self.kind,
+            Self::NEWS_THREAD | Self::PUBLIC_THREAD | Self::PRIVATE_THREAD
+        )
     }
 
     /// 投稿（スレッド）だけを置くチャンネル
@@ -305,11 +340,18 @@ impl Channel {
             return n.to_string();
         }
         let names: Vec<&str> = self.recipients.iter().map(|u| u.display()).collect();
-        if names.is_empty() { "(不明)".into() } else { names.join(", ") }
+        if names.is_empty() {
+            "(不明)".into()
+        } else {
+            names.join(", ")
+        }
     }
 
     pub fn last_id(&self) -> u64 {
-        self.last_message_id.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0)
+        self.last_message_id
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     }
 }
 
@@ -330,11 +372,17 @@ pub struct Attachment {
 impl Attachment {
     pub fn is_video(&self) -> bool {
         if let Some(content_type) = &self.content_type {
-            if content_type.starts_with("video/") { return true; }
-            if content_type != "application/octet-stream" { return false; }
+            if content_type.starts_with("video/") {
+                return true;
+            }
+            if content_type != "application/octet-stream" {
+                return false;
+            }
         }
         let name = self.filename.to_ascii_lowercase();
-        [".mp4", ".webm", ".mov", ".m4v", ".mkv"].iter().any(|ext| name.ends_with(ext))
+        [".mp4", ".webm", ".mov", ".m4v", ".mkv"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
     }
 
     pub fn is_image(&self) -> bool {
@@ -342,7 +390,9 @@ impl Attachment {
             return ct.starts_with("image/");
         }
         let f = self.filename.to_lowercase();
-        [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| f.ends_with(e))
+        [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+            .iter()
+            .any(|e| f.ends_with(e))
     }
 }
 
@@ -352,6 +402,121 @@ pub struct StickerItem {
     pub name: String,
     #[serde(default)]
     pub format_type: u8,
+}
+
+/// リアクションの絵文字。カスタム絵文字は id があり、Unicode の絵文字は name だけ
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash, PartialEq, Eq)]
+pub struct ReactionEmoji {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub animated: bool,
+}
+
+impl ReactionEmoji {
+    /// 同じ絵文字かどうかの比較に使う（カスタムは id、Unicode は文字）
+    pub fn key(&self) -> &str {
+        self.id.as_deref().or(self.name.as_deref()).unwrap_or("")
+    }
+
+    /// API の URL に入れる形（カスタムは name:id）
+    pub fn api_str(&self) -> String {
+        match &self.id {
+            Some(id) => format!("{}:{id}", self.name.as_deref().unwrap_or("_")),
+            None => self.name.clone().unwrap_or_default(),
+        }
+    }
+}
+
+/// メッセージに付いたリアクション
+#[derive(Clone, Debug, Deserialize, Serialize, Hash, PartialEq, Eq)]
+pub struct Reaction {
+    pub emoji: ReactionEmoji,
+    #[serde(default)]
+    pub count: u32,
+    /// 自分も押している
+    #[serde(default)]
+    pub me: bool,
+}
+
+/// リアクションの増減（ゲートウェイの MESSAGE_REACTION_* と、自分で押したとき）
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReactionOp {
+    Add { emoji: ReactionEmoji, me: bool },
+    Remove { emoji: ReactionEmoji, me: bool },
+    RemoveAll,
+    RemoveEmoji(ReactionEmoji),
+}
+
+impl ReactionOp {
+    /// 逆の操作（自分で押して API が失敗したときに戻す）
+    pub fn undo(&self) -> Option<ReactionOp> {
+        match self {
+            Self::Add { emoji, me } => Some(Self::Remove {
+                emoji: emoji.clone(),
+                me: *me,
+            }),
+            Self::Remove { emoji, me } => Some(Self::Add {
+                emoji: emoji.clone(),
+                me: *me,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// リアクションの一覧に op を当てる。変わったら true。
+/// 自分の Add / Remove は、すでにその状態なら何もしない（押した直後の表示と、ゲートウェイから戻ってくる同じ通知で二重に数えない）
+pub fn apply_reaction(list: &mut Vec<Reaction>, op: ReactionOp) -> bool {
+    match op {
+        ReactionOp::Add { emoji, me } => {
+            match list.iter_mut().find(|r| r.emoji.key() == emoji.key()) {
+                Some(r) if me && r.me => false,
+                Some(r) => {
+                    r.count += 1;
+                    r.me |= me;
+                    true
+                }
+                None => {
+                    list.push(Reaction {
+                        emoji,
+                        count: 1,
+                        me,
+                    });
+                    true
+                }
+            }
+        }
+        ReactionOp::Remove { emoji, me } => {
+            let Some(i) = list.iter().position(|r| r.emoji.key() == emoji.key()) else {
+                return false;
+            };
+            let r = &mut list[i];
+            if me && !r.me {
+                return false;
+            }
+            r.count = r.count.saturating_sub(1);
+            if me {
+                r.me = false;
+            }
+            if r.count == 0 {
+                list.remove(i);
+            }
+            true
+        }
+        ReactionOp::RemoveAll => {
+            let changed = !list.is_empty();
+            list.clear();
+            changed
+        }
+        ReactionOp::RemoveEmoji(emoji) => {
+            let n = list.len();
+            list.retain(|r| r.emoji.key() != emoji.key());
+            list.len() != n
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Hash)]
@@ -439,7 +604,9 @@ impl Embed {
     }
 
     fn is_bare_media(&self) -> bool {
-        matches!(self.kind.as_deref(), Some("image" | "gifv")) && self.title.is_none() && self.description.is_none()
+        matches!(self.kind.as_deref(), Some("image" | "gifv"))
+            && self.title.is_none()
+            && self.description.is_none()
     }
 
     /// 文字の入ったカードとして出す埋め込みか
@@ -461,7 +628,10 @@ impl Embed {
         if self.kind.as_deref() != Some("gifv") {
             return None;
         }
-        [self.video.as_ref(), self.thumbnail.as_ref()].into_iter().flatten().find_map(|m| gif_url(&m.url))
+        [self.video.as_ref(), self.thumbnail.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|m| gif_url(&m.url))
     }
 
     /// 何か表示するものがあるか
@@ -472,7 +642,9 @@ impl Embed {
 
 /// Tenor / Giphy の mp4・静止画 URL を、アニメーションする GIF の URL にする
 fn gif_url(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     let (host, path) = rest.split_once('/')?;
     let path = path.split(['?', '#']).next()?;
     if host.ends_with("tenor.com") {
@@ -489,10 +661,69 @@ fn gif_url(url: &str) -> Option<String> {
         return Some(format!("https://media.tenor.com/{id}AAAAd/{name}.gif"));
     }
     if host.ends_with("giphy.com") {
-        let stem = path.strip_suffix(".mp4").or_else(|| path.strip_suffix(".webp"))?;
+        let stem = path
+            .strip_suffix(".mp4")
+            .or_else(|| path.strip_suffix(".webp"))?;
         return Some(format!("https://{host}/{stem}.gif"));
     }
     None
+}
+
+/// Discord の投票。結果がまだ集計されていない場合もある。
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
+pub struct Poll {
+    #[serde(default)]
+    pub question: PollMedia,
+    #[serde(default)]
+    pub answers: Vec<PollAnswer>,
+    #[serde(default)]
+    pub expiry: Option<String>,
+    #[serde(default)]
+    pub allow_multiselect: bool,
+    #[serde(default)]
+    pub results: Option<PollResults>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
+pub struct PollMedia {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub emoji: Option<PollEmoji>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
+pub struct PollEmoji {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub animated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
+pub struct PollAnswer {
+    pub answer_id: u32,
+    #[serde(default)]
+    pub poll_media: PollMedia,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
+pub struct PollResults {
+    #[serde(default)]
+    pub is_finalized: bool,
+    #[serde(default)]
+    pub answer_counts: Vec<PollAnswerCount>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
+pub struct PollAnswerCount {
+    pub id: u32,
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub me_voted: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Hash)]
@@ -523,7 +754,11 @@ pub struct Message {
     #[serde(default)]
     pub sticker_items: Vec<StickerItem>,
     #[serde(default)]
+    pub reactions: Vec<Reaction>,
+    #[serde(default)]
     pub embeds: Vec<Embed>,
+    #[serde(default)]
+    pub poll: Option<Poll>,
     /// 返信先（削除済みなら null）
     #[serde(default)]
     pub referenced_message: Option<Box<Message>>,
@@ -600,8 +835,10 @@ impl VoiceState {
             user_id,
             guild_id: v["guild_id"].as_str().or(guild_id).map(String::from),
             channel_id: v["channel_id"].as_str().map(String::from),
-            self_mute: v["self_mute"].as_bool().unwrap_or(false) || v["mute"].as_bool().unwrap_or(false),
-            self_deaf: v["self_deaf"].as_bool().unwrap_or(false) || v["deaf"].as_bool().unwrap_or(false),
+            self_mute: v["self_mute"].as_bool().unwrap_or(false)
+                || v["mute"].as_bool().unwrap_or(false),
+            self_deaf: v["self_deaf"].as_bool().unwrap_or(false)
+                || v["deaf"].as_bool().unwrap_or(false),
             self_stream: v["self_stream"].as_bool().unwrap_or(false),
             user,
         })
@@ -645,10 +882,14 @@ mod embed_tests {
 
     #[test]
     fn bare_image_stays_image() {
-        let img = parse(serde_json::json!({ "type": "image", "url": "u", "thumbnail": { "url": "https://x/i.png" } }));
+        let img = parse(
+            serde_json::json!({ "type": "image", "url": "u", "thumbnail": { "url": "https://x/i.png" } }),
+        );
         assert!(img.media().is_some());
         assert!(!img.is_rich());
-        let gif = parse(serde_json::json!({ "type": "gifv", "url": "u", "thumbnail": { "url": "https://x/g.png" }, "video": { "url": "https://x/g.mp4" } }));
+        let gif = parse(
+            serde_json::json!({ "type": "gifv", "url": "u", "thumbnail": { "url": "https://x/g.png" }, "video": { "url": "https://x/g.mp4" } }),
+        );
         assert!(gif.media().is_some() && !gif.is_rich());
     }
 
@@ -659,15 +900,25 @@ mod embed_tests {
             "thumbnail": { "url": "https://media.tenor.com/SPmJqrVn0PEAAAAe/steven-universe-happy.png" },
             "video": { "url": "https://media.tenor.com/SPmJqrVn0PEAAAPo/steven-universe-happy.mp4" }
         }));
-        assert_eq!(tenor.animated_url().as_deref(), Some("https://media.tenor.com/SPmJqrVn0PEAAAAd/steven-universe-happy.gif"));
+        assert_eq!(
+            tenor.animated_url().as_deref(),
+            Some("https://media.tenor.com/SPmJqrVn0PEAAAAd/steven-universe-happy.gif")
+        );
         let giphy = parse(serde_json::json!({
             "type": "gifv", "url": "https://giphy.com/gifs/x",
             "video": { "url": "https://media.giphy.com/media/abc/giphy.mp4" }
         }));
-        assert_eq!(giphy.animated_url().as_deref(), Some("https://media.giphy.com/media/abc/giphy.gif"));
-        let other = parse(serde_json::json!({ "type": "gifv", "video": { "url": "https://example.com/a.mp4" } }));
+        assert_eq!(
+            giphy.animated_url().as_deref(),
+            Some("https://media.giphy.com/media/abc/giphy.gif")
+        );
+        let other = parse(
+            serde_json::json!({ "type": "gifv", "video": { "url": "https://example.com/a.mp4" } }),
+        );
         assert!(other.animated_url().is_none());
-        let img = parse(serde_json::json!({ "type": "image", "thumbnail": { "url": "https://media.tenor.com/SPmJqrVn0PEAAAAe/a.png" } }));
+        let img = parse(
+            serde_json::json!({ "type": "image", "thumbnail": { "url": "https://media.tenor.com/SPmJqrVn0PEAAAAe/a.png" } }),
+        );
         assert!(img.animated_url().is_none());
     }
 }
@@ -688,20 +939,40 @@ mod permission_tests {
         let base = VIEW_CHANNEL;
         let roles = vec!["r1".to_string()];
         // @everyone で見えなくされたチャンネル
-        let hidden = ch("1", 0, None, serde_json::json!([{ "id": G, "type": 0, "allow": "0", "deny": "1024" }]));
+        let hidden = ch(
+            "1",
+            0,
+            None,
+            serde_json::json!([{ "id": G, "type": 0, "allow": "0", "deny": "1024" }]),
+        );
         assert!(!can_view(&hidden, G, base, &roles, ME));
         // 自分のロールで許可されていれば見える
-        let by_role = ch("2", 0, None, serde_json::json!([{ "id": G, "type": 0, "allow": "0", "deny": "1024" }, { "id": "r1", "type": 0, "allow": "1024", "deny": "0" }]));
+        let by_role = ch(
+            "2",
+            0,
+            None,
+            serde_json::json!([{ "id": G, "type": 0, "allow": "0", "deny": "1024" }, { "id": "r1", "type": 0, "allow": "1024", "deny": "0" }]),
+        );
         assert!(can_view(&by_role, G, base, &roles, ME));
         // 他人のロールの許可は関係ない
         assert!(!can_view(&by_role, G, base, &[], ME));
         // メンバー個別の拒否はロールの許可より強い（古い文字列の type も読む）
-        let member_deny = ch("3", 0, None, serde_json::json!([{ "id": "r1", "type": "role", "allow": "1024", "deny": "0" }, { "id": ME, "type": "member", "allow": "0", "deny": "1024" }]));
+        let member_deny = ch(
+            "3",
+            0,
+            None,
+            serde_json::json!([{ "id": "r1", "type": "role", "allow": "1024", "deny": "0" }, { "id": ME, "type": "member", "allow": "0", "deny": "1024" }]),
+        );
         assert!(!can_view(&member_deny, G, base, &roles, ME));
         // 管理者は全部見える
         assert!(can_view(&hidden, G, ADMINISTRATOR, &[], ME));
         // 元々 VIEW_CHANNEL が無くても上書きで許可されれば見える
-        let allowed = ch("4", 0, None, serde_json::json!([{ "id": ME, "type": 1, "allow": "1024", "deny": "0" }]));
+        let allowed = ch(
+            "4",
+            0,
+            None,
+            serde_json::json!([{ "id": ME, "type": 1, "allow": "1024", "deny": "0" }]),
+        );
         assert!(can_view(&allowed, G, 0, &[], ME));
     }
 
@@ -709,7 +980,12 @@ mod permission_tests {
     fn channel_permissions_keep_other_bits() {
         let base = VIEW_CHANNEL | SEND_MESSAGES | PIN_MESSAGES;
         // ロールでピン留めだけ禁止されたチャンネル
-        let c = ch("1", 0, None, serde_json::json!([{ "id": "r1", "type": 0, "allow": "0", "deny": PIN_MESSAGES.to_string() }]));
+        let c = ch(
+            "1",
+            0,
+            None,
+            serde_json::json!([{ "id": "r1", "type": 0, "allow": "0", "deny": PIN_MESSAGES.to_string() }]),
+        );
         let p = channel_permissions(&c, G, base, &["r1".into()], ME);
         assert_eq!(p & PIN_MESSAGES, 0);
         assert_ne!(p & SEND_MESSAGES, 0);
@@ -726,15 +1002,32 @@ mod permission_tests {
             ch("b", 0, Some("c2"), serde_json::json!([])),
             ch("c3", Channel::CATEGORY, None, serde_json::json!([])),
         ];
-        let ids: Vec<String> = visible_channels(list, G, VIEW_CHANNEL, &[], ME).into_iter().map(|c| c.id).collect();
+        let ids: Vec<String> = visible_channels(list, G, VIEW_CHANNEL, &[], ME)
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
         assert_eq!(ids, vec!["c2", "b", "c3"]);
     }
 
     #[test]
     fn base_permissions_combine_everyone_and_my_roles() {
-        let role = |id: &str, p: u64| Role { id: id.into(), name: String::new(), color: 0, position: 0, hoist: false, permissions: p.to_string() };
-        let roles = vec![role(G, VIEW_CHANNEL), role("r1", 1 << 11), role("r2", ADMINISTRATOR)];
-        assert_eq!(base_permissions(G, &roles, &["r1".into()]), VIEW_CHANNEL | 1 << 11);
+        let role = |id: &str, p: u64| Role {
+            id: id.into(),
+            name: String::new(),
+            color: 0,
+            position: 0,
+            hoist: false,
+            permissions: p.to_string(),
+        };
+        let roles = vec![
+            role(G, VIEW_CHANNEL),
+            role("r1", 1 << 11),
+            role("r2", ADMINISTRATOR),
+        ];
+        assert_eq!(
+            base_permissions(G, &roles, &["r1".into()]),
+            VIEW_CHANNEL | 1 << 11
+        );
     }
 }
 
@@ -756,7 +1049,8 @@ mod layout_hash_tests {
             "author": {"id": "u", "username": "name"},
             "embeds": [{"fields": [{"name": "title", "value": "short"}],
                         "image": {"url": "https://example.com/image", "width": 100, "height": 100}}]
-        })).unwrap();
+        }))
+        .unwrap();
         let original = hash(&message);
         let mut updated = message.clone();
         updated.embeds[0].fields[0].value = "a much longer field".into();
@@ -767,5 +1061,147 @@ mod layout_hash_tests {
         let mut updated = message.clone();
         updated.author.username = "another author".into();
         assert_ne!(hash(&updated), original);
+    }
+
+    fn thumbs() -> ReactionEmoji {
+        ReactionEmoji {
+            id: None,
+            name: Some("👍".into()),
+            animated: false,
+        }
+    }
+
+    #[test]
+    fn reactions_count_up_and_down() {
+        let mut list = Vec::new();
+        assert!(apply_reaction(
+            &mut list,
+            ReactionOp::Add {
+                emoji: thumbs(),
+                me: false
+            }
+        ));
+        assert!(apply_reaction(
+            &mut list,
+            ReactionOp::Add {
+                emoji: thumbs(),
+                me: true
+            }
+        ));
+        assert_eq!((list[0].count, list[0].me), (2, true));
+        // 自分の分がゲートウェイから戻ってきても二重に数えない
+        assert!(!apply_reaction(
+            &mut list,
+            ReactionOp::Add {
+                emoji: thumbs(),
+                me: true
+            }
+        ));
+        assert_eq!(list[0].count, 2);
+        assert!(apply_reaction(
+            &mut list,
+            ReactionOp::Remove {
+                emoji: thumbs(),
+                me: true
+            }
+        ));
+        assert!(!apply_reaction(
+            &mut list,
+            ReactionOp::Remove {
+                emoji: thumbs(),
+                me: true
+            }
+        ));
+        assert_eq!((list[0].count, list[0].me), (1, false));
+        assert!(apply_reaction(
+            &mut list,
+            ReactionOp::Remove {
+                emoji: thumbs(),
+                me: false
+            }
+        ));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn reactions_remove_emoji_and_all() {
+        let custom = ReactionEmoji {
+            id: Some("9".into()),
+            name: Some("pog".into()),
+            animated: false,
+        };
+        assert_eq!(custom.api_str(), "pog:9");
+        assert_eq!(thumbs().api_str(), "👍");
+        let mut list = Vec::new();
+        apply_reaction(
+            &mut list,
+            ReactionOp::Add {
+                emoji: thumbs(),
+                me: false,
+            },
+        );
+        apply_reaction(
+            &mut list,
+            ReactionOp::Add {
+                emoji: custom.clone(),
+                me: false,
+            },
+        );
+        // 名前が変わってもカスタム絵文字は id で同じものとみなす
+        let renamed = ReactionEmoji {
+            name: Some("pog2".into()),
+            ..custom
+        };
+        assert!(apply_reaction(&mut list, ReactionOp::RemoveEmoji(renamed)));
+        assert_eq!(list.len(), 1);
+        assert!(apply_reaction(&mut list, ReactionOp::RemoveAll));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn poll_message_preserves_results_and_unicode_emoji() {
+        let input = serde_json::json!({
+            "id": "1", "channel_id": "c", "author": { "id": "u", "username": "u" },
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "poll": { "question": {"text": "昼食は？"}, "allow_multiselect": true,
+                "answers": [{"answer_id": 1, "poll_media": {"text": "寿司", "emoji": {"id": null, "name": "🍣"}}}],
+                "results": {"is_finalized": false, "answer_counts": [{"id": 1, "count": 3, "me_voted": true}]}}
+        });
+        let msg: Message = serde_json::from_value(input).unwrap();
+        let poll = msg.poll.as_ref().unwrap();
+        assert_eq!(poll.question.text.as_deref(), Some("昼食は？"));
+        assert_eq!(
+            poll.answers[0]
+                .poll_media
+                .emoji
+                .as_ref()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("🍣")
+        );
+        assert_eq!(poll.results.as_ref().unwrap().answer_counts[0].count, 3);
+        assert!(poll.results.as_ref().unwrap().answer_counts[0].me_voted);
+        let restored: Message = serde_json::from_slice(&serde_json::to_vec(&msg).unwrap()).unwrap();
+        assert_eq!(restored.poll.unwrap().answers[0].answer_id, 1);
+    }
+
+    #[test]
+    fn history_reactions_are_read() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1", "channel_id": "c", "author": { "id": "u", "username": "u" }, "timestamp": "2026-01-01T00:00:00+00:00",
+            "reactions": [{ "count": 3, "count_details": { "burst": 0, "normal": 3 }, "me": true, "me_burst": false,
+                            "emoji": { "id": null, "name": "🔥" }, "burst_colors": [] }]
+        }))
+        .unwrap();
+        assert_eq!(m.reactions.len(), 1);
+        assert_eq!(
+            (
+                m.reactions[0].count,
+                m.reactions[0].me,
+                m.reactions[0].emoji.key()
+            ),
+            (3, true, "🔥")
+        );
     }
 }

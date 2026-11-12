@@ -7,11 +7,17 @@ pub struct Color32 {
 #[allow(dead_code)]
 impl Color32 {
     pub const TRANSPARENT: Color32 = Color32 { rgba: [0, 0, 0, 0] };
-    pub const WHITE: Color32 = Color32 { rgba: [255, 255, 255, 255] };
-    pub const BLACK: Color32 = Color32 { rgba: [0, 0, 0, 255] };
+    pub const WHITE: Color32 = Color32 {
+        rgba: [255, 255, 255, 255],
+    };
+    pub const BLACK: Color32 = Color32 {
+        rgba: [0, 0, 0, 255],
+    };
 
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        Color32 { rgba: [r, g, b, 255] }
+        Color32 {
+            rgba: [r, g, b, 255],
+        }
     }
     pub const fn from_rgba_unmultiplied(r: u8, g: u8, b: u8, a: u8) -> Self {
         Color32 { rgba: [r, g, b, a] }
@@ -23,7 +29,9 @@ impl Color32 {
         Color32 { rgba: [0, 0, 0, a] }
     }
     pub const fn from_white_alpha(a: u8) -> Self {
-        Color32 { rgba: [255, 255, 255, a] }
+        Color32 {
+            rgba: [255, 255, 255, a],
+        }
     }
     pub fn r(self) -> u8 {
         self.rgba[0]
@@ -43,13 +51,16 @@ impl Color32 {
     /// 透明度を掛ける（egui の gamma_multiply と同じく、見た目の濃さを factor 倍にする）
     pub fn gamma_multiply(self, factor: f32) -> Self {
         let [r, g, b, a] = self.rgba;
-        Color32 { rgba: [r, g, b, (a as f32 * factor.clamp(0.0, 1.0)).round() as u8] }
+        Color32 {
+            rgba: [r, g, b, (a as f32 * factor.clamp(0.0, 1.0)).round() as u8],
+        }
     }
     /// other へ t (0..1) だけ近づける
     pub fn lerp_to_gamma(self, other: Color32, t: f32) -> Self {
         let mut out = [0u8; 4];
         for i in 0..4 {
-            out[i] = (self.rgba[i] as f32 + (other.rgba[i] as f32 - self.rgba[i] as f32) * t).round() as u8;
+            out[i] = (self.rgba[i] as f32 + (other.rgba[i] as f32 - self.rgba[i] as f32) * t)
+                .round() as u8;
         }
         Color32 { rgba: out }
     }
@@ -58,7 +69,12 @@ impl Color32 {
 impl From<Color32> for gpui::Rgba {
     fn from(c: Color32) -> Self {
         let [r, g, b, a] = c.rgba;
-        gpui::Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: a as f32 / 255.0 }
+        gpui::Rgba {
+            r: r as f32 / 255.0,
+            g: g as f32 / 255.0,
+            b: b as f32 / 255.0,
+            a: a as f32 / 255.0,
+        }
     }
 }
 

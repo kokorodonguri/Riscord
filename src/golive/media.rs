@@ -11,6 +11,33 @@ pub struct Encoded {
     pub keyframe: bool,
 }
 
+/// 画面共有を始める前に選ぶ画質。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QualityPreset {
+    P360_30,
+    P360_60,
+    P720_60,
+    P1080_30,
+    P1080_60,
+    #[default]
+    #[serde(other)]
+    P720_30,
+}
+
+impl QualityPreset {
+    pub fn fit(self, source: Option<(i32, i32)>) -> Quality {
+        let (width, height, fps) = match self {
+            Self::P360_30 => (640, 360, 30),
+            Self::P360_60 => (640, 360, 60),
+            Self::P720_30 => (1280, 720, 30),
+            Self::P720_60 => (1280, 720, 60),
+            Self::P1080_30 => (1920, 1080, 30),
+            Self::P1080_60 => (1920, 1080, 60),
+        };
+        Quality::fit(source, width, height, fps)
+    }
+}
+
 /// 配信の画質
 #[derive(Clone, Copy, Debug)]
 pub struct Quality {
@@ -23,13 +50,21 @@ pub struct Quality {
 impl Quality {
     /// 元の大きさを、縦横比を保って max_w×max_h に収める（偶数にそろえる）
     pub fn fit(src: Option<(i32, i32)>, max_w: u32, max_h: u32, fps: u32) -> Quality {
-        let (sw, sh) = src.filter(|(w, h)| *w > 0 && *h > 0).map(|(w, h)| (w as f64, h as f64)).unwrap_or((1920.0, 1080.0));
+        let (sw, sh) = src
+            .filter(|(w, h)| *w > 0 && *h > 0)
+            .map(|(w, h)| (w as f64, h as f64))
+            .unwrap_or((1920.0, 1080.0));
         let s = (max_w as f64 / sw).min(max_h as f64 / sh).min(1.0);
         let even = |v: f64| ((v as u32) & !1).max(16);
         let (width, height) = (even(sw * s), even(sh * s));
         // 720p30 で 2.5Mbps 程度。画素数に比例させる
         let bitrate = ((width * height) as f64 * fps as f64 * 0.09) as u32;
-        Quality { width, height, fps, bitrate: bitrate.clamp(500_000, 6_000_000) }
+        Quality {
+            width,
+            height,
+            fps,
+            bitrate: bitrate.clamp(500_000, 6_000_000),
+        }
     }
 }
 
@@ -49,7 +84,9 @@ mod platform {
         fd: OwnedFd,
         node: u32,
         pub size: Option<(i32, i32)>,
-        session: Option<ashpd::desktop::Session<'static, ashpd::desktop::screencast::Screencast<'static>>>,
+        session: Option<
+            ashpd::desktop::Session<'static, ashpd::desktop::screencast::Screencast<'static>>,
+        >,
     }
 
     impl Drop for Source {
@@ -70,7 +107,9 @@ mod platform {
         use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
         use ashpd::desktop::PersistMode;
         let err = |e: ashpd::Error| match e {
-            ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => "画面の選択が取り消されました".to_string(),
+            ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => {
+                "画面の選択が取り消されました".to_string()
+            }
             e => format!("画面共有のポータルを使えません: {e}"),
         };
         let proxy = Screencast::new().await.map_err(err)?;
@@ -79,17 +118,40 @@ mod platform {
             Ok(m) if m.contains(CursorMode::Embedded) => CursorMode::Embedded,
             _ => CursorMode::Hidden,
         };
-        let types = proxy.available_source_types().await.unwrap_or(SourceType::Monitor.into());
+        let types = proxy
+            .available_source_types()
+            .await
+            .unwrap_or(SourceType::Monitor.into());
         proxy
-            .select_sources(&session, cursor, types & (SourceType::Monitor | SourceType::Window), false, None, PersistMode::DoNot)
+            .select_sources(
+                &session,
+                cursor,
+                types & (SourceType::Monitor | SourceType::Window),
+                false,
+                None,
+                PersistMode::DoNot,
+            )
             .await
             .map_err(err)?;
-        let streams = proxy.start(&session, None).await.map_err(err)?.response().map_err(err)?;
-        let stream = streams.streams().first().ok_or("共有する画面が選ばれませんでした")?;
+        let streams = proxy
+            .start(&session, None)
+            .await
+            .map_err(err)?
+            .response()
+            .map_err(err)?;
+        let stream = streams
+            .streams()
+            .first()
+            .ok_or("共有する画面が選ばれませんでした")?;
         let node = stream.pipe_wire_node_id();
         let size = stream.size();
         let fd = proxy.open_pipe_wire_remote(&session).await.map_err(err)?;
-        Ok(Source { fd, node, size, session: Some(session) })
+        Ok(Source {
+            fd,
+            node,
+            size,
+            session: Some(session),
+        })
     }
 
     fn have(name: &str) -> bool {
@@ -104,7 +166,10 @@ mod platform {
                 q.bitrate / 1000
             ))
         } else if have("openh264enc") {
-            Ok(format!("openh264enc bitrate={} gop-size={gop} complexity=low usage-type=screen", q.bitrate))
+            Ok(format!(
+                "openh264enc bitrate={} gop-size={gop} complexity=low usage-type=screen",
+                q.bitrate
+            ))
         } else {
             Err("H264 のエンコーダーが見つかりません（gst-plugins-ugly の x264enc か、gst-plugins-bad の openh264enc を入れてください）".into())
         }
@@ -118,13 +183,26 @@ mod platform {
     }
 
     impl Capture {
-        pub fn start(source: Source, q: Quality, out: tokio::sync::mpsc::Sender<Encoded>) -> Result<Capture, String> {
-            let src = format!("pipewiresrc fd={} path={} do-timestamp=true keepalive-time=500 always-copy=true", source.fd.as_raw_fd(), source.node);
+        pub fn start(
+            source: Source,
+            q: Quality,
+            out: tokio::sync::mpsc::Sender<Encoded>,
+        ) -> Result<Capture, String> {
+            let src = format!(
+                "pipewiresrc fd={} path={} do-timestamp=true keepalive-time=500 always-copy=true",
+                source.fd.as_raw_fd(),
+                source.node
+            );
             Self::with_source(&src, Some(source), q, out)
         }
 
         /// テスト用などに、任意の映像元から作る
-        pub fn with_source(src: &str, source: Option<Source>, q: Quality, out: tokio::sync::mpsc::Sender<Encoded>) -> Result<Capture, String> {
+        pub fn with_source(
+            src: &str,
+            source: Option<Source>,
+            q: Quality,
+            out: tokio::sync::mpsc::Sender<Encoded>,
+        ) -> Result<Capture, String> {
             gst::init().map_err(|e| format!("GStreamer を初期化できません: {e}"))?;
             let desc = format!(
                 "{src} ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! videoscale ! videorate ! video/x-raw,format=I420,width={w},height={h},framerate={fps}/1,pixel-aspect-ratio=1/1 ! {enc} ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au ! appsink name=sink max-buffers=8 drop=true sync=false",
@@ -133,32 +211,56 @@ mod platform {
                 fps = q.fps,
                 enc = encoder(&q)?,
             );
-            let pipeline = gst::parse::launch(&desc).map_err(|e| format!("映像の処理を組み立てられません: {e}"))?;
-            let bin = pipeline.clone().downcast::<gst::Bin>().map_err(|_| "パイプラインが不正です")?;
-            let sink = bin.by_name("sink").and_then(|s| s.downcast::<gst_app::AppSink>().ok()).ok_or("appsink がありません")?;
+            let pipeline = gst::parse::launch(&desc)
+                .map_err(|e| format!("映像の処理を組み立てられません: {e}"))?;
+            let bin = pipeline
+                .clone()
+                .downcast::<gst::Bin>()
+                .map_err(|_| "パイプラインが不正です")?;
+            let sink = bin
+                .by_name("sink")
+                .and_then(|s| s.downcast::<gst_app::AppSink>().ok())
+                .ok_or("appsink がありません")?;
             let offset: u32 = rand::random();
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |sink| {
                         let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                        let Some(buf) = sample.buffer() else { return Ok(gst::FlowSuccess::Ok) };
-                        let Ok(map) = buf.map_readable() else { return Ok(gst::FlowSuccess::Ok) };
+                        let Some(buf) = sample.buffer() else {
+                            return Ok(gst::FlowSuccess::Ok);
+                        };
+                        let Ok(map) = buf.map_readable() else {
+                            return Ok(gst::FlowSuccess::Ok);
+                        };
                         let ns = buf.pts().map(|t| t.nseconds()).unwrap_or(0);
-                        let rtp_ts = ((ns as u128 * 90_000 / 1_000_000_000) as u32).wrapping_add(offset);
+                        let rtp_ts =
+                            ((ns as u128 * 90_000 / 1_000_000_000) as u32).wrapping_add(offset);
                         let keyframe = !buf.flags().contains(gst::BufferFlags::DELTA_UNIT);
                         // 送るのが追いつかないときは捨てる（遅延をためない）
-                        let _ = out.try_send(Encoded { data: map.to_vec(), rtp_ts, keyframe });
+                        let _ = out.try_send(Encoded {
+                            data: map.to_vec(),
+                            rtp_ts,
+                            keyframe,
+                        });
                         Ok(gst::FlowSuccess::Ok)
                     })
                     .build(),
             );
-            pipeline.set_state(gst::State::Playing).map_err(|e| format!("画面の取り込みを始められません: {e}"))?;
-            Ok(Capture { pipeline, sink, _source: source })
+            pipeline
+                .set_state(gst::State::Playing)
+                .map_err(|e| format!("画面の取り込みを始められません: {e}"))?;
+            Ok(Capture {
+                pipeline,
+                sink,
+                _source: source,
+            })
         }
 
         /// 次のフレームをキーフレームにする（視聴者が増えた・PLI が来た）
         pub fn force_keyframe(&self) {
-            let ev = gst_video::UpstreamForceKeyUnitEvent::builder().all_headers(true).build();
+            let ev = gst_video::UpstreamForceKeyUnitEvent::builder()
+                .all_headers(true)
+                .build();
             self.sink.send_event(ev);
         }
 
@@ -167,8 +269,12 @@ mod platform {
             let bus = self.pipeline.bus()?;
             while let Some(m) = bus.pop() {
                 match m.view() {
-                    gst::MessageView::Error(e) => return Some(format!("画面の取り込みが止まりました: {}", e.error())),
-                    gst::MessageView::Eos(..) => return Some("共有していた画面が閉じられました".into()),
+                    gst::MessageView::Error(e) => {
+                        return Some(format!("画面の取り込みが止まりました: {}", e.error()))
+                    }
+                    gst::MessageView::Eos(..) => {
+                        return Some("共有していた画面が閉じられました".into())
+                    }
                     _ => {}
                 }
             }
@@ -191,14 +297,29 @@ mod platform {
     impl Decoder {
         pub fn new(latest: Arc<Mutex<Option<Frame>>>, waker: Waker) -> Result<Decoder, String> {
             gst::init().map_err(|e| format!("GStreamer を初期化できません: {e}"))?;
-            let dec = ["avdec_h264", "openh264dec", "v4l2h264dec"].into_iter().find(|d| have(d)).ok_or("H264 のデコーダーが見つかりません（gst-libav か openh264 を入れてください）")?;
+            let dec = ["avdec_h264", "openh264dec", "v4l2h264dec"]
+                .into_iter()
+                .find(|d| have(d))
+                .ok_or(
+                    "H264 のデコーダーが見つかりません（gst-libav か openh264 を入れてください）",
+                )?;
             let desc = format!(
                 "appsrc name=src is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! videoscale ! video/x-raw,format=BGRA,width=[16,1920],height=[16,1080],pixel-aspect-ratio=1/1 ! appsink name=sink max-buffers=1 drop=true sync=false"
             );
-            let pipeline = gst::parse::launch(&desc).map_err(|e| format!("映像の処理を組み立てられません: {e}"))?;
-            let bin = pipeline.clone().downcast::<gst::Bin>().map_err(|_| "パイプラインが不正です")?;
-            let src = bin.by_name("src").and_then(|s| s.downcast::<gst_app::AppSrc>().ok()).ok_or("appsrc がありません")?;
-            let sink = bin.by_name("sink").and_then(|s| s.downcast::<gst_app::AppSink>().ok()).ok_or("appsink がありません")?;
+            let pipeline = gst::parse::launch(&desc)
+                .map_err(|e| format!("映像の処理を組み立てられません: {e}"))?;
+            let bin = pipeline
+                .clone()
+                .downcast::<gst::Bin>()
+                .map_err(|_| "パイプラインが不正です")?;
+            let src = bin
+                .by_name("src")
+                .and_then(|s| s.downcast::<gst_app::AppSrc>().ok())
+                .ok_or("appsrc がありません")?;
+            let sink = bin
+                .by_name("sink")
+                .and_then(|s| s.downcast::<gst_app::AppSink>().ok())
+                .ok_or("appsink がありません")?;
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |sink| {
@@ -211,7 +332,9 @@ mod platform {
                     })
                     .build(),
             );
-            pipeline.set_state(gst::State::Playing).map_err(|e| format!("映像を再生できません: {e}"))?;
+            pipeline
+                .set_state(gst::State::Playing)
+                .map_err(|e| format!("映像を再生できません: {e}"))?;
             Ok(Decoder { pipeline, src })
         }
 
@@ -240,7 +363,8 @@ mod platform {
     fn frame_from_sample(sample: &gst::Sample) -> Option<Frame> {
         use gst_video::VideoFrameExt;
         let info = gst_video::VideoInfo::from_caps(sample.caps()?).ok()?;
-        let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(sample.buffer()?, &info).ok()?;
+        let frame =
+            gst_video::VideoFrameRef::from_buffer_ref_readable(sample.buffer()?, &info).ok()?;
         let data = frame.plane_data(0).ok()?;
         let stride = usize::try_from(frame.plane_stride()[0]).ok()?;
         let row = info.width() as usize * 4;
@@ -251,7 +375,11 @@ mod platform {
         for line in data.chunks_exact(stride).take(info.height() as usize) {
             pixels.extend_from_slice(&line[..row]);
         }
-        Some(Frame { width: info.width(), height: info.height(), data: pixels })
+        Some(Frame {
+            width: info.width(),
+            height: info.height(),
+            data: pixels,
+        })
     }
 
     #[cfg(test)]
@@ -262,15 +390,24 @@ mod platform {
         /// テスト画像をエンコード → RTP に分けて暗号化 → 組み立て → デコード まで通す
         #[test]
         fn encode_packetize_decode_round_trip() {
-            if gst::init().is_err() || !(have("x264enc") || have("openh264enc")) || !(have("avdec_h264") || have("openh264dec")) || !have("videotestsrc") {
+            if gst::init().is_err()
+                || !(have("x264enc") || have("openh264enc"))
+                || !(have("avdec_h264") || have("openh264dec"))
+                || !have("videotestsrc")
+            {
                 eprintln!("GStreamer のプラグインが足りないので飛ばします");
                 return;
             }
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
             rt.block_on(async {
                 let q = Quality::fit(Some((640, 360)), 640, 360, 15);
                 let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-                let cap = Capture::with_source("videotestsrc is-live=true num-buffers=30", None, q, tx).unwrap();
+                let cap =
+                    Capture::with_source("videotestsrc is-live=true num-buffers=30", None, q, tx)
+                        .unwrap();
                 let latest = Arc::new(Mutex::new(None));
                 let dec = Decoder::new(latest.clone(), Waker::default()).unwrap();
                 let cipher = rtp::Cipher::new(rtp::MODE_AES, &[3u8; 32]).unwrap();
@@ -278,11 +415,15 @@ mod platform {
                 let mut dp = rtp::Depacketizer::default();
                 let mut frames = 0;
                 let mut first_key = None;
-                while let Ok(Some(e)) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+                while let Ok(Some(e)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await
+                {
                     first_key.get_or_insert(e.keyframe);
                     for p in pk.packetize(&cipher, &e.data, e.rtp_ts) {
                         let r = rtp::parse_rtp(&p).unwrap();
-                        if let rtp::Push::Frame(au) = dp.push(r.seq, r.timestamp, r.marker, &r.decrypt(&cipher).unwrap()) {
+                        if let rtp::Push::Frame(au) =
+                            dp.push(r.seq, r.timestamp, r.marker, &r.decrypt(&cipher).unwrap())
+                        {
                             dec.push(au.data);
                             frames += 1;
                         }
@@ -325,7 +466,11 @@ mod platform {
     }
     pub struct Capture;
     impl Capture {
-        pub fn start(_: Source, _: Quality, _: tokio::sync::mpsc::Sender<Encoded>) -> Result<Capture, String> {
+        pub fn start(
+            _: Source,
+            _: Quality,
+            _: tokio::sync::mpsc::Sender<Encoded>,
+        ) -> Result<Capture, String> {
             Err(UNSUPPORTED.into())
         }
         pub fn force_keyframe(&self) {}

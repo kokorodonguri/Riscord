@@ -17,7 +17,12 @@ fn login_input(state: &Entity<gpui::component::input::InputState>, busy: bool) -
         .border_color(BORDER())
         .rounded(z(6.0))
         .px(z(4.0))
-        .child(Input::new(state).appearance(false).disabled(busy).h(z(40.0)))
+        .child(
+            Input::new(state)
+                .appearance(false)
+                .disabled(busy)
+                .h(z(40.0)),
+        )
 }
 
 fn label(s: &'static str) -> Div {
@@ -34,11 +39,19 @@ impl Root {
         a.login_error = None;
         if let Some(ticket) = a.login.mfa_ticket.clone() {
             if !a.login.mfa_code.trim().is_empty() {
-                a.login.busy = Some(login::mfa(&a.waker, ticket, a.login.mfa_code.trim().to_string()));
+                a.login.busy = Some(login::mfa(
+                    &a.waker,
+                    ticket,
+                    a.login.mfa_code.trim().to_string(),
+                ));
             }
         } else {
             if !a.login.email.trim().is_empty() && !a.login.password.is_empty() {
-                a.login.busy = Some(login::password(&a.waker, a.login.email.trim().to_string(), a.login.password.clone()));
+                a.login.busy = Some(login::password(
+                    &a.waker,
+                    a.login.email.trim().to_string(),
+                    a.login.password.clone(),
+                ));
             }
         }
         cx.notify();
@@ -52,7 +65,11 @@ impl Root {
                 .flex()
                 .flex_row()
                 .items_start()
-                .child(div().w(z(720.0 - 240.0 - 64.0)).child(self.login_form(window, cx)))
+                .child(
+                    div()
+                        .w(z(720.0 - 240.0 - 64.0))
+                        .child(self.login_form(window, cx)),
+                )
                 .child(div().mx(z(32.0)).w(px(1.0)).h(z(300.0)).bg(DIVIDER()))
                 .child(div().w(z(240.0)).child(self.login_qr(cx)))
         } else {
@@ -63,7 +80,11 @@ impl Root {
                 .child(div().my(z(24.0)).child(hline(DIVIDER())))
                 .child(self.login_qr(cx))
         };
-        let width = if wide { z(720.0) } else { z((self.app.screen_w - 64.0).clamp(0.0, 420.0)) };
+        let width = if wide {
+            z(720.0)
+        } else {
+            z((self.app.screen_w - 64.0).clamp(0.0, 420.0))
+        };
         div().id("login").size_full().bg(RAIL()).overflow_y_scroll().child(
             div().w_full().min_h_full().flex().flex_col().items_center().justify_center().py(z(24.0)).child(
                 div()
@@ -93,10 +114,16 @@ impl Root {
         } else {
             ("おかえりなさい！", "Discord のアカウントでログインします。")
         };
-        let mut col = div()
-            .flex()
-            .flex_col()
-            .child(div().flex().flex_col().items_center().text_center().mb(z(20.0)).child(medium(title, 24.0, WHITE())).child(text(sub, 15.0, MUTED()).mt(z(6.0))));
+        let mut col = div().flex().flex_col().child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .text_center()
+                .mb(z(20.0))
+                .child(medium(title, 24.0, WHITE()))
+                .child(text(sub, 15.0, MUTED()).mt(z(6.0))),
+        );
         let remember = |label_text: &'static str, on: bool, cx: &mut Context<Self>| {
             div()
                 .id("remember")
@@ -119,7 +146,9 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .when(on, |d| d.child(icon(gpui::assets::IconName::Check, 14.0, Color32::WHITE))),
+                        .when(on, |d| {
+                            d.child(icon(gpui::assets::IconName::Check, 14.0, Color32::WHITE))
+                        }),
                 )
                 .child(text(label_text, 15.0, MUTED()))
         };
@@ -127,21 +156,33 @@ impl Root {
             fill_button("login_btn", label_text, BLURPLE(), Color32::WHITE, enabled)
                 .w_full()
                 .h(z(44.0))
-                .when(enabled, |b| b.on_click(cx.listener(|this, _, _, cx| this.login_submit(cx))))
+                .when(enabled, |b| {
+                    b.on_click(cx.listener(|this, _, _, cx| this.login_submit(cx)))
+                })
         };
         if a.login.mfa_ticket.is_some() {
             let ready = !busy && !a.login.mfa_code.trim().is_empty();
             col = col
                 .child(label("認証コード"))
                 .child(login_input(&self.inp.mfa, busy))
-                .child(div().mt(z(20.0)).child(button(if busy { "確認中…" } else { "ログイン" }, ready, cx)))
-                .child(div().mt(z(8.0)).child(link_text("back", "最初に戻る").on_click(cx.listener(|this, _, _, cx| {
-                    let a = &mut this.app;
-                    a.login.mfa_ticket = None;
-                    a.login.mfa_code.clear();
-                    a.login_error = None;
-                    cx.notify();
-                }))));
+                .child(div().mt(z(20.0)).child(button(
+                    if busy { "確認中…" } else { "ログイン" },
+                    ready,
+                    cx,
+                )))
+                .child(
+                    div()
+                        .mt(z(8.0))
+                        .child(link_text("back", "最初に戻る").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                let a = &mut this.app;
+                                a.login.mfa_ticket = None;
+                                a.login.mfa_code.clear();
+                                a.login_error = None;
+                                cx.notify();
+                            },
+                        ))),
+                );
         } else {
             let ready = !busy && !a.login.email.trim().is_empty() && !a.login.password.is_empty();
             col = col
@@ -151,7 +192,15 @@ impl Root {
                 .child(label("パスワード"))
                 .child(login_input(&self.inp.password, busy))
                 .child(remember("このPCにログイン情報を保存する", a.remember, cx))
-                .child(div().mt(z(16.0)).child(button(if busy { "ログイン中…" } else { "ログイン" }, ready, cx)));
+                .child(div().mt(z(16.0)).child(button(
+                    if busy {
+                        "ログイン中…"
+                    } else {
+                        "ログイン"
+                    },
+                    ready,
+                    cx,
+                )));
         }
 
         if let Some(e) = &a.login_error {
@@ -165,11 +214,25 @@ impl Root {
         let qr = self.app.login.qr.as_ref();
         let qr_size = 176.0;
         let code: AnyElement = match qr {
-            Some(QrSession { scanned: Some((name, avatar_url)), ended: None, .. }) => {
+            Some(QrSession {
+                scanned: Some((name, avatar_url)),
+                ended: None,
+                ..
+            }) => {
                 // 読み取られたら、スマホでの承認を待つ間はそのアカウントを出す
-                div().size(z(qr_size)).flex().items_center().justify_center().child(avatar(avatar_url.as_deref(), 96.0, name, 48.0, BLURPLE())).into_any_element()
+                div()
+                    .size(z(qr_size))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(avatar(avatar_url.as_deref(), 96.0, name, 48.0, BLURPLE()))
+                    .into_any_element()
             }
-            Some(QrSession { modules: Some((w, cells)), ended, .. }) => {
+            Some(QrSession {
+                modules: Some((w, cells)),
+                ended,
+                ..
+            }) => {
                 let (w, cells, ended) = (*w, cells.clone(), ended.is_some());
                 div()
                     .size(z(qr_size))
@@ -184,8 +247,15 @@ impl Root {
                                 for (i, &dark) in cells.iter().enumerate() {
                                     if dark {
                                         let (x, y) = ((i % w) as f32, (i / w) as f32);
-                                        let o = bounds.origin + point(quiet + cell * x, quiet + cell * y);
-                                        window.paint_quad(fill(Bounds::new(o, gpui::size(cell + px(0.3), cell + px(0.3))), Hsla::black()));
+                                        let o = bounds.origin
+                                            + point(quiet + cell * x, quiet + cell * y);
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                o,
+                                                gpui::size(cell + px(0.3), cell + px(0.3)),
+                                            ),
+                                            Hsla::black(),
+                                        ));
                                     }
                                 }
                             },
@@ -194,18 +264,41 @@ impl Root {
                     )
                     // 真ん中にロゴ（誤り訂正の範囲に収まる大きさ）
                     .child(
-                        div().absolute().inset_0().flex().items_center().justify_center().child(
-                            div()
-                                .size(z(36.0))
-                                .rounded(z(6.0))
-                                .bg(Color32::WHITE)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(div().size(z(30.0)).rounded_full().bg(BLURPLE()).flex().items_center().justify_center().child(logo(16.0, Color32::WHITE, BLURPLE()))),
-                        ),
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .size(z(36.0))
+                                    .rounded(z(6.0))
+                                    .bg(Color32::WHITE)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .size(z(30.0))
+                                            .rounded_full()
+                                            .bg(BLURPLE())
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(logo(16.0, Color32::WHITE, BLURPLE())),
+                                    ),
+                            ),
                     )
-                    .when(ended, |d| d.child(div().absolute().inset_0().rounded(z(8.0)).bg(Color32::from_black_alpha(200))))
+                    .when(ended, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded(z(8.0))
+                                .bg(Color32::from_black_alpha(200)),
+                        )
+                    })
                     .into_any_element()
             }
             _ => div()
@@ -215,22 +308,37 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(qr.is_none_or(|q| q.ended.is_none()), |d| d.child(spinner(28.0)))
+                .when(qr.is_none_or(|q| q.ended.is_none()), |d| {
+                    d.child(spinner(28.0))
+                })
                 .into_any_element(),
         };
-        let scanned = qr.and_then(|q| q.scanned.as_ref()).filter(|_| qr.is_some_and(|q| q.ended.is_none())).map(|s| s.0.clone());
+        let scanned = qr
+            .and_then(|q| q.scanned.as_ref())
+            .filter(|_| qr.is_some_and(|q| q.ended.is_none()))
+            .map(|s| s.0.clone());
         let ended = qr.and_then(|q| q.ended.clone());
         let restart = cx.listener(|this, _, _, cx| {
             this.app.login.qr = Some(QrSession::start(&this.app.waker));
             cx.notify();
         });
-        let mut col = div().flex().flex_col().items_center().text_center().child(code).child(div().h(z(20.0)));
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .text_center()
+            .child(code)
+            .child(div().h(z(20.0)));
         match (scanned, ended) {
             (_, Some(msg)) => {
                 col = col
                     .child(medium("QRコードでログイン", 20.0, WHITE()))
                     .child(text(msg, 14.0, MUTED()).mt(z(6.0)))
-                    .child(small_button("qr_restart", "QR コードを作り直す").mt(z(10.0)).on_click(restart));
+                    .child(
+                        small_button("qr_restart", "QR コードを作り直す")
+                            .mt(z(10.0))
+                            .on_click(restart),
+                    );
             }
             (Some(name), None) => {
                 col = col

@@ -35,7 +35,9 @@ fn pack(c: Color32) -> u32 {
 }
 
 fn unpack(v: u32) -> Color32 {
-    Color32 { rgba: v.to_le_bytes() }
+    Color32 {
+        rgba: v.to_le_bytes(),
+    }
 }
 
 macro_rules! palette {
@@ -144,7 +146,10 @@ pub const PART_PROPS: &[(&str, &str)] = &[
     ("border_width", "枠線の太さ"),
     ("radius", "角の丸み"),
     ("opacity", "中身ごとの見え具合（0〜1）"),
-    ("hover_bg", "マウスを乗せたときの地の色（行・ボタンなど、乗せると色が変わる部品だけ）"),
+    (
+        "hover_bg",
+        "マウスを乗せたときの地の色（行・ボタンなど、乗せると色が変わる部品だけ）",
+    ),
 ];
 
 /// 部品1つの上書き。None の項目は元の見た目のまま
@@ -167,7 +172,12 @@ pub fn set_parts(parts: &[PartStyle]) {
 
 /// 今のテーマでの、その部品の上書き
 pub fn part_style(p: Part) -> PartStyle {
-    PART_STYLES.read().unwrap().get(p as usize).copied().unwrap_or_default()
+    PART_STYLES
+        .read()
+        .unwrap()
+        .get(p as usize)
+        .copied()
+        .unwrap_or_default()
 }
 
 /// テーマの [parts] を読む。知らない部品・項目や読めない値は飛ばして、warnings に理由を足す
@@ -175,13 +185,17 @@ fn resolve_parts(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<PartSty
     let mut out = vec![PartStyle::default(); PARTS.len()];
     for (group, v) in table {
         let Some(members) = v.as_table() else {
-            warnings.push(format!("parts.{group} は [parts.{group}.部品] の形で書いてください"));
+            warnings.push(format!(
+                "parts.{group} は [parts.{group}.部品] の形で書いてください"
+            ));
             continue;
         };
         for (name, v) in members {
             let key = format!("{group}.{name}");
             let Some(props) = v.as_table() else {
-                warnings.push(format!("parts.{key} は読めません。[parts.画面.部品] の下に項目を書いてください"));
+                warnings.push(format!(
+                    "parts.{key} は読めません。[parts.画面.部品] の下に項目を書いてください"
+                ));
                 continue;
             };
             let Some(i) = PARTS.iter().position(|p| p.0 == key) else {
@@ -190,7 +204,12 @@ fn resolve_parts(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<PartSty
             };
             for (prop, v) in props {
                 let color = || v.as_str().and_then(parse_color);
-                let number = || v.as_float().or_else(|| v.as_integer().map(|n| n as f64)).map(|n| n as f32).filter(|n| n.is_finite() && *n >= 0.0);
+                let number = || {
+                    v.as_float()
+                        .or_else(|| v.as_integer().map(|n| n as f64))
+                        .map(|n| n as f32)
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                };
                 let st = &mut out[i];
                 let ok = match prop.as_str() {
                     "bg" => color().map(|c| st.bg = Some(c)).is_some(),
@@ -237,7 +256,12 @@ pub fn parse_color(s: &str) -> Option<Color32> {
     let n = u32::from_str_radix(h, 16).ok()?;
     match h.len() {
         6 => Some(Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8)),
-        8 => Some(Color32::from_rgba_unmultiplied((n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, n as u8)),
+        8 => Some(Color32::from_rgba_unmultiplied(
+            (n >> 24) as u8,
+            (n >> 16) as u8,
+            (n >> 8) as u8,
+            n as u8,
+        )),
         _ => None,
     }
 }
@@ -302,32 +326,78 @@ pub const BUILTIN: &[(&str, &str, &[(&str, &str)])] = &[
         "dark",
         "ダーク（Discord 風）",
         &[
-            ("bg", "#1e1f22"), ("rail", "#1e1f22"), ("sidebar", "#2b2d31"), ("chat", "#313338"), ("input", "#383a40"),
-            ("userbar", "#232428"), ("hover", "#35373c"), ("selected", "#404249"), ("msg_hover", "#2e3035"),
-            ("divider", "#3f4147"), ("border", "#1e1f22"), ("call_bg", "#000000"), ("embed_bg", "#2b2d31"),
-            ("embed_bar", "#1e1f22"), ("widget", "#4e5058"), ("widget_hover", "#6d6f78"),
+            ("bg", "#1e1f22"),
+            ("rail", "#1e1f22"),
+            ("sidebar", "#2b2d31"),
+            ("chat", "#313338"),
+            ("input", "#383a40"),
+            ("userbar", "#232428"),
+            ("hover", "#35373c"),
+            ("selected", "#404249"),
+            ("msg_hover", "#2e3035"),
+            ("divider", "#3f4147"),
+            ("border", "#1e1f22"),
+            ("call_bg", "#000000"),
+            ("embed_bg", "#2b2d31"),
+            ("embed_bar", "#1e1f22"),
+            ("widget", "#4e5058"),
+            ("widget_hover", "#6d6f78"),
         ],
     ),
     (
         "midnight",
         "ミッドナイト（青）",
         &[
-            ("bg", "#0b0e17"), ("rail", "#121726"), ("sidebar", "#0f1320"), ("chat", "#0b0e17"), ("input", "#141a2b"),
-            ("userbar", "#0b0e17"), ("accent", "#7aa2f7"), ("text", "#c0caf5"), ("muted", "#8089b3"), ("faint", "#565f89"),
-            ("strong", "#e0e6ff"), ("hover", "#151b2e"), ("selected", "#1f2740"), ("msg_hover", "#111627"),
-            ("divider", "#1a2035"), ("border", "#283252"), ("link", "#7dcfff"), ("embed_bg", "#121726"),
-            ("embed_bar", "#283252"), ("widget", "#1f2740"), ("widget_hover", "#2a3557"), ("reply_line", "#3b4261"),
+            ("bg", "#0b0e17"),
+            ("rail", "#121726"),
+            ("sidebar", "#0f1320"),
+            ("chat", "#0b0e17"),
+            ("input", "#141a2b"),
+            ("userbar", "#0b0e17"),
+            ("accent", "#7aa2f7"),
+            ("text", "#c0caf5"),
+            ("muted", "#8089b3"),
+            ("faint", "#565f89"),
+            ("strong", "#e0e6ff"),
+            ("hover", "#151b2e"),
+            ("selected", "#1f2740"),
+            ("msg_hover", "#111627"),
+            ("divider", "#1a2035"),
+            ("border", "#283252"),
+            ("link", "#7dcfff"),
+            ("embed_bg", "#121726"),
+            ("embed_bar", "#283252"),
+            ("widget", "#1f2740"),
+            ("widget_hover", "#2a3557"),
+            ("reply_line", "#3b4261"),
         ],
     ),
     (
         "sakura",
         "さくら（ピンク）",
         &[
-            ("bg", "#1a1216"), ("rail", "#241a1f"), ("sidebar", "#1f161b"), ("chat", "#1a1216"), ("input", "#2a1e24"),
-            ("userbar", "#1a1216"), ("accent", "#f4a7c3"), ("text", "#f2dde5"), ("muted", "#b8949f"), ("faint", "#8a6b75"),
-            ("strong", "#fff0f5"), ("hover", "#271c22"), ("selected", "#35252d"), ("msg_hover", "#21171c"),
-            ("divider", "#2e2128"), ("border", "#43303a"), ("link", "#ff9ecb"), ("embed_bg", "#241a1f"),
-            ("embed_bar", "#43303a"), ("widget", "#35252d"), ("widget_hover", "#4a333e"), ("reply_line", "#5a4250"),
+            ("bg", "#1a1216"),
+            ("rail", "#241a1f"),
+            ("sidebar", "#1f161b"),
+            ("chat", "#1a1216"),
+            ("input", "#2a1e24"),
+            ("userbar", "#1a1216"),
+            ("accent", "#f4a7c3"),
+            ("text", "#f2dde5"),
+            ("muted", "#b8949f"),
+            ("faint", "#8a6b75"),
+            ("strong", "#fff0f5"),
+            ("hover", "#271c22"),
+            ("selected", "#35252d"),
+            ("msg_hover", "#21171c"),
+            ("divider", "#2e2128"),
+            ("border", "#43303a"),
+            ("link", "#ff9ecb"),
+            ("embed_bg", "#241a1f"),
+            ("embed_bar", "#43303a"),
+            ("widget", "#35252d"),
+            ("widget_hover", "#4a333e"),
+            ("reply_line", "#5a4250"),
         ],
     ),
 ];
@@ -356,7 +426,9 @@ pub fn list_files(dir: &Path) -> Vec<(String, Option<ThemeFile>)> {
         .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let file = std::fs::read_to_string(e.path()).ok().and_then(|s| toml::from_str(&s).ok());
+            let file = std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|s| toml::from_str(&s).ok());
             (name, file)
         })
         .collect();
@@ -428,19 +500,55 @@ pub fn resolve(
         set(k, v);
     }
     // 旧テーマでは設定画面の色をチャット欄から引き継ぐ。
-    let specified = |key: &str| [overrides.get(key), file.colors.get(key)].into_iter().flatten().any(|v| parse_color(v).is_some());
+    let specified = |key: &str| {
+        [overrides.get(key), file.colors.get(key)]
+            .into_iter()
+            .flatten()
+            .any(|v| parse_color(v).is_some())
+    };
     if !specified("settings_bg") {
         colors[30] = colors[3];
     }
     if !specified("settings_nav") {
         colors[31] = colors[30];
     }
-    let image = bg_override.image.clone().filter(|s| !s.trim().is_empty()).or(file.background.image.clone());
-    let opacity = bg_override.opacity.or(file.background.opacity).unwrap_or(0.35).clamp(0.0, 1.0);
-    let window = bg_override.area.as_deref().or(file.background.area.as_deref()) == Some("window");
-    let background = image.filter(|s| !s.trim().is_empty()).map(|s| BackgroundImage { uri: image_uri(&s, dir), opacity, window });
-    let font = file.font.as_deref().map(expand_home).map(|p| if p.is_relative() { dir.join(p) } else { p });
-    (Resolved { colors, parts, background, font }, error, warnings)
+    let image = bg_override
+        .image
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or(file.background.image.clone());
+    let opacity = bg_override
+        .opacity
+        .or(file.background.opacity)
+        .unwrap_or(0.35)
+        .clamp(0.0, 1.0);
+    let window = bg_override
+        .area
+        .as_deref()
+        .or(file.background.area.as_deref())
+        == Some("window");
+    let background = image
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| BackgroundImage {
+            uri: image_uri(&s, dir),
+            opacity,
+            window,
+        });
+    let font =
+        file.font
+            .as_deref()
+            .map(expand_home)
+            .map(|p| if p.is_relative() { dir.join(p) } else { p });
+    (
+        Resolved {
+            colors,
+            parts,
+            background,
+            font,
+        },
+        error,
+        warnings,
+    )
 }
 
 /// TOML の文字列にする（" と \ と制御文字だけ \uXXXX などで書き、それ以外の文字はそのまま）
@@ -460,7 +568,10 @@ fn toml_str(s: &str) -> String {
 
 /// 今の配色をテーマファイルにする（自分のテーマを作る出発点）
 pub fn export(name: &str, colors: &[Color32], background: &Background) -> String {
-    let mut s = format!("name = {}\n# font = \"/path/to/font.ttf\"\n\n[colors]\n", toml_str(name));
+    let mut s = format!(
+        "name = {}\n# font = \"/path/to/font.ttf\"\n\n[colors]\n",
+        toml_str(name)
+    );
     for ((key, label, _), c) in KEYS.iter().zip(colors) {
         s.push_str(&format!("{key} = \"{}\"   # {label}\n", format_color(*c)));
     }
@@ -469,8 +580,14 @@ pub fn export(name: &str, colors: &[Color32], background: &Background) -> String
         Some(i) if !i.is_empty() => s.push_str(&format!("image = {}\n", toml_str(i))),
         _ => s.push_str("# image = \"~/Pictures/wallpaper.png\"\n"),
     }
-    s.push_str(&format!("opacity = {}\n", background.opacity.unwrap_or(0.35)));
-    s.push_str(&format!("area = {}   # \"chat\" か \"window\"\n", toml_str(background.area.as_deref().unwrap_or("chat"))));
+    s.push_str(&format!(
+        "opacity = {}\n",
+        background.opacity.unwrap_or(0.35)
+    ));
+    s.push_str(&format!(
+        "area = {}   # \"chat\" か \"window\"\n",
+        toml_str(background.area.as_deref().unwrap_or("chat"))
+    ));
     s
 }
 
@@ -480,8 +597,14 @@ mod tests {
 
     #[test]
     fn colors_parse_and_format() {
-        assert_eq!(parse_color("#5865f2"), Some(Color32::from_rgb(0x58, 0x65, 0xf2)));
-        assert_eq!(parse_color("ff000080").map(|c| c.to_srgba_unmultiplied()[3]), Some(0x80));
+        assert_eq!(
+            parse_color("#5865f2"),
+            Some(Color32::from_rgb(0x58, 0x65, 0xf2))
+        );
+        assert_eq!(
+            parse_color("ff000080").map(|c| c.to_srgba_unmultiplied()[3]),
+            Some(0x80)
+        );
         assert_eq!(parse_color("#12"), None);
         assert_eq!(format_color(Color32::from_rgb(1, 2, 3)), "#010203");
     }
@@ -490,7 +613,16 @@ mod tests {
     fn settings_colors_inherit_and_can_be_overridden() {
         let mut overrides = BTreeMap::new();
         overrides.insert("chat".into(), "#123456".into());
-        let resolve_colors = |overrides: &BTreeMap<String, String>| resolve("builtin:black", Path::new("/nonexistent"), overrides, &Background::default()).0.colors;
+        let resolve_colors = |overrides: &BTreeMap<String, String>| {
+            resolve(
+                "builtin:black",
+                Path::new("/nonexistent"),
+                overrides,
+                &Background::default(),
+            )
+            .0
+            .colors
+        };
         let colors = resolve_colors(&overrides);
         assert_eq!(colors[30], colors[3]);
         assert_eq!(colors[31], colors[3]);
@@ -499,7 +631,10 @@ mod tests {
         assert_eq!(colors[30], parse_color("#abcdef80").unwrap());
         assert_eq!(colors[31], colors[30]);
         overrides.insert("settings_nav".into(), "#112233".into());
-        assert_eq!(resolve_colors(&overrides)[31], parse_color("#112233").unwrap());
+        assert_eq!(
+            resolve_colors(&overrides)[31],
+            parse_color("#112233").unwrap()
+        );
     }
 
     #[test]
@@ -536,7 +671,11 @@ mod tests {
     #[test]
     fn export_escapes_strings_for_toml() {
         let path = "/home/u/Downloads/いつもありか\u{3099}とう \"x\" \\y.jpg";
-        let bg = Background { image: Some(path.into()), opacity: Some(0.3), area: None };
+        let bg = Background {
+            image: Some(path.into()),
+            opacity: Some(0.3),
+            area: None,
+        };
         let text = export("名前\"", &current_colors(), &bg);
         let f: ThemeFile = toml::from_str(&text).unwrap();
         assert_eq!(f.background.image.as_deref(), Some(path));
@@ -545,7 +684,12 @@ mod tests {
 
     #[test]
     fn export_round_trips() {
-        let (r, _, _) = resolve("builtin:midnight", Path::new("/nonexistent"), &BTreeMap::new(), &Background::default());
+        let (r, _, _) = resolve(
+            "builtin:midnight",
+            Path::new("/nonexistent"),
+            &BTreeMap::new(),
+            &Background::default(),
+        );
         let text = export("x", &r.colors, &Background::default());
         let f: ThemeFile = toml::from_str(&text).unwrap();
         let dir = std::env::temp_dir().join(format!("riscord-theme-rt-{}", std::process::id()));
@@ -562,7 +706,11 @@ mod tests {
         let f: ThemeFile = toml::from_str(include_str!("../themes/template.toml")).unwrap();
         assert_eq!(f.colors.len(), KEYS.len());
         for (key, _, default) in KEYS {
-            assert_eq!(f.colors.get(*key).and_then(|v| parse_color(v)), Some(*default), "{key}");
+            assert_eq!(
+                f.colors.get(*key).and_then(|v| parse_color(v)),
+                Some(*default),
+                "{key}"
+            );
         }
         assert_eq!(f.background.opacity, Some(0.35));
         assert_eq!(f.background.area.as_deref(), Some("chat"));
@@ -590,8 +738,15 @@ mod tests {
         let parts = resolve_parts(&f.parts, &mut warnings);
         let card = parts[Part::ProfileCard as usize];
         assert_eq!(card.bg, parse_color("#0e0e1080"));
-        assert_eq!((card.radius, card.opacity, card.border_width, card.text), (Some(16.0), Some(0.5), Some(2.5), None));
-        assert_eq!(parts[Part::ProfileButton as usize], PartStyle::default(), "書いていない部品はそのまま");
+        assert_eq!(
+            (card.radius, card.opacity, card.border_width, card.text),
+            (Some(16.0), Some(0.5), Some(2.5), None)
+        );
+        assert_eq!(
+            parts[Part::ProfileButton as usize],
+            PartStyle::default(),
+            "書いていない部品はそのまま"
+        );
         warnings.sort();
         assert_eq!(
             warnings,
@@ -624,7 +779,14 @@ mod tests {
             assert!(t.contains(&format!("# {prop} = ")), "{prop}");
         }
         // 部品の見出しのコメントを外しても、警告なしで読めること
-        let open: String = t.lines().map(|l| l.strip_prefix("# [parts.").map_or(l.to_string(), |r| format!("[parts.{r}")) + "\n").collect();
+        let open: String = t
+            .lines()
+            .map(|l| {
+                l.strip_prefix("# [parts.")
+                    .map_or(l.to_string(), |r| format!("[parts.{r}"))
+                    + "\n"
+            })
+            .collect();
         let f: ThemeFile = toml::from_str(&open).unwrap();
         let mut warnings = Vec::new();
         resolve_parts(&f.parts, &mut warnings);

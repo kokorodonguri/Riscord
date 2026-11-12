@@ -3,7 +3,10 @@
 //! 終わるまでは読み込み中として扱う。大きすぎるものは縮小・フレームの間引きをしてメモリも抑える。
 //! 出来上がった画像は gpui の RenderImage（BGRA）で持ち、`img()` にそのまま渡せる（アニメも gpui が進める）
 use gpui::RenderImage;
-use image::{codecs::gif::GifDecoder, codecs::webp::WebPDecoder, AnimationDecoder as _, Delay, Frame, ImageDecoder as _, RgbaImage};
+use image::{
+    codecs::gif::GifDecoder, codecs::webp::WebPDecoder, AnimationDecoder as _, Delay, Frame,
+    ImageDecoder as _, RgbaImage,
+};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,6 +22,8 @@ const MAX_BACKGROUND_PIXELS: u32 = 3840 * 2160;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 /// 同時にデコードする数（CPU を食い尽くさないよう少なめ）
 const DECODERS: usize = 2;
+const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
+const DOWNLOADS: usize = 4;
 
 #[derive(Clone)]
 pub enum Img {
@@ -46,6 +51,7 @@ struct Store {
     rt: tokio::runtime::Runtime,
     http: reqwest::Client,
     decode: Arc<tokio::sync::Semaphore>,
+    downloads: tokio::sync::Semaphore,
 }
 
 fn store() -> &'static Store {
@@ -63,6 +69,7 @@ fn store() -> &'static Store {
             .expect("tokio"),
         http: image_client(Duration::from_secs(30)).expect("http client"),
         decode: Arc::new(tokio::sync::Semaphore::new(DECODERS)),
+        downloads: tokio::sync::Semaphore::new(DOWNLOADS),
     })
 }
 
@@ -95,6 +102,9 @@ pub fn get(uri: &str) -> Img {
     let uri = uri.to_string();
     s.rt.spawn(async move {
         let s = store();
+        let Ok(_download_permit) = s.downloads.acquire().await else {
+            return;
+        };
         let bytes = load_bytes(&s.http, &uri).await;
         let result = match bytes {
             Ok(b) => {
@@ -103,8 +113,14 @@ pub fn get(uri: &str) -> Img {
                 if !is_current_request(s.cache.lock().unwrap().get(&uri), &request) {
                     return;
                 }
-                let max = if uri.starts_with("file://") { MAX_BACKGROUND_PIXELS } else { MAX_FRAME_PIXELS };
-                tokio::task::spawn_blocking(move || decode(&b, max)).await.unwrap_or_else(|_| Err("decode panicked".into()))
+                let max = if uri.starts_with("file://") {
+                    MAX_BACKGROUND_PIXELS
+                } else {
+                    MAX_FRAME_PIXELS
+                };
+                tokio::task::spawn_blocking(move || decode(&b, max))
+                    .await
+                    .unwrap_or_else(|_| Err("decode panicked".into()))
             }
             Err(e) => Err(e),
         };
@@ -158,39 +174,67 @@ pub fn take_dropped() -> Vec<Arc<RenderImage>> {
 
 #[cfg(test)]
 pub(crate) fn release_queued(image: &Arc<RenderImage>) -> bool {
-    store().dropped.lock().unwrap().iter().any(|item| Arc::ptr_eq(item, image))
+    store()
+        .dropped
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|item| Arc::ptr_eq(item, image))
 }
 
 async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String> {
     if let Some(path) = uri.strip_prefix("file://") {
-        return tokio::fs::read(path).await.map_err(|e| format!("{path}: {e}"));
+        return tokio::fs::read(path)
+            .await
+            .map_err(|e| format!("{path}: {e}"));
     }
     if !(uri.starts_with("http://") || uri.starts_with("https://")) {
         return Err("対応していない URI".into());
     }
     let disk = disk_path(uri);
     if let Some(p) = &disk {
-        if let Ok(b) = tokio::fs::read(p).await {
-            return Ok(b);
+        if tokio::fs::metadata(p)
+            .await
+            .is_ok_and(|m| m.len() <= MAX_DOWNLOAD_BYTES as u64)
+        {
+            if let Ok(b) = tokio::fs::read(p).await {
+                if b.len() <= MAX_DOWNLOAD_BYTES {
+                    return Ok(b);
+                }
+            }
         }
     }
-    let resp = http.get(uri).send().await.map_err(|e| e.to_string())?;
+    let mut resp = http.get(uri).send().await.map_err(|e| e.to_string())?;
     let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     if status.as_u16() >= 400 {
         return Err(format!("{}", status.as_u16()));
     }
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_DOWNLOAD_BYTES as u64)
+    {
+        return Err("画像のダウンロードサイズが上限を超えました".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if chunk.len() > MAX_DOWNLOAD_BYTES - bytes.len() {
+            return Err("画像のダウンロードサイズが上限を超えました".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if let Some(p) = disk {
-        let b = bytes.to_vec();
+        let b = bytes.clone();
         tokio::task::spawn_blocking(move || {
             let _ = std::fs::create_dir_all(p.parent().unwrap());
             let tmp = p.with_extension("tmp");
             if crate::cache::write_private(&tmp, &b).is_ok() {
                 let _ = std::fs::rename(&tmp, &p);
             }
-        });
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// アイコン（ユーザー・サーバー・グループ DM）はディスクにも控え、次の起動ですぐ出す。
@@ -225,7 +269,10 @@ fn shrink(img: RgbaImage, max: u32) -> RgbaImage {
         return img;
     }
     let k = (max as f64 / (w as f64 * h as f64)).sqrt();
-    let (nw, nh) = (((w as f64 * k) as u32).max(1), ((h as f64 * k) as u32).max(1));
+    let (nw, nh) = (
+        ((w as f64 * k) as u32).max(1),
+        ((h as f64 * k) as u32).max(1),
+    );
     image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
 }
 
@@ -253,20 +300,27 @@ fn is_webp(b: &[u8]) -> bool {
 /// 全フレームをデコードする。メモリの上限を超えそうなら、表示時間を足し合わせながらフレームを間引く
 pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
     let (frames, (w, h)): (image::Frames<'_>, (u32, u32)) = if is_gif(bytes) {
-        let d = GifDecoder::new(Cursor::new(bytes)).map_err(|e| format!("GIF decode failure ({e})"))?;
+        let d =
+            GifDecoder::new(Cursor::new(bytes)).map_err(|e| format!("GIF decode failure ({e})"))?;
         let dims = d.dimensions();
         (d.into_frames(), dims)
     } else if is_webp(bytes) {
-        let mut d = WebPDecoder::new(Cursor::new(bytes)).map_err(|e| format!("WebP decode failure ({e})"))?;
+        let mut d = WebPDecoder::new(Cursor::new(bytes))
+            .map_err(|e| format!("WebP decode failure ({e})"))?;
         let dims = d.dimensions();
         if !d.has_animation() {
-            let img = image::DynamicImage::from_decoder(d).map_err(|e| format!("WebP decode failure ({e})"))?.to_rgba8();
+            let img = image::DynamicImage::from_decoder(d)
+                .map_err(|e| format!("WebP decode failure ({e})"))?
+                .to_rgba8();
             return Ok(vec![bgra_frame(shrink(img, max_pixels), Duration::ZERO)]);
         }
-        d.set_background_color(image::Rgba([0, 0, 0, 0])).map_err(|e| format!("WebP decode failure ({e})"))?;
+        d.set_background_color(image::Rgba([0, 0, 0, 0]))
+            .map_err(|e| format!("WebP decode failure ({e})"))?;
         (d.into_frames(), dims)
     } else {
-        let img = image::load_from_memory(bytes).map_err(|e| format!("decode failure ({e})"))?.to_rgba8();
+        let img = image::load_from_memory(bytes)
+            .map_err(|e| format!("decode failure ({e})"))?
+            .to_rgba8();
         return Ok(vec![bgra_frame(shrink(img, max_pixels), Duration::ZERO)]);
     };
     let frame_bytes = (w.max(1) as usize * h.max(1) as usize).min(max_pixels as usize) * 4;
@@ -297,7 +351,11 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
     if images.is_empty() {
         return Err("no frames".into());
     }
-    Ok(images.into_iter().zip(durations).map(|(img, d)| bgra_frame(img, d)).collect())
+    Ok(images
+        .into_iter()
+        .zip(durations)
+        .map(|(img, d)| bgra_frame(img, d))
+        .collect())
 }
 
 #[cfg(test)]
@@ -309,8 +367,15 @@ mod tests {
         {
             let mut enc = image::codecs::gif::GifEncoder::new(&mut out);
             for i in 0..frames {
-                let img = RgbaImage::from_pixel(w as u32, h as u32, image::Rgba([i as u8, 0, 0, 255]));
-                enc.encode_frame(Frame::from_parts(img, 0, 0, Delay::from_numer_denom_ms(50, 1))).unwrap();
+                let img =
+                    RgbaImage::from_pixel(w as u32, h as u32, image::Rgba([i as u8, 0, 0, 255]));
+                enc.encode_frame(Frame::from_parts(
+                    img,
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(50, 1),
+                ))
+                .unwrap();
             }
         }
         out
@@ -328,24 +393,41 @@ mod tests {
     fn huge_animations_are_thinned_out() {
         // 1フレーム 840x640 の上限ぎりぎり → 64MB に収まるよう間引く
         let frames = decode(&gif(40, 840, 640), MAX_FRAME_PIXELS).unwrap();
-        assert!(frames.len() * 840 * 640 * 4 <= MAX_BYTES, "{}", frames.len());
-        assert!(frames.len() < 40, "frames should be thinned to fit the memory budget");
-        let total: Duration = frames.iter().map(|frame| Duration::from(frame.delay())).sum();
+        assert!(
+            frames.len() * 840 * 640 * 4 <= MAX_BYTES,
+            "{}",
+            frames.len()
+        );
+        assert!(
+            frames.len() < 40,
+            "frames should be thinned to fit the memory budget"
+        );
+        let total: Duration = frames
+            .iter()
+            .map(|frame| Duration::from(frame.delay()))
+            .sum();
         assert_eq!(total, Duration::from_millis(2000));
     }
 
     #[test]
     fn animated_webp_preserves_multiple_frames_and_timing() {
-        let frames = decode(include_bytes!("../tests/fixtures/animated.webp"), MAX_FRAME_PIXELS).unwrap();
+        let frames = decode(
+            include_bytes!("../tests/fixtures/animated.webp"),
+            MAX_FRAME_PIXELS,
+        )
+        .unwrap();
         assert!(frames.len() > 1);
-        assert!(frames.iter().all(|frame| Duration::from(frame.delay()) >= Duration::from_millis(20)));
+        assert!(frames
+            .iter()
+            .all(|frame| Duration::from(frame.delay()) >= Duration::from_millis(20)));
     }
 
     #[test]
     fn static_png_decodes_and_shrinks() {
         let img = RgbaImage::from_pixel(2000, 2000, image::Rgba([1, 2, 3, 255]));
         let mut png = Vec::new();
-        img.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
         let frames = decode(&png, MAX_FRAME_PIXELS).unwrap();
         assert_eq!(frames.len(), 1);
         let (w, h) = frames[0].buffer().dimensions();
@@ -365,10 +447,14 @@ mod request_tests {
         let (release, done) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut request = [0; 1024];
-            socket.read(&mut request).unwrap();
-            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx").unwrap();
+            assert!(socket.read(&mut request).unwrap() > 0);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
+                .unwrap();
             let _ = done.recv_timeout(Duration::from_secs(5));
         });
         let client = image_client(Duration::from_millis(100)).unwrap();
@@ -378,7 +464,37 @@ mod request_tests {
         let _ = release.send(());
         server.join().unwrap();
         assert!(result.is_err(), "stalled body must not remain pending");
-        assert!(elapsed >= Duration::from_millis(60) && elapsed < Duration::from_secs(3), "{elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(60) && elapsed < Duration::from_secs(3),
+            "{elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_stream_without_content_length() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let block = vec![0; 65536];
+            for _ in 0..=MAX_DOWNLOAD_BYTES / block.len() {
+                if socket.write_all(&block).is_err() {
+                    break;
+                }
+            }
+        });
+        let client = image_client(Duration::from_secs(5)).unwrap();
+        let error = load_bytes(&client, &format!("http://{addr}/large"))
+            .await
+            .unwrap_err();
+        assert!(error.contains("上限"), "{error}");
+        server.join().unwrap();
     }
 
     #[test]

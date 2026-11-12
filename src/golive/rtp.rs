@@ -38,8 +38,12 @@ pub enum Cipher {
 impl Cipher {
     pub fn new(mode: &str, key: &[u8]) -> Option<Cipher> {
         match mode {
-            MODE_AES => Aes256Gcm::new_from_slice(key).ok().map(|c| Cipher::Aes(Box::new(c))),
-            MODE_XCHACHA => XChaCha20Poly1305::new_from_slice(key).ok().map(Cipher::XChaCha),
+            MODE_AES => Aes256Gcm::new_from_slice(key)
+                .ok()
+                .map(|c| Cipher::Aes(Box::new(c))),
+            MODE_XCHACHA => XChaCha20Poly1305::new_from_slice(key)
+                .ok()
+                .map(Cipher::XChaCha),
             _ => None,
         }
     }
@@ -53,12 +57,16 @@ impl Cipher {
             Cipher::Aes(c) => {
                 let mut n = aes_gcm::Nonce::default();
                 n[..4].copy_from_slice(&counter.to_be_bytes());
-                c.encrypt_in_place_detached(&n, head, &mut buf).ok()?.to_vec()
+                c.encrypt_in_place_detached(&n, head, &mut buf)
+                    .ok()?
+                    .to_vec()
             }
             Cipher::XChaCha(c) => {
                 let mut n = chacha20poly1305::XNonce::default();
                 n[..4].copy_from_slice(&counter.to_be_bytes());
-                c.encrypt_in_place_detached(&n, head, &mut buf).ok()?.to_vec()
+                c.encrypt_in_place_detached(&n, head, &mut buf)
+                    .ok()?
+                    .to_vec()
             }
         };
         out.extend_from_slice(&buf);
@@ -80,12 +88,14 @@ impl Cipher {
             Cipher::Aes(c) => {
                 let mut n = aes_gcm::Nonce::default();
                 n[..4].copy_from_slice(nonce);
-                c.decrypt_in_place_detached(&n, head, &mut buf, tag.into()).ok()?;
+                c.decrypt_in_place_detached(&n, head, &mut buf, tag.into())
+                    .ok()?;
             }
             Cipher::XChaCha(c) => {
                 let mut n = chacha20poly1305::XNonce::default();
                 n[..4].copy_from_slice(nonce);
-                c.decrypt_in_place_detached(&n, head, &mut buf, tag.into()).ok()?;
+                c.decrypt_in_place_detached(&n, head, &mut buf, tag.into())
+                    .ok()?;
             }
         }
         Some(buf)
@@ -103,7 +113,11 @@ pub struct Packetizer {
 
 impl Packetizer {
     pub fn new(ssrc: u32) -> Self {
-        Packetizer { ssrc, seq: rand::random(), counter: rand::random() }
+        Packetizer {
+            ssrc,
+            seq: rand::random(),
+            counter: rand::random(),
+        }
     }
 
     fn header(&mut self, marker: bool, timestamp: u32) -> [u8; 16] {
@@ -150,7 +164,9 @@ impl Packetizer {
                     let mut body = Vec::with_capacity(6 + chunk.len());
                     body.extend_from_slice(&EXT);
                     body.push((nal0 & 0xE0) | 28);
-                    body.push(if first { 0x80 } else { 0 } | if end { 0x40 } else { 0 } | (nal0 & 0x1F));
+                    body.push(
+                        if first { 0x80 } else { 0 } | if end { 0x40 } else { 0 } | (nal0 & 0x1F),
+                    );
                     body.extend_from_slice(chunk);
                     if let Some(p) = self.seal(cipher, &head, &body) {
                         out.push(p);
@@ -205,7 +221,11 @@ pub fn split_annexb(data: &[u8]) -> Vec<&[u8]> {
     }
     let mut out = Vec::with_capacity(starts.len());
     for (k, &s) in starts.iter().enumerate() {
-        let mut e = if k + 1 < starts.len() { starts[k + 1] - 3 } else { data.len() };
+        let mut e = if k + 1 < starts.len() {
+            starts[k + 1] - 3
+        } else {
+            data.len()
+        };
         // 4 バイトの開始コード (00 00 00 01) の先頭の 0 は前の NAL に含めない
         if k + 1 < starts.len() && e > s && data[e - 1] == 0 {
             e -= 1;
@@ -266,7 +286,9 @@ impl Rtp<'_> {
     pub fn decrypt(&self, cipher: &Cipher) -> Option<Vec<u8>> {
         let mut plain = cipher.open(self.raw, self.head_len)?;
         if self.has_ext {
-            let words = u16::from_be_bytes([self.raw[self.head_len - 2], self.raw[self.head_len - 1]]) as usize;
+            let words =
+                u16::from_be_bytes([self.raw[self.head_len - 2], self.raw[self.head_len - 1]])
+                    as usize;
             if plain.len() < words * 4 {
                 return None;
             }
@@ -296,7 +318,9 @@ pub fn rtcp_wants_keyframe(cipher: &Cipher, packet: &[u8]) -> bool {
         return true;
     }
     // 先頭が SR/RR などの複合パケットなら中身を開いて探す
-    let Some(plain) = cipher.open(packet, 8) else { return false };
+    let Some(plain) = cipher.open(packet, 8) else {
+        return false;
+    };
     let first_len = (u16::from_be_bytes([packet[2], packet[3]]) as usize + 1) * 4;
     let mut rest = &plain[first_len.saturating_sub(8).min(plain.len())..];
     while rest.len() >= 4 {
@@ -406,7 +430,9 @@ impl Depacketizer {
             if broken || data.is_empty() {
                 return Push::Lost;
             }
-            let keyframe = split_annexb(&data).iter().any(|n| matches!(n.first().map(|b| b & 0x1F), Some(5) | Some(7)));
+            let keyframe = split_annexb(&data)
+                .iter()
+                .any(|n| matches!(n.first().map(|b| b & 0x1F), Some(5) | Some(7)));
             return Push::Frame(AccessUnit { data, keyframe });
         }
         if lost {
@@ -426,7 +452,9 @@ mod tests {
     }
 
     fn frame() -> Vec<u8> {
-        let mut f = vec![0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 1, 0x68, 4, 5, 0, 0, 0, 1, 0x65];
+        let mut f = vec![
+            0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 1, 0x68, 4, 5, 0, 0, 0, 1, 0x65,
+        ];
         f.extend((0..5000u32).map(|i| (i % 251) as u8 | 1));
         f
     }

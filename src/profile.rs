@@ -10,7 +10,11 @@ static NAME: OnceLock<Option<String>> = OnceLock::new();
 static LOCK: OnceLock<File> = OnceLock::new();
 
 pub fn valid(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 32 && name.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'_')
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'_')
 }
 
 fn from_args() -> Option<String> {
@@ -23,7 +27,9 @@ fn from_args() -> Option<String> {
             name = Some(v.to_string());
         }
     }
-    let name = name.or_else(|| std::env::var("RISCORD_PROFILE").ok()).filter(|n| !n.is_empty())?;
+    let name = name
+        .or_else(|| std::env::var("RISCORD_PROFILE").ok())
+        .filter(|n| !n.is_empty())?;
     if valid(&name) {
         Some(name)
     } else {
@@ -92,12 +98,19 @@ pub fn list() -> Vec<String> {
 
 /// 新しいプロファイルに使う、空いている番号（2, 3, …）
 pub fn next_name(existing: &[String]) -> String {
-    (2..).map(|i: u32| i.to_string()).find(|n| !existing.contains(n)).unwrap()
+    (2..)
+        .map(|i: u32| i.to_string())
+        .find(|n| !existing.contains(n))
+        .unwrap()
 }
 
 fn open_lock(dir: &Path) -> std::io::Result<File> {
     std::fs::create_dir_all(dir)?;
-    std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("lock"))
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("lock"))
 }
 
 /// lock を取る。もう他のウィンドウが持っていれば false
@@ -218,10 +231,15 @@ pub fn create(name: &str) -> std::io::Result<()> {
 /// 開いていないプロファイルを、記録・トークンごと消す
 pub fn remove(name: &str) -> std::io::Result<()> {
     if !valid(name) || is_running(Some(name)) {
-        return Err(std::io::Error::other("開いているプロファイルは削除できません"));
+        return Err(std::io::Error::other(
+            "開いているプロファイルは削除できません",
+        ));
     }
     std::fs::remove_dir_all(dir_for(&shared_dir(), Some(name)))?;
-    let cache = crate::app::cache_root().join("riscord").join("profiles").join(name);
+    let cache = crate::app::cache_root()
+        .join("riscord")
+        .join("profiles")
+        .join(name);
     let _ = std::fs::remove_dir_all(cache);
     Ok(())
 }
@@ -258,7 +276,10 @@ mod tests {
     fn default_profile_keeps_old_folder() {
         let shared = Path::new("/c/riscord");
         assert_eq!(dir_for(shared, None), shared);
-        assert_eq!(dir_for(shared, Some("2")), Path::new("/c/riscord/profiles/2"));
+        assert_eq!(
+            dir_for(shared, Some("2")),
+            Path::new("/c/riscord/profiles/2")
+        );
     }
 
     #[test]

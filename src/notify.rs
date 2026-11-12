@@ -8,7 +8,13 @@ use crate::wake::Waker;
 pub type Clicked = Arc<Mutex<Option<(Option<String>, String)>>>;
 
 /// 通知を出す（通知サーバーとのやり取りで待たないよう別スレッドで）
-pub fn show(title: String, body: String, target: (Option<String>, String), clicked: Clicked, waker: Waker) {
+pub fn show(
+    title: String,
+    body: String,
+    target: (Option<String>, String),
+    clicked: Clicked,
+    waker: Waker,
+) {
     if cfg!(test) {
         return;
     }
@@ -17,7 +23,10 @@ pub fn show(title: String, body: String, target: (Option<String>, String), click
         n.appname("Riscord").summary(&title).body(&body);
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            n.icon("riscord").hint(notify_rust::Hint::Category("im.received".into())).hint(notify_rust::Hint::DesktopEntry("riscord".into())).action("default", "開く");
+            n.icon("riscord")
+                .hint(notify_rust::Hint::Category("im.received".into()))
+                .hint(notify_rust::Hint::DesktopEntry("riscord".into()))
+                .action("default", "開く");
         }
         let handle = match n.show() {
             Ok(h) => h,

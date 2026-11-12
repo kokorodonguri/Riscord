@@ -3,7 +3,9 @@
 use std::io::Cursor;
 
 use anyhow::{bail, Result};
-use image::{codecs::gif::GifDecoder, codecs::png::PngDecoder, AnimationDecoder, DynamicImage, RgbaImage};
+use image::{
+    codecs::gif::GifDecoder, codecs::png::PngDecoder, AnimationDecoder, DynamicImage, RgbaImage,
+};
 use velato::{model::fixed, Composition, RenderSink, Renderer};
 use vello_cpu::kurbo::{Affine, BezPath, Shape};
 use vello_cpu::peniko::{BlendMode, Brush};
@@ -54,13 +56,19 @@ fn shrink(img: RgbaImage) -> RgbaImage {
         return img;
     }
     let s = MAX_PX as f32 / w.max(h) as f32;
-    let (nw, nh) = (((w as f32 * s) as u32).max(1), ((h as f32 * s) as u32).max(1));
+    let (nw, nh) = (
+        ((w as f32 * s) as u32).max(1),
+        ((h as f32 * s) as u32).max(1),
+    );
     image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
 }
 
 fn single(img: RgbaImage) -> Frames {
     let size = [img.width() as usize, img.height() as usize];
-    Frames { size, frames: vec![(img.into_raw(), 0)] }
+    Frames {
+        size,
+        frames: vec![(img.into_raw(), 0)],
+    }
 }
 
 fn from_anim(frames: image::Frames<'_>) -> Result<Frames> {
@@ -87,10 +95,17 @@ struct Sink<'a> {
 }
 
 impl RenderSink for Sink<'_> {
-    fn push_layer(&mut self, blend: impl Into<BlendMode>, alpha: f32, transform: Affine, shape: &impl Shape) {
+    fn push_layer(
+        &mut self,
+        blend: impl Into<BlendMode>,
+        alpha: f32,
+        transform: Affine,
+        shape: &impl Shape,
+    ) {
         self.ctx.set_transform(Affine::IDENTITY);
         let p: BezPath = transform * shape.to_path(0.1);
-        self.ctx.push_layer(Some(&p), Some(blend.into()), Some(alpha), None, None);
+        self.ctx
+            .push_layer(Some(&p), Some(blend.into()), Some(alpha), None, None);
     }
 
     fn push_clip_layer(&mut self, transform: Affine, shape: &impl Shape) {
@@ -103,7 +118,13 @@ impl RenderSink for Sink<'_> {
         self.ctx.pop_layer();
     }
 
-    fn draw(&mut self, stroke: Option<&fixed::Stroke>, transform: Affine, brush: &fixed::Brush, shape: &impl Shape) {
+    fn draw(
+        &mut self,
+        stroke: Option<&fixed::Stroke>,
+        transform: Affine,
+        brush: &fixed::Brush,
+        shape: &impl Shape,
+    ) {
         match brush {
             Brush::Solid(c) => self.ctx.set_paint(*c),
             Brush::Gradient(g) => self.ctx.set_paint(g.clone()),
@@ -129,7 +150,11 @@ fn decode_lottie(bytes: &[u8]) -> Result<Frames> {
     let scale = MAX_PX as f64 / cw.max(ch);
     let (w, h) = ((cw * scale).round() as u16, (ch * scale).round() as u16);
 
-    let fps = if comp.frame_rate > 0.0 { comp.frame_rate } else { 60.0 };
+    let fps = if comp.frame_rate > 0.0 {
+        comp.frame_rate
+    } else {
+        60.0
+    };
     let step = (fps / LOTTIE_FPS).max(1.0);
     let ms = (1000.0 * step / fps).round() as u32;
 
@@ -140,7 +165,13 @@ fn decode_lottie(bytes: &[u8]) -> Result<Frames> {
     let mut f = comp.frames.start;
     while f < comp.frames.end && frames.len() < MAX_FRAMES {
         ctx.reset();
-        renderer.append(&comp, f, Affine::scale(scale), 1.0, &mut Sink { ctx: &mut ctx });
+        renderer.append(
+            &comp,
+            f,
+            Affine::scale(scale),
+            1.0,
+            &mut Sink { ctx: &mut ctx },
+        );
         ctx.flush();
         let mut pm = Pixmap::new(w, h);
         ctx.render(&mut pm, &mut res);
@@ -150,7 +181,10 @@ fn decode_lottie(bytes: &[u8]) -> Result<Frames> {
     if frames.is_empty() {
         bail!("コマがありません");
     }
-    Ok(Frames { size: [w as usize, h as usize], frames })
+    Ok(Frames {
+        size: [w as usize, h as usize],
+        frames,
+    })
 }
 
 #[cfg(test)]
@@ -163,7 +197,8 @@ mod tests {
         let blue = image::Rgba([0, 0, 255, 255]);
         let mut png = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 3, red))
-            .write_to(&mut png, image::ImageFormat::Png).unwrap();
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
         let decoded = decode(1, png.get_ref()).unwrap();
         assert_eq!(decoded.size, [4, 3]);
         assert_eq!(decoded.frames.len(), 1);
@@ -174,16 +209,27 @@ mod tests {
         {
             let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
             for (color, ms) in [(red, 40), (blue, 60)] {
-                encoder.encode_frame(image::Frame::from_parts(
-                    RgbaImage::from_pixel(4, 3, color), 0, 0, image::Delay::from_numer_denom_ms(ms, 1),
-                )).unwrap();
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        RgbaImage::from_pixel(4, 3, color),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(ms, 1),
+                    ))
+                    .unwrap();
             }
         }
         let decoded = decode(GIF, &gif).unwrap();
         assert_eq!(decoded.size, [4, 3]);
         assert_eq!(decoded.frames.len(), 2);
-        assert_eq!((&decoded.frames[0].0[..4], decoded.frames[0].1), (&red.0[..], 40));
-        assert_eq!((&decoded.frames[1].0[..4], decoded.frames[1].1), (&blue.0[..], 60));
+        assert_eq!(
+            (&decoded.frames[0].0[..4], decoded.frames[0].1),
+            (&red.0[..], 40)
+        );
+        assert_eq!(
+            (&decoded.frames[1].0[..4], decoded.frames[1].1),
+            (&blue.0[..], 60)
+        );
         assert!(decode(GIF, b"not a gif").is_err());
         assert!(decode(1, b"not a png").is_err());
     }
@@ -194,7 +240,10 @@ mod tests {
         let decoded = decode(LOTTIE, data).unwrap();
         assert_eq!(decoded.size, [200, 200]);
         assert_eq!(decoded.frames.len(), 3);
-        assert!(decoded.frames.iter().all(|(rgba, ms)| rgba.len() == 200 * 200 * 4 && *ms == 33));
+        assert!(decoded
+            .frames
+            .iter()
+            .all(|(rgba, ms)| rgba.len() == 200 * 200 * 4 && *ms == 33));
         assert!(decode(LOTTIE, b"not json").is_err());
     }
 
@@ -220,12 +269,19 @@ mod tests {
     /// STICKER_DIR に apng.png と lottie.json を置いて実行する
     #[test]
     fn decode_samples() {
-        let Ok(dir) = std::env::var("STICKER_DIR") else { return };
+        let Ok(dir) = std::env::var("STICKER_DIR") else {
+            return;
+        };
         let dir = std::path::PathBuf::from(dir);
         let a = decode(2, &std::fs::read(dir.join("apng.png")).unwrap()).unwrap();
         println!("apng: {:?} {} frames", a.size, a.frames.len());
         let l = decode(LOTTIE, &std::fs::read(dir.join("lottie.json")).unwrap()).unwrap();
-        println!("lottie: {:?} {} frames {}ms", l.size, l.frames.len(), l.frames[0].1);
+        println!(
+            "lottie: {:?} {} frames {}ms",
+            l.size,
+            l.frames.len(),
+            l.frames[0].1
+        );
         assert!(a.frames.len() > 1 && l.frames.len() > 1);
     }
 }

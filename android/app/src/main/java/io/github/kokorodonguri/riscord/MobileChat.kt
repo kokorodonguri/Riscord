@@ -143,6 +143,25 @@ import java.time.Duration
                 Text(richMessage(content),fontSize=15.sp,lineHeight=22.sp)
                 if(message.nonNull("edited_timestamp")!=null) Text("編集済み",fontSize=10.sp,color=MobileMuted)
             }
+            message.optJSONObject("poll")?.let { poll ->
+                Surface(shape=RoundedCornerShape(12.dp),color=MobileRaised,modifier=Modifier.fillMaxWidth().padding(top=6.dp)) {
+                    Column(Modifier.padding(12.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                        Text(poll.optJSONObject("question")?.optString("text").orEmpty(),fontWeight=FontWeight.SemiBold)
+                        val counts=poll.optJSONObject("results")?.optJSONArray("answer_counts")?.objects().orEmpty()
+                        poll.optJSONArray("answers")?.objects().orEmpty().forEach { answer ->
+                            val media=answer.optJSONObject("poll_media")
+                            val count=counts.firstOrNull {it.optInt("id")==answer.optInt("answer_id")}
+                            val emoji=media?.optJSONObject("emoji")?.optString("name").orEmpty()
+                            val label=media?.optString("text").orEmpty()
+                            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                                Text("$emoji $label",modifier=Modifier.weight(1f),fontSize=13.sp)
+                                if(count!=null) Text("${count.optInt("count")} 票${if(count.optBoolean("me_voted")) " · 回答済み" else ""}",fontSize=12.sp,color=MobileMuted)
+                            }
+                        }
+                        Text("投票への回答はまだできません",fontSize=11.sp,color=MobileMuted)
+                    }
+                }
+            }
             val reactions=message.optJSONArray("reactions")?.objects().orEmpty()
             if(reactions.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(top=5.dp),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                 reactions.forEach {reaction->Surface(onClick={onReaction(reaction)},shape=RoundedCornerShape(8.dp),color=if(reaction.optBoolean("me")) MobileAccent.copy(alpha=.2f) else MobileRaised) {

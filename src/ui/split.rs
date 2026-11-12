@@ -29,9 +29,22 @@ impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let left_profile = profile::name().map(str::to_string);
         let vertical = Rc::new(Cell::new(false));
-        let left = cx.new(|cx| Root::new(window, cx, left_profile.clone(), true, None, vertical.clone()));
+        let left = cx.new(|cx| {
+            Root::new(
+                window,
+                cx,
+                left_profile.clone(),
+                true,
+                None,
+                vertical.clone(),
+            )
+        });
         let sub = cx.subscribe_in(&left, window, Self::on_pane_event);
-        let mut shell = Shell { panes: vec![left], _subs: vec![sub], vertical };
+        let mut shell = Shell {
+            panes: vec![left],
+            _subs: vec![sub],
+            vertical,
+        };
         // 前回右に開いていたアカウントを開き直す
         // デモで RISCORD_DEMO_SPLIT を付けたら、最初から分割しておく（画面確認用）
         let demo_split = crate::demo::enabled() && std::env::var_os("RISCORD_DEMO_SPLIT").is_some();
@@ -62,23 +75,43 @@ impl Shell {
         self.panes[0].read(cx).app.profile.clone()
     }
 
-    fn on_pane_event(&mut self, _: &Entity<Root>, ev: &PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_pane_event(
+        &mut self,
+        _: &Entity<Root>,
+        ev: &PaneEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match ev {
             PaneEvent::OpenSplit(p) => self.open(p.clone(), true, window, cx),
         }
     }
 
     /// そのプロファイルを右に開く。もう右に別のアカウントがあれば閉じてから開く
-    fn open(&mut self, right: Option<String>, explicit: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn open(
+        &mut self,
+        right: Option<String>,
+        explicit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let left = self.left_profile(cx);
-        if right == left || self.panes.get(1).is_some_and(|p| p.read(cx).app.profile == right) {
+        if right == left
+            || self
+                .panes
+                .get(1)
+                .is_some_and(|p| p.read(cx).app.profile == right)
+        {
             return;
         }
         self.close_right(false, cx);
         let Some(lock) = profile::lock(right.as_deref()) else {
             if explicit {
                 self.panes[0].update(cx, |r, cx| {
-                    r.app.show_toast(&format!("{} はもう別のウィンドウで開いています", profile::label(right.as_deref())));
+                    r.app.show_toast(&format!(
+                        "{} はもう別のウィンドウで開いています",
+                        profile::label(right.as_deref())
+                    ));
                     cx.notify();
                 });
             } else {
@@ -87,8 +120,18 @@ impl Shell {
             }
             return;
         };
-        let pane = cx.new(|cx| Root::new(window, cx, right.clone(), false, Some(lock), self.vertical.clone()));
-        self._subs.push(cx.subscribe_in(&pane, window, Self::on_pane_event));
+        let pane = cx.new(|cx| {
+            Root::new(
+                window,
+                cx,
+                right.clone(),
+                false,
+                Some(lock),
+                self.vertical.clone(),
+            )
+        });
+        self._subs
+            .push(cx.subscribe_in(&pane, window, Self::on_pane_event));
         self.panes.push(pane);
         self.sync_others(cx);
         profile::split_save(left.as_deref(), Some(right.as_deref()));
@@ -122,7 +165,11 @@ impl Shell {
 
     /// 区画それぞれに、分割しているか・もう片方は誰かを教える
     fn sync_others(&mut self, cx: &mut Context<Self>) {
-        let profiles: Vec<Option<String>> = self.panes.iter().map(|p| p.read(cx).app.profile.clone()).collect();
+        let profiles: Vec<Option<String>> = self
+            .panes
+            .iter()
+            .map(|p| p.read(cx).app.profile.clone())
+            .collect();
         for (i, p) in self.panes.iter().enumerate() {
             let other = (profiles.len() > 1).then(|| profiles[1 - i].clone());
             p.update(cx, |r, cx| {
@@ -166,7 +213,15 @@ impl Shell {
             .text_size(z(12.0))
             .text_color(if active { TEXT() } else { MUTED() })
             .on_click(cx.listener(move |_, _, window, cx| window.focus(&focus, cx)))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label),
+            )
             .when(i == 1, |d| {
                 d.child(
                     div()
@@ -194,19 +249,52 @@ impl Render for Shell {
         let split = self.panes.len() > 1;
         let n = self.panes.len() as f32;
         let vp = window.viewport_size();
-        let vertical = split && vertical_split(f32::from(vp.width), self.panes[0].read(cx).app.settings.zoom);
+        let vertical = split
+            && vertical_split(
+                f32::from(vp.width),
+                self.panes[0].read(cx).app.settings.zoom,
+            );
         self.vertical.set(vertical);
         // 区画の幅は半分ずつに決め打ちする（中身の最小幅で片方が押し出されないように）
         let pane_w = (vp.width - px(DIVIDER) * (n - 1.0)) / n;
         let pane_h = (vp.height - px(DIVIDER) * (n - 1.0)) / n;
-        let mut row = div().id("shell").size_full().flex().when(vertical, |d| d.flex_col()).when(!vertical, |d| d.flex_row()).overflow_hidden().bg(opaque(BG()));
+        let mut row = div()
+            .id("shell")
+            .size_full()
+            .flex()
+            .when(vertical, |d| d.flex_col())
+            .when(!vertical, |d| d.flex_row())
+            .overflow_hidden()
+            .bg(opaque(BG()));
         for i in 0..self.panes.len() {
             if i > 0 {
-                row = row.child(div().flex_none().when(vertical, |d| d.h(px(DIVIDER)).w_full()).when(!vertical, |d| d.w(px(DIVIDER)).h_full()).bg(BORDER()));
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .when(vertical, |d| d.h(px(DIVIDER)).w_full())
+                        .when(!vertical, |d| d.w(px(DIVIDER)).h_full())
+                        .bg(BORDER()),
+                );
             }
-            let body = div().flex_1().min_h_0().w_full().relative().overflow_hidden().child(self.panes[i].clone());
-            let col = div().flex_none().when(vertical, |d| d.w_full().h(pane_h)).when(!vertical, |d| d.w(pane_w).h_full()).flex().flex_col().overflow_hidden();
-            let col = if split { col.child(self.header(i, window, cx)) } else { col };
+            let body = div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .relative()
+                .overflow_hidden()
+                .child(self.panes[i].clone());
+            let col = div()
+                .flex_none()
+                .when(vertical, |d| d.w_full().h(pane_h))
+                .when(!vertical, |d| d.w(pane_w).h_full())
+                .flex()
+                .flex_col()
+                .overflow_hidden();
+            let col = if split {
+                col.child(self.header(i, window, cx))
+            } else {
+                col
+            };
             row = row.child(col.child(body));
         }
         row

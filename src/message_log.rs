@@ -80,9 +80,22 @@ impl MessageLog {
             return;
         }
         self.loaded = true;
-        let Some(stored) = std::fs::read(&self.path).ok().and_then(|b| serde_json::from_slice::<Stored>(&b).ok()) else { return };
-        self.deleted = stored.deleted.into_iter().map(|d| (d.message.id.clone(), d)).collect();
-        self.edited = stored.edited.into_iter().map(|e| (e.message.id.clone(), e)).collect();
+        let Some(stored) = std::fs::read(&self.path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Stored>(&b).ok())
+        else {
+            return;
+        };
+        self.deleted = stored
+            .deleted
+            .into_iter()
+            .map(|d| (d.message.id.clone(), d))
+            .collect();
+        self.edited = stored
+            .edited
+            .into_iter()
+            .map(|e| (e.message.id.clone(), e))
+            .collect();
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -109,7 +122,9 @@ impl MessageLog {
     }
 
     pub fn wanted(m: &Message, me: Option<&str>, opt: Options) -> bool {
-        !(opt.ignore_self && me == Some(m.author.id.as_str())) && !(opt.ignore_bots && m.author.bot) && !m.is_call()
+        !(opt.ignore_self && me == Some(m.author.id.as_str()))
+            && !(opt.ignore_bots && m.author.bot)
+            && !m.is_call()
     }
 
     /// 削除を記録する
@@ -117,7 +132,8 @@ impl MessageLog {
         self.ensure_loaded();
         let mut message = m.clone();
         message.log = None;
-        self.deleted.insert(m.id.clone(), Deleted { message, at: now() });
+        self.deleted
+            .insert(m.id.clone(), Deleted { message, at: now() });
         self.cache.remove(&m.id);
         trim(&mut self.deleted, |d| d.at.clone());
         self.changed();
@@ -129,9 +145,15 @@ impl MessageLog {
         let entry = self.edited.entry(old.id.clone()).or_insert_with(|| {
             let mut message = old.clone();
             message.log = None;
-            Edited { message, history: Vec::new() }
+            Edited {
+                message,
+                history: Vec::new(),
+            }
         });
-        entry.history.push(PastEdit { content: old.content.clone(), at: now() });
+        entry.history.push(PastEdit {
+            content: old.content.clone(),
+            at: now(),
+        });
         if entry.history.len() > EDITS_MAX {
             entry.history.remove(0);
         }
@@ -139,14 +161,20 @@ impl MessageLog {
         if let Some(c) = self.cache.get_mut(&old.id) {
             c.content = new_content.to_string();
         }
-        trim(&mut self.edited, |e| e.history.last().map(|h| h.at.clone()).unwrap_or_default());
+        trim(&mut self.edited, |e| {
+            e.history.last().map(|h| h.at.clone()).unwrap_or_default()
+        });
         self.changed();
     }
 
     /// このメッセージに付ける印（記録が無ければ None）
     pub fn mark_for(&self, id: &str) -> Option<Box<LogMark>> {
         let deleted_at = self.deleted.get(id).map(|d| d.at.clone());
-        let edits = self.edited.get(id).map(|e| e.history.clone()).unwrap_or_default();
+        let edits = self
+            .edited
+            .get(id)
+            .map(|e| e.history.clone())
+            .unwrap_or_default();
         (deleted_at.is_some() || !edits.is_empty()).then(|| Box::new(LogMark { deleted_at, edits }))
     }
 
@@ -163,7 +191,12 @@ impl MessageLog {
             .deleted
             .values()
             .filter(|d| d.message.channel_id == channel && !have.contains(d.message.id.as_str()))
-            .filter(|d| from_start || first.as_deref().is_some_and(|f| snowflake_cmp(&d.message.id, f).is_ge()))
+            .filter(|d| {
+                from_start
+                    || first
+                        .as_deref()
+                        .is_some_and(|f| snowflake_cmp(&d.message.id, f).is_ge())
+            })
             .map(|d| {
                 let mut m = d.message.clone();
                 m.log = self.mark_for(&m.id);
@@ -204,8 +237,13 @@ impl MessageLog {
         if self.dirty_since.take().is_none() {
             return;
         }
-        let stored = Stored { deleted: self.deleted.values().cloned().collect(), edited: self.edited.values().cloned().collect() };
-        let Ok(bytes) = serde_json::to_vec(&stored) else { return };
+        let stored = Stored {
+            deleted: self.deleted.values().cloned().collect(),
+            edited: self.edited.values().cloned().collect(),
+        };
+        let Ok(bytes) = serde_json::to_vec(&stored) else {
+            return;
+        };
         if self.path.as_os_str().is_empty() {
             return;
         }

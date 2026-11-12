@@ -61,7 +61,10 @@ impl SearchView {
             return if self.total == 0 {
                 "一致するメッセージはありません".to_string()
             } else {
-                format!("このページに表示できる結果はありません（全 {} 件）", self.total)
+                format!(
+                    "このページに表示できる結果はありません（全 {} 件）",
+                    self.total
+                )
             };
         }
         let from = u64::from(self.offset) + 1;
@@ -90,7 +93,10 @@ pub fn snowflake_at(t: chrono::DateTime<chrono::Utc>) -> u64 {
 fn parse_day(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     let s = s.replace('/', "-");
     let d = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()?;
-    let local = d.and_hms_opt(0, 0, 0)?.and_local_timezone(Local).earliest()?;
+    let local = d
+        .and_hms_opt(0, 0, 0)?
+        .and_local_timezone(Local)
+        .earliest()?;
     Some(local.with_timezone(&chrono::Utc))
 }
 
@@ -110,25 +116,47 @@ fn has_kind(s: &str) -> Option<&'static str> {
 }
 
 /// 検索語を Discord の条件にする。名前が見つからない・日付が読めないなどは理由を返す
-pub fn parse_search(q: &str, in_guild: bool, names: &dyn SearchNames) -> Result<Vec<(String, String)>, String> {
+pub fn parse_search(
+    q: &str,
+    in_guild: bool,
+    names: &dyn SearchNames,
+) -> Result<Vec<(String, String)>, String> {
     let mut params = Vec::new();
     let mut words = Vec::new();
-    let day = |v: &str| parse_day(v).ok_or_else(|| format!("日付「{v}」を読めません（2026-01-31 の形で書いてください）"));
+    let day = |v: &str| {
+        parse_day(v)
+            .ok_or_else(|| format!("日付「{v}」を読めません（2026-01-31 の形で書いてください）"))
+    };
     for tok in q.split_whitespace() {
-        let Some((key, v)) = tok.split_once(':').filter(|(k, v)| !v.is_empty() && !k.is_empty()) else {
+        let Some((key, v)) = tok
+            .split_once(':')
+            .filter(|(k, v)| !v.is_empty() && !k.is_empty())
+        else {
             words.push(tok);
             continue;
         };
         match key.to_lowercase().as_str() {
             "from" | "mentions" => {
-                let id = names.user_id(v).ok_or_else(|| format!("ユーザー「{v}」が見つかりません"))?;
-                params.push((if key.eq_ignore_ascii_case("from") { "author_id" } else { "mentions" }.to_string(), id));
+                let id = names
+                    .user_id(v)
+                    .ok_or_else(|| format!("ユーザー「{v}」が見つかりません"))?;
+                params.push((
+                    if key.eq_ignore_ascii_case("from") {
+                        "author_id"
+                    } else {
+                        "mentions"
+                    }
+                    .to_string(),
+                    id,
+                ));
             }
             "in" => {
                 if !in_guild {
                     return Err("DM では in: は使えません".into());
                 }
-                let id = names.channel_id(v).ok_or_else(|| format!("チャンネル「{v}」が見つかりません"))?;
+                let id = names
+                    .channel_id(v)
+                    .ok_or_else(|| format!("チャンネル「{v}」が見つかりません"))?;
                 params.push(("channel_id".into(), id));
             }
             "has" => {
@@ -136,13 +164,22 @@ pub fn parse_search(q: &str, in_guild: bool, names: &dyn SearchNames) -> Result<
                 params.push(("has".into(), k.into()));
             }
             "before" => params.push(("max_id".into(), snowflake_at(day(v)?).to_string())),
-            "after" => params.push(("min_id".into(), snowflake_at(day(v)? + chrono::Duration::days(1)).to_string())),
+            "after" => params.push((
+                "min_id".into(),
+                snowflake_at(day(v)? + chrono::Duration::days(1)).to_string(),
+            )),
             "during" => {
                 let d = day(v)?;
                 params.push(("min_id".into(), snowflake_at(d).to_string()));
-                params.push(("max_id".into(), snowflake_at(d + chrono::Duration::days(1)).to_string()));
+                params.push((
+                    "max_id".into(),
+                    snowflake_at(d + chrono::Duration::days(1)).to_string(),
+                ));
             }
-            "pinned" => params.push(("pinned".into(), matches!(v.to_lowercase().as_str(), "true" | "yes" | "はい").to_string())),
+            "pinned" => params.push((
+                "pinned".into(),
+                matches!(v.to_lowercase().as_str(), "true" | "yes" | "はい").to_string(),
+            )),
             // 知らない「xx:」は本文として探す（URL など）
             _ => words.push(tok),
         }
@@ -163,7 +200,10 @@ fn parse_results(v: &serde_json::Value) -> Result<(Vec<Message>, u32, bool), Opt
         return Err(Some(v["retry_after"].as_f64().unwrap_or(2.0)));
     }
     let groups = v["messages"].as_array().ok_or(None)?;
-    let total = v["total_results"].as_u64().unwrap_or(groups.len() as u64).min(u32::MAX as u64) as u32;
+    let total = v["total_results"]
+        .as_u64()
+        .unwrap_or(groups.len() as u64)
+        .min(u32::MAX as u64) as u32;
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
         // 1件ずつの配列（昔は前後の文脈も入っていて、当たりに hit: true が付いていた）
@@ -191,13 +231,20 @@ pub(super) struct SearchNamesFor<'a> {
 impl SearchNames for SearchNamesFor<'_> {
     fn user_id(&self, name: &str) -> Option<String> {
         let name = name.trim_start_matches('@');
-        if let Some(id) = name.strip_prefix("<@").and_then(|s| s.strip_suffix('>')).map(|s| s.trim_start_matches('!')) {
+        if let Some(id) = name
+            .strip_prefix("<@")
+            .and_then(|s| s.strip_suffix('>'))
+            .map(|s| s.trim_start_matches('!'))
+        {
             return Some(id.to_string());
         }
         if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
             return Some(name.to_string());
         }
-        let hit = |u: &User| u.username.eq_ignore_ascii_case(name) || u.global_name.as_deref().is_some_and(|g| g == name);
+        let hit = |u: &User| {
+            u.username.eq_ignore_ascii_case(name)
+                || u.global_name.as_deref().is_some_and(|g| g == name)
+        };
         if let Some(me) = self.app.me.as_ref().filter(|u| hit(u)) {
             return Some(me.id.clone());
         }
@@ -210,7 +257,12 @@ impl SearchNames for SearchNamesFor<'_> {
                 }
             }
         }
-        self.app.dms.iter().flat_map(|c| c.recipients.iter()).find(|u| hit(u)).map(|u| u.id.clone())
+        self.app
+            .dms
+            .iter()
+            .flat_map(|c| c.recipients.iter())
+            .find(|u| hit(u))
+            .map(|u| u.id.clone())
     }
 
     fn channel_id(&self, name: &str) -> Option<String> {
@@ -219,7 +271,19 @@ impl SearchNames for SearchNamesFor<'_> {
         if let Some(id) = name.strip_prefix("<#").and_then(|s| s.strip_suffix('>')) {
             return Some(id.to_string());
         }
-        self.app.channels.get(g).into_iter().flatten().chain(self.app.threads.get(g).into_iter().flatten()).find(|c| c.kind != Channel::CATEGORY && c.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))).map(|c| c.id.clone())
+        self.app
+            .channels
+            .get(g)
+            .into_iter()
+            .flatten()
+            .chain(self.app.threads.get(g).into_iter().flatten())
+            .find(|c| {
+                c.kind != Channel::CATEGORY
+                    && c.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+            .map(|c| c.id.clone())
     }
 }
 
@@ -249,7 +313,11 @@ impl App {
     pub fn search_typed(&mut self) {
         let pending = !self.search_query.trim().is_empty();
         if let Some(s) = self.search.as_mut() {
-            *s = SearchView { rev: s.rev + 1, loading: pending, ..Default::default() };
+            *s = SearchView {
+                rev: s.rev + 1,
+                loading: pending,
+                ..Default::default()
+            };
         }
         self.search_due = pending.then(|| std::time::Instant::now() + SEARCH_DEBOUNCE);
         if pending {
@@ -265,14 +333,18 @@ impl App {
             self.run_search();
         }
         let scope = self.current_search_scope();
-        let scope_changed = self.side == SidePanel::Search && !self.search_query.trim().is_empty() && self.search.as_ref().is_some_and(|s| {
-            (s.scope.is_some() || (!s.loading && s.error.is_some())) && s.scope != scope
-        });
+        let scope_changed = self.side == SidePanel::Search
+            && !self.search_query.trim().is_empty()
+            && self.search.as_ref().is_some_and(|s| {
+                (s.scope.is_some() || (!s.loading && s.error.is_some())) && s.scope != scope
+            });
         if scope_changed {
             self.run_search();
             return;
         }
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
         if s.retry_at.is_some_and(|t| now >= t) {
             s.retry_at = None;
             self.send_search();
@@ -287,14 +359,30 @@ impl App {
             Some(scope) => scope,
             None => {
                 if let Some(s) = self.search.as_mut() {
-                    *s = SearchView { rev: s.rev + 1, error: (!q.is_empty()).then(|| "検索するチャンネルを選択してください".into()), ..Default::default() };
+                    *s = SearchView {
+                        rev: s.rev + 1,
+                        error: (!q.is_empty())
+                            .then(|| "検索するチャンネルを選択してください".into()),
+                        ..Default::default()
+                    };
                 }
                 return;
             }
         };
-        let parsed = parse_search(&q, matches!(scope, SearchScope::Guild(_)), &SearchNamesFor { app: self, guild: self.sel_guild.as_deref() });
+        let parsed = parse_search(
+            &q,
+            matches!(scope, SearchScope::Guild(_)),
+            &SearchNamesFor {
+                app: self,
+                guild: self.sel_guild.as_deref(),
+            },
+        );
         let s = self.search.get_or_insert_with(SearchView::default);
-        *s = SearchView { rev: s.rev + 1, scope: Some(scope), ..Default::default() };
+        *s = SearchView {
+            rev: s.rev + 1,
+            scope: Some(scope),
+            ..Default::default()
+        };
         match parsed {
             _ if q.is_empty() => {} // 初期化だけ行い、検索は送らない
             Err(e) => {
@@ -312,8 +400,18 @@ impl App {
 
     /// ページを移る
     pub fn search_page(&mut self, forward: bool) {
-        let Some(s) = self.search.as_mut().filter(|s| s.scope.is_some() && !s.loading) else { return };
-        let next = if forward { s.offset + SEARCH_PAGE } else { s.offset.saturating_sub(SEARCH_PAGE) };
+        let Some(s) = self
+            .search
+            .as_mut()
+            .filter(|s| s.scope.is_some() && !s.loading)
+        else {
+            return;
+        };
+        let next = if forward {
+            s.offset + SEARCH_PAGE
+        } else {
+            s.offset.saturating_sub(SEARCH_PAGE)
+        };
         if next == s.offset || next > SEARCH_MAX_OFFSET || (forward && next >= s.total) {
             return;
         }
@@ -325,13 +423,23 @@ impl App {
     /// 読み込めなかった検索を、同じ条件・ページからやり直す。
     pub fn retry_search(&mut self) {
         let scope = self.current_search_scope();
-        let Some(s) = self.search.as_mut().filter(|s| s.searched && !s.loading && (s.error.is_some() || s.partial) && s.scope == scope && scope.is_some()) else { return };
+        let Some(s) = self.search.as_mut().filter(|s| {
+            s.searched
+                && !s.loading
+                && (s.error.is_some() || s.partial)
+                && s.scope == scope
+                && scope.is_some()
+        }) else {
+            return;
+        };
         s.retries = 0;
         self.send_search();
     }
 
     fn send_search(&mut self) {
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
         let Some(scope) = s.scope.clone() else { return };
         s.loading = true;
         s.error = None;
@@ -348,7 +456,10 @@ impl App {
         };
         self.next_api_id += 1;
         let id = self.next_api_id;
-        let queued = self.backend.as_ref().is_some_and(|b| b.cmd.send(Cmd::Api { id, call }).is_ok());
+        let queued = self
+            .backend
+            .as_ref()
+            .is_some_and(|b| b.cmd.send(Cmd::Api { id, call }).is_ok());
         if let Some(s) = self.search.as_mut() {
             if queued {
                 s.request = id;
@@ -362,34 +473,48 @@ impl App {
 
     pub(super) fn on_search_result(&mut self, id: u64, result: Result<serde_json::Value, String>) {
         let scope = self.current_search_scope();
-        let Some(s) = self.search.as_mut().filter(|s| s.request == id && s.loading && s.scope == scope) else { return };
+        let Some(s) = self
+            .search
+            .as_mut()
+            .filter(|s| s.request == id && s.loading && s.scope == scope)
+        else {
+            return;
+        };
         s.rev += 1;
         match result {
-            Ok(v) => match parse_results(&v) {
-                Ok((messages, total, partial)) => {
-                    s.loading = false;
-                    s.total = total;
-                    s.partial = partial;
-                    let hits: Vec<SearchHit> = messages.into_iter().map(|m| SearchHit { place: String::new(), message: m }).collect();
-                    s.hits = hits;
-                    self.name_search_hits(&v);
+            Ok(v) => {
+                match parse_results(&v) {
+                    Ok((messages, total, partial)) => {
+                        s.loading = false;
+                        s.total = total;
+                        s.partial = partial;
+                        let hits: Vec<SearchHit> = messages
+                            .into_iter()
+                            .map(|m| SearchHit {
+                                place: String::new(),
+                                message: m,
+                            })
+                            .collect();
+                        s.hits = hits;
+                        self.name_search_hits(&v);
+                    }
+                    Err(Some(wait)) if s.retries < SEARCH_RETRIES => {
+                        // 索引の準備中: 言われた時間だけ待ってやり直す
+                        s.retries += 1;
+                        let wait = std::time::Duration::from_secs_f64(wait.clamp(1.0, 30.0));
+                        s.retry_at = Some(std::time::Instant::now() + wait);
+                        self.repaint_after(wait);
+                    }
+                    Err(Some(_)) => {
+                        s.loading = false;
+                        s.error = Some("検索の準備に時間がかかっています。しばらくしてからもう一度お試しください".into());
+                    }
+                    Err(None) => {
+                        s.loading = false;
+                        s.error = Some("検索結果を読めませんでした".into());
+                    }
                 }
-                Err(Some(wait)) if s.retries < SEARCH_RETRIES => {
-                    // 索引の準備中: 言われた時間だけ待ってやり直す
-                    s.retries += 1;
-                    let wait = std::time::Duration::from_secs_f64(wait.clamp(1.0, 30.0));
-                    s.retry_at = Some(std::time::Instant::now() + wait);
-                    self.repaint_after(wait);
-                }
-                Err(Some(_)) => {
-                    s.loading = false;
-                    s.error = Some("検索の準備に時間がかかっています。しばらくしてからもう一度お試しください".into());
-                }
-                Err(None) => {
-                    s.loading = false;
-                    s.error = Some("検索結果を読めませんでした".into());
-                }
-            },
+            }
             Err(e) => {
                 eprintln!("検索に失敗しました: {e}");
                 s.loading = false;
@@ -400,8 +525,15 @@ impl App {
 
     /// 結果に「#チャンネル名」を付ける（スレッドは結果に入っている名前を使う）
     fn name_search_hits(&mut self, v: &serde_json::Value) {
-        let threads: HashMap<&str, &str> = v["threads"].as_array().into_iter().flatten().filter_map(|t| Some((t["id"].as_str()?, t["name"].as_str()?))).collect();
-        let Some(s) = self.search.as_ref() else { return };
+        let threads: HashMap<&str, &str> = v["threads"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| Some((t["id"].as_str()?, t["name"].as_str()?)))
+            .collect();
+        let Some(s) = self.search.as_ref() else {
+            return;
+        };
         let guild = match &s.scope {
             Some(SearchScope::Guild(g)) => Some(g.clone()),
             _ => None,
@@ -418,7 +550,12 @@ impl App {
                         .or_else(|| self.find_guild_channel(g, cid).and_then(|c| c.name.clone()))
                         .map(|n| format!("#{n}"))
                         .unwrap_or_default(),
-                    None => self.dms.iter().find(|c| c.id == cid).map(|c| c.dm_label()).unwrap_or_default(),
+                    None => self
+                        .dms
+                        .iter()
+                        .find(|c| c.id == cid)
+                        .map(|c| c.dm_label())
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -454,7 +591,12 @@ mod tests {
 
     #[test]
     fn filters_become_discord_params() {
-        let p = parse_search("こんにちは from:sakura in:#一般 has:画像 pinned:true", true, &Names).unwrap();
+        let p = parse_search(
+            "こんにちは from:sakura in:#一般 has:画像 pinned:true",
+            true,
+            &Names,
+        )
+        .unwrap();
         assert_eq!(p[0], ("content".into(), "こんにちは".into()));
         assert!(p.contains(&("author_id".into(), "2".into())));
         assert!(p.contains(&("channel_id".into(), "10".into())));
@@ -462,13 +604,20 @@ mod tests {
         assert!(p.contains(&("pinned".into(), "true".into())));
         // URL などの知らない「xx:」は本文
         let p = parse_search("https://example.com", true, &Names).unwrap();
-        assert_eq!(p, vec![("content".to_string(), "https://example.com".to_string())]);
+        assert_eq!(
+            p,
+            vec![("content".to_string(), "https://example.com".to_string())]
+        );
     }
 
     #[test]
     fn bad_filters_explain_why() {
-        assert!(parse_search("from:nobody", true, &Names).unwrap_err().contains("nobody"));
-        assert!(parse_search("in:一般", false, &Names).unwrap_err().contains("DM"));
+        assert!(parse_search("from:nobody", true, &Names)
+            .unwrap_err()
+            .contains("nobody"));
+        assert!(parse_search("in:一般", false, &Names)
+            .unwrap_err()
+            .contains("DM"));
         assert!(parse_search("has:cat", true, &Names).is_err());
         assert!(parse_search("before:昨日", true, &Names).is_err());
     }
@@ -476,24 +625,49 @@ mod tests {
     #[test]
     fn dates_become_id_bounds() {
         let p = parse_search("during:2026-01-31", true, &Names).unwrap();
-        let min: u64 = p.iter().find(|(k, _)| k == "min_id").unwrap().1.parse().unwrap();
-        let max: u64 = p.iter().find(|(k, _)| k == "max_id").unwrap().1.parse().unwrap();
+        let min: u64 = p
+            .iter()
+            .find(|(k, _)| k == "min_id")
+            .unwrap()
+            .1
+            .parse()
+            .unwrap();
+        let max: u64 = p
+            .iter()
+            .find(|(k, _)| k == "max_id")
+            .unwrap()
+            .1
+            .parse()
+            .unwrap();
         // ちょうど1日分
         assert_eq!((max >> 22) - (min >> 22), 86_400_000);
-        let before: u64 = parse_search("before:2026-01-31", true, &Names).unwrap()[0].1.parse().unwrap();
-        let after: u64 = parse_search("after:2026-01-31", true, &Names).unwrap()[0].1.parse().unwrap();
+        let before: u64 = parse_search("before:2026-01-31", true, &Names).unwrap()[0]
+            .1
+            .parse()
+            .unwrap();
+        let after: u64 = parse_search("after:2026-01-31", true, &Names).unwrap()[0]
+            .1
+            .parse()
+            .unwrap();
         assert_eq!(before, min);
         assert_eq!(after, max);
-        assert_eq!(snowflake_at(chrono::DateTime::from_timestamp_millis(1_420_070_400_000 + 1).unwrap()), 1 << 22);
+        assert_eq!(
+            snowflake_at(chrono::DateTime::from_timestamp_millis(1_420_070_400_000 + 1).unwrap()),
+            1 << 22
+        );
     }
 
     #[test]
     fn results_and_index_wait_are_read() {
         let m = serde_json::json!({ "id": "5", "channel_id": "c", "author": { "id": "u", "username": "u" }, "timestamp": "2026-01-01T00:00:00+00:00" });
-        let (list, total, partial) = parse_results(&serde_json::json!({ "total_results": 120, "messages": [[m]] })).unwrap();
+        let (list, total, partial) =
+            parse_results(&serde_json::json!({ "total_results": 120, "messages": [[m]] })).unwrap();
         assert_eq!((list.len(), total), (1, 120));
         assert!(!partial);
-        assert_eq!(parse_results(&serde_json::json!({ "code": 110000, "retry_after": 3 })).unwrap_err(), Some(3.0));
+        assert_eq!(
+            parse_results(&serde_json::json!({ "code": 110000, "retry_after": 3 })).unwrap_err(),
+            Some(3.0)
+        );
         assert_eq!(parse_results(&serde_json::json!({})).unwrap_err(), None);
     }
 
@@ -503,7 +677,9 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 0)).unwrap();
         app.poll();
         let s = app.search.as_ref().unwrap();
@@ -518,8 +694,15 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
-        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"total_results":60,"messages":[]})) }).unwrap();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+            panic!()
+        };
+        tx.send(Event::Api {
+            id,
+            call,
+            result: Ok(serde_json::json!({"total_results":60,"messages":[]})),
+        })
+        .unwrap();
         app.poll();
         let label = app.search.as_ref().unwrap().result_label();
         assert!(!label.contains("1–0"));
@@ -532,11 +715,15 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 60)).unwrap();
         app.poll();
         app.search_page(true);
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 1)).unwrap();
         app.poll();
         let label = app.search.as_ref().unwrap().result_label();
@@ -550,15 +737,29 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         let valid = serde_json::json!({ "id":"5", "channel_id":"c", "author":{"id":"u","username":"u"}, "timestamp":"2026-01-01T00:00:00+00:00" });
-        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"total_results":2,"messages":[[{"id":"broken"}],[valid]]})) }).unwrap();
+        tx.send(Event::Api {
+            id,
+            call,
+            result: Ok(
+                serde_json::json!({"total_results":2,"messages":[[{"id":"broken"}],[valid]]}),
+            ),
+        })
+        .unwrap();
         app.poll();
         let s = app.search.as_ref().unwrap();
         assert_eq!(s.hits.len(), 1);
-        assert!(s.result_label().contains("一部"), "表示できなかった検索結果を知らせる");
+        assert!(
+            s.result_label().contains("一部"),
+            "表示できなかった検索結果を知らせる"
+        );
         app.retry_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 1)).unwrap();
         app.poll();
         assert!(!app.search.as_ref().unwrap().result_label().contains("一部"));
@@ -570,16 +771,33 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
-        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"total_results":1,"messages":[[{"id":"broken"}]]})) }).unwrap();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+            panic!()
+        };
+        tx.send(Event::Api {
+            id,
+            call,
+            result: Ok(serde_json::json!({"total_results":1,"messages":[[{"id":"broken"}]]})),
+        })
+        .unwrap();
         app.poll();
         let s = app.search.as_ref().unwrap();
         assert!(!s.loading && s.error.is_some() && s.hits.is_empty());
         app.retry_search();
-        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { .. }, .. })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Cmd::Api {
+                call: ApiCall::SearchGuild { .. },
+                ..
+            })
+        ));
     }
 
-    fn harness() -> (App, std::sync::mpsc::Sender<Event>, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
+    fn harness() -> (
+        App,
+        std::sync::mpsc::Sender<Event>,
+        tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    ) {
         let mut app = App::default();
         let (tx, ev) = std::sync::mpsc::channel();
         let (cmd, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -591,7 +809,14 @@ mod tests {
 
     fn reply(id: u64, total: u32) -> Event {
         let m = serde_json::json!({ "id": "5", "channel_id": "c", "author": { "id": "u", "username": "u" }, "timestamp": "2026-01-01T00:00:00+00:00" });
-        Event::Api { id, call: ApiCall::SearchGuild { guild_id: "g".into(), query: vec![] }, result: Ok(serde_json::json!({ "total_results": total, "messages": [[m]] })) }
+        Event::Api {
+            id,
+            call: ApiCall::SearchGuild {
+                guild_id: "g".into(),
+                query: vec![],
+            },
+            result: Ok(serde_json::json!({ "total_results": total, "messages": [[m]] })),
+        }
     }
 
     #[test]
@@ -600,12 +825,18 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id: first, call } = rx.try_recv().unwrap() else { panic!() };
-        assert!(matches!(&call, ApiCall::SearchGuild { guild_id, query } if guild_id == "g" && query.contains(&("content".into(), "猫".into()))));
+        let Cmd::Api { id: first, call } = rx.try_recv().unwrap() else {
+            panic!()
+        };
+        assert!(
+            matches!(&call, ApiCall::SearchGuild { guild_id, query } if guild_id == "g" && query.contains(&("content".into(), "猫".into())))
+        );
         // 返事を待つ間に打ち直した: 前の結果は捨てる
         app.search_query = "犬".into();
         app.run_search();
-        let Cmd::Api { id: second, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id: second, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         assert_ne!(first, second);
         tx.send(reply(first, 1)).unwrap();
         app.poll();
@@ -617,9 +848,18 @@ mod tests {
         assert_eq!(s.result_label(), "1–1 件目（全 60 件）");
         // 次のページは offset=25
         app.search_page(true);
-        let Cmd::Api { call: ApiCall::SearchGuild { query, .. }, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api {
+            call: ApiCall::SearchGuild { query, .. },
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!()
+        };
         assert!(query.contains(&("offset".into(), "25".into())));
-        assert!(app.search.as_ref().unwrap().hits.is_empty(), "ページの取得中は前のページを表示しない");
+        assert!(
+            app.search.as_ref().unwrap().hits.is_empty(),
+            "ページの取得中は前のページを表示しない"
+        );
     }
 
     #[test]
@@ -628,12 +868,17 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id: old, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id: old, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         app.search_query = "犬".into();
         app.search_typed();
         tx.send(reply(old, 1)).unwrap();
         app.poll();
-        assert!(app.search.as_ref().unwrap().hits.is_empty(), "旧検索の結果を新しい検索語の下に表示しない");
+        assert!(
+            app.search.as_ref().unwrap().hits.is_empty(),
+            "旧検索の結果を新しい検索語の下に表示しない"
+        );
     }
 
     #[test]
@@ -642,7 +887,9 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 1)).unwrap();
         app.poll();
         assert_eq!(app.search.as_ref().unwrap().hits.len(), 1);
@@ -659,7 +906,9 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         app.search_query.clear();
         app.search_typed();
         tx.send(reply(id, 1)).unwrap();
@@ -690,13 +939,20 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id: old, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id: old, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         app.sel_guild = Some("別サーバー".into());
         tx.send(reply(old, 1)).unwrap();
         app.poll();
-        assert!(app.search.as_ref().unwrap().hits.is_empty(), "別サーバーの見出しの下に古い結果を出さない");
+        assert!(
+            app.search.as_ref().unwrap().hits.is_empty(),
+            "別サーバーの見出しの下に古い結果を出さない"
+        );
         app.tick_search();
-        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { guild_id, .. }, .. }) if guild_id == "別サーバー"));
+        assert!(
+            matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { guild_id, .. }, .. }) if guild_id == "別サーバー")
+        );
     }
 
     #[test]
@@ -705,7 +961,9 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 1)).unwrap();
         app.poll();
         assert_eq!(app.search.as_ref().unwrap().hits.len(), 1);
@@ -713,7 +971,9 @@ mod tests {
         app.sel_channel = Some("別DM".into());
         app.tick_search();
         assert!(app.search.as_ref().unwrap().hits.is_empty());
-        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchChannel { channel_id, .. }, .. }) if channel_id == "別DM"));
+        assert!(
+            matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchChannel { channel_id, .. }, .. }) if channel_id == "別DM")
+        );
     }
 
     #[test]
@@ -722,7 +982,9 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 1)).unwrap();
         app.poll();
         app.sel_channel = Some("別チャンネル".into());
@@ -737,7 +999,9 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 1)).unwrap();
         app.poll();
         app.toggle_search();
@@ -747,7 +1011,9 @@ mod tests {
         app.toggle_search();
         app.tick_search();
         assert!(app.search.as_ref().unwrap().hits.is_empty());
-        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { guild_id, .. }, .. }) if guild_id == "別サーバー"));
+        assert!(
+            matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { guild_id, .. }, .. }) if guild_id == "別サーバー")
+        );
     }
 
     #[test]
@@ -756,16 +1022,31 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
         tx.send(reply(id, 60)).unwrap();
         app.poll();
         app.search_page(true);
-        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
-        tx.send(Event::Api { id, call, result: Err("network unavailable".into()) }).unwrap();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+            panic!()
+        };
+        tx.send(Event::Api {
+            id,
+            call,
+            result: Err("network unavailable".into()),
+        })
+        .unwrap();
         app.poll();
         assert!(app.search.as_ref().unwrap().error.is_some());
         app.retry_search();
-        let Cmd::Api { id, call: ApiCall::SearchGuild { query, .. } } = rx.try_recv().unwrap() else { panic!() };
+        let Cmd::Api {
+            id,
+            call: ApiCall::SearchGuild { query, .. },
+        } = rx.try_recv().unwrap()
+        else {
+            panic!()
+        };
         assert!(query.contains(&("content".into(), "猫".into())));
         assert!(query.contains(&("offset".into(), "25".into())));
         app.retry_search();
@@ -786,8 +1067,15 @@ mod tests {
         assert!(rx.try_recv().is_err());
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
-        tx.send(Event::Api { id, call, result: Err("network unavailable".into()) }).unwrap();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+            panic!()
+        };
+        tx.send(Event::Api {
+            id,
+            call,
+            result: Err("network unavailable".into()),
+        })
+        .unwrap();
         app.poll();
         app.sel_guild = Some("別サーバー".into());
         app.retry_search();
@@ -805,7 +1093,13 @@ mod tests {
         assert!(!s.loading && s.error.is_some());
         app.backend = backend;
         app.retry_search();
-        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { .. }, .. })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Cmd::Api {
+                call: ApiCall::SearchGuild { .. },
+                ..
+            })
+        ));
         assert!(app.search.as_ref().unwrap().loading);
     }
 
@@ -826,14 +1120,30 @@ mod tests {
         app.toggle_search();
         app.search_query = "猫".into();
         app.run_search();
-        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
-        tx.send(Event::Api { id, call: ApiCall::SearchGuild { guild_id: "g".into(), query: vec![] }, result: Ok(serde_json::json!({ "code": 110000, "retry_after": 0 })) }).unwrap();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else {
+            panic!()
+        };
+        tx.send(Event::Api {
+            id,
+            call: ApiCall::SearchGuild {
+                guild_id: "g".into(),
+                query: vec![],
+            },
+            result: Ok(serde_json::json!({ "code": 110000, "retry_after": 0 })),
+        })
+        .unwrap();
         app.poll();
         let s = app.search.as_mut().unwrap();
         assert!(s.retry_at.is_some() && s.loading);
         s.retry_at = Some(std::time::Instant::now());
         app.tick_search();
-        assert!(matches!(rx.try_recv().unwrap(), Cmd::Api { call: ApiCall::SearchGuild { .. }, .. }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Cmd::Api {
+                call: ApiCall::SearchGuild { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

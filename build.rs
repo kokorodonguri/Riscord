@@ -20,6 +20,10 @@ fn main() {
             println!("cargo:rerun-if-changed={path}");
         }
     }
-    let sha = std::env::var("GITHUB_SHA").ok().filter(|s| !s.is_empty()).or_else(|| git(&["rev-parse", "HEAD"])).unwrap_or_default();
+    let sha = std::env::var("GITHUB_SHA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| git(&["rev-parse", "HEAD"]))
+        .unwrap_or_default();
     println!("cargo:rustc-env=RISCORD_GIT_SHA={sha}");
 }

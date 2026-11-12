@@ -13,7 +13,14 @@ pub fn enabled() -> bool {
 }
 
 fn user(id: &str, name: &str) -> User {
-    User { id: id.into(), username: name.into(), global_name: Some(name.into()), avatar: None, premium_type: None, bot: false }
+    User {
+        id: id.into(),
+        username: name.into(),
+        global_name: Some(name.into()),
+        avatar: None,
+        premium_type: None,
+        bot: false,
+    }
 }
 
 fn channel(id: &str, kind: u8, name: &str, parent: Option<&str>, position: i32) -> Channel {
@@ -36,7 +43,13 @@ fn message(id: u64, channel: &str, author: &User, content: &str, minutes_ago: i6
 }
 
 /// 通話の記録。seconds が無ければ、まだ続いている通話
-fn call(channel: &str, author: &User, participants: &[&str], minutes_ago: i64, seconds: Option<i64>) -> Message {
+fn call(
+    channel: &str,
+    author: &User,
+    participants: &[&str],
+    minutes_ago: i64,
+    seconds: Option<i64>,
+) -> Message {
     let at = chrono::Utc::now() - chrono::Duration::minutes(minutes_ago);
     let ended = seconds.map(|s| (at + chrono::Duration::seconds(s)).to_rfc3339());
     serde_json::from_value(serde_json::json!({
@@ -57,9 +70,19 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
             waker.wake();
         };
         let me = user("1", "どんぐり");
-        let others = [user("2", "さくら"), user("3", "たろう"), user("4", "とても長い名前のユーザーさんです")];
-        let guild: Guild = serde_json::from_value(serde_json::json!({ "id": "100", "name": "デモサーバー", "permissions": "8" })).unwrap();
-        let guild2: Guild = serde_json::from_value(serde_json::json!({ "id": "101", "name": "ゲーム部", "permissions": "8" })).unwrap();
+        let others = [
+            user("2", "さくら"),
+            user("3", "たろう"),
+            user("4", "とても長い名前のユーザーさんです"),
+        ];
+        let guild: Guild = serde_json::from_value(
+            serde_json::json!({ "id": "100", "name": "デモサーバー", "permissions": "8" }),
+        )
+        .unwrap();
+        let guild2: Guild = serde_json::from_value(
+            serde_json::json!({ "id": "101", "name": "ゲーム部", "permissions": "8" }),
+        )
+        .unwrap();
         let roles: Vec<Role> = serde_json::from_value(serde_json::json!([
             { "id": "100", "name": "@everyone", "color": 0, "position": 0, "permissions": "8" },
             { "id": "500", "name": "管理者", "color": 0xe67e22, "position": 2, "hoist": true, "permissions": "8" },
@@ -74,9 +97,27 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
         send(Event::Guilds(vec![guild, guild2]));
         send(Event::Dms(vec![dm]));
         send(Event::Presences(vec![
-            ("1".into(), Presence { status: "online".into(), activity: None }),
-            ("2".into(), Presence { status: "idle".into(), activity: Some("プレイ中: パズル".into()) }),
-            ("3".into(), Presence { status: "dnd".into(), activity: None }),
+            (
+                "1".into(),
+                Presence {
+                    status: "online".into(),
+                    activity: None,
+                },
+            ),
+            (
+                "2".into(),
+                Presence {
+                    status: "idle".into(),
+                    activity: Some("プレイ中: パズル".into()),
+                },
+            ),
+            (
+                "3".into(),
+                Presence {
+                    status: "dnd".into(),
+                    activity: None,
+                },
+            ),
         ]));
         // サーバーアイコンのメンション数の印を見るための未読メンション
         send(Event::ReadyExtra(serde_json::json!({
@@ -108,7 +149,10 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                 }
                 Cmd::LoadMessages(cid) => {
                     if initialized.contains(&cid) {
-                        send(Event::Messages(cid.clone(), messages.get(&cid).cloned().unwrap_or_default()));
+                        send(Event::Messages(
+                            cid.clone(),
+                            messages.get(&cid).cloned().unwrap_or_default(),
+                        ));
                         continue;
                     }
                     let mut list = vec![
@@ -136,19 +180,35 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     messages.insert(cid.clone(), list.clone());
                     send(Event::Messages(cid, list));
                 }
-                Cmd::LoadOlder { channel_id, before } => send(Event::OlderMessages { channel_id, before, messages: Some(vec![]) }),
+                Cmd::LoadOlder { channel_id, before } => send(Event::OlderMessages {
+                    channel_id,
+                    before,
+                    messages: Some(vec![]),
+                }),
                 Cmd::SubscribeMembers { guild_id, .. } => {
                     let mut all = vec![me.clone()];
                     all.extend(others.iter().cloned());
                     let members: Vec<Member> = all
                         .iter()
-                        .map(|u| Member { user: Some(u.clone()), nick: None, roles: if u.id == "2" { vec!["500".into()] } else { vec![] } })
+                        .map(|u| Member {
+                            user: Some(u.clone()),
+                            nick: None,
+                            roles: if u.id == "2" {
+                                vec!["500".into()]
+                            } else {
+                                vec![]
+                            },
+                        })
                         .collect();
                     send(Event::GuildMembers(guild_id.clone(), members));
                     send(Event::MemberList {
                         guild_id,
                         list_id: "demo".into(),
-                        groups: vec![("500".into(), 1), ("online".into(), 2), ("offline".into(), 1)],
+                        groups: vec![
+                            ("500".into(), 1),
+                            ("online".into(), 2),
+                            ("offline".into(), 1),
+                        ],
                         ops: vec![net::ListOp::Sync {
                             range: [0, 99],
                             items: vec![
@@ -163,18 +223,37 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                         }],
                     });
                 }
-                Cmd::Send { channel_id, content, .. } => {
+                Cmd::Send {
+                    channel_id,
+                    content,
+                    ..
+                } => {
                     next += 1;
                     let m = message(next, &channel_id, &me, &content, 0);
-                    messages.entry(channel_id.clone()).or_default().push(m.clone());
-                    send(Event::ComposeResult { channel_id, result: Ok(Some(m)) });
+                    messages
+                        .entry(channel_id.clone())
+                        .or_default()
+                        .push(m.clone());
+                    send(Event::ComposeResult {
+                        channel_id,
+                        result: Ok(Some(m)),
+                    });
                 }
-                Cmd::Edit { channel_id, id, content } => {
-                    let result = messages.get_mut(&channel_id).and_then(|list| list.iter_mut().find(|m| m.id == id)).map(|m| {
-                        m.content = content;
-                        m.edited_timestamp = Some(chrono::Utc::now().to_rfc3339());
-                        m.clone()
-                    }).ok_or(()).map(Some);
+                Cmd::Edit {
+                    channel_id,
+                    id,
+                    content,
+                } => {
+                    let result = messages
+                        .get_mut(&channel_id)
+                        .and_then(|list| list.iter_mut().find(|m| m.id == id))
+                        .map(|m| {
+                            m.content = content;
+                            m.edited_timestamp = Some(chrono::Utc::now().to_rfc3339());
+                            m.clone()
+                        })
+                        .ok_or(())
+                        .map(Some);
                     send(Event::ComposeResult { channel_id, result });
                 }
                 Cmd::Delete { channel_id, id } => {
@@ -198,18 +277,42 @@ mod tests {
     #[test]
     fn message_changes_survive_reload_in_each_channel() {
         let (tx, rx) = spawn(Waker::default());
-        let receive = || rx.recv_timeout(Duration::from_secs(2)).expect("demo response");
+        let receive = || {
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("demo response")
+        };
         while !matches!(receive(), Event::GatewayReady) {}
         let load = |id: &str| tx.send(Cmd::LoadMessages(id.into())).unwrap();
         load("900");
         while !matches!(receive(), Event::Messages(_, _)) {}
-        tx.send(Cmd::Send { channel_id: "900".into(), content: "first".into(), reply_to: None, files: vec![] }).unwrap();
+        tx.send(Cmd::Send {
+            channel_id: "900".into(),
+            content: "first".into(),
+            reply_to: None,
+            files: vec![],
+        })
+        .unwrap();
         let id = loop {
-            if let Event::ComposeResult { result: Ok(Some(m)), .. } = receive() { break m.id; }
+            if let Event::ComposeResult {
+                result: Ok(Some(m)),
+                ..
+            } = receive()
+            {
+                break m.id;
+            }
         };
-        tx.send(Cmd::Edit { channel_id: "900".into(), id: id.clone(), content: "edited".into() }).unwrap();
+        tx.send(Cmd::Edit {
+            channel_id: "900".into(),
+            id: id.clone(),
+            content: "edited".into(),
+        })
+        .unwrap();
         loop {
-            if let Event::ComposeResult { result: Ok(Some(m)), .. } = receive() {
+            if let Event::ComposeResult {
+                result: Ok(Some(m)),
+                ..
+            } = receive()
+            {
                 assert_eq!(m.content, "edited");
                 break;
             }
@@ -221,7 +324,11 @@ mod tests {
                 break;
             }
         }
-        tx.send(Cmd::Delete { channel_id: "900".into(), id: id.clone() }).unwrap();
+        tx.send(Cmd::Delete {
+            channel_id: "900".into(),
+            id: id.clone(),
+        })
+        .unwrap();
         while !matches!(receive(), Event::MessageDelete { .. }) {}
         load("900");
         loop {
@@ -237,7 +344,13 @@ mod tests {
                 break;
             }
         }
-        tx.send(Cmd::Send { channel_id: "new".into(), content: "before load".into(), reply_to: None, files: vec![] }).unwrap();
+        tx.send(Cmd::Send {
+            channel_id: "new".into(),
+            content: "before load".into(),
+            reply_to: None,
+            files: vec![],
+        })
+        .unwrap();
         while !matches!(receive(), Event::ComposeResult { .. }) {}
         load("new");
         loop {

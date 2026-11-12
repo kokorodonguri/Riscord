@@ -2053,3 +2053,54 @@ fn muted_channels_are_read_and_hidden_when_asked() {
     assert!(!app.hidden_as_muted("g1", &in_cat, None));
     let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
 }
+
+/// チャンネルのメンションは、メッセージのサーバーを先に見て、無ければ他のサーバーからも探す
+#[test]
+fn channel_mentions_prefer_own_guild_then_fall_back() {
+    let m: Message = serde_json::from_value(serde_json::json!({
+        "id": "1", "channel_id": "c", "guild_id": "g1", "author": { "id": "9", "username": "a" },
+        "timestamp": "2026-11-01T00:00:00+00:00", "content": "",
+    }))
+    .unwrap();
+    let ch = |id: &str, name: &str| -> Channel {
+        serde_json::from_value(serde_json::json!({ "id": id, "type": 0, "name": name })).unwrap()
+    };
+    let mut channels = HashMap::new();
+    channels.insert("g1".to_string(), vec![ch("10", "一般")]);
+    channels.insert("g2".to_string(), vec![ch("20", "よそ")]);
+    let got = resolve_mentions("<#10> <#20> <#30>", &m, &channels, &[]);
+    assert_eq!(got, "#一般 #よそ #不明なチャンネル");
+}
+
+/// 右クリックの対象は押されたときに ID で引く（チャンネルの一覧・ピン・検索結果のどれからでも）
+#[test]
+fn find_message_looks_in_list_pins_and_search() {
+    let mut app = bench_app(3);
+    assert_eq!(
+        app.find_message("c", "100001").map(|m| m.content),
+        Some("message 1".to_string())
+    );
+    let pinned: Message = serde_json::from_value(serde_json::json!({
+        "id": "500", "channel_id": "other", "author": { "id": "1", "username": "u" },
+        "timestamp": "2026-11-01T00:00:00+00:00", "content": "pinned",
+    }))
+    .unwrap();
+    let mut searched = pinned.clone();
+    searched.id = "600".into();
+    searched.content = "found".into();
+    let mut pins = pins::PinsView::default();
+    pins.items.push(pins::PinItem {
+        pinned_at: String::new(),
+        message: pinned,
+    });
+    app.pins = Some(pins);
+    let mut search = search::SearchView::default();
+    search.hits.push(search::SearchHit {
+        message: searched,
+        place: String::new(),
+    });
+    app.search = Some(search);
+    assert_eq!(app.find_message("other", "500").unwrap().content, "pinned");
+    assert_eq!(app.find_message("other", "600").unwrap().content, "found");
+    assert!(app.find_message("c", "999").is_none());
+}

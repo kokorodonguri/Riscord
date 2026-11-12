@@ -498,10 +498,14 @@ impl Root {
             .flex()
             .flex_col()
             .on_mouse_down(MouseButton::Right, {
-                let m = m.clone();
+                // 描くたびに Message を丸ごと（埋め込み・返信先まで）複製しないよう、押されたときに ID で引く
+                let (cid, id) = (m.channel_id.clone(), m.id.clone());
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    let Some(m) = this.app.find_message(&cid, &id) else {
+                        return;
+                    };
                     this.menu = Some((PopMenu::Message, ev.position));
-                    this.menu_msg = Some(m.clone());
+                    this.menu_msg = Some(m);
                     cx.stop_propagation();
                     cx.notify();
                 })
@@ -1134,15 +1138,53 @@ impl Root {
     }
 
     /// 本文。記法ごとの塊（文・見出し・引用・コードブロック）を上から並べる
+    /// 本文を描く前の形。元（本文・チャンネル・プラグインの状態）とメンションの名前が前と同じなら控えを返す
+    fn body_blocks(&mut self, m: &Message) -> Rc<[md::Block]> {
+        use std::hash::{Hash, Hasher};
+        let hash = |f: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            f(&mut h);
+            h.finish()
+        };
+        let src = hash(&|h| (&m.content, &m.channel_id, self.app.plugins.revision).hash(h));
+        if self.body_cache.get(&m.id).is_none_or(|c| c.src != src) {
+            // 表示加工（Lua）は本文かプラグインの状態が変わったときだけ呼ぶ
+            let displayed = self
+                .app
+                .plugins
+                .transform("on_display", &m.content, &m.channel_id);
+            if self.body_cache.len() >= super::BODY_CACHE_MAX {
+                self.body_cache.clear();
+            }
+            self.body_cache.insert(
+                m.id.clone(),
+                super::BodyCache {
+                    src,
+                    displayed,
+                    resolved: 0,
+                    blocks: Rc::from([]),
+                },
+            );
+        }
+        // メンションの名前（チャンネル名・ロール名）は後から変わるので毎回入れ直し、結果が変わったときだけ解析し直す
+        let roles = self.guild_roles();
+        let c = &self.body_cache[&m.id];
+        let content = resolve_mentions(&c.displayed, m, &self.app.channels, roles);
+        let resolved = hash(&|h| content.hash(h)).max(1);
+        if c.resolved == resolved {
+            return c.blocks.clone();
+        }
+        let blocks: Rc<[md::Block]> = md::blocks(&content).into();
+        drop(content);
+        let c = self.body_cache.get_mut(&m.id).unwrap();
+        c.resolved = resolved;
+        c.blocks = blocks.clone();
+        blocks
+    }
+
     fn inline_content(&mut self, m: &Message, cx: &mut Context<Self>) -> AnyElement {
         let fs = self.app.settings.font_size;
-        let displayed = self
-            .app
-            .plugins
-            .transform("on_display", &m.content, &m.channel_id);
-        let roles = self.guild_roles();
-        let content = resolve_mentions(&displayed, m, &self.app.channels, roles).into_owned();
-        let blocks = md::blocks(&content);
+        let blocks = self.body_blocks(m);
         let edited = m.edited_timestamp.is_some();
         let revealed = self.revealed.contains(&m.id);
         let on_spoiler: Rc<dyn Fn(&mut Window, &mut App)> = {

@@ -656,10 +656,12 @@ pub fn resolve_mentions<'a>(
             Some(match kind {
                 '#' => format!(
                     "#{}",
-                    channels
-                        .values()
-                        .flatten()
-                        .find(|c| c.id == id)
+                    // ほとんどは同じサーバーのチャンネルなので、そこを先に見る（全サーバーの全チャンネルを毎回なめない）
+                    m.guild_id
+                        .as_ref()
+                        .and_then(|g| channels.get(g))
+                        .and_then(|l| l.iter().find(|c| c.id == id))
+                        .or_else(|| channels.values().flatten().find(|c| c.id == id))
                         .and_then(|c| c.name.clone())
                         .unwrap_or_else(|| "不明なチャンネル".into())
                 ),
@@ -4971,6 +4973,26 @@ impl App {
         for l in self.voice_index.values_mut() {
             l.sort();
         }
+    }
+
+    /// 表示中のメッセージを ID で引く（チャンネルの一覧 → ピン一覧 → 検索結果の順。右クリックのメニュー用）
+    pub fn find_message(&self, channel_id: &str, id: &str) -> Option<Message> {
+        // 右クリックされるのはほぼ新しい行なので末尾から探す
+        let in_list = self
+            .messages
+            .get(channel_id)
+            .and_then(|l| l.iter().rev().find(|m| m.id == id));
+        let in_pins = || {
+            self.pins
+                .as_ref()
+                .and_then(|p| p.items.iter().map(|i| &i.message).find(|m| m.id == id))
+        };
+        let in_search = || {
+            self.search
+                .as_ref()
+                .and_then(|s| s.hits.iter().map(|h| &h.message).find(|m| m.id == id))
+        };
+        in_list.or_else(in_pins).or_else(in_search).cloned()
     }
 
     pub fn find_user(&self, id: &str) -> Option<User> {

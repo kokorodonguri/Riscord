@@ -165,6 +165,21 @@ pub struct MsgList {
     pub detached: bool,
 }
 
+/// メッセージ本文を描く前の形（プラグインの表示加工 → メンションの名前 → 記法の分解）の控え。
+/// 見えている行は描き直すたびに Lua の呼び出しと記法の解析をしていたので、元が同じ間は使い回す
+pub struct BodyCache {
+    /// 本文・チャンネル・プラグインの状態（revision）の目印。変わったら表示加工をやり直す
+    pub src: u64,
+    /// on_display を通した後の本文
+    pub displayed: String,
+    /// メンションの名前を入れた後の本文の目印（チャンネル名・ロール名が変わったら解析し直す）
+    pub resolved: u64,
+    pub blocks: Rc<[crate::markdown::Block]>,
+}
+
+/// 本文の控えの上限（超えたら捨てて作り直す。見えている行の分だけすぐ戻る）
+pub const BODY_CACHE_MAX: usize = 2048;
+
 /// 入力欄（gpui-component）。中身は AppState の文字列と同期する
 pub struct Inputs {
     pub compose: Entity<TextareaState>,
@@ -255,6 +270,8 @@ pub struct Root {
     pub hover_msg: Option<String>,
     /// スポイラーを押して開いたメッセージ
     pub revealed: std::collections::HashSet<String>,
+    /// メッセージ ID ごとの本文の控え（BodyCache）
+    pub body_cache: HashMap<String, BodyCache>,
     pub menu: Option<(PopMenu, Point<Pixels>)>,
     /// PopMenu::Guild の対象のサーバー
     pub menu_guild: Option<String>,
@@ -858,6 +875,7 @@ impl Root {
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
             revealed: Default::default(),
+            body_cache: HashMap::new(),
             menu: None,
             menu_guild: None,
             menu_from_header: false,

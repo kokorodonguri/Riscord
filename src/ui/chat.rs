@@ -355,6 +355,7 @@ impl Root {
         v.extend(self.moderation_dialog(cx));
         v.extend(self.server_settings_dialog(cx));
         v.extend(self.channel_create_dialog(cx));
+        v.extend(self.guild_profile_dialog(cx));
         v.extend(self.soundboard_dialog(cx));
         v.extend(self.leave_dialog(cx));
         if self.app.settings_open {

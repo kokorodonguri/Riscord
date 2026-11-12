@@ -7,6 +7,7 @@ mod dialogs;
 mod emoji;
 mod forum;
 mod friends;
+mod guild_profile;
 mod kit;
 mod login;
 mod members;
@@ -193,6 +194,10 @@ pub struct Inputs {
     pub poll_answers: Entity<TextareaState>,
     /// 作るチャンネル・カテゴリの名前
     pub channel_name: Entity<InputState>,
+    /// このサーバーでのプロフィール
+    pub guild_nick: Entity<InputState>,
+    pub guild_pronouns: Entity<InputState>,
+    pub guild_bio: Entity<TextareaState>,
     /// サーバー管理: イベントと AutoMod ルールの下書き
     pub event_name: Entity<InputState>,
     pub event_start: Entity<InputState>,
@@ -547,6 +552,13 @@ impl Root {
                     .placeholder("選択肢を1行ずつ入力")
             }),
             channel_name: new_input(window, cx, "名前", false),
+            guild_nick: new_input(window, cx, "ニックネーム", false),
+            guild_pronouns: new_input(window, cx, "代名詞", false),
+            guild_bio: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(3, 6)
+                    .placeholder("自己紹介")
+            }),
             event_name: new_input(window, cx, "イベント名", false),
             event_start: new_input(window, cx, "開始 YYYY-MM-DD HH:MM", false),
             event_end: new_input(window, cx, "終了 YYYY-MM-DD HH:MM", false),
@@ -624,6 +636,19 @@ impl Root {
             }),
             bind(cx, window, &inp.channel_name, Some(100), |a| {
                 a.channel_draft.as_mut().map(|d| &mut d.name)
+            }),
+            bind(cx, window, &inp.guild_nick, Some(st::NICK_MAX), |a| {
+                a.guild_profile.as_mut().map(|e| &mut e.draft.nick)
+            }),
+            bind(
+                cx,
+                window,
+                &inp.guild_pronouns,
+                Some(st::PRONOUNS_MAX),
+                |a| a.guild_profile.as_mut().map(|e| &mut e.draft.pronouns),
+            ),
+            bind(cx, window, &inp.guild_bio, Some(st::BIO_MAX), |a| {
+                a.guild_profile.as_mut().map(|e| &mut e.draft.bio)
             }),
             bind(cx, window, &inp.event_name, Some(100), |a| {
                 a.moderation
@@ -1123,6 +1148,11 @@ impl Root {
         sync(&self.inp.folder_name, &self.app.folder_name, window, cx);
         if let Some(d) = &self.app.channel_draft {
             sync(&self.inp.channel_name, &d.name, window, cx);
+        }
+        if let Some(e) = &self.app.guild_profile {
+            sync(&self.inp.guild_nick, &e.draft.nick, window, cx);
+            sync(&self.inp.guild_pronouns, &e.draft.pronouns, window, cx);
+            sync(&self.inp.guild_bio, &e.draft.bio, window, cx);
         }
         if let Some(m) = self.app.moderation.as_ref() {
             if let Some(d) = &m.event_draft {

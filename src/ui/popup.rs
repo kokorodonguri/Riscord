@@ -608,6 +608,19 @@ impl Root {
                 })),
         );
 
+        // 自分のこと
+        col = col.child(menu_divider());
+        let g1 = gid.clone();
+        col = col.child(
+            item("gm_profile", IconName::Pencil, "サーバープロフィールを編集").on_click(
+                cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.open_guild_profile(&g1);
+                    cx.notify();
+                }),
+            ),
+        );
+
         // ID・脱退
         col = col.child(menu_divider());
         let g1 = gid.clone();

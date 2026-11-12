@@ -1379,6 +1379,8 @@ pub struct App {
     pub server_settings: Option<(String, SettingsTab)>,
     /// チャンネル・カテゴリを作る画面
     pub channel_draft: Option<ChannelDraft>,
+    /// このサーバーでの自分のプロフィールを編集する画面
+    pub guild_profile: Option<GuildProfileEdit>,
     /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
     pub member_action_confirm: Option<String>,
     pub member_action_pending: Option<(u64, &'static str)>,
@@ -2995,6 +2997,10 @@ impl App {
         }
         if self.is_soundboard_request(id) {
             self.soundboard_result(id, result);
+            return;
+        }
+        if self.is_guild_profile_request(id) {
+            self.guild_profile_result(id, result);
             return;
         }
         if self.is_channel_create_request(id) {
@@ -5152,6 +5158,8 @@ mod authors;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;
+mod guild_profile;
+pub use guild_profile::{GuildProfileEdit, BIO_MAX, NICK_MAX, PRONOUNS_MAX};
 mod official_folders;
 mod server_settings;
 pub use server_settings::SettingsTab;

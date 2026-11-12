@@ -73,6 +73,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # ubuntu-22.04 ランナーに入っている libunwind-14-dev が、libgstreamer1.0-dev の依存する libunwind-dev とぶつかるので外す
+          sudo apt-get remove -y libunwind-14-dev || true
           sudo apt-get install -y --no-install-recommends \
             pkg-config cmake libasound2-dev libfontconfig-dev libfreetype-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \

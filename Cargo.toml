@@ -78,3 +78,5 @@ gpui-pre = { path = "vendor/gpui-pre" }
 # Linux から Windows 版をクロスビルドできるよう、fxc.exe がないときはシェーダーを起動時にコンパイルする版。
 # Windows 上でのビルドは元と同じく fxc.exe で事前コンパイルする
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+# macOS で Option::map_or_default が使えない Rust でもビルドできるよう、map + unwrap_or_default に直した版
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

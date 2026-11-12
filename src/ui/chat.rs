@@ -30,8 +30,14 @@ fn row_key(
     h.finish()
 }
 
+fn id_key(id: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish().max(1)
+}
+
 /// 前の行の目印と比べて、変わった所だけ list に知らせる（先頭に読み足しても見ている行は動かない）
-fn sync_list(l: &mut MsgList, keys: Vec<u64>) {
+fn sync_list(l: &mut MsgList, keys: Vec<u64>, ids: Vec<u64>) {
     let old = &l.keys;
     let p = old.iter().zip(&keys).take_while(|(a, b)| a == b).count();
     let max_s = old.len().min(keys.len()) - p;
@@ -44,18 +50,54 @@ fn sync_list(l: &mut MsgList, keys: Vec<u64>) {
         .count();
     if p + s != old.len() || p + s != keys.len() {
         let top = l.state.logical_scroll_top();
-        let added = keys.len() - p - s;
-        l.state.splice(p..old.len() - s, added);
-        // 先頭の読み込み中表示を見ているときに古いメッセージが前に入ったら、元の一番上のメッセージへ位置を移す。
-        // そのままだと上端に張り付いたままになり、読み足しが止まらなくなる
-        if top.item_ix == 0 && p == 1 && s == old.len() - 1 {
-            l.state.scroll_to(ListOffset {
-                item_ix: 1 + added,
-                offset_in_item: px(0.0),
-            });
+        // 見ていたメッセージ（先頭の読み込み中表示を見ていたときは、その次の一番上のメッセージ）
+        let anchor = if l.state.is_following_tail() {
+            None
+        } else if top.item_ix == 0 {
+            l.ids
+                .get(1)
+                .copied()
+                .filter(|&id| id != 0)
+                .map(|id| (id, px(0.0), true))
+        } else {
+            l.ids
+                .get(top.item_ix)
+                .copied()
+                .filter(|&id| id != 0)
+                .map(|id| (id, top.offset_in_item, false))
+        };
+        // 先頭行（ix = 0）だけ計測済みのまま後ろに未計測の行が入ると、上へスクロールしたとき
+        // 未計測の区間を飛び越えて先頭へ飛ぶので、0 から入れ替える
+        let start = if p == 1 { 0 } else { p };
+        let added = keys.len() - start - s;
+        l.state.splice(start..old.len() - s, added);
+        // 古いメッセージが前に入ると、元の一番上の行は日付の区切りや連投のまとまりが変わって key も変わる。
+        // 見ていたメッセージの位置へスクロール位置を移す。そのままだと上端に張り付き、読み足しが止まらなくなる
+        if let Some((anchor_id, offset, from_head)) = anchor {
+            if let Some(new_ix) = ids.iter().position(|&id| id == anchor_id) {
+                if from_head {
+                    if new_ix > 1 {
+                        l.state.scroll_to(ListOffset {
+                            item_ix: new_ix,
+                            offset_in_item: px(0.0),
+                        });
+                    }
+                } else if l.state.logical_scroll_top().item_ix != new_ix {
+                    let keep = if keys.get(new_ix) == old.get(top.item_ix) {
+                        offset
+                    } else {
+                        px(0.0)
+                    };
+                    l.state.scroll_to(ListOffset {
+                        item_ix: new_ix,
+                        offset_in_item: keep,
+                    });
+                }
+            }
         }
     }
     l.keys = keys;
+    l.ids = ids;
 }
 
 impl Root {
@@ -1114,10 +1156,12 @@ impl Root {
             self.lists[&cid].keys.len()
         } else {
             let mut keys = Vec::with_capacity(msgs.len() + 2);
+            let mut ids = Vec::with_capacity(msgs.len() + 2);
             {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 (no_access, hist_end, prefix, cname).hash(&mut h);
                 keys.push(h.finish());
+                ids.push(0);
             }
             let mut pt = None;
             for (i, m) in msgs.iter().enumerate() {
@@ -1130,12 +1174,14 @@ impl Root {
                     compact,
                     self.app.plugins.revision,
                 ));
+                ids.push(id_key(&m.id));
                 pt = t;
             }
             keys.push(1);
+            ids.push(0);
             let n = keys.len();
             match self.lists.get_mut(&cid) {
-                Some(l) => sync_list(l, keys),
+                Some(l) => sync_list(l, keys, ids),
                 None => {
                     let state = ListState::new(n, ListAlignment::Bottom, px(600.0));
                     state.set_follow_mode(FollowMode::Tail);
@@ -1151,6 +1197,7 @@ impl Root {
                         MsgList {
                             state,
                             keys,
+                            ids,
                             stamp: 0,
                             detached: false,
                         },
@@ -1854,4 +1901,63 @@ fn round_button(id: &'static str, name: IconName, bg: Color32, fg: Color32) -> S
         .justify_center()
         .cursor_pointer()
         .child(icon(name, 24.0, fg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{px, sync_list, FollowMode, ListAlignment, ListOffset, ListState, MsgList};
+
+    #[test]
+    fn sync_list_preserves_anchor_when_older_prepended_and_first_row_key_changes() {
+        // [先頭(10), m1, m2, m3, 末尾(1)]
+        let keys = vec![10, 101, 102, 103, 1];
+        let ids = vec![0, 1001, 1002, 1003, 0];
+        let state = ListState::new(keys.len(), ListAlignment::Bottom, px(600.0));
+        state.set_follow_mode(FollowMode::Tail);
+        let mut l = MsgList {
+            state,
+            keys,
+            ids,
+            stamp: 0,
+            detached: false,
+        };
+        // 一番上のメッセージを見ているときに古い 2 件が前に入り、m1 の key が変わる（日付の区切りなど）
+        l.state.scroll_to(ListOffset {
+            item_ix: 1,
+            offset_in_item: px(12.0),
+        });
+        sync_list(
+            &mut l,
+            vec![10, 91, 92, 101_999, 102, 103, 1],
+            vec![0, 901, 902, 1001, 1002, 1003, 0],
+        );
+        assert_eq!(l.state.logical_scroll_top().item_ix, 3);
+        // 先頭の読み込み中表示を見ているときに、さらに 2 件入る
+        l.state.scroll_to(ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.0),
+        });
+        sync_list(
+            &mut l,
+            vec![10, 81, 82, 91_999, 92, 101_999, 102, 103, 1],
+            vec![0, 801, 802, 901, 902, 1001, 1002, 1003, 0],
+        );
+        assert_eq!(l.state.logical_scroll_top().item_ix, 3);
+    }
+
+    #[test]
+    fn sync_list_keeps_following_tail_for_new_messages() {
+        let state = ListState::new(3, ListAlignment::Bottom, px(600.0));
+        state.set_follow_mode(FollowMode::Tail);
+        let mut l = MsgList {
+            state,
+            keys: vec![10, 101, 1],
+            ids: vec![0, 1001, 0],
+            stamp: 0,
+            detached: false,
+        };
+        sync_list(&mut l, vec![10, 101, 102, 1], vec![0, 1001, 1002, 0]);
+        assert!(l.state.is_following_tail());
+        assert_eq!(l.ids, vec![0, 1001, 1002, 0]);
+    }
 }

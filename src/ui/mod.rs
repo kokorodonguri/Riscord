@@ -154,6 +154,8 @@ pub struct MsgList {
     pub state: ListState,
     /// 前に渡した行の中身の目印（変わった行だけ測り直す）
     pub keys: Vec<u64>,
+    /// 前に渡した各行のメッセージ ID の目印（先頭・末尾の番兵は 0）。読み足しの前後で見ていた行を探す
+    pub ids: Vec<u64>,
     /// keys を作ったときの一覧の状態（AppState::msg_rev など）。同じなら keys は作り直さない
     pub stamp: u64,
     /// 最新とつながっていない一覧を出している（その間は下端に付いていかない）

@@ -1397,23 +1397,32 @@ async fn gateway_once_at(
         ),
         _ => gateway.to_string(),
     };
-    let (ws, _) = tokio_tungstenite::connect_async(url.as_str()).await?;
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio_tungstenite::connect_async(url.as_str()),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Gateway 接続がタイムアウトしました"))??;
     let (mut write, mut read) = ws.split();
     let mut inflater = Inflater::new();
 
-    let hello = loop {
-        match read.next().await {
-            Some(Ok(m @ (WsMsg::Text(_) | WsMsg::Binary(_)))) => {
-                match decode_frame(&m, &mut inflater)? {
-                    Some(v) => break v,
-                    None => continue,
+    let hello = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match read.next().await {
+                Some(Ok(m @ (WsMsg::Text(_) | WsMsg::Binary(_)))) => {
+                    match decode_frame(&m, &mut inflater)? {
+                        Some(v) => break Ok(v),
+                        None => continue,
+                    }
                 }
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(e.into()),
+                None => bail!("helloを受信する前に切断"),
             }
-            Some(Ok(_)) => continue,
-            Some(Err(e)) => return Err(e.into()),
-            None => bail!("helloを受信する前に切断"),
         }
-    };
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Gateway Hello の受信がタイムアウトしました"))??;
     let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41_250);
     if interval_ms == 0 {
         bail!("無効な heartbeat interval");

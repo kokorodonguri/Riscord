@@ -110,6 +110,10 @@ pub fn get(uri: &str) -> Img {
         let Ok(_download_permit) = s.downloads.acquire().await else {
             return;
         };
+        // キューで待っている間に破棄された要求は通信を開始しない。
+        if !is_current_request(s.cache.lock().unwrap().get(&uri), &request) {
+            return;
+        }
         let bytes = load_bytes(&s.http, &uri).await;
         let result = match bytes {
             Ok(b) => {

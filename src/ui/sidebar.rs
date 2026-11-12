@@ -539,6 +539,7 @@ impl Root {
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                         this.menu = Some((PopMenu::Guild, ev.position));
                         this.menu_guild = Some(gid2.clone());
+                        this.menu_from_header = false;
                         this.app.ensure_guild_channels(&gid2);
                         cx.stop_propagation();
                         cx.notify();
@@ -589,10 +590,65 @@ impl Root {
                     .find(|x| &x.id == g)
                     .map(|x| x.name.clone())
                     .unwrap_or_default();
-                div()
-                    .pl(z(7.0))
-                    .w_full()
-                    .child(line(title, 16.0, WHITE()).font_weight(FontWeight::MEDIUM))
+                // 押すとサーバーのメニュー（公式クライアントと同じく見出しの下に開く）
+                let open = self.menu.is_some_and(|(m, _)| m == PopMenu::Guild)
+                    && self.menu_from_header
+                    && self.menu_guild.as_ref() == Some(g);
+                let (gid, slot, slot2) = (
+                    g.clone(),
+                    self.guild_header_bounds.clone(),
+                    self.guild_header_bounds.clone(),
+                );
+                div().w_full().child(
+                    div()
+                        .id("guild_header")
+                        .relative()
+                        .w_full()
+                        .h(z(36.0))
+                        .pl(z(7.0))
+                        .pr(z(4.0))
+                        .rounded(z(6.0))
+                        .flex()
+                        .items_center()
+                        .gap(z(6.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(HOVER()))
+                        .when(open, |d| d.bg(HOVER()))
+                        .child(
+                            line(title, 16.0, WHITE())
+                                .font_weight(FontWeight::MEDIUM)
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .child(icon(
+                            if open {
+                                IconName::X
+                            } else {
+                                IconName::ChevronDown
+                            },
+                            16.0,
+                            TEXT(),
+                        ))
+                        .child(
+                            canvas(move |bounds, _, _| slot.set(Some(bounds)), |_, _, _, _| {})
+                                .absolute()
+                                .size_full(),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if open {
+                                this.menu = None;
+                                this.menu_guild = None;
+                            } else if let Some(b) = slot2.get() {
+                                this.menu = Some((
+                                    PopMenu::Guild,
+                                    b.bottom_left() + point(px(0.0), z(6.0)),
+                                ));
+                                this.menu_guild = Some(gid.clone());
+                                this.menu_from_header = true;
+                            }
+                            cx.notify();
+                        })),
+                )
             }
         };
         let head = div()

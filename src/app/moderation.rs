@@ -642,6 +642,19 @@ impl App {
         self.reload_moderation();
     }
 
+    /// イベントの作成画面を開く（サーバーのメニューの「イベントを作成」）
+    pub fn open_event_create(&mut self, guild_id: &str) {
+        if !self.can_open_mod_tab(guild_id, ModTab::Events) {
+            return;
+        }
+        if !self.guilds.iter().any(|g| g.id == guild_id) {
+            return;
+        }
+        self.moderation = Some(ServerModeration::new(guild_id.to_owned(), ModTab::Events));
+        self.reload_moderation();
+        self.start_event_draft(None);
+    }
+
     pub fn close_moderation(&mut self) {
         if self
             .moderation
@@ -1121,6 +1134,24 @@ mod tests {
         assert!(none.moderation.is_none());
         let (admin, _) = self::app(ADMINISTRATOR);
         assert!(ModTab::ALL.iter().all(|t| admin.can_open_mod_tab("1", *t)));
+    }
+
+    #[test]
+    fn event_shortcut_opens_events_tab_with_a_new_draft() {
+        let (mut app, mut rx) = app(BAN_MEMBERS | MANAGE_EVENTS);
+        app.open_event_create("1");
+        let m = app.moderation.as_ref().unwrap();
+        assert_eq!(m.tab, ModTab::Events);
+        assert!(m.event_draft.as_ref().is_some_and(|d| d.editing.is_none()));
+        // 最初のタブの一覧は取りに行かず、イベントだけ読む
+        assert!(matches!(
+            next(&mut rx).1,
+            net::ApiCall::GetScheduledEvents(_)
+        ));
+        assert!(rx.try_recv().is_err());
+        let (mut none, _) = self::app(BAN_MEMBERS);
+        none.open_event_create("1");
+        assert!(none.moderation.is_none());
     }
 
     #[test]

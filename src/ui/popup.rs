@@ -160,7 +160,10 @@ impl Root {
             PopMenu::Emoji => self.emoji_picker(cx).into_any_element(),
         };
         // 右クリックのメニューはカーソルの右下に、ボタンのメニューはボタンの上に出す
-        let (at, anchor) = if matches!(menu, PopMenu::Guild | PopMenu::Folder | PopMenu::Message) {
+        let (at, anchor) = if menu == PopMenu::Guild && self.menu_from_header {
+            // サーバー名の見出しから開いたときは、見出しの真下に出す
+            (pos, Anchor::TopLeft)
+        } else if matches!(menu, PopMenu::Guild | PopMenu::Folder | PopMenu::Message) {
             (pos + point(z(4.0), z(0.0)), Anchor::TopLeft)
         } else if menu == PopMenu::Emoji {
             // 入力欄の右端のボタンから、左上へ開く
@@ -419,11 +422,12 @@ impl Root {
         )
     }
 
-    /// サーバーアイコンの右クリックメニュー
+    /// サーバーのメニュー（サーバー名の見出し・アイコンの右クリック）。並びは公式クライアントに合わせる
     fn guild_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         let gid = self.menu_guild.clone()?;
         let g = self.app.guilds.iter().find(|g| g.id == gid)?;
         let owner = g.owner;
+        let from_header = self.menu_from_header;
         let unread = self
             .app
             .unread
@@ -445,132 +449,118 @@ impl Root {
             .flex()
             .flex_col()
             .gap(z(2.0));
-
-        let folder_guild = gid.clone();
-        let in_folder = self
-            .app
-            .settings
-            .guild_folders
-            .iter()
-            .any(|f| f.guild_ids.contains(&gid));
-        col = col.child(
+        let item = |id: &'static str, name: IconName, label: &'static str| {
             menu_row(
-                "gm_folder",
-                icon(IconName::MessagesSquare, 18.0, TEXT()).into_any_element(),
-                if in_folder {
-                    "フォルダから移動"
-                } else {
-                    "フォルダを作成"
-                },
+                id,
+                icon(name, 18.0, TEXT()).into_any_element(),
+                label,
                 false,
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                let changed = if in_folder {
-                    this.app.remove_guild_from_folder(&folder_guild)
-                } else {
-                    this.app.create_guild_folder(&folder_guild).is_some()
-                };
-                if changed {
-                    this.app.save_settings();
-                }
-                cx.notify();
-            })),
+        };
+
+        // 招待・設定・作成
+        let g1 = gid.clone();
+        col = col.child(
+            item("gm_invite", IconName::UserPlus, "サーバーに招待").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    close(this);
+                    this.app.create_guild_invite(&g1);
+                    cx.notify();
+                },
+            )),
         );
         let settings_gid = gid.clone();
         col = col.child(
-            menu_row(
-                "gm_settings",
-                icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
-                "サーバー設定",
-                false,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                this.app.open_guild_editor(&settings_gid);
-                cx.notify();
-            })),
+            item("gm_settings", IconName::Settings, "サーバー設定").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    close(this);
+                    this.app.open_guild_editor(&settings_gid);
+                    cx.notify();
+                },
+            )),
         );
         let role_gid = gid.clone();
         col = col.child(
-            menu_row(
-                "gm_roles",
-                icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
-                "ロールを確認・管理",
-                false,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                this.app.open_role_admin(&role_gid);
-                cx.notify();
-            })),
+            item("gm_roles", IconName::Settings, "ロールを確認・管理").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    close(this);
+                    this.app.open_role_admin(&role_gid);
+                    cx.notify();
+                },
+            )),
         );
         if self.app.can_moderate_guild(&gid) {
             let mod_gid = gid.clone();
             col = col.child(
-                menu_row(
-                    "gm_moderation",
-                    icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
-                    "サーバー管理",
-                    false,
+                item("gm_moderation", IconName::Settings, "サーバー管理").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        close(this);
+                        this.app.open_moderation(&mod_gid);
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        if self.app.can_open_mod_tab(&gid, crate::app::ModTab::Events) {
+            let g1 = gid.clone();
+            col = col.child(
+                item("gm_event", IconName::CirclePlus, "イベントを作成").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        close(this);
+                        this.app.open_event_create(&g1);
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        if !from_header {
+            let folder_guild = gid.clone();
+            let in_folder = self
+                .app
+                .settings
+                .guild_folders
+                .iter()
+                .any(|f| f.guild_ids.contains(&gid));
+            col = col.child(
+                item(
+                    "gm_folder",
+                    IconName::Folder,
+                    if in_folder {
+                        "フォルダから移動"
+                    } else {
+                        "フォルダを作成"
+                    },
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     close(this);
-                    this.app.open_moderation(&mod_gid);
+                    let changed = if in_folder {
+                        this.app.remove_guild_from_folder(&folder_guild)
+                    } else {
+                        this.app.create_guild_folder(&folder_guild).is_some()
+                    };
+                    if changed {
+                        this.app.save_settings();
+                    }
                     cx.notify();
                 })),
             );
         }
-        let g1 = gid.clone();
-        col = col.child(
-            menu_row(
-                "gm_read",
-                icon(IconName::CheckCheck, 18.0, TEXT()).into_any_element(),
-                "既読にする",
-                false,
-            )
-            .when(!unread, |d| d.opacity(0.5))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                this.app.mark_guild_read(&g1);
-                cx.notify();
-            })),
-        );
-        let g1 = gid.clone();
-        col = col.child(
-            menu_row(
-                "gm_invite",
-                icon(IconName::UserPlus, 18.0, TEXT()).into_any_element(),
-                "サーバーに招待",
-                false,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                this.app.create_guild_invite(&g1);
-                cx.notify();
-            })),
-        );
-        col = col.child(menu_divider());
 
+        // 通知
+        col = col.child(menu_divider());
         let g1 = gid.clone();
         let (mute_icon, mute_label) = if set.muted {
             (IconName::Bell, "サーバーのミュートを解除")
         } else {
             (IconName::BellOff, "サーバーをミュート")
         };
-        col = col.child(
-            menu_row(
-                "gm_mute",
-                icon(mute_icon, 18.0, TEXT()).into_any_element(),
-                mute_label,
-                false,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
+        col = col.child(item("gm_mute", mute_icon, mute_label).on_click(cx.listener(
+            move |this, _, _, cx| {
                 let muted = this.app.guild_settings.get(&g1).is_some_and(|s| s.muted);
                 this.app.set_guild_settings(&g1, Some(!muted), None);
                 cx.notify();
-            })),
-        );
+            },
+        )));
         col = col.child(div().px(z(10.0)).pt(z(6.0)).pb(z(2.0)).child(text(
             "通知設定",
             12.0,
@@ -609,6 +599,30 @@ impl Root {
                     })),
             );
         }
+        let g1 = gid.clone();
+        col = col.child(
+            item("gm_read", IconName::CheckCheck, "既読にする")
+                .when(!unread, |d| d.opacity(0.5))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.mark_guild_read(&g1);
+                    cx.notify();
+                })),
+        );
+
+        // ID・脱退
+        col = col.child(menu_divider());
+        let g1 = gid.clone();
+        col = col.child(
+            item("gm_id", IconName::IdCard, "サーバーIDをコピー").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    close(this);
+                    cx.write_to_clipboard(ClipboardItem::new_string(g1.clone()));
+                    this.app.show_toast("サーバーIDをコピーしました");
+                    cx.notify();
+                },
+            )),
+        );
         if !owner {
             col = col.child(menu_divider());
             let g1 = gid.clone();
@@ -628,22 +642,6 @@ impl Root {
                 })),
             );
         }
-        col = col.child(menu_divider());
-        let g1 = gid.clone();
-        col = col.child(
-            menu_row(
-                "gm_id",
-                icon(IconName::IdCard, 18.0, TEXT()).into_any_element(),
-                "サーバーIDをコピー",
-                false,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                cx.write_to_clipboard(ClipboardItem::new_string(g1.clone()));
-                this.app.show_toast("サーバーIDをコピーしました");
-                cx.notify();
-            })),
-        );
         Some(col)
     }
 

@@ -249,6 +249,10 @@ pub struct Root {
     pub menu: Option<(PopMenu, Point<Pixels>)>,
     /// PopMenu::Guild の対象のサーバー
     pub menu_guild: Option<String>,
+    /// サーバーのメニューを、チャンネル一覧の上のサーバー名から開いた（見出しの下に出す）
+    pub menu_from_header: bool,
+    /// サーバー名の見出しの位置（描いたときに覚える。メニューを真下に出すため）
+    pub guild_header_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     pub menu_folder: Option<String>,
     /// PopMenu::Message の対象のメッセージ
     pub menu_msg: Option<crate::model::Message>,
@@ -823,6 +827,8 @@ impl Root {
             revealed: Default::default(),
             menu: None,
             menu_guild: None,
+            menu_from_header: false,
+            guild_header_bounds: Rc::default(),
             menu_folder: None,
             menu_msg: None,
             emoji_rows: None,

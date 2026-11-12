@@ -32,6 +32,8 @@ songbird = { version = "0.6", default-features = false, features = ["driver", "g
 cpal = "0.18.2"
 async-trait = "0.1.92"
 symphonia-core = "0.5"
+# サウンドボードの音（MP3 と Ogg）を読む。Opus は songbird の復号器を使う
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg"] }
 # ゲートウェイの zlib-stream 展開（png 経由で既に依存ツリーにある版を使う）
 flate2 = "1.1"
 # 画像の貼り付け。Wayland ネイティブのクリップボードにも対応させる
@@ -51,6 +53,8 @@ emojis = "0.9"
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 davey = "0.1"
+# マイクのノイズ抑制（RNNoise を Rust に移したもの。モデルは同梱で、外部ライブラリは要らない）
+nnnoiseless = { version = "0.5", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gstreamer = "0.23"

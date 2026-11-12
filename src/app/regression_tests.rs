@@ -1522,3 +1522,234 @@ fn poll_gateway_update_is_replayed_during_history_load() {
         .answer_counts[0];
     assert_eq!((count.count, count.me_voted), (1, true));
 }
+
+#[test]
+fn poll_creation_validates_and_preserves_draft_after_failure() {
+    let mut app = bench_app(0);
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.poll_draft = Some(PollDraft {
+        channel_id: "c".into(),
+        question: "Lunch?".into(),
+        answers: "One".into(),
+        duration: 24,
+        ..Default::default()
+    });
+    app.submit_poll();
+    assert!(rx.try_recv().is_err());
+    assert!(app.poll_draft.as_ref().unwrap().error.is_some());
+    app.poll_draft.as_mut().unwrap().answers = "One\nTwo".into();
+    app.submit_poll();
+    app.submit_poll();
+    let Cmd::Api {
+        id,
+        call: call @ net::ApiCall::SendMessage { .. },
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("expected poll")
+    };
+    assert!(rx.try_recv().is_err());
+    assert!(
+        matches!(&call, net::ApiCall::SendMessage { body, .. } if body["poll"]["answers"].as_array().unwrap().len() == 2 && body["poll"]["duration"] == 24)
+    );
+    app.on_api_result(id, call, Err("forbidden".into()));
+    let draft = app.poll_draft.as_ref().unwrap();
+    assert!(draft.pending.is_none());
+    assert_eq!(draft.answers, "One\nTwo");
+    assert!(draft.error.is_some());
+}
+
+#[test]
+fn poll_end_only_author_and_recovers_from_disconnection() {
+    let mut app = bench_app(1);
+    app.me =
+        Some(serde_json::from_value(serde_json::json!({"id":"other","username":"other"})).unwrap());
+    app.messages.get_mut("c").unwrap()[0].poll = Some(serde_json::from_value(serde_json::json!({
+        "question":{"text":"Q"}, "answers":[{"answer_id":1,"poll_media":{"text":"A"}}], "results":{"answer_counts":[]}
+    })).unwrap());
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.end_poll("c", "100000");
+    assert!(rx.try_recv().is_err());
+    app.me.as_mut().unwrap().id = "1".into();
+    app.end_poll("c", "100000");
+    app.end_poll("c", "100000");
+    let Cmd::Api {
+        id,
+        call: call @ net::ApiCall::EndPoll { .. },
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("expected end poll")
+    };
+    assert!(rx.try_recv().is_err());
+    drop(rx);
+    app.on_api_result(id, call, Ok(serde_json::Value::Null));
+    assert!(app.pending_poll_votes.is_empty());
+    app.end_poll("c", "100000");
+    assert!(app.pending_poll_votes.is_empty());
+}
+
+#[test]
+fn guild_folders_preserve_membership_order_and_round_trip_settings() {
+    let mut app = App::default();
+    app.guilds = ["a", "b", "c", "d"].map(guild).to_vec();
+    let id = app.create_guild_folder("b").unwrap();
+    assert!(app.move_guild_to_folder("d", &id));
+    assert!(!app.move_guild_to_folder("missing", &id));
+    assert!(!app.move_guild_to_folder("a", "missing"));
+    assert!(app.drop_guild_on_guild("a", "b"));
+    assert!(app.settings.guild_folders[0]
+        .guild_ids
+        .contains(&"a".to_string()));
+    assert!(app.drop_guild_on_guild("a", "c"));
+    assert!(!app.settings.guild_folders[0]
+        .guild_ids
+        .contains(&"a".to_string()));
+    app.settings.guild_folders[0].name = "Friends".into();
+    app.settings.guild_folders[0].color = 0xed4245;
+    app.settings.guild_folders[0].collapsed = true;
+    let encoded = serde_json::to_vec(&app.settings).unwrap();
+    let decoded: Settings = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.guild_folders[0].name, "Friends");
+    assert_eq!(decoded.guild_folders[0].color, 0xed4245);
+    assert!(decoded.guild_folders[0].collapsed);
+    assert!(decoded.guild_folders[0]
+        .guild_ids
+        .contains(&"b".to_string()));
+    assert!(app.move_folder_to_guild(&id, "c"));
+    let ids = guild_ids(&app);
+    let b = ids.iter().position(|id| *id == "b").unwrap();
+    let d = ids.iter().position(|id| *id == "d").unwrap();
+    assert_eq!(b.abs_diff(d), 1);
+    assert!(app.settings.guild_order.contains(&"b".into()));
+    let old: Settings = serde_json::from_str("{}").unwrap();
+    assert!(old.guild_folders.is_empty());
+}
+
+#[test]
+fn friend_refresh_does_not_overwrite_new_gateway_events() {
+    let mut app = App::default();
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.fetch_friends();
+    let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+        panic!("expected request")
+    };
+    app.on_gateway_event(
+        "RELATIONSHIP_ADD",
+        serde_json::json!({"id":"1","type":1,"user":{"id":"1","username":"alice"}}),
+    );
+    app.on_api_result(id, call, Ok(serde_json::json!([])));
+    assert_eq!(app.friends.relationships.len(), 1);
+    let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+        panic!("expected retry")
+    };
+    app.on_api_result(
+        id,
+        call,
+        Ok(serde_json::json!([{"id":"1","type":1,"user":{"id":"1","username":"alice"}}])),
+    );
+    assert!(app.friends.loaded);
+    assert_eq!(app.friends.relationships[0].user.username, "alice");
+}
+
+#[test]
+fn friend_actions_validate_state_and_retain_data_on_error() {
+    let mut app = App::default();
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.friends_ready(
+        &serde_json::json!([{"id":"1","type":3,"user":{"id":"1","username":"alice"}}]),
+    );
+    app.friend_action(FriendAction::Accept("2".into()));
+    assert!(rx.try_recv().is_err());
+    app.friend_action(FriendAction::Accept("1".into()));
+    app.friend_action(FriendAction::Accept("1".into()));
+    let Cmd::Api {
+        id,
+        call: call @ net::ApiCall::AddFriend(_),
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("expected accept")
+    };
+    assert!(rx.try_recv().is_err());
+    app.on_api_result(id, call, Err("403 Forbidden".into()));
+    assert_eq!(app.friends.relationships[0].kind, 3);
+    assert!(app.friends.pending.is_empty());
+    assert!(app.friends.error.is_some());
+    app.friends.username = "bob".into();
+    app.friend_action(FriendAction::Request);
+    let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+        panic!("expected request")
+    };
+    app.on_api_result(id, call, Err("400 Bad Request".into()));
+    assert_eq!(app.friends.username, "bob");
+}
+
+#[test]
+fn friend_dm_response_is_validated_and_does_not_hijack_navigation() {
+    let mut app = App::default();
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.friends_ready(
+        &serde_json::json!([{"id":"1","type":1,"user":{"id":"1","username":"alice"}}]),
+    );
+    app.friends.open = true;
+    app.friend_action(FriendAction::OpenDm("1".into()));
+    let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+        panic!("expected DM creation")
+    };
+    app.friends.open = false;
+    app.on_api_result(
+        id,
+        call,
+        Ok(serde_json::json!({"id":"42","type":1,"recipients":[{"id":"1","username":"alice"}]})),
+    );
+    assert!(app.pending_open.is_none());
+    assert_eq!(app.dms[0].id, "42");
+    app.friend_action(FriendAction::OpenDm("1".into()));
+    assert_eq!(app.pending_open.as_deref(), Some("42"));
+}
+
+#[test]
+fn friend_success_during_refresh_triggers_a_fresh_snapshot() {
+    let mut app = App::default();
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.friends_ready(
+        &serde_json::json!([{"id":"1","type":3,"user":{"id":"1","username":"alice"}}]),
+    );
+    app.fetch_friends();
+    let Cmd::Api {
+        id: read_id,
+        call: read,
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("expected refresh")
+    };
+    app.friend_action(FriendAction::Accept("1".into()));
+    let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+        panic!("expected accept")
+    };
+    app.on_api_result(id, call, Ok(serde_json::Value::Null));
+    app.on_api_result(
+        read_id,
+        read,
+        Ok(serde_json::json!([{"id":"1","type":3,"user":{"id":"1","username":"alice"}}])),
+    );
+    let Cmd::Api { id, call } = rx.try_recv().unwrap() else {
+        panic!("expected fresh refresh")
+    };
+    app.on_api_result(
+        id,
+        call,
+        Ok(serde_json::json!([{"id":"1","type":1,"user":{"id":"1","username":"alice"}}])),
+    );
+    assert_eq!(app.friends.relationships[0].kind, 1);
+}

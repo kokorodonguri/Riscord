@@ -284,6 +284,10 @@ pub enum ApiCall {
         guild_id: String,
         role_id: String,
     },
+    ReorderRoles {
+        guild_id: String,
+        positions: Value,
+    },
     GetMember {
         guild_id: String,
         user_id: String,
@@ -376,11 +380,24 @@ pub enum ApiCall {
         guild_id: String,
         body: Value,
     },
+    ModifyAutoModRule {
+        guild_id: String,
+        rule_id: String,
+        body: Value,
+    },
     DeleteAutoModRule {
         guild_id: String,
         rule_id: String,
     },
     GetVoiceRegions,
+    /// サウンドボード: 標準の音・サーバーの音・ボイスチャンネルで鳴らす
+    GetDefaultSounds,
+    GetGuildSounds(String),
+    SendSound {
+        channel_id: String,
+        sound_id: String,
+        source_guild_id: Option<String>,
+    },
 
     // ---- 招待 ----
     GetInvite(String),
@@ -491,6 +508,10 @@ impl ApiCall {
                 json!({ "channel_overrides": { channel_id.clone(): settings } }),
             ),
             GetDms => get("/users/@me/channels".into()),
+            CreateDm(users) if users.len() == 1 => post(
+                "/users/@me/channels".into(),
+                json!({ "recipient_id": users[0] }),
+            ),
             CreateDm(users) => post("/users/@me/channels".into(), json!({ "recipients": users })),
             GetRelationships => get("/users/@me/relationships".into()),
             SendFriendRequest { username } => post(
@@ -787,6 +808,10 @@ impl ApiCall {
                 body,
             } => patch(format!("/guilds/{guild_id}/roles/{role_id}"), body.clone()),
             DeleteRole { guild_id, role_id } => del(format!("/guilds/{guild_id}/roles/{role_id}")),
+            ReorderRoles {
+                guild_id,
+                positions,
+            } => patch(format!("/guilds/{guild_id}/roles"), positions.clone()),
             GetMember { guild_id, user_id } => get(format!("/guilds/{guild_id}/members/{user_id}")),
             SearchMembers {
                 guild_id,
@@ -892,10 +917,31 @@ impl ApiCall {
                 format!("/guilds/{guild_id}/auto-moderation/rules"),
                 body.clone(),
             ),
+            ModifyAutoModRule {
+                guild_id,
+                rule_id,
+                body,
+            } => patch(
+                format!("/guilds/{guild_id}/auto-moderation/rules/{rule_id}"),
+                body.clone(),
+            ),
             DeleteAutoModRule { guild_id, rule_id } => del(format!(
                 "/guilds/{guild_id}/auto-moderation/rules/{rule_id}"
             )),
             GetVoiceRegions => get("/voice/regions".into()),
+            GetDefaultSounds => get("/soundboard-default-sounds".into()),
+            GetGuildSounds(g) => get(format!("/guilds/{g}/soundboard-sounds")),
+            SendSound {
+                channel_id,
+                sound_id,
+                source_guild_id,
+            } => post(
+                format!("/channels/{channel_id}/send-soundboard-sound"),
+                match source_guild_id {
+                    Some(g) => json!({ "sound_id": sound_id, "source_guild_id": g }),
+                    None => json!({ "sound_id": sound_id }),
+                },
+            ),
 
             GetInvite(code) => get(format!(
                 "/invites/{}?with_counts=true&with_expiration=true",
@@ -1126,6 +1172,50 @@ mod tests {
         }
         .route();
         assert_eq!(p, "/users/@me/guilds/%40me/settings");
+    }
+
+    #[test]
+    fn channel_permission_routes_keep_string_bitfields() {
+        let body = json!({"type": 1, "allow": "1267650600228229401496703205376", "deny": "2048"});
+        let (method, path, payload) = ApiCall::EditPermissions {
+            channel_id: "20".into(),
+            overwrite_id: "11".into(),
+            body: body.clone(),
+        }
+        .route();
+        assert_eq!(method, Method::PUT);
+        assert_eq!(path, "/channels/20/permissions/11");
+        assert_eq!(payload, Some(body));
+        let (method, path, _) = ApiCall::DeletePermission {
+            channel_id: "20".into(),
+            overwrite_id: "11".into(),
+        }
+        .route();
+        assert_eq!(method, Method::DELETE);
+        assert_eq!(path, "/channels/20/permissions/11");
+    }
+
+    #[test]
+    fn role_reorder_uses_guild_roles_patch() {
+        let positions = json!([{ "id": "5", "position": 3 }]);
+        let (method, path, body) = ApiCall::ReorderRoles {
+            guild_id: "7".into(),
+            positions: positions.clone(),
+        }
+        .route();
+        assert_eq!(method, Method::PATCH);
+        assert_eq!(path, "/guilds/7/roles");
+        assert_eq!(body, Some(positions));
+    }
+
+    #[test]
+    fn single_dm_uses_documented_recipient_id_and_group_route_is_preserved() {
+        let (method, path, body) = ApiCall::CreateDm(vec!["123".into()]).route();
+        assert_eq!(method, Method::POST);
+        assert_eq!(path, "/users/@me/channels");
+        assert_eq!(body, Some(json!({"recipient_id": "123"})));
+        let (_, _, body) = ApiCall::CreateDm(vec!["123".into(), "456".into()]).route();
+        assert_eq!(body, Some(json!({"recipients": ["123", "456"]})));
     }
 
     #[test]

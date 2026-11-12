@@ -777,6 +777,7 @@ mod tests {
                 color: 0,
                 position: 0,
                 hoist: false,
+                managed: Some(false),
                 permissions: "0".into(),
             }],
         );

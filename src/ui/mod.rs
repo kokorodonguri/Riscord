@@ -1,17 +1,22 @@
 //! 画面（gpui）。状態とロジックは crate::app にあり、ここではそれを描いて操作をつなぐ
+mod channel_permissions;
 mod chat;
 mod commands;
 mod dialogs;
 mod emoji;
 mod forum;
+mod friends;
 mod kit;
 mod login;
 mod members;
 mod message;
+mod moderation;
 mod panel;
 mod popup;
+mod role_admin;
 mod settings;
 mod sidebar;
+mod soundboard;
 mod split;
 
 use std::cell::Cell;
@@ -174,6 +179,22 @@ pub struct Inputs {
     pub search: Entity<InputState>,
     /// メッセージから作るスレッドの名前
     pub thread_name: Entity<InputState>,
+    pub role_name: Entity<InputState>,
+    pub guild_name: Entity<InputState>,
+    pub guild_description: Entity<TextareaState>,
+    pub channel_member_id: Entity<InputState>,
+    pub friend_name: Entity<InputState>,
+    pub folder_name: Entity<InputState>,
+    pub poll_question: Entity<InputState>,
+    pub poll_answers: Entity<TextareaState>,
+    /// サーバー管理: イベントと AutoMod ルールの下書き
+    pub event_name: Entity<InputState>,
+    pub event_start: Entity<InputState>,
+    pub event_end: Entity<InputState>,
+    pub event_location: Entity<InputState>,
+    pub event_description: Entity<TextareaState>,
+    pub rule_name: Entity<InputState>,
+    pub rule_keywords: Entity<TextareaState>,
     /// フォーラムの新しい投稿の題と本文
     pub post_title: Entity<InputState>,
     pub post_body: Entity<TextareaState>,
@@ -187,6 +208,7 @@ pub enum PopMenu {
     Headset,
     /// サーバーアイコンの右クリック（対象は Root::menu_guild）
     Guild,
+    Folder,
     /// メッセージの右クリック（対象は Root::menu_msg）
     Message,
     /// 入力欄の絵文字ボタン
@@ -216,6 +238,7 @@ pub struct Root {
     pub menu: Option<(PopMenu, Point<Pixels>)>,
     /// PopMenu::Guild の対象のサーバー
     pub menu_guild: Option<String>,
+    pub menu_folder: Option<String>,
     /// PopMenu::Message の対象のメッセージ
     pub menu_msg: Option<crate::model::Message>,
     /// 絵文字ピッカーの行（目印が変わったら作り直す）
@@ -488,6 +511,37 @@ impl Root {
             emoji_query: new_input(window, cx, "絵文字を検索", false),
             search: new_input(window, cx, "検索（from: in: has: before: after:）", false),
             thread_name: new_input(window, cx, "スレッド名", false),
+            role_name: new_input(window, cx, "ロール名", false),
+            guild_name: new_input(window, cx, "サーバー名", false),
+            guild_description: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 4)
+                    .placeholder("サーバーの説明")
+            }),
+            channel_member_id: new_input(window, cx, "メンバー ID", false),
+            friend_name: new_input(window, cx, "ユーザー名", false),
+            folder_name: new_input(window, cx, "フォルダ名", false),
+            poll_question: new_input(window, cx, "質問", false),
+            poll_answers: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 6)
+                    .placeholder("選択肢を1行ずつ入力")
+            }),
+            event_name: new_input(window, cx, "イベント名", false),
+            event_start: new_input(window, cx, "開始 YYYY-MM-DD HH:MM", false),
+            event_end: new_input(window, cx, "終了 YYYY-MM-DD HH:MM", false),
+            event_location: new_input(window, cx, "場所", false),
+            event_description: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 5)
+                    .placeholder("説明（任意）")
+            }),
+            rule_name: new_input(window, cx, "ルール名", false),
+            rule_keywords: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 6)
+                    .placeholder("ブロックする語をカンマか改行で区切って入力")
+            }),
             post_title: new_input(window, cx, "タイトル", false),
             post_body: cx.new(|cx| {
                 TextareaState::new(window, cx)
@@ -512,6 +566,84 @@ impl Root {
                 Some(&mut a.emoji_query)
             }),
             bind(cx, window, &inp.search, None, |a| Some(&mut a.search_query)),
+            bind(cx, window, &inp.role_name, Some(100), |a| {
+                a.role_admin
+                    .as_mut()
+                    .and_then(|a| a.draft.as_mut())
+                    .map(|d| &mut d.name)
+            }),
+            bind(cx, window, &inp.guild_name, Some(100), |a| {
+                a.role_admin
+                    .as_mut()
+                    .and_then(|a| a.guild_edit.as_mut())
+                    .map(|d| &mut d.name)
+            }),
+            bind(cx, window, &inp.guild_description, Some(300), |a| {
+                a.role_admin
+                    .as_mut()
+                    .and_then(|a| a.guild_edit.as_mut())
+                    .map(|d| &mut d.description)
+            }),
+            bind(cx, window, &inp.channel_member_id, Some(20), |a| {
+                a.role_admin
+                    .as_mut()
+                    .and_then(|a| a.channel_permissions.as_mut())
+                    .map(|v| &mut v.member_id)
+            }),
+            bind(cx, window, &inp.friend_name, Some(100), |a| {
+                Some(&mut a.friends.username)
+            }),
+            bind(cx, window, &inp.folder_name, Some(100), |a| {
+                Some(&mut a.folder_name)
+            }),
+            bind(cx, window, &inp.poll_question, Some(300), |a| {
+                a.poll_draft.as_mut().map(|d| &mut d.question)
+            }),
+            bind(cx, window, &inp.poll_answers, None, |a| {
+                a.poll_draft.as_mut().map(|d| &mut d.answers)
+            }),
+            bind(cx, window, &inp.event_name, Some(100), |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.event_draft.as_mut())
+                    .map(|d| &mut d.name)
+            }),
+            bind(cx, window, &inp.event_start, Some(16), |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.event_draft.as_mut())
+                    .map(|d| &mut d.start)
+            }),
+            bind(cx, window, &inp.event_end, Some(16), |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.event_draft.as_mut())
+                    .map(|d| &mut d.end)
+            }),
+            bind(cx, window, &inp.event_location, Some(100), |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.event_draft.as_mut())
+                    .map(|d| &mut d.location)
+            }),
+            bind(cx, window, &inp.event_description, Some(1000), |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.event_draft.as_mut())
+                    .map(|d| &mut d.description)
+            }),
+            bind(cx, window, &inp.rule_name, Some(100), |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.rule_draft.as_mut())
+                    .map(|d| &mut d.name)
+            }),
+            bind(cx, window, &inp.rule_keywords, None, |a| {
+                a.moderation
+                    .as_mut()
+                    .and_then(|m| m.rule_draft.as_mut())
+                    .map(|d| &mut d.keywords)
+            }),
             bind(cx, window, &inp.thread_name, Some(100), |a| {
                 Some(&mut a.thread_name)
             }),
@@ -537,6 +669,16 @@ impl Root {
         ];
         // 入力欄: 文字を写すほか、Enter で送信する
         subs.push(cx.subscribe_in(
+            &inp.channel_member_id,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.app.verify_channel_member();
+                    cx.notify();
+                }
+            },
+        ));
+        subs.push(cx.subscribe_in(
             &inp.compose,
             window,
             |this: &mut Root, state, ev: &InputEvent, window, cx| match ev {
@@ -548,6 +690,16 @@ impl Root {
                     this.submit_input(window, cx);
                 }
                 _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &inp.friend_name,
+            window,
+            |this: &mut Root, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.app.friend_action(crate::app::FriendAction::Request);
+                    cx.notify();
+                }
             },
         ));
         subs.push(cx.subscribe_in(
@@ -659,6 +811,7 @@ impl Root {
             revealed: Default::default(),
             menu: None,
             menu_guild: None,
+            menu_folder: None,
             menu_msg: None,
             emoji_rows: None,
             emoji_ac_sel: (String::new(), 0),
@@ -926,6 +1079,42 @@ impl Root {
         );
         sync(&self.inp.search, &self.app.search_query, window, cx);
         sync(&self.inp.thread_name, &self.app.thread_name, window, cx);
+        if let Some(admin) = self.app.role_admin.as_ref() {
+            if let Some(draft) = &admin.draft {
+                sync(&self.inp.role_name, &draft.name, window, cx);
+            }
+            if let Some(draft) = &admin.guild_edit {
+                sync(&self.inp.guild_name, &draft.name, window, cx);
+                sync(&self.inp.guild_description, &draft.description, window, cx);
+            }
+            if let Some(view) = &admin.channel_permissions {
+                sync(&self.inp.channel_member_id, &view.member_id, window, cx);
+            }
+        }
+        sync(&self.inp.folder_name, &self.app.folder_name, window, cx);
+        if let Some(m) = self.app.moderation.as_ref() {
+            if let Some(d) = &m.event_draft {
+                sync(&self.inp.event_name, &d.name, window, cx);
+                sync(&self.inp.event_start, &d.start, window, cx);
+                sync(&self.inp.event_end, &d.end, window, cx);
+                sync(&self.inp.event_location, &d.location, window, cx);
+                sync(&self.inp.event_description, &d.description, window, cx);
+            }
+            if let Some(d) = &m.rule_draft {
+                sync(&self.inp.rule_name, &d.name, window, cx);
+                sync(&self.inp.rule_keywords, &d.keywords, window, cx);
+            }
+        }
+        sync(
+            &self.inp.friend_name,
+            &self.app.friends.username,
+            window,
+            cx,
+        );
+        if let Some(d) = &self.app.poll_draft {
+            sync(&self.inp.poll_question, &d.question, window, cx);
+            sync(&self.inp.poll_answers, &d.answers, window, cx);
+        }
         sync(&self.inp.post_title, &self.app.post_title, window, cx);
         sync(&self.inp.post_body, &self.app.post_body, window, cx);
         if let Some((q, _)) = &self.app.switcher {
@@ -1106,13 +1295,16 @@ impl Root {
         };
         if let Some((g, c)) = from.pop() {
             to.push(before);
+            let friends_home = g.is_none() && c.is_none();
             a.select(g, c);
+            a.friends.open = friends_home;
         }
         self.after_nav();
     }
 
     /// サーバーを選ぶ（None = DM）
     pub fn pick_guild(&mut self, g: Option<String>) {
+        self.app.friends.open = false;
         let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
         let a = &mut self.app;
         if let Some(gid) = &g {
@@ -1127,6 +1319,7 @@ impl Root {
     }
 
     pub fn open_channel(&mut self, id: String) {
+        self.app.friends.open = false;
         let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
         self.app.open_channel(id);
         self.after_move(before);

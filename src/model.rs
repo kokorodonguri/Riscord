@@ -68,6 +68,9 @@ pub struct Role {
     pub position: i64,
     #[serde(default)]
     pub hoist: bool,
+    /// 連携サービスが管理するロールか。不明な場合は編集を許可しない。
+    #[serde(default)]
+    pub managed: Option<bool>,
     /// 権限ビット（10進の文字列）
     #[serde(default)]
     pub permissions: String,
@@ -1092,6 +1095,7 @@ mod permission_tests {
             color: 0,
             position: 0,
             hoist: false,
+            managed: Some(false),
             permissions: p.to_string(),
         };
         let roles = vec![

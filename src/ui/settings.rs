@@ -1192,7 +1192,19 @@ impl Root {
                     .bg(WHITE()),
             );
         }
-        let mut s3 = section(3, "入力感度").child(meter.mb(z(12.0)));
+        let noise = self.app.settings.noise_suppression;
+        let mut s3 = section(3, "入力感度")
+            .child(row(
+                "ノイズ抑制",
+                Some("キーボードの音や空調など、声以外の雑音を減らします。少し CPU を使い、音声が 10 ms 遅れます。".into()),
+                toggle_switch("noise_switch", noise).on_click(cx.listener(move |this, _, _, cx| {
+                    this.app.settings.noise_suppression = !noise;
+                    this.app.apply_voice_settings();
+                    this.app.save_settings();
+                    cx.notify();
+                })),
+            ))
+            .child(meter.mb(z(12.0)));
         if !ptt {
             s3 = s3
                 .child(self.slider_row("vad_db", "しきい値", window, cx))

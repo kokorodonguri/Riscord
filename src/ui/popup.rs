@@ -5,8 +5,8 @@ use gpui::*;
 
 use super::*;
 use crate::app::{
-    darken, local_dt, name_color, rgb, snowflake_date, status_label, user_avatar_url, ProfileState,
-    STATUSES,
+    darken, local_dt, name_color, rgb, snowflake_date, status_label, user_avatar_url, MemberAction,
+    ProfileState, STATUSES,
 };
 use crate::color::Color32;
 use crate::model::ProfileData;
@@ -126,17 +126,41 @@ impl Root {
                         cx.notify();
                     })),
                 );
+                col = col.child(
+                    menu_row(
+                        "plus_poll",
+                        icon(IconName::MessagesSquare, 20.0, TEXT()).into_any_element(),
+                        "投票を作成",
+                        false,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.menu = None;
+                        if let Some(draft) = this.app.poll_draft.as_ref() {
+                            if Some(&draft.channel_id) != this.app.sel_channel.as_ref() {
+                                this.app.show_toast("作成中の投票があります。元のチャンネルで送信またはキャンセルしてください");
+                            }
+                        } else if let Some(channel_id) = this.app.sel_channel.clone() {
+                            this.app.poll_draft = Some(crate::app::PollDraft {
+                                channel_id,
+                                duration: 24,
+                                ..Default::default()
+                            });
+                        }
+                        cx.notify();
+                    })),
+                );
                 col.into_any_element()
             }
             PopMenu::Mic | PopMenu::Headset => self
                 .audio_menu(menu == PopMenu::Mic, window, cx)
                 .into_any_element(),
             PopMenu::Guild => self.guild_menu(cx)?.into_any_element(),
+            PopMenu::Folder => self.folder_menu(cx)?.into_any_element(),
             PopMenu::Message => self.message_menu(cx)?.into_any_element(),
             PopMenu::Emoji => self.emoji_picker(cx).into_any_element(),
         };
         // 右クリックのメニューはカーソルの右下に、ボタンのメニューはボタンの上に出す
-        let (at, anchor) = if matches!(menu, PopMenu::Guild | PopMenu::Message) {
+        let (at, anchor) = if matches!(menu, PopMenu::Guild | PopMenu::Folder | PopMenu::Message) {
             (pos + point(z(4.0), z(0.0)), Anchor::TopLeft)
         } else if menu == PopMenu::Emoji {
             // 入力欄の右端のボタンから、左上へ開く
@@ -244,6 +268,31 @@ impl Root {
                 cx.notify();
             })),
         );
+        if mine
+            && m.poll.as_ref().is_some_and(|p| {
+                !p.results.as_ref().is_some_and(|r| r.is_finalized)
+                    && !p
+                        .expiry
+                        .as_deref()
+                        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                        .is_some_and(|end| end <= chrono::Utc::now())
+            })
+        {
+            let (cid, mid) = (m.channel_id.clone(), m.id.clone());
+            col = col.child(
+                menu_row(
+                    "mm_end_poll",
+                    icon(IconName::Pin, 18.0, TEXT()).into_any_element(),
+                    "投票を終了",
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.end_poll(&cid, &mid);
+                    cx.notify();
+                })),
+            );
+        }
         // ピン留めできるのは通常のメッセージ・返信・コマンドの結果だけ
         let pinnable = !deleted && matches!(m.kind, 0 | 19 | 20 | 23);
         if pinnable
@@ -310,6 +359,66 @@ impl Root {
         Some(col)
     }
 
+    fn folder_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let id = self.menu_folder.clone()?;
+        let folder = self
+            .app
+            .settings
+            .guild_folders
+            .iter()
+            .find(|f| f.id == id)?;
+        let name = folder.name.clone();
+        let color = folder.color;
+        let edit_id = id.clone();
+        let delete_id = id;
+        Some(
+            popup_box()
+                .p(z(6.0))
+                .w(z(220.0))
+                .flex()
+                .flex_col()
+                .gap(z(2.0))
+                .child(
+                    menu_row(
+                        "folder_edit",
+                        icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
+                        "フォルダを編集",
+                        false,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu = None;
+                        this.menu_folder = None;
+                        this.app.folder_name = name.clone();
+                        this.app.folder_color = color;
+                        this.app.folder_edit = Some(edit_id.clone());
+                        this.inp.folder_name.update(cx, |s, cx| {
+                            s.set_value(name.clone(), window, cx);
+                            s.focus(window, cx);
+                        });
+                        cx.notify();
+                    })),
+                )
+                .child(
+                    menu_row(
+                        "folder_delete",
+                        icon(IconName::X, 18.0, TEXT()).into_any_element(),
+                        "フォルダを削除",
+                        false,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.menu_folder = None;
+                        this.app
+                            .settings
+                            .guild_folders
+                            .retain(|f| f.id != delete_id);
+                        this.app.save_settings();
+                        cx.notify();
+                    })),
+                ),
+        )
+    }
+
     /// サーバーアイコンの右クリックメニュー
     fn guild_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         let gid = self.menu_guild.clone()?;
@@ -337,6 +446,81 @@ impl Root {
             .flex_col()
             .gap(z(2.0));
 
+        let folder_guild = gid.clone();
+        let in_folder = self
+            .app
+            .settings
+            .guild_folders
+            .iter()
+            .any(|f| f.guild_ids.contains(&gid));
+        col = col.child(
+            menu_row(
+                "gm_folder",
+                icon(IconName::MessagesSquare, 18.0, TEXT()).into_any_element(),
+                if in_folder {
+                    "フォルダから移動"
+                } else {
+                    "フォルダを作成"
+                },
+                false,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                let changed = if in_folder {
+                    this.app.remove_guild_from_folder(&folder_guild)
+                } else {
+                    this.app.create_guild_folder(&folder_guild).is_some()
+                };
+                if changed {
+                    this.app.save_settings();
+                }
+                cx.notify();
+            })),
+        );
+        let settings_gid = gid.clone();
+        col = col.child(
+            menu_row(
+                "gm_settings",
+                icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
+                "サーバー設定",
+                false,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                this.app.open_guild_editor(&settings_gid);
+                cx.notify();
+            })),
+        );
+        let role_gid = gid.clone();
+        col = col.child(
+            menu_row(
+                "gm_roles",
+                icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
+                "ロールを確認・管理",
+                false,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                this.app.open_role_admin(&role_gid);
+                cx.notify();
+            })),
+        );
+        if self.app.can_moderate_guild(&gid) {
+            let mod_gid = gid.clone();
+            col = col.child(
+                menu_row(
+                    "gm_moderation",
+                    icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
+                    "サーバー管理",
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.open_moderation(&mod_gid);
+                    cx.notify();
+                })),
+            );
+        }
         let g1 = gid.clone();
         col = col.child(
             menu_row(
@@ -912,7 +1096,7 @@ impl Root {
                 about = about.child(heading("ロール").mt(z(8.0))).child(wrap);
             }
             info = info.child(about);
-            if let Some(cid) = dm {
+            if let Some(cid) = dm.clone() {
                 info = info.child(
                     div().mt(z(10.0)).child(
                         fill_button_part(
@@ -926,6 +1110,7 @@ impl Root {
                         .w_full()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.app.popup = None;
+                            this.app.friends.open = false;
                             let before = (this.app.sel_guild.clone(), this.app.sel_channel.clone());
                             this.app.sel_guild = None;
                             this.app.open_channel(cid.clone());
@@ -934,6 +1119,176 @@ impl Root {
                         })),
                     ),
                 );
+            }
+        }
+        if !is_me {
+            let id = user.id.clone();
+            let relationship = self
+                .app
+                .friends
+                .relationships
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.kind);
+            let pending = self
+                .app
+                .friends
+                .pending
+                .values()
+                .any(|a| a.user_id() == Some(id.as_str()));
+            if dm.is_none() {
+                let uid = id.clone();
+                info = info.child(
+                    fill_button(
+                        "profile_create_dm",
+                        "メッセージを送る",
+                        BLURPLE(),
+                        WHITE(),
+                        !pending,
+                    )
+                    .mt(z(8.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app
+                            .friend_action(crate::app::FriendAction::OpenDm(uid.clone()));
+                        cx.notify();
+                    })),
+                );
+            }
+            if !self.app.friends.loaded
+                && self.app.friends.loading.is_none()
+                && self.app.friends.error.is_some()
+            {
+                info = info.child(
+                    div()
+                        .mt(z(8.0))
+                        .flex()
+                        .flex_col()
+                        .gap(z(4.0))
+                        .child(text("フレンド情報を取得できませんでした", 12.0, MUTED()))
+                        .child(text_button("profile_friends_retry", "再読み込み").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.app.fetch_friends();
+                                cx.notify();
+                            }),
+                        )),
+                );
+            }
+            if self.app.friends.loaded {
+                let mut controls = div().mt(z(8.0)).flex().flex_wrap().gap(z(4.0));
+                match relationship {
+                    None => {
+                        let uid = id.clone();
+                        controls = controls.child(
+                            fill_button(
+                                "profile_friend_add",
+                                "フレンドに追加",
+                                BLURPLE(),
+                                WHITE(),
+                                !pending,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.app.friend_action(crate::app::FriendAction::AddById(
+                                        uid.clone(),
+                                    ));
+                                    cx.notify();
+                                },
+                            )),
+                        );
+                        controls =
+                            controls.child(self.friend_row_button(&id, "ブロック", 2, pending, cx));
+                    }
+                    Some(1) => {
+                        controls = controls.child(self.friend_row_button(
+                            &id,
+                            "フレンド削除",
+                            1,
+                            pending,
+                            cx,
+                        ));
+                        controls =
+                            controls.child(self.friend_row_button(&id, "ブロック", 2, pending, cx));
+                    }
+                    Some(2) => {
+                        controls = controls.child(self.friend_row_button(
+                            &id,
+                            "ブロック解除",
+                            1,
+                            pending,
+                            cx,
+                        ))
+                    }
+                    Some(3) => {
+                        controls =
+                            controls.child(self.friend_row_button(&id, "承認", 3, pending, cx));
+                        controls =
+                            controls.child(self.friend_row_button(&id, "拒否", 1, pending, cx));
+                    }
+                    Some(4) => {
+                        controls = controls.child(self.friend_row_button(
+                            &id,
+                            "申請を取り消す",
+                            1,
+                            pending,
+                            cx,
+                        ))
+                    }
+                    _ => {}
+                }
+                info = info.child(controls);
+            }
+        }
+        if let Some(guild_id) = pp.guild_id.clone() {
+            let member = user.clone();
+            let role_gid = guild_id.clone();
+            info = info.child(
+                text_button("profile_member_roles", "サーバーのロールを確認・管理")
+                    .mt(z(8.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.popup = None;
+                        this.app.open_member_role_admin(&role_gid, &member);
+                        cx.notify();
+                    })),
+            );
+            let is_me = self.app.me.as_ref().is_some_and(|me| me.id == user.id);
+            let actions = [
+                (MemberAction::Timeout(3600), "1時間タイムアウト"),
+                (MemberAction::Timeout(0), "タイムアウト解除"),
+                (MemberAction::Kick, "キック"),
+                (MemberAction::Ban, "BAN"),
+            ];
+            let mut row = div().mt(z(6.0)).flex().flex_wrap().gap(z(4.0));
+            let mut any = false;
+            for (action, label) in actions {
+                if is_me || !self.app.can_member_action(&guild_id, action) {
+                    continue;
+                }
+                any = true;
+                let key = action.key(&user.id);
+                let confirming = self.app.member_action_confirm.as_deref() == Some(key.as_str());
+                let (gid, uid) = (guild_id.clone(), user.id.clone());
+                row = row.child(
+                    fill_button(
+                        SharedString::from(format!("profile_mod_{key}")),
+                        if confirming {
+                            "もう一度押して確定"
+                        } else {
+                            label
+                        },
+                        if confirming { RED() } else { WIDGET() },
+                        WHITE(),
+                        self.app.member_action_pending.is_none(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.app.member_action(&gid, &uid, action) {
+                            this.app.popup = None;
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            if any {
+                info = info.child(row);
             }
         }
         let body = popup_box()

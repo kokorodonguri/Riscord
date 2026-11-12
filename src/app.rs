@@ -88,6 +88,29 @@ pub fn save_token(profile: Option<&str>, token: &str) -> std::io::Result<()> {
     opts.open(&p)?.write_all(token.as_bytes())
 }
 
+/// ローカルのサーバーフォルダ。Discord の設定とは同期しない。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GuildFolder {
+    pub id: String,
+    pub name: String,
+    pub color: u32,
+    pub collapsed: bool,
+    pub guild_ids: Vec<String>,
+}
+
+impl Default for GuildFolder {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            color: 0x5865f2,
+            collapsed: false,
+            guild_ids: Vec::new(),
+        }
+    }
+}
+
 // ---- 設定 ----
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -118,6 +141,8 @@ pub struct Settings {
     pub ptt_key: Option<String>,
     /// 音声検出のしきい値 (dB)
     pub vad_db: f32,
+    /// マイクのノイズ抑制（RNNoise）
+    pub noise_suppression: bool,
     pub in_gain: f32,
     pub out_gain: f32,
     pub self_mute: bool,
@@ -125,6 +150,7 @@ pub struct Settings {
     /// サーバーレールの並び（ドラッグで並べ替えたもの）。ここにないサーバーは後ろに元の順で並ぶ。
     /// Riscord の中だけの並びで、Discord の設定には書かない
     pub guild_order: Vec<String>,
+    pub guild_folders: Vec<GuildFolder>,
 }
 
 impl Default for Settings {
@@ -148,11 +174,13 @@ impl Default for Settings {
             ptt: false,
             ptt_key: None,
             vad_db: -40.0,
+            noise_suppression: false,
             in_gain: 1.0,
             out_gain: 1.0,
             self_mute: false,
             self_deaf: false,
             guild_order: Vec::new(),
+            guild_folders: Vec::new(),
         }
     }
 }
@@ -1052,6 +1080,17 @@ pub struct ComposeSubmission {
 }
 
 #[derive(Default)]
+pub struct PollDraft {
+    pub channel_id: String,
+    pub question: String,
+    pub answers: String,
+    pub duration: u32,
+    pub multiselect: bool,
+    pub pending: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Default)]
 pub struct App {
     pub plugins: crate::plugins::Plugins,
     pub translator: crate::translator::Translator,
@@ -1246,6 +1285,20 @@ pub struct App {
     /// メッセージからスレッドを作る画面と、名前の欄の中身
     pub thread_draft: Option<ThreadDraft>,
     pub thread_name: String,
+    pub role_admin: Option<RoleAdmin>,
+    /// サーバー管理画面（監査ログ・BAN・招待・イベント・AutoMod）
+    pub moderation: Option<ServerModeration>,
+    /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
+    pub member_action_confirm: Option<String>,
+    pub member_action_pending: Option<(u64, &'static str)>,
+    /// サウンドボードの一覧（開いているとき）と、自分が最後に鳴らした音
+    pub soundboard: Option<Soundboard>,
+    pub recent_sound: Option<(String, std::time::Instant)>,
+    pub friends: Friends,
+    pub poll_draft: Option<PollDraft>,
+    pub folder_edit: Option<String>,
+    pub folder_name: String,
+    pub folder_color: u32,
     /// 画面に頼む: このチャンネルを開く（戻る・進むの履歴に残すため Root で開く）
     pub pending_open: Option<String>,
     /// ゲートウェイのセッション（スラッシュコマンドの実行で送る）
@@ -2013,6 +2066,7 @@ impl App {
                     self.emoji_rev += 1;
                 }
                 Event::ReadyExtra(d) => {
+                    self.friends_ready(&d["relationships"]);
                     if let Some(sid) = d["session_id"].as_str() {
                         self.session_id = Some(sid.to_string());
                     }
@@ -2523,6 +2577,10 @@ impl App {
                         }
                     }
                     self.update_voice_call_started();
+                    // 切断・別のチャンネルへの移動でサウンドボードは閉じる（音の一覧はサーバーごと）
+                    if !matches!(self.voice_status, Some(VoiceStatus::Connected { .. })) {
+                        self.soundboard = None;
+                    }
                 }
                 Event::Call {
                     channel_id,
@@ -2774,6 +2832,27 @@ impl App {
         id
     }
 
+    fn refresh_poll(&mut self, channel_id: String, message_id: String) {
+        self.next_api_id += 1;
+        let key = (channel_id.clone(), message_id.clone());
+        let sent = self.backend.as_ref().is_some_and(|b| {
+            b.cmd
+                .send(Cmd::Api {
+                    id: self.next_api_id,
+                    call: net::ApiCall::GetMessage {
+                        channel_id,
+                        message_id,
+                    },
+                })
+                .is_ok()
+        });
+        if !sent {
+            self.pending_poll_votes.remove(&key);
+            self.show_toast("投票結果を更新できませんでした。再接続してください");
+            self.bump_msgs();
+        }
+    }
+
     fn on_api_result(
         &mut self,
         id: u64,
@@ -2782,6 +2861,46 @@ impl App {
     ) {
         use net::ApiCall as A;
         // 結果を自分で扱うもの（失敗の知らせ方もそれぞれ）
+        if self.is_role_admin_request(id) {
+            self.role_admin_result(id, result);
+            return;
+        }
+        if self.is_moderation_request(id) {
+            self.moderation_result(id, result);
+            return;
+        }
+        if self.is_soundboard_request(id) {
+            self.soundboard_result(id, result);
+            return;
+        }
+        if self
+            .friends
+            .loading
+            .is_some_and(|(request, _)| request == id)
+            || self.friends.pending.contains_key(&id)
+        {
+            self.friends_api_result(id, result);
+            return;
+        }
+        if self
+            .poll_draft
+            .as_ref()
+            .is_some_and(|d| d.pending == Some(id))
+        {
+            match result {
+                Ok(_) => {
+                    self.poll_draft = None;
+                    self.show_toast("投票を作成しました");
+                }
+                Err(e) => {
+                    if let Some(d) = self.poll_draft.as_mut() {
+                        d.pending = None;
+                        d.error = Some(format!("投票を作成できませんでした: {e}"));
+                    }
+                }
+            }
+            return;
+        }
         let call = match call {
             A::GetChannelPins {
                 channel_id, before, ..
@@ -2816,6 +2935,20 @@ impl App {
             A::GetUserCommands => return self.on_commands_loaded("u".into(), result),
             A::Interaction(body) => return self.on_interaction_sent(body, result),
             A::LeaveThread(t) => return self.on_thread_join_result(t, false, result),
+            A::EndPoll {
+                channel_id,
+                message_id,
+            } => {
+                if let Err(e) = result {
+                    self.pending_poll_votes.remove(&(channel_id, message_id));
+                    eprintln!("投票を終了できませんでした: {e}");
+                    self.show_toast("投票を終了できませんでした");
+                    self.bump_msgs();
+                } else {
+                    self.refresh_poll(channel_id, message_id);
+                }
+                return;
+            }
             A::VotePoll {
                 channel_id,
                 message_id,
@@ -2826,10 +2959,7 @@ impl App {
                     eprintln!("投票できませんでした: {e}");
                     self.show_toast("投票できませんでした");
                 } else {
-                    self.api(A::GetMessage {
-                        channel_id,
-                        message_id,
-                    });
+                    self.refresh_poll(channel_id, message_id);
                 }
                 self.bump_msgs();
                 return;
@@ -2842,18 +2972,20 @@ impl App {
                     .remove(&(channel_id.clone(), message_id.clone()));
                 match result {
                     Ok(value) => {
-                        if let Ok(fresh) = serde_json::from_value::<Message>(value) {
-                            if fresh.channel_id == channel_id && fresh.id == message_id {
-                                if let Some(existing) =
-                                    self.messages.get_mut(&channel_id).and_then(|messages| {
-                                        messages.iter_mut().find(|m| m.id == message_id)
-                                    })
-                                {
-                                    if let Some(poll) = fresh.poll {
-                                        existing.poll = Some(poll);
-                                    }
-                                }
+                        let fresh = serde_json::from_value::<Message>(value)
+                            .ok()
+                            .filter(|m| m.channel_id == channel_id && m.id == message_id)
+                            .and_then(|m| m.poll);
+                        if let Some(poll) = fresh {
+                            if let Some(existing) =
+                                self.messages.get_mut(&channel_id).and_then(|messages| {
+                                    messages.iter_mut().find(|m| m.id == message_id)
+                                })
+                            {
+                                existing.poll = Some(poll);
                             }
+                        } else {
+                            self.show_toast("投票結果を更新できませんでした");
                         }
                     }
                     Err(e) => {
@@ -2912,6 +3044,107 @@ impl App {
         }
     }
 
+    pub fn submit_poll(&mut self) {
+        let Some(draft) = self.poll_draft.as_ref() else {
+            return;
+        };
+        if draft.pending.is_some() {
+            return;
+        }
+        let question = draft.question.trim();
+        let answers: Vec<_> = draft
+            .answers
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let error = if question.is_empty() || question.chars().count() > 300 {
+            Some("質問は1〜300文字で入力してください")
+        } else if !(2..=10).contains(&answers.len())
+            || answers.iter().any(|s| s.chars().count() > 55)
+        {
+            Some("選択肢は1行につき55文字以内で2〜10個入力してください")
+        } else if ![1, 4, 8, 24, 72, 168].contains(&draft.duration) {
+            Some("投票期間を選択してください")
+        } else if self.sel_channel.as_deref() != Some(draft.channel_id.as_str()) {
+            Some("投票を作成したチャンネルに戻ってください")
+        } else if self
+            .channel_perms(self.sel_guild.as_deref(), &draft.channel_id)
+            .is_some_and(|p| p & (1 << 49) == 0)
+        {
+            Some("このチャンネルで投票を作成する権限がありません")
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.poll_draft.as_mut().unwrap().error = Some(error.into());
+            return;
+        }
+        let channel_id = draft.channel_id.clone();
+        let body = serde_json::json!({"poll": {
+            "question": {"text": question},
+            "answers": answers.iter().map(|answer| serde_json::json!({"poll_media": {"text": answer}})).collect::<Vec<_>>(),
+            "duration": draft.duration, "allow_multiselect": draft.multiselect, "layout_type": 1
+        }});
+        self.next_api_id += 1;
+        let id = self.next_api_id;
+        let sent = self.backend.as_ref().is_some_and(|b| {
+            b.cmd
+                .send(Cmd::Api {
+                    id,
+                    call: net::ApiCall::SendMessage { channel_id, body },
+                })
+                .is_ok()
+        });
+        let draft = self.poll_draft.as_mut().unwrap();
+        if sent {
+            draft.pending = Some(id);
+            draft.error = None;
+        } else {
+            draft.error = Some("接続できません。再接続してからお試しください".into());
+        }
+    }
+
+    pub fn end_poll(&mut self, channel: &str, message: &str) {
+        let key = (channel.to_owned(), message.to_owned());
+        let allowed = self
+            .messages
+            .get(channel)
+            .and_then(|items| items.iter().find(|m| m.id == message))
+            .is_some_and(|m| {
+                self.me.as_ref().is_some_and(|u| u.id == m.author.id)
+                    && m.poll.as_ref().is_some_and(|p| {
+                        !p.results.as_ref().is_some_and(|r| r.is_finalized)
+                            && !p
+                                .expiry
+                                .as_deref()
+                                .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                                .is_some_and(|end| end <= chrono::Utc::now())
+                    })
+            });
+        if !allowed || self.pending_poll_votes.contains(&key) {
+            return;
+        }
+        self.next_api_id += 1;
+        let sent = self.backend.as_ref().is_some_and(|b| {
+            b.cmd
+                .send(Cmd::Api {
+                    id: self.next_api_id,
+                    call: net::ApiCall::EndPoll {
+                        channel_id: channel.into(),
+                        message_id: message.into(),
+                    },
+                })
+                .is_ok()
+        });
+        if !sent {
+            self.show_toast("接続していません");
+            return;
+        }
+        self.pending_poll_votes.insert(key);
+        self.bump_msgs();
+    }
+
     pub fn toggle_poll_vote(&mut self, channel: &str, message: &str, answer: u32) {
         let key = (channel.to_owned(), message.to_owned());
         if self.pending_poll_votes.contains(&key) {
@@ -2935,16 +3168,24 @@ impl App {
                 }
             });
         let Some(answer_ids) = ids else { return };
-        if self.backend.is_none() {
+        self.next_api_id += 1;
+        let sent = self.backend.as_ref().is_some_and(|b| {
+            b.cmd
+                .send(Cmd::Api {
+                    id: self.next_api_id,
+                    call: net::ApiCall::VotePoll {
+                        channel_id: channel.into(),
+                        message_id: message.into(),
+                        answer_ids,
+                    },
+                })
+                .is_ok()
+        });
+        if !sent {
             self.show_toast("接続していません");
             return;
         }
         self.pending_poll_votes.insert(key);
-        self.api(net::ApiCall::VotePoll {
-            channel_id: channel.into(),
-            message_id: message.into(),
-            answer_ids,
-        });
         self.bump_msgs();
     }
 
@@ -3127,6 +3368,65 @@ impl App {
     }
 
     fn on_gateway_event(&mut self, t: &str, mut d: serde_json::Value) {
+        if t.starts_with("GUILD_ROLE_") {
+            if let Some(guild_id) = d["guild_id"].as_str() {
+                self.role_admin_event(guild_id);
+            }
+            return;
+        }
+        if t == "GUILD_UPDATE" {
+            if let Some(guild_id) = d["id"].as_str() {
+                if let Some(guild) = self.guilds.iter_mut().find(|g| g.id == guild_id) {
+                    if let Some(name) = d["name"].as_str().filter(|name| !name.is_empty()) {
+                        guild.name = name.to_owned();
+                    }
+                    if let Some(icon) = d.get("icon") {
+                        if icon.is_null() || icon.is_string() {
+                            guild.icon = icon.as_str().map(str::to_owned);
+                        }
+                    }
+                }
+                self.role_admin_event(guild_id);
+            }
+        }
+        if matches!(t, "CHANNEL_UPDATE" | "CHANNEL_DELETE") {
+            let affected = self.role_admin.as_ref().and_then(|admin| {
+                let channel = admin.channel_permissions.as_ref()?;
+                let id = d["id"].as_str()?;
+                (channel.affected_channel(id)
+                    && d["guild_id"]
+                        .as_str()
+                        .is_none_or(|gid| gid == admin.guild_id))
+                .then(|| admin.guild_id.clone())
+            });
+            if let Some(guild_id) = affected {
+                self.role_admin_event(&guild_id);
+            }
+        }
+        if t == "GUILD_MEMBER_REMOVE" {
+            let relevant =
+                self.role_admin.as_ref().is_some_and(|admin| {
+                    admin.target.as_ref().is_some_and(|target| {
+                        d["user"]["id"].as_str() == Some(target.user_id.as_str())
+                    }) || admin.channel_permissions.as_ref().is_some_and(|channel| {
+                        d["user"]["id"]
+                            .as_str()
+                            .is_some_and(|id| channel.affected_member(id))
+                    }) || self
+                        .me
+                        .as_ref()
+                        .is_some_and(|me| d["user"]["id"].as_str() == Some(me.id.as_str()))
+                });
+            if relevant {
+                if let Some(guild_id) = d["guild_id"].as_str() {
+                    self.role_admin_event(guild_id);
+                }
+            }
+        }
+        if t.starts_with("RELATIONSHIP_") {
+            self.friends_event(t, &d);
+            return;
+        }
         match t {
             "MESSAGE_POLL_VOTE_ADD" | "MESSAGE_POLL_VOTE_REMOVE" => {
                 if let (Some(channel), Some(message), Some(answer), Some(user)) = (
@@ -3216,6 +3516,7 @@ impl App {
                 }
             }
             // unavailable のときは障害で一時的に見えないだけなので残す
+            "VOICE_CHANNEL_EFFECT_SEND" => self.on_voice_effect(&d),
             "GUILD_DELETE" if d["unavailable"] != true => {
                 if let Some(gid) = d["id"].as_str() {
                     self.remove_guild(gid);
@@ -3241,9 +3542,21 @@ impl App {
             }
             // 自分のロールが変わった
             "GUILD_MEMBER_UPDATE" => {
-                let me = self.me.as_ref().map(|u| u.id.as_str());
-                if me.is_some() && d["user"]["id"].as_str() == me {
-                    if let Some(gid) = d["guild_id"].as_str() {
+                let user_id = d["user"]["id"].as_str();
+                let mine = self
+                    .me
+                    .as_ref()
+                    .is_some_and(|u| Some(u.id.as_str()) == user_id);
+                let target = self
+                    .role_admin
+                    .as_ref()
+                    .and_then(|a| a.target.as_ref())
+                    .is_some_and(|t| Some(t.user_id.as_str()) == user_id);
+                if let Some(gid) = d["guild_id"].as_str() {
+                    if mine || target {
+                        self.role_admin_event(gid);
+                    }
+                    if mine {
                         let roles = d["roles"]
                             .as_array()
                             .into_iter()
@@ -3256,6 +3569,152 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// サーバーを一つのフォルダへ移す。未参加の ID は受け付けない。
+    pub fn move_guild_to_folder(&mut self, guild_id: &str, folder_id: &str) -> bool {
+        if !self.guilds.iter().any(|g| g.id == guild_id)
+            || !self
+                .settings
+                .guild_folders
+                .iter()
+                .any(|f| f.id == folder_id)
+        {
+            return false;
+        }
+        let already = self
+            .settings
+            .guild_folders
+            .iter()
+            .any(|f| f.id == folder_id && f.guild_ids.iter().any(|id| id == guild_id));
+        if already {
+            return false;
+        }
+        let anchor = self
+            .settings
+            .guild_folders
+            .iter()
+            .find(|f| f.id == folder_id)
+            .and_then(|f| self.guilds.iter().find(|g| f.guild_ids.contains(&g.id)))
+            .map(|g| g.id.clone());
+        if let Some(anchor) = anchor {
+            self.move_guild(guild_id, &anchor);
+        }
+        for folder in &mut self.settings.guild_folders {
+            folder.guild_ids.retain(|id| id != guild_id);
+        }
+        if let Some(folder) = self
+            .settings
+            .guild_folders
+            .iter_mut()
+            .find(|f| f.id == folder_id)
+        {
+            folder.guild_ids.push(guild_id.to_owned());
+        }
+        true
+    }
+
+    pub fn remove_guild_from_folder(&mut self, guild_id: &str) -> bool {
+        let mut changed = false;
+        for folder in &mut self.settings.guild_folders {
+            let before = folder.guild_ids.len();
+            folder.guild_ids.retain(|id| id != guild_id);
+            changed |= before != folder.guild_ids.len();
+        }
+        changed
+    }
+
+    pub fn create_guild_folder(&mut self, guild_id: &str) -> Option<String> {
+        if !self.guilds.iter().any(|g| g.id == guild_id) {
+            return None;
+        }
+        let id = loop {
+            let candidate = format!("{:016x}", rand::random::<u64>());
+            if !self
+                .settings
+                .guild_folders
+                .iter()
+                .any(|f| f.id == candidate)
+            {
+                break candidate;
+            }
+        };
+        self.remove_guild_from_folder(guild_id);
+        self.settings.guild_folders.push(GuildFolder {
+            id: id.clone(),
+            name: "フォルダ".into(),
+            guild_ids: vec![guild_id.into()],
+            ..Default::default()
+        });
+        Some(id)
+    }
+
+    pub fn drop_guild_on_guild(&mut self, from: &str, to: &str) -> bool {
+        if from == to
+            || !self.guilds.iter().any(|g| g.id == from)
+            || !self.guilds.iter().any(|g| g.id == to)
+        {
+            return false;
+        }
+        let target_folder = self
+            .settings
+            .guild_folders
+            .iter()
+            .find(|f| f.guild_ids.iter().any(|id| id == to))
+            .map(|f| f.id.clone());
+        let changed = match target_folder {
+            Some(id) => self.move_guild_to_folder(from, &id),
+            None => self.remove_guild_from_folder(from),
+        };
+        self.move_guild(from, to) || changed
+    }
+
+    /// フォルダ内のサーバーをひとまとまりとして、別のサーバーの位置へ動かす。
+    pub fn move_folder_to_guild(&mut self, folder_id: &str, target: &str) -> bool {
+        let Some(folder) = self
+            .settings
+            .guild_folders
+            .iter()
+            .find(|f| f.id == folder_id)
+        else {
+            return false;
+        };
+        let ids: std::collections::HashSet<&str> =
+            folder.guild_ids.iter().map(String::as_str).collect();
+        if ids.contains(target) {
+            return false;
+        }
+        let Some(target_index) = self.guilds.iter().position(|g| g.id == target) else {
+            return false;
+        };
+        let Some(first_index) = self.guilds.iter().position(|g| ids.contains(g.id.as_str())) else {
+            return false;
+        };
+        let mut moved = Vec::new();
+        let mut remaining = Vec::new();
+        for guild in std::mem::take(&mut self.guilds) {
+            if ids.contains(guild.id.as_str()) {
+                moved.push(guild);
+            } else {
+                remaining.push(guild);
+            }
+        }
+        let index = remaining.iter().position(|g| g.id == target).unwrap()
+            + usize::from(first_index < target_index);
+        remaining.splice(index..index, moved);
+        self.guilds = remaining;
+        let shown: std::collections::HashSet<&str> =
+            self.guilds.iter().map(|g| g.id.as_str()).collect();
+        let mut order: Vec<String> = self.guilds.iter().map(|g| g.id.clone()).collect();
+        order.extend(
+            self.settings
+                .guild_order
+                .iter()
+                .filter(|id| !shown.contains(id.as_str()))
+                .cloned(),
+        );
+        self.settings.guild_order = order;
+        true
     }
 
     /// 保存してある並び（settings.guild_order）にサーバーを並べる
@@ -3307,6 +3766,12 @@ impl App {
     /// 抜けた・消えたサーバーを一覧から外す
     pub fn remove_guild(&mut self, gid: &str) {
         self.guilds.retain(|g| g.id != gid);
+        if self.role_admin.as_ref().is_some_and(|a| a.guild_id == gid) {
+            self.role_admin = None;
+        }
+        if self.moderation.as_ref().is_some_and(|m| m.guild_id == gid) {
+            self.moderation = None;
+        }
         self.channels.remove(gid);
         self.unread.retain(|_, g| g.as_deref() != Some(gid));
         self.mention_counts
@@ -3663,6 +4128,7 @@ impl App {
     }
 
     pub fn open_channel(&mut self, id: String) {
+        self.friends.open = false;
         if self.sel_channel.as_deref() != Some(&id) {
             if self.editing.take().is_some() {
                 self.input.clear();
@@ -3889,6 +4355,7 @@ impl App {
     }
 
     pub fn select(&mut self, guild: Option<String>, channel: Option<String>) {
+        self.friends.open = false;
         if let Some(gid) = &guild {
             self.ensure_guild_channels(gid);
         }
@@ -3944,6 +4411,7 @@ impl App {
         }
         v.set_vad_threshold(db_to_lin(s.vad_db));
         v.set_in_gain(s.in_gain);
+        v.set_noise_suppression(s.noise_suppression);
         v.set_out_gain(s.out_gain);
         let mut changed = false;
         for (slot, val) in [
@@ -4191,6 +4659,9 @@ impl App {
     }
 
     pub fn open_profile(&mut self, user: User, anchor: Bounds<Pixels>, above: bool) {
+        if !self.friends.loaded && self.friends.loading.is_none() {
+            self.fetch_friends();
+        }
         let guild_id = self.sel_guild.clone();
         let key = net::profile_key(&user.id, guild_id.as_deref());
         if !self.profiles.contains_key(&key) {
@@ -4366,6 +4837,16 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+mod role_admin;
+pub use role_admin::RoleAdmin;
+mod channel_permissions;
+pub use channel_permissions::{ChannelPermissionView, CHANNEL_PERMISSION_BITS};
+mod friends;
+pub use friends::{FriendAction, Friends};
+mod moderation;
+mod soundboard;
+pub use moderation::{MemberAction, ModTab, ServerModeration};
+pub use soundboard::{Sound, Soundboard};
 mod commands;
 mod jump;
 mod pins;

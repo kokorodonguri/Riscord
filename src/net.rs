@@ -12,7 +12,7 @@ use crate::model::{
     self, Channel, Embed, Guild, Member, Message, Presence, ProfileData, Role, User, VoiceState,
 };
 use crate::voice::{VoiceCtl, VoiceSession};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 mod inflate;
@@ -140,6 +140,11 @@ pub enum Cmd {
     VoiceFlags,
     /// 着信を拒否する
     StopRinging(String),
+    /// サウンドボードの音を手元で鳴らす（CDN から取って復号し、受信の音声に混ぜる）
+    PlaySound {
+        sound_id: String,
+        volume: f32,
+    },
     /// 画面共有を始める（共有する画面をポータルで選んでもらう）/ やめる
     StartStream(crate::golive::media::QualityPreset),
     StopStream,
@@ -581,6 +586,112 @@ fn is_unauthorized(e: &anyhow::Error) -> bool {
     e.downcast_ref::<UnauthorizedMarker>().is_some()
 }
 
+/// サウンドボードの音の取得と、復号済みの音の置き場（同じ音を何度も取りに行かない）
+#[derive(Clone)]
+struct SoundCache {
+    ctl: Arc<VoiceCtl>,
+    /// CDN には認証情報を送らないので、API とは別の接続を使う
+    http: reqwest::Client,
+    decoded: Arc<Mutex<VecDeque<DecodedSound>>>,
+    /// 取得中の音（連打で同じ音を何本も取りに行かない）
+    loading: Arc<Mutex<HashSet<String>>>,
+}
+
+/// 音の ID と、復号した 48 kHz ステレオ
+type DecodedSound = (String, Arc<Vec<f32>>);
+
+/// 覚えておく音の数
+const SOUND_CACHE: usize = 32;
+/// 取りに行く音の大きさの上限（Discord の上限は 512 KB）
+const SOUND_MAX_BYTES: usize = 1024 * 1024;
+
+impl SoundCache {
+    fn new(ctl: Arc<VoiceCtl>) -> Self {
+        Self {
+            ctl,
+            http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(20))
+                .build()
+                .unwrap_or_default(),
+            decoded: Default::default(),
+            loading: Default::default(),
+        }
+    }
+
+    fn cached(&self, id: &str) -> Option<Arc<Vec<f32>>> {
+        let mut q = self.decoded.lock().unwrap();
+        let i = q.iter().position(|(k, _)| k == id)?;
+        let e = q.remove(i)?;
+        let pcm = e.1.clone();
+        q.push_back(e);
+        Some(pcm)
+    }
+
+    fn play(&self, sound_id: String, volume: f32, tx: Tx) {
+        if sound_id.is_empty()
+            || sound_id.len() > 20
+            || !sound_id.bytes().all(|b| b.is_ascii_digit())
+        {
+            return;
+        }
+        if let Some(pcm) = self.cached(&sound_id) {
+            self.ctl.play_effect(&pcm, volume);
+            return;
+        }
+        if !self.loading.lock().unwrap().insert(sound_id.clone()) {
+            return;
+        }
+        let this = self.clone();
+        tokio::spawn(async move {
+            let r = this.fetch(&sound_id).await;
+            this.loading.lock().unwrap().remove(&sound_id);
+            match r {
+                Ok(pcm) => {
+                    let pcm = Arc::new(pcm);
+                    this.ctl.play_effect(&pcm, volume);
+                    let mut q = this.decoded.lock().unwrap();
+                    q.push_back((sound_id, pcm));
+                    while q.len() > SOUND_CACHE {
+                        q.pop_front();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("サウンドボード {sound_id}: {e:#}");
+                    tx.send(Event::Error(
+                        "サウンドボードの音を再生できませんでした".into(),
+                    ));
+                }
+            }
+        });
+    }
+
+    async fn fetch(&self, sound_id: &str) -> Result<Vec<f32>> {
+        let mut res = self
+            .http
+            .get(format!(
+                "https://cdn.discordapp.com/soundboard-sounds/{sound_id}"
+            ))
+            .send()
+            .await?
+            .error_for_status()?;
+        if res
+            .content_length()
+            .is_some_and(|n| n as usize > SOUND_MAX_BYTES)
+        {
+            anyhow::bail!("大きすぎます");
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = res.chunk().await? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > SOUND_MAX_BYTES {
+                anyhow::bail!("大きすぎます");
+            }
+        }
+        tokio::task::spawn_blocking(move || crate::voice::decode_sound(bytes)).await?
+    }
+}
+
 fn api_client(connect_timeout: Duration, read_timeout: Duration) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) riscord/0.1")
@@ -631,6 +742,7 @@ async fn run(
         status.clone(),
         v_tx.clone(),
     ));
+    let sounds = SoundCache::new(ctl.clone());
     tokio::spawn(voice_task(
         me_id.clone(),
         api.clone(),
@@ -685,6 +797,10 @@ async fn run(
         }
         if let Cmd::Gateway(v) = &cmd {
             let _ = gw_tx.send(v.clone());
+            continue;
+        }
+        if let Cmd::PlaySound { sound_id, volume } = &cmd {
+            sounds.play(sound_id.clone(), *volume, tx.clone());
             continue;
         }
         if let Cmd::SubscribeMembers {
@@ -810,7 +926,8 @@ async fn run(
                 | Cmd::StartStream(_)
                 | Cmd::StopStream
                 | Cmd::WatchStream(_)
-                | Cmd::StopWatching => Ok(()),
+                | Cmd::StopWatching
+                | Cmd::PlaySound { .. } => Ok(()),
                 Cmd::Api { id, call } => {
                     let result = api.call(&call).await.map_err(|e| format!("{e:#}"));
                     tx.send(Event::Api { id, call, result });
@@ -2811,6 +2928,7 @@ mod tests {
             color: 0xff0000,
             position: 3,
             hoist: false,
+            managed: Some(false),
             permissions: String::new(),
         };
         assert!(api.cached_roles("g").is_none());
@@ -2838,6 +2956,7 @@ mod tests {
             color: 0,
             position: 0,
             hoist: false,
+            managed: Some(false),
             permissions: String::new(),
         };
         api.store_roles("a", &[role("old")]);

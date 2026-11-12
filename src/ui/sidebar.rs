@@ -23,6 +23,22 @@ impl Render for GuildDrag {
     }
 }
 
+#[derive(Clone)]
+struct FolderDrag {
+    id: String,
+    name: String,
+}
+impl Render for FolderDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p(z(8.0))
+            .rounded(z(8.0))
+            .bg(BLURPLE())
+            .child(text(self.name.clone(), 14.0, WHITE()))
+            .opacity(0.8)
+    }
+}
+
 /// 行の枠（選択中・マウスを乗せたときの背景、未読の白い印）。文字色は group "row" のホバーで変える
 fn row_frame(
     id: impl Into<ElementId>,
@@ -327,12 +343,160 @@ impl Root {
                 .justify_center()
                 .child(div().w(z(32.0)).h(px(1.0)).bg(DIVIDER())),
         );
+        enum Entry<'a> {
+            Folder(&'a crate::app::GuildFolder),
+            Guild(&'a crate::model::Guild),
+        }
+        let folders = &a.settings.guild_folders;
+        let mut membership = std::collections::HashMap::new();
+        for (index, folder) in folders.iter().enumerate() {
+            for id in &folder.guild_ids {
+                membership.entry(id.as_str()).or_insert(index);
+            }
+        }
+        let mut members = vec![Vec::new(); folders.len()];
         for g in &a.guilds {
+            if let Some(&index) = membership.get(g.id.as_str()) {
+                members[index].push(g);
+            }
+        }
+        let mut entries = Vec::new();
+        let mut seen = vec![false; folders.len()];
+        for g in &a.guilds {
+            if let Some(&index) = membership.get(g.id.as_str()) {
+                if !seen[index] {
+                    seen[index] = true;
+                    entries.push(Entry::Folder(&folders[index]));
+                    if !folders[index].collapsed {
+                        entries.extend(members[index].iter().copied().map(Entry::Guild));
+                    }
+                }
+            } else {
+                entries.push(Entry::Guild(g));
+            }
+        }
+        for (index, folder) in folders.iter().enumerate() {
+            if !seen[index] {
+                entries.push(Entry::Folder(folder));
+            }
+        }
+        for entry in entries {
+            let g = match entry {
+                Entry::Guild(g) => g,
+                Entry::Folder(folder) => {
+                    let fid = folder.id.clone();
+                    let drop_id = fid.clone();
+                    let menu_id = fid.clone();
+                    let anchor = a
+                        .guilds
+                        .iter()
+                        .find(|g| folder.guild_ids.contains(&g.id))
+                        .map(|g| g.id.clone());
+                    let folder_drag = FolderDrag {
+                        id: fid.clone(),
+                        name: folder.name.clone(),
+                    };
+                    let color = folder.color & 0xffffff;
+                    let bg =
+                        Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
+                    let label = if folder.name.is_empty() {
+                        "フォルダ"
+                    } else {
+                        &folder.name
+                    };
+                    let count = folder
+                        .guild_ids
+                        .iter()
+                        .fold(0u32, |n, id| n.saturating_add(a.mention_count(Some(id))));
+                    let has_unread = folder
+                        .guild_ids
+                        .iter()
+                        .any(|id| unread.contains(&Some(id.as_str())));
+                    col = col.child(
+                        div()
+                            .id(SharedString::from(format!("folder-{}", folder.id)))
+                            .relative()
+                            .w(z(72.0))
+                            .h(z(48.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .tooltip(tip(label.to_string()))
+                            .child(
+                                div()
+                                    .size(z(40.0))
+                                    .rounded(z(12.0))
+                                    .bg(bg)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(text(
+                                        if folder.collapsed { "▸" } else { "▾" },
+                                        22.0,
+                                        WHITE(),
+                                    )),
+                            )
+                            .when(count > 0, |d| d.child(mention_badge(count)))
+                            .when(count == 0 && has_unread, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .w(z(4.0))
+                                        .h(z(8.0))
+                                        .rounded_r(z(4.0))
+                                        .bg(WHITE()),
+                                )
+                            })
+                            .on_drag(folder_drag, |d, _, _, cx| cx.new(|_| d.clone()))
+                            .on_drop(cx.listener(move |this, d: &FolderDrag, _, cx| {
+                                if let Some(target) = &anchor {
+                                    if this.app.move_folder_to_guild(&d.id, target) {
+                                        this.app.save_settings();
+                                    }
+                                }
+                                cx.notify();
+                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(f) = this
+                                    .app
+                                    .settings
+                                    .guild_folders
+                                    .iter_mut()
+                                    .find(|f| f.id == fid)
+                                {
+                                    f.collapsed = !f.collapsed;
+                                    this.app.save_settings();
+                                }
+                                cx.notify();
+                            }))
+                            .on_drop(cx.listener(move |this, d: &GuildDrag, _, cx| {
+                                if this.app.move_guild_to_folder(&d.id, &drop_id) {
+                                    this.app.save_settings();
+                                }
+                                cx.notify();
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                    this.menu = Some((PopMenu::Folder, ev.position));
+                                    this.menu_folder = Some(menu_id.clone());
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            ),
+                    );
+                    continue;
+                }
+            };
             let sel = a.sel_guild.as_deref() == Some(&g.id);
             let url = guild_icon_url(g);
             let gid = g.id.clone();
             let gid2 = gid.clone();
             let gid3 = gid.clone();
+            let gid4 = gid.clone();
             let drag = GuildDrag {
                 id: gid.clone(),
                 name: g.name.clone(),
@@ -352,7 +516,13 @@ impl Root {
                 .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
                 .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))
                 .on_drop(cx.listener(move |this, d: &GuildDrag, _, cx| {
-                    if this.app.move_guild(&d.id, &gid3) {
+                    if this.app.drop_guild_on_guild(&d.id, &gid3) {
+                        this.app.save_settings();
+                    }
+                    cx.notify();
+                }))
+                .on_drop(cx.listener(move |this, d: &FolderDrag, _, cx| {
+                    if this.app.move_folder_to_guild(&d.id, &gid4) {
                         this.app.save_settings();
                     }
                     cx.notify();
@@ -445,6 +615,27 @@ impl Root {
             .pb(z(8.0));
         match &a.sel_guild {
             None => {
+                list = list.child(
+                    row_frame("friends_open", 42.0, a.friends.open, false)
+                        .gap(z(12.0))
+                        .px(z(10.0))
+                        .child(icon(IconName::UserPlus, 20.0, MUTED()))
+                        .child(text("フレンド", 16.0, TEXT()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let before = (this.app.sel_guild.clone(), this.app.sel_channel.clone());
+                            this.app.select(None, None);
+                            this.app.friends.open = true;
+                            this.app.side = crate::app::SidePanel::None;
+                            this.after_move(before);
+                            if this.app.screen_w < 700.0 {
+                                this.app.compact_sidebar_closed = true;
+                            }
+                            if !this.app.friends.loaded && this.app.friends.loading.is_none() {
+                                this.app.fetch_friends();
+                            }
+                            cx.notify();
+                        })),
+                );
                 list = list.child(
                     div()
                         .h(z(28.0))
@@ -542,7 +733,7 @@ impl Root {
                     }
                     cats.sort_by_key(|c| c.position);
                     let mut rows: Vec<AnyElement> = Vec::new();
-                    if top.is_empty() && by_parent.is_empty() {
+                    if top.is_empty() && by_parent.is_empty() && cats.is_empty() {
                         rows.push(
                             div()
                                 .mt(z(12.0))
@@ -556,9 +747,9 @@ impl Root {
                         self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
                     }
                     for cat in cats {
-                        let Some(l) = by_parent.get(cat.id.as_str()) else {
-                            continue;
-                        };
+                        let cat_id = cat.id.clone();
+                        let cat_gid = gid.clone();
+                        let can_edit = a.may_edit_channel_permissions(gid, &cat_id);
                         rows.push(
                             div()
                                 .mt(z(14.0))
@@ -573,12 +764,35 @@ impl Root {
                                         12.0,
                                         FAINT(),
                                     )
-                                    .part(Part::SidebarCategory),
+                                    .part(Part::SidebarCategory)
+                                    .flex_1()
+                                    .min_w_0(),
                                 )
+                                .when(can_edit, |d| {
+                                    d.child(
+                                        icon_button(
+                                            SharedString::from(format!(
+                                                "category-permissions-{cat_id}"
+                                            )),
+                                            IconName::Settings,
+                                            20.0,
+                                        )
+                                        .tooltip(tip("カテゴリの権限"))
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.app
+                                                    .open_channel_permissions(&cat_gid, &cat_id);
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                })
                                 .into_any_element(),
                         );
-                        for c in l {
-                            self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                        if let Some(l) = by_parent.get(cat.id.as_str()) {
+                            for c in l {
+                                self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                            }
                         }
                     }
                     list = list.overflow_y_scroll().children(rows);
@@ -766,6 +980,7 @@ impl Root {
             a.voice_channel().map(|(g, c, k)| (g.clone(), c.clone(), k))
         {
             let (cname, place) = a.voice_place(gid.as_deref(), &cid);
+            let in_guild = gid.is_some();
             let color = if connected { GREEN() } else { ORANGE() };
             card = card.child(
                 div()
@@ -822,6 +1037,16 @@ impl Root {
                                     .child(line(format!("{cname} / {place}"), 12.0, MUTED())),
                             ),
                     )
+                    .when(connected && in_guild, |d| {
+                        d.child(
+                            icon_button("soundboard", IconName::Volume2, 32.0)
+                                .tooltip(tip("サウンドボード"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.app.toggle_soundboard();
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .when(connected, |d| {
                         let sharing = a.my_stream.is_some();
                         d.child(

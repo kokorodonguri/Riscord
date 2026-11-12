@@ -2,7 +2,7 @@
 use std::hash::{Hash, Hasher};
 
 use gpui::assets::IconName;
-use gpui::component::input::Textarea;
+use gpui::component::input::{Input, Textarea};
 use gpui::prelude::*;
 use gpui::*;
 
@@ -70,7 +70,9 @@ impl Root {
             self.app.show_members
         };
         let dm_user = match (&self.app.sel_guild, self.app.current_channel()) {
-            (None, Some(c)) if c.recipients.len() == 1 => Some(c.recipients[0].clone()),
+            (None, Some(c)) if !self.app.friends.open && c.recipients.len() == 1 => {
+                Some(c.recipients[0].clone())
+            }
             _ => None,
         };
 
@@ -300,6 +302,10 @@ impl Root {
         v.extend(self.switcher_dialog(cx));
         v.extend(self.delete_dialog(cx));
         v.extend(self.thread_dialog(cx));
+        v.extend(self.folder_dialog(cx));
+        v.extend(self.role_admin_dialog(cx));
+        v.extend(self.moderation_dialog(cx));
+        v.extend(self.soundboard_dialog(cx));
         v.extend(self.leave_dialog(cx));
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
@@ -393,6 +399,9 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if self.app.friends.open && self.app.sel_guild.is_none() {
+            return self.friends_view(cx);
+        }
         let cur = self.app.current_channel().cloned();
         let (prefix, cname) = match &cur {
             Some(c) if self.app.sel_guild.is_none() => ("@", c.dm_label()),
@@ -573,6 +582,23 @@ impl Root {
         }
         // 右から: 通話・ビデオ・再読込・一覧/プロフィール切替（Vesktop の並び）
         let mut right = div().flex().items_center().gap(z(6.0)).flex_none();
+        if let Some(guild_id) = a
+            .sel_guild
+            .as_ref()
+            .filter(|_| matches!(c.kind, 0 | 2 | 4 | 5 | 13 | 15 | 16))
+            .filter(|g| a.may_edit_channel_permissions(g, &c.id))
+        {
+            let guild_id = guild_id.clone();
+            let channel_id = c.id.clone();
+            right = right.child(
+                icon_button("channel_permissions", IconName::Settings, 32.0)
+                    .tooltip(tip("チャンネルの権限"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.open_channel_permissions(&guild_id, &channel_id);
+                        cx.notify();
+                    })),
+            );
+        }
         if a.sel_guild.is_none() {
             let cid = c.id.clone();
             right = right
@@ -1324,6 +1350,117 @@ impl Root {
             if c.archived() {
                 col = col.child(div().px(z(4.0)).pb(z(4.0)).flex().items_center().gap(z(6.0)).child(icon(IconName::Archive, 14.0, MUTED())).child(text("このスレッドはアーカイブされています。メッセージを送信すると再開します。", 13.0, MUTED())));
             }
+        }
+        if let Some(d) = a
+            .poll_draft
+            .as_ref()
+            .filter(|d| Some(&d.channel_id) == a.sel_channel.as_ref())
+        {
+            let sending = d.pending.is_some();
+            let mut form = card(INPUT(), DIVIDER(), 8.0)
+                .p(z(10.0))
+                .flex()
+                .flex_col()
+                .gap(z(6.0))
+                .child(medium("投票を作成", 16.0, WHITE()))
+                .child(
+                    Input::new(&self.inp.poll_question)
+                        .appearance(false)
+                        .disabled(sending),
+                )
+                .child(
+                    Textarea::new(&self.inp.poll_answers)
+                        .appearance(false)
+                        .disabled(sending),
+                );
+            let mut durations = div().flex().flex_wrap().gap(z(4.0));
+            for (hours, label) in [
+                (1, "1時間"),
+                (4, "4時間"),
+                (8, "8時間"),
+                (24, "1日"),
+                (72, "3日"),
+                (168, "1週間"),
+            ] {
+                durations = durations.child(
+                    fill_button(
+                        format!("poll_duration_{hours}"),
+                        label,
+                        if d.duration == hours {
+                            BLURPLE()
+                        } else {
+                            WIDGET()
+                        },
+                        WHITE(),
+                        !sending,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(d) = this.app.poll_draft.as_mut() {
+                            if d.pending.is_none() {
+                                d.duration = hours;
+                            }
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            form = form.child(durations).child(
+                text_button(
+                    "poll_multi",
+                    if d.multiselect {
+                        "☑ 複数回答"
+                    } else {
+                        "☐ 複数回答"
+                    },
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(d) = this.app.poll_draft.as_mut() {
+                        if d.pending.is_none() {
+                            d.multiselect = !d.multiselect;
+                        }
+                    }
+                    cx.notify();
+                })),
+            );
+            form = form.children(d.error.clone().map(|e| text(e, 13.0, RED())));
+            form = form.child(
+                div()
+                    .flex()
+                    .gap(z(8.0))
+                    .child(
+                        text_button("poll_cancel", "キャンセル").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                if this
+                                    .app
+                                    .poll_draft
+                                    .as_ref()
+                                    .is_some_and(|d| d.pending.is_none())
+                                {
+                                    this.app.poll_draft = None;
+                                }
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        fill_button(
+                            "poll_submit",
+                            if sending {
+                                "送信中…"
+                            } else {
+                                "投票を作成"
+                            },
+                            BLURPLE(),
+                            WHITE(),
+                            !sending,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.app.submit_poll();
+                            cx.notify();
+                        })),
+                    ),
+            );
+            return col.child(form);
         }
         col = col.children(suggest).children(cmd_suggest);
         if let Some(label) = a.pending_command_label() {

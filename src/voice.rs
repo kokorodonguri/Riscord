@@ -22,6 +22,10 @@ const FRAME: usize = 960 * 2;
 const MIC_MAX: usize = FRAME * 5;
 /// スピーカー側に溜めておく上限
 const OUT_MAX: usize = FRAME * 10;
+/// サウンドボードの音をためておく上限（48 kHz ステレオで 12 秒）
+const EFFECT_MAX: usize = RATE as usize * 2 * 12;
+/// サウンドボードの音の長さの上限（Discord は 5.2 秒まで）
+const SOUND_MAX_SECS: usize = 10;
 /// 音声検出で閉じるまでの猶予
 const VAD_HANG: Duration = Duration::from_millis(300);
 
@@ -45,6 +49,10 @@ pub struct VoiceCtl {
     /// 直近のマイク入力レベル (0..1)
     level: AtomicU32,
     vad_open: AtomicBool,
+    /// マイクのノイズ抑制
+    noise_suppression: AtomicBool,
+    /// 再生待ちのサウンドボードの音（48 kHz ステレオ）。受信の音声に混ぜて流す
+    effects: Mutex<VecDeque<f32>>,
     /// 実際に送信中か
     pub transmitting: AtomicBool,
     pub input_device: Mutex<Option<String>>,
@@ -71,6 +79,8 @@ impl Default for VoiceCtl {
             out_gain: AtomicU32::new(1.0f32.to_bits()),
             level: AtomicU32::new(0),
             vad_open: AtomicBool::new(false),
+            noise_suppression: AtomicBool::new(false),
+            effects: Mutex::new(VecDeque::new()),
             transmitting: AtomicBool::new(false),
             input_device: Mutex::new(None),
             output_device: Mutex::new(None),
@@ -92,6 +102,34 @@ impl VoiceCtl {
     }
     pub fn set_in_gain(&self, v: f32) {
         f32_store(&self.in_gain, v)
+    }
+    /// サウンドボードの音を鳴らす。すでに鳴っている音には重ねる
+    pub fn play_effect(&self, pcm: &[f32], volume: f32) {
+        let volume = volume.clamp(0.0, 1.0);
+        let mut q = self.effects.lock().unwrap();
+        let overlap = q.len().min(pcm.len());
+        for (v, &s) in q.iter_mut().zip(&pcm[..overlap]) {
+            *v = (*v + s * volume).clamp(-1.0, 1.0);
+        }
+        let room = EFFECT_MAX.saturating_sub(q.len());
+        q.extend(pcm[overlap..].iter().take(room).map(|&s| s * volume));
+    }
+
+    /// 20 ms 分の効果音を mix に足す。足したら true
+    fn mix_effects(&self, mix: &mut [f32]) -> bool {
+        let mut q = self.effects.lock().unwrap();
+        if q.is_empty() {
+            return false;
+        }
+        let n = q.len().min(mix.len());
+        for (m, s) in mix.iter_mut().zip(q.drain(..n)) {
+            *m += s;
+        }
+        true
+    }
+
+    pub fn set_noise_suppression(&self, on: bool) {
+        self.noise_suppression.store(on, Relaxed)
     }
     pub fn set_out_gain(&self, v: f32) {
         f32_store(&self.out_gain, v)
@@ -230,6 +268,44 @@ impl Resampler {
 }
 
 /// 任意チャンネル数 → ステレオ
+/// RNNoise でマイクの雑音を抑える。48 kHz のモノラルを 10 ms ずつ処理するので、10 ms 遅れる
+struct Denoiser {
+    state: Box<nnnoiseless::DenoiseState<'static>>,
+    /// まだ 10 ms に満たないモノラルの入力（i16 の幅）
+    pending: Vec<f32>,
+    frame: Vec<f32>,
+}
+
+impl Denoiser {
+    fn new() -> Self {
+        Self {
+            state: nnnoiseless::DenoiseState::new(),
+            pending: Vec::with_capacity(nnnoiseless::DenoiseState::FRAME_SIZE * 2),
+            frame: vec![0.0; nnnoiseless::DenoiseState::FRAME_SIZE],
+        }
+    }
+
+    /// 48 kHz ステレオ（交互）を受け取り、処理し終わった分をステレオで返す（長さは呼ぶたびに変わる）
+    fn run(&mut self, stereo: &[f32], out: &mut Vec<f32>) {
+        const N: usize = nnnoiseless::DenoiseState::FRAME_SIZE;
+        out.clear();
+        self.pending.extend(
+            (0..stereo.len() / 2).map(|i| (stereo[2 * i] + stereo[2 * i + 1]) * 0.5 * 32768.0),
+        );
+        let mut used = 0;
+        while self.pending.len() - used >= N {
+            self.state
+                .process_frame(&mut self.frame, &self.pending[used..used + N]);
+            used += N;
+            for &s in &self.frame {
+                let s = (s / 32768.0).clamp(-1.0, 1.0);
+                out.extend_from_slice(&[s, s]);
+            }
+        }
+        self.pending.drain(..used);
+    }
+}
+
 fn to_stereo(data: &[f32], ch: usize, out: &mut Vec<f32>) {
     for f in data.chunks_exact(ch) {
         let (l, r) = if ch == 1 { (f[0], f[0]) } else { (f[0], f[1]) };
@@ -303,6 +379,8 @@ fn open_streams(
     let mut last_loud = Instant::now() - VAD_HANG;
     let mut st = Vec::new();
     let mut rsd = Vec::new();
+    let mut denoised = Vec::new();
+    let mut denoiser: Option<Denoiser> = None;
     let mut on_input = move |data: &[f32]| {
         let gain = f32_load(&ctl2.in_gain);
         st.clear();
@@ -311,6 +389,15 @@ fn open_streams(
             .for_each(|s| *s = (*s * gain).clamp(-1.0, 1.0));
         rsd.clear();
         rs.run(&st, &mut rsd);
+        // 雑音を消してから音量を測る（雑音で音声検出が開かないように）
+        if ctl2.noise_suppression.load(Relaxed) {
+            denoiser
+                .get_or_insert_with(Denoiser::new)
+                .run(&rsd, &mut denoised);
+            std::mem::swap(&mut rsd, &mut denoised);
+        } else {
+            denoiser = None;
+        }
         let rms = if rsd.is_empty() {
             0.0
         } else {
@@ -489,6 +576,75 @@ impl symphonia_core::io::MediaSource for MicSource {
     }
 }
 
+/// サウンドボードの音（MP3・Ogg Opus など）を 48 kHz ステレオにする
+pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
+    use symphonia_core::audio::SampleBuffer;
+    use symphonia_core::codecs::DecoderOptions;
+    use symphonia_core::errors::Error as SymErr;
+    use symphonia_core::formats::FormatOptions;
+    use symphonia_core::io::MediaSourceStream;
+    use symphonia_core::meta::MetadataOptions;
+    use symphonia_core::probe::Hint;
+
+    let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
+    let mut format = songbird::input::codecs::get_probe()
+        .format(
+            &Hint::new(),
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| anyhow!("形式を読めません: {e}"))?
+        .format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| anyhow!("音声がありません"))?;
+    let track_id = track.id;
+    let mut dec = songbird::input::codecs::get_codec_registry()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| anyhow!("復号できません: {e}"))?;
+    // コンテナの値は当てにならないこともあるので、復号した音のレートで変換する
+    let mut rs: Option<(u32, Resampler)> = None;
+    let limit = RATE as usize * 2 * SOUND_MAX_SECS;
+    let (mut st, mut out, mut part) = (Vec::new(), Vec::new(), Vec::new());
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(SymErr::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymErr::ResetRequired) => break,
+            Err(e) => return Err(anyhow!("読み込みに失敗: {e}")),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let buf = match dec.decode(&packet) {
+            Ok(b) => b,
+            // 壊れた 1 パケットは飛ばす
+            Err(SymErr::DecodeError(_)) => continue,
+            Err(e) => return Err(anyhow!("復号に失敗: {e}")),
+        };
+        let spec = *buf.spec();
+        let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+        sb.copy_interleaved_ref(buf);
+        st.clear();
+        to_stereo(sb.samples(), spec.channels.count().max(1), &mut st);
+        part.clear();
+        if rs.as_ref().is_none_or(|(r, _)| *r != spec.rate) {
+            rs = Some((spec.rate, Resampler::new(spec.rate, RATE, 2)));
+        }
+        rs.as_mut().unwrap().1.run(&st, &mut part);
+        out.extend_from_slice(&part);
+        if out.len() >= limit {
+            out.truncate(limit);
+            break;
+        }
+    }
+    if out.is_empty() {
+        return Err(anyhow!("音声がありません"));
+    }
+    Ok(out)
+}
+
 // ---- 受信 ----
 
 struct Receiver {
@@ -532,7 +688,8 @@ impl EventHandler for Receiver {
                     }
                 }
                 drop(users);
-                if !t.speaking.is_empty() {
+                let effects = self.ctl.mix_effects(mix);
+                if !t.speaking.is_empty() || effects {
                     self.out.push(mix, OUT_MAX);
                 }
                 // 変化したときだけ UI を再描画する
@@ -733,6 +890,82 @@ mod tests {
                 start.elapsed().as_secs_f64() * 1000.0
             );
         }
+    }
+
+    #[test]
+    fn effects_overlap_and_drain_into_mix() {
+        let ctl = VoiceCtl::default();
+        ctl.play_effect(&[0.5; 4], 1.0);
+        ctl.play_effect(&[0.25; 6], 0.5);
+        let mut mix = [0.0f32; 4];
+        assert!(ctl.mix_effects(&mut mix));
+        assert_eq!(mix, [0.625; 4]);
+        let mut mix = [0.0f32; 4];
+        assert!(ctl.mix_effects(&mut mix));
+        assert_eq!(mix, [0.125, 0.125, 0.0, 0.0]);
+        assert!(!ctl.mix_effects(&mut mix));
+    }
+
+    #[test]
+    fn decode_sound_reads_mp3_and_ogg_opus_at_48k_stereo() {
+        for (name, bytes) in [
+            (
+                "mp3",
+                &include_bytes!("../tests/fixtures/soundboard-sine.mp3")[..],
+            ),
+            (
+                "ogg",
+                &include_bytes!("../tests/fixtures/soundboard-sine.ogg")[..],
+            ),
+        ] {
+            let pcm = decode_sound(bytes.to_vec()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // 0.5 秒の 440 Hz（ステレオ 48 kHz で約 48000 サンプル）
+            let secs = pcm.len() as f32 / (RATE as f32 * 2.0);
+            assert!((0.4..0.7).contains(&secs), "{name}: {secs}");
+            let peak = pcm.iter().fold(0f32, |m, s| m.max(s.abs()));
+            // ffmpeg の sine は振幅 1/8
+            assert!(peak > 0.05, "{name}: {peak}");
+        }
+    }
+
+    #[test]
+    fn decode_sound_rejects_garbage() {
+        assert!(decode_sound(b"not audio at all".to_vec()).is_err());
+    }
+
+    #[test]
+    fn denoiser_keeps_length_and_quiets_noise() {
+        let mut d = Denoiser::new();
+        let mut out = Vec::new();
+        let mut total_in = 0;
+        let mut total_out = 0;
+        let mut energy_in = 0.0f32;
+        let mut energy_out = 0.0f32;
+        let mut seed = 1u32;
+        // 決まった長さでない塊で渡しても、10 ms ずつ処理して全部返す
+        for (i, len) in [100usize, 333, 960, 7, 2000]
+            .iter()
+            .cycle()
+            .take(200)
+            .enumerate()
+        {
+            let input: Vec<f32> = (0..*len * 2)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    ((seed >> 16) as f32 / 32768.0 - 1.0) * 0.05
+                })
+                .collect();
+            total_in += input.len();
+            d.run(&input, &mut out);
+            total_out += out.len();
+            if i > 50 {
+                energy_in += input.iter().map(|s| s * s).sum::<f32>();
+                energy_out += out.iter().map(|s| s * s).sum::<f32>();
+            }
+        }
+        assert!(total_in - total_out < 480 * 2);
+        assert_eq!(total_out % 2, 0);
+        assert!(energy_out < energy_in * 0.5, "{energy_out} vs {energy_in}");
     }
 
     #[test]

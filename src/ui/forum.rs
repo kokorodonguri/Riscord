@@ -508,6 +508,95 @@ impl Root {
             .into_any_element()
     }
 
+    pub fn folder_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let id = self.app.folder_edit.clone()?;
+        let width = (self.app.screen_w - 56.0).clamp(0.0, 440.0);
+        let mut colors = div().flex().flex_wrap().gap(z(8.0));
+        for color in [
+            0x5865f2u32,
+            0x57f287,
+            0xfee75c,
+            0xeb459e,
+            0xed4245,
+            0x747f8d,
+        ] {
+            let bg = crate::color::Color32::from_rgb(
+                (color >> 16) as u8,
+                (color >> 8) as u8,
+                color as u8,
+            );
+            colors = colors.child(
+                div()
+                    .id(("folder-color", color as usize))
+                    .size(z(32.0))
+                    .rounded_full()
+                    .bg(bg)
+                    .when(self.app.folder_color == color, |d| {
+                        d.border_2().border_color(WHITE())
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.folder_color = color;
+                        cx.notify();
+                    })),
+            );
+        }
+        let content =
+            card(SIDEBAR(), BORDER(), 8.0)
+                .p(z(20.0))
+                .w(z(width))
+                .flex()
+                .flex_col()
+                .gap(z(10.0))
+                .child(medium("フォルダを編集", 20.0, WHITE()))
+                .child(
+                    div().bg(INPUT()).rounded(z(8.0)).px(z(8.0)).child(
+                        Input::new(&self.inp.folder_name)
+                            .appearance(false)
+                            .h(z(34.0)),
+                    ),
+                )
+                .child(colors)
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(z(8.0))
+                        .child(text_button("folder_edit_cancel", "キャンセル").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.app.folder_edit = None;
+                                cx.notify();
+                            }),
+                        ))
+                        .child(
+                            fill_button("folder_edit_save", "保存", BLURPLE(), WHITE(), true)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let name = this.app.folder_name.trim();
+                                    if name.is_empty() {
+                                        this.app.show_toast("フォルダ名を入力してください");
+                                    } else if let Some(folder) = this
+                                        .app
+                                        .settings
+                                        .guild_folders
+                                        .iter_mut()
+                                        .find(|f| f.id == id)
+                                    {
+                                        folder.name = name.to_owned();
+                                        folder.color = this.app.folder_color;
+                                        this.app.folder_edit = None;
+                                        this.app.save_settings();
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                );
+        let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            this.app.folder_edit = None;
+            cx.notify();
+        });
+        Some(modal("folder_edit_dialog", content, close, 170).into_any_element())
+    }
+
     /// メッセージからスレッドを作る画面
     pub fn thread_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let d = self.app.thread_draft.as_ref()?;

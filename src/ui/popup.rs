@@ -621,6 +621,45 @@ impl Root {
             ),
         );
 
+        let g1 = gid.clone();
+        let hide = self.app.settings.hide_muted_guilds.contains(&gid);
+        col = col.child(
+            div()
+                .id("gm_hide_muted")
+                .h(z(32.0))
+                .px(z(10.0))
+                .rounded(z(6.0))
+                .flex()
+                .items_center()
+                .gap(z(10.0))
+                .cursor_pointer()
+                .text_color(TEXT())
+                .hover(|s| s.bg(HOVER()).text_color(WHITE()))
+                .child(icon(IconName::BellOff, 18.0, TEXT()))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(z(14.0))
+                        .child("ミュートしたチャンネルを隠す"),
+                )
+                .child(
+                    div()
+                        .size(z(18.0))
+                        .rounded(z(4.0))
+                        .border_1()
+                        .border_color(if hide { BLURPLE() } else { MUTED() })
+                        .when(hide, |d| d.bg(BLURPLE()))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(hide, |d| d.child(icon(IconName::Check, 14.0, WHITE()))),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.app.toggle_hide_muted(&g1);
+                    cx.notify();
+                })),
+        );
+
         // ID・脱退
         col = col.child(menu_divider());
         let g1 = gid.clone();

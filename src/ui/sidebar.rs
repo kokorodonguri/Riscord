@@ -803,7 +803,9 @@ impl Root {
                         );
                     }
                     for c in top {
-                        self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                        if !a.hidden_as_muted(gid, c, cur_voice.as_deref()) {
+                            self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                        }
                     }
                     for cat in cats {
                         let cat_id = cat.id.clone();
@@ -883,11 +885,12 @@ impl Root {
                         );
                         if let Some(l) = by_parent.get(cat.id.as_str()) {
                             for c in l {
-                                if !collapsed
+                                if (!collapsed
                                     || a.channel_visible_in_collapsed_category(
                                         c,
                                         cur_voice.as_deref(),
-                                    )
+                                    ))
+                                    && !a.hidden_as_muted(gid, c, cur_voice.as_deref())
                                 {
                                     self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
                                 }

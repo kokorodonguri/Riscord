@@ -1976,3 +1976,80 @@ fn avatar_and_decoration_urls_resolve_user_and_guild_overrides() {
         serde_json::from_value(serde_json::json!({"id": "11", "username": "x"})).unwrap();
     assert!(decoration_for(&nobody, Some(&bad)).is_none());
 }
+
+#[test]
+fn muted_channels_are_read_and_hidden_when_asked() {
+    let (gid, s) = GuildSettings::parse(&serde_json::json!({
+        "guild_id": "g1",
+        "channel_overrides": [
+            {"channel_id": "c1", "muted": true},
+            {"channel_id": "cat", "muted": true, "mute_config": {"end_time": "2999-01-01T00:00:00+00:00"}},
+            {"channel_id": "old", "muted": true, "mute_config": {"end_time": "2000-01-01T00:00:00+00:00"}},
+            {"channel_id": "c2", "muted": false}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(gid, "g1");
+    let mut muted: Vec<&str> = s.muted_channels.iter().map(String::as_str).collect();
+    muted.sort();
+    assert_eq!(
+        muted,
+        ["c1", "cat"],
+        "期限切れとミュートでないものは入れない"
+    );
+    // オブジェクトの形でも読める
+    let (_, s2) = GuildSettings::parse(&serde_json::json!({
+        "guild_id": "g1",
+        "channel_overrides": {"c9": {"channel_id": "c9", "muted": true}}
+    }))
+    .unwrap();
+    assert!(s2.muted_channels.contains("c9"));
+
+    let profile = "hide-muted-test";
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+    let mut app = App::default();
+    app.set_profile(Some(profile.into()));
+    app.sel_guild = Some("g1".into());
+    app.guild_settings.insert("g1".into(), s);
+    let ch = |id: &str, kind: u8, parent: Option<&str>| -> Channel {
+        serde_json::from_value(
+            serde_json::json!({"id": id, "type": kind, "name": id, "parent_id": parent}),
+        )
+        .unwrap()
+    };
+    let (c1, c2, in_cat, v) = (
+        ch("c1", 0, None),
+        ch("c2", 0, None),
+        ch("c3", 0, Some("cat")),
+        ch("v", 2, Some("cat")),
+    );
+    app.channels.insert(
+        "g1".into(),
+        vec![
+            c1.clone(),
+            c2.clone(),
+            ch("cat", 4, None),
+            in_cat.clone(),
+            v.clone(),
+        ],
+    );
+    assert_eq!(
+        app.sidebar_order(),
+        ["c1", "c2", "c3"],
+        "切り替えるまでは隠さない"
+    );
+    app.toggle_hide_muted("g1");
+    assert!(load_settings(Some(profile))
+        .hide_muted_guilds
+        .contains("g1"));
+    // ミュートしたカテゴリの中のチャンネルも隠す
+    assert_eq!(app.sidebar_order(), ["c2"]);
+    assert!(app.hidden_as_muted("g1", &v, None));
+    // 選んでいるチャンネルと、入っているボイスチャンネルは隠さない
+    app.sel_channel = Some("c1".into());
+    assert!(!app.hidden_as_muted("g1", &c1, None));
+    assert!(!app.hidden_as_muted("g1", &v, Some("v")));
+    app.toggle_hide_muted("g1");
+    assert!(!app.hidden_as_muted("g1", &in_cat, None));
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+}

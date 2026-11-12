@@ -153,6 +153,8 @@ pub struct Settings {
     pub guild_folders: Vec<GuildFolder>,
     /// 閉じているチャンネルカテゴリ
     pub collapsed_categories: std::collections::BTreeSet<String>,
+    /// ミュートしたチャンネルを隠すサーバー
+    pub hide_muted_guilds: std::collections::BTreeSet<String>,
     /// サーバーごとに最後に開いたチャンネル（DM はキー ""）
     pub last_channels: std::collections::BTreeMap<String, String>,
     /// チャンネル一覧・メンバー一覧の横幅（境界をドラッグして変える。0 は既定の幅）
@@ -190,6 +192,7 @@ impl Default for Settings {
             guild_folders: Vec::new(),
             collapsed_categories: Default::default(),
             last_channels: Default::default(),
+            hide_muted_guilds: Default::default(),
             channel_pane_width: PANE_DEFAULT,
             member_pane_width: PANE_DEFAULT,
         }
@@ -4579,6 +4582,33 @@ impl App {
         }
     }
 
+    /// チャンネル（か、それを入れたカテゴリ）をミュートしているか
+    pub fn is_channel_muted(&self, guild_id: &str, c: &Channel) -> bool {
+        self.guild_settings.get(guild_id).is_some_and(|s| {
+            s.muted_channels.contains(&c.id)
+                || c.parent_id
+                    .as_ref()
+                    .is_some_and(|p| s.muted_channels.contains(p))
+        })
+    }
+
+    /// 「ミュートしたチャンネルを隠す」で隠すチャンネルか。選んでいるチャンネルと、
+    /// 自分や人がいるボイスチャンネルは隠さない
+    pub fn hidden_as_muted(&self, guild_id: &str, c: &Channel, cur_voice: Option<&str>) -> bool {
+        self.settings.hide_muted_guilds.contains(guild_id)
+            && self.is_channel_muted(guild_id, c)
+            && self.sel_channel.as_deref() != Some(c.id.as_str())
+            && !(c.is_voice()
+                && (cur_voice == Some(c.id.as_str()) || self.voice_members(&c.id).next().is_some()))
+    }
+
+    pub fn toggle_hide_muted(&mut self, guild_id: &str) {
+        if !self.settings.hide_muted_guilds.remove(guild_id) {
+            self.settings.hide_muted_guilds.insert(guild_id.to_owned());
+        }
+        self.save_settings();
+    }
+
     /// メンバー一覧がチャット欄の横に並ぶか（狭い画面では重ねて出す）
     pub fn members_inline(&self) -> bool {
         let narrow = self.screen_w < 900.0;
@@ -4641,7 +4671,9 @@ impl App {
                 };
                 let mut out: Vec<String> = chs
                     .iter()
-                    .filter(|c| c.is_text() && c.parent_id.is_none())
+                    .filter(|c| {
+                        c.is_text() && c.parent_id.is_none() && !self.hidden_as_muted(g, c, None)
+                    })
                     .map(|c| c.id.clone())
                     .collect();
                 let mut cats: Vec<&Channel> =
@@ -4656,6 +4688,7 @@ impl App {
                                     && c.parent_id.as_deref() == Some(&cat.id)
                                     && (!collapsed
                                         || self.channel_visible_in_collapsed_category(c, None))
+                                    && !self.hidden_as_muted(g, c, None)
                             })
                             .map(|c| c.id.clone()),
                     );
@@ -5196,28 +5229,42 @@ pub struct GuildSettings {
     pub muted: bool,
     /// 0 = すべてのメッセージ、1 = @メンションのみ、2 = なし、3 = サーバーの既定
     pub notifications: u8,
+    /// ミュートしているチャンネル・カテゴリ（channel_overrides から。期限切れは除く）
+    pub muted_channels: HashSet<String>,
+}
+
+/// mute_config の期限を過ぎていれば、ミュートは解けている
+fn mute_active(v: &serde_json::Value) -> bool {
+    v["muted"].as_bool().unwrap_or(false)
+        && !v["mute_config"]["end_time"]
+            .as_str()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .is_some_and(|end| end < chrono::Utc::now())
 }
 
 impl GuildSettings {
     /// user_guild_settings の1件から（サーバーID, 設定）。DM の分（guild_id が null）は除く
     pub fn parse(v: &serde_json::Value) -> Option<(String, GuildSettings)> {
         let gid = v["guild_id"].as_str()?.to_string();
-        let mut muted = v["muted"].as_bool().unwrap_or(false);
-        // 期限つきのミュートは、期限を過ぎていれば解けている
-        if let Some(end) = v["mute_config"]["end_time"]
-            .as_str()
-            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        {
-            if end < chrono::Utc::now() {
-                muted = false;
-            }
-        }
+        let muted = mute_active(v);
         let notifications = v["message_notifications"].as_u64().unwrap_or(3).min(3) as u8;
+        // 配列のことも、チャンネル ID をキーにしたオブジェクトのこともある
+        let overrides = &v["channel_overrides"];
+        let muted_channels = overrides
+            .as_array()
+            .map(|a| a.iter().collect::<Vec<_>>())
+            .or_else(|| overrides.as_object().map(|o| o.values().collect()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| mute_active(o))
+            .filter_map(|o| o["channel_id"].as_str().map(String::from))
+            .collect();
         Some((
             gid,
             GuildSettings {
                 muted,
                 notifications,
+                muted_channels,
             },
         ))
     }

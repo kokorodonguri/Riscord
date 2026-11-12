@@ -18,9 +18,13 @@ pub struct PinsView {
     pub has_more: bool,
     /// 読み込み中のページ（None = 先頭）
     pub loading: Option<Option<String>>,
+    /// 現在読み込み中の要求番号
+    request: Option<u64>,
     /// 読み込み中に変わった。届いたら先頭から読み直す
     pub stale: bool,
     pub error: Option<String>,
+    /// 失敗したページ（外側の None は失敗がない状態）
+    failed_before: Option<Option<String>>,
     /// 中身が変わるたびに増やす（画面の一覧を作り直す目印）
     pub rev: u64,
 }
@@ -52,6 +56,9 @@ fn parse_pins(v: serde_json::Value) -> Result<(Vec<PinItem>, bool), String> {
         if let Ok(m) = serde_json::from_value::<Message>(it["message"].clone()) {
             out.push(PinItem { pinned_at: at.to_string(), message: m });
         }
+    }
+    if out.is_empty() && (!items.is_empty() || has_more) {
+        return Err("ピン一覧のページを読み取れません".into());
     }
     Ok((out, has_more))
 }
@@ -119,9 +126,21 @@ impl App {
         }
         p.loading = Some(before.clone());
         p.error = None;
+        p.failed_before = None;
         p.rev += 1;
+        self.next_api_id += 1;
+        let id = self.next_api_id;
+        p.request = Some(id);
         let call = ApiCall::GetChannelPins { channel_id: p.channel_id.clone(), before, limit: PIN_PAGE };
-        self.send(Cmd::Api { id: 0, call });
+        let queued = self.backend.as_ref().is_some_and(|b| b.cmd.send(Cmd::Api { id, call }).is_ok());
+        if !queued {
+            if let Some(p) = self.pins.as_mut() {
+                p.failed_before = p.loading.take();
+                p.request = None;
+                p.error = Some("ピン留めされたメッセージを読み込めませんでした。接続を確認して再試行してください".into());
+                p.rev += 1;
+            }
+        }
     }
 
     /// 次のページ
@@ -136,11 +155,29 @@ impl App {
         }
     }
 
-    pub(super) fn on_pins_loaded(&mut self, channel_id: String, before: Option<String>, result: Result<serde_json::Value, String>) {
-        let Some(p) = self.pins.as_mut().filter(|p| p.channel_id == channel_id && p.loading.as_ref() == Some(&before)) else { return };
+    /// 一覧の読み込みをやり直す。
+    pub fn retry_pins(&mut self) {
+        let Some(p) = self.pins.as_ref().filter(|p| p.error.is_some() && p.loading.is_none()) else { return };
+        let Some(before) = p.failed_before.clone() else { return };
+        self.load_pins(before);
+    }
+
+    pub(super) fn on_pins_loaded(&mut self, id: u64, channel_id: String, before: Option<String>, result: Result<serde_json::Value, String>) {
+        let Some(p) = self.pins.as_mut().filter(|p| p.request == Some(id) && p.channel_id == channel_id && p.loading.as_ref() == Some(&before)) else { return };
+        p.request = None;
         p.loading = None;
         p.rev += 1;
-        match result.and_then(parse_pins) {
+        let result = match result {
+            Ok(v) => parse_pins(v).map_err(|e| {
+                eprintln!("ピン一覧を読めませんでした: {e}");
+                "ピン留めされたメッセージを読み取れませんでした。再試行してください".to_string()
+            }),
+            Err(e) => {
+                eprintln!("ピン一覧を読めませんでした: {e}");
+                Err(api_error_text(&e, "ピン留めされたメッセージを読み込めませんでした"))
+            }
+        };
+        match result {
             Ok((items, has_more)) => {
                 if before.is_none() {
                     p.items.clear();
@@ -151,8 +188,8 @@ impl App {
                 p.has_more = has_more;
             }
             Err(e) => {
-                eprintln!("ピン一覧を読めませんでした: {e}");
-                p.error = Some(api_error_text(&e, "ピン留めされたメッセージを読み込めませんでした"));
+                p.error = Some(e);
+                p.failed_before = Some(before);
             }
         }
         if std::mem::take(&mut p.stale) {
@@ -164,7 +201,14 @@ impl App {
     pub fn set_pinned(&mut self, m: &Message, pin: bool) {
         let (channel_id, message_id) = (m.channel_id.clone(), m.id.clone());
         let call = if pin { ApiCall::Pin { channel_id, message_id } } else { ApiCall::Unpin { channel_id, message_id } };
-        self.send(Cmd::Api { id: 0, call });
+        let queued = self.backend.as_ref().is_some_and(|b| b.cmd.send(Cmd::Api { id: 0, call }).is_ok());
+        if !queued {
+            self.show_toast(if pin {
+                "ピン留めできませんでした。接続を確認して再試行してください"
+            } else {
+                "ピン留めを外せませんでした。接続を確認して再試行してください"
+            });
+        }
     }
 
     pub(super) fn on_pin_result(&mut self, channel_id: String, message_id: String, pin: bool, result: Result<serde_json::Value, String>) {
@@ -233,11 +277,110 @@ mod tests {
         (app, tx, rx)
     }
 
-    fn next_pins_call(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>) -> ApiCall {
+    fn next_pins_call(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>) -> (u64, ApiCall) {
         match rx.try_recv().unwrap() {
-            Cmd::Api { call: call @ ApiCall::GetChannelPins { .. }, .. } => call,
+            Cmd::Api { id, call: call @ ApiCall::GetChannelPins { .. } } => (id, call),
             _ => panic!("ピン一覧を頼んでいない"),
         }
+    }
+
+    #[test]
+    fn pins_without_a_backend_can_be_retried_after_reconnection() {
+        let (mut app, _tx, mut rx) = harness();
+        let backend = app.backend.take();
+        app.toggle_pins();
+        let p = app.pins.as_ref().unwrap();
+        assert!(p.loading.is_none() && p.error.is_some());
+        app.backend = backend;
+        app.retry_pins();
+        assert!(matches!(next_pins_call(&mut rx).1, ApiCall::GetChannelPins { before: None, .. }));
+        assert!(app.pins.as_ref().unwrap().loading.is_some());
+    }
+
+    #[test]
+    fn pins_with_a_closed_backend_do_not_load_forever() {
+        let (mut app, _tx, rx) = harness();
+        drop(rx);
+        app.toggle_pins();
+        let p = app.pins.as_ref().unwrap();
+        assert!(p.loading.is_none() && p.error.is_some());
+    }
+
+    #[test]
+    fn closing_and_reopening_pins_discards_the_old_response() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_pins();
+        let (old_id, old) = next_pins_call(&mut rx);
+        app.toggle_pins();
+        app.toggle_pins();
+        let (current_id, current) = next_pins_call(&mut rx);
+        assert_ne!(old_id, current_id);
+        tx.send(Event::Api { id: old_id, call: old, result: Ok(serde_json::json!({"has_more":false,"items":[{"pinned_at":"2026-01-01T00:00:00+00:00","message":msg("old",true)}]})) }).unwrap();
+        app.poll();
+        let p = app.pins.as_ref().unwrap();
+        assert!(p.loading.is_some() && p.items.is_empty(), "閉じる前の応答を新しい一覧に反映しない");
+        tx.send(Event::Api { id: current_id, call: current, result: Ok(serde_json::json!({"has_more":false,"items":[{"pinned_at":"2026-01-02T00:00:00+00:00","message":msg("new",true)}]})) }).unwrap();
+        app.poll();
+        assert_eq!(app.pins.as_ref().unwrap().items[0].message.id, "new");
+    }
+
+    #[test]
+    fn late_failure_from_closed_pins_does_not_replace_the_new_result() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_pins();
+        let (old_id, old) = next_pins_call(&mut rx);
+        app.toggle_pins();
+        app.toggle_pins();
+        let (current_id, current) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id: current_id, call: current, result: Ok(serde_json::json!({"has_more":false,"items":[{"pinned_at":"2026-01-02T00:00:00+00:00","message":msg("new",true)}]})) }).unwrap();
+        app.poll();
+        tx.send(Event::Api { id: old_id, call: old, result: Err("network unavailable".into()) }).unwrap();
+        app.poll();
+        let p = app.pins.as_ref().unwrap();
+        assert!(p.error.is_none() && p.loading.is_none());
+        assert_eq!(p.items[0].message.id, "new");
+    }
+
+    #[test]
+    fn retry_after_failed_refresh_reloads_the_first_page() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_pins();
+        let (id, call) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"has_more":true,"items":[{"pinned_at":"2026-01-01T00:00:00+00:00","message":msg("1",true)}]})) }).unwrap();
+        app.poll();
+        app.load_pins(None);
+        let (id, call) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id, call, result: Err("network unavailable".into()) }).unwrap();
+        app.poll();
+        assert!(app.pins.as_ref().unwrap().error.is_some());
+        app.retry_pins();
+        let (id, call) = next_pins_call(&mut rx);
+        assert!(matches!(&call, ApiCall::GetChannelPins { before: None, .. }), "更新失敗後は古い続きではなく先頭を再取得する");
+        app.retry_pins();
+        assert!(rx.try_recv().is_err(), "再取得中の二重送信を防ぐ");
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"has_more":false,"items":[{"pinned_at":"2026-01-02T00:00:00+00:00","message":msg("2",true)}]})) }).unwrap();
+        app.poll();
+        let p = app.pins.as_ref().unwrap();
+        assert!(p.error.is_none() && p.items.len()==1 && p.items[0].message.id=="2");
+    }
+
+    #[test]
+    fn retry_older_pins_keeps_the_original_cursor_after_an_item_is_removed() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_pins();
+        let (id, call) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"has_more":true,"items":[
+            {"pinned_at":"2026-01-02T00:00:00+00:00","message":msg("1",true)},
+            {"pinned_at":"2026-01-01T00:00:00+00:00","message":msg("2",true)}
+        ]})) }).unwrap();
+        app.poll();
+        app.load_more_pins();
+        let (id, call) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id, call, result: Err("network unavailable".into()) }).unwrap();
+        app.poll();
+        app.on_pin_changed("c", "2", false);
+        app.retry_pins();
+        assert!(matches!(next_pins_call(&mut rx).1, ApiCall::GetChannelPins { before: Some(at), .. } if at == "2026-01-01T00:00:00+00:00"));
     }
 
     #[test]
@@ -245,16 +388,16 @@ mod tests {
         let (mut app, tx, mut rx) = harness();
         app.toggle_pins();
         assert_eq!(app.side, SidePanel::Pins);
-        let call = next_pins_call(&mut rx);
+        let (id, call) = next_pins_call(&mut rx);
         assert!(matches!(&call, ApiCall::GetChannelPins { before: None, limit: 50, .. }));
         let items = |ids: &[(&str, &str)]| serde_json::Value::Array(ids.iter().map(|(id, at)| serde_json::json!({ "pinned_at": at, "message": msg(id, true) })).collect());
-        tx.send(Event::Api { id: 0, call, result: Ok(serde_json::json!({ "has_more": true, "items": items(&[("5", "2026-01-05T00:00:00+00:00"), ("4", "2026-01-04T00:00:00+00:00")]) })) }).unwrap();
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({ "has_more": true, "items": items(&[("5", "2026-01-05T00:00:00+00:00"), ("4", "2026-01-04T00:00:00+00:00")]) })) }).unwrap();
         app.poll();
         app.load_more_pins();
-        let call = next_pins_call(&mut rx);
+        let (id, call) = next_pins_call(&mut rx);
         assert!(matches!(&call, ApiCall::GetChannelPins { before: Some(b), .. } if b == "2026-01-04T00:00:00+00:00"));
         // 境目の 4 がもう一度来ても重ねない
-        tx.send(Event::Api { id: 0, call, result: Ok(serde_json::json!({ "has_more": false, "items": items(&[("4", "2026-01-04T00:00:00+00:00"), ("3", "2026-01-03T00:00:00+00:00")]) })) }).unwrap();
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({ "has_more": false, "items": items(&[("4", "2026-01-04T00:00:00+00:00"), ("3", "2026-01-03T00:00:00+00:00")]) })) }).unwrap();
         app.poll();
         let ids: Vec<&str> = app.pins.as_ref().unwrap().items.iter().map(|i| i.message.id.as_str()).collect();
         assert_eq!(ids, ["5", "4", "3"]);
@@ -267,8 +410,8 @@ mod tests {
     fn pin_changes_sync_messages_and_open_list() {
         let (mut app, tx, mut rx) = harness();
         app.toggle_pins();
-        let call = next_pins_call(&mut rx);
-        tx.send(Event::Api { id: 0, call, result: Ok(serde_json::json!({ "has_more": false, "items": [{ "pinned_at": "2026-01-01T00:00:00+00:00", "message": msg("1", true) }] })) }).unwrap();
+        let (id, call) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({ "has_more": false, "items": [{ "pinned_at": "2026-01-01T00:00:00+00:00", "message": msg("1", true) }] })) }).unwrap();
         app.poll();
         // 別の端末で外された（MESSAGE_UPDATE）
         tx.send(Event::MessageUpdate { channel_id: "c".into(), id: "1".into(), content: None, embeds: None, pinned: Some(false) }).unwrap();
@@ -279,7 +422,7 @@ mod tests {
         tx.send(Event::Api { id: 0, call: ApiCall::Pin { channel_id: "c".into(), message_id: "1".into() }, result: Ok(serde_json::Value::Null) }).unwrap();
         app.poll();
         assert!(app.messages["c"][0].pinned);
-        assert!(matches!(next_pins_call(&mut rx), ApiCall::GetChannelPins { before: None, .. }));
+        assert!(matches!(next_pins_call(&mut rx).1, ApiCall::GetChannelPins { before: None, .. }));
         // 読み込み中に CHANNEL_PINS_UPDATE が来たら、届いてからもう一度読み直す
         tx.send(Event::Gateway { t: "CHANNEL_PINS_UPDATE".into(), d: serde_json::json!({ "channel_id": "c" }) }).unwrap();
         app.poll();
@@ -294,6 +437,27 @@ mod tests {
         app.poll();
         assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("権限")));
         assert!(!app.messages["c"][0].pinned);
+    }
+
+    #[test]
+    fn pin_action_without_a_backend_reports_failure_and_keeps_the_message() {
+        let (mut app, _tx, _rx) = harness();
+        app.backend = None;
+        let message: Message = serde_json::from_value(msg("1", false)).unwrap();
+        app.set_pinned(&message, true);
+        assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("ピン留めできませんでした")));
+        assert!(!app.messages["c"][0].pinned);
+    }
+
+    #[test]
+    fn unpin_action_with_a_closed_backend_reports_failure_and_keeps_the_pin() {
+        let (mut app, _tx, rx) = harness();
+        drop(rx);
+        let message: Message = serde_json::from_value(msg("1", true)).unwrap();
+        app.messages.get_mut("c").unwrap()[0].pinned = true;
+        app.set_pinned(&message, false);
+        assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("ピン留めを外せませんでした")));
+        assert!(app.messages["c"][0].pinned);
     }
 
     #[test]
@@ -317,5 +481,27 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(items[0].message.pinned);
         assert!(parse_pins(serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn pins_page_with_no_usable_cursor_is_an_error_instead_of_an_empty_list() {
+        let bad = serde_json::json!({"has_more":true,"items":[{"pinned_at":"2026-01-01T00:00:00+00:00","message":{"id":"broken"}}]});
+        assert!(parse_pins(bad).is_err());
+        assert!(parse_pins(serde_json::json!({"has_more":true,"items":[]})).is_err());
+        let (items, has_more) = parse_pins(serde_json::json!({"has_more":false,"items":[]})).unwrap();
+        assert!(items.is_empty() && !has_more);
+    }
+
+    #[test]
+    fn malformed_pin_page_explains_the_read_failure_and_can_be_retried() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_pins();
+        let (id, call) = next_pins_call(&mut rx);
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"has_more":true,"items":[]})) }).unwrap();
+        app.poll();
+        let p = app.pins.as_ref().unwrap();
+        assert!(p.loading.is_none() && p.error.as_ref().is_some_and(|e| e.contains("読み取れません")));
+        app.retry_pins();
+        assert!(matches!(next_pins_call(&mut rx).1, ApiCall::GetChannelPins { before: None, .. }));
     }
 }

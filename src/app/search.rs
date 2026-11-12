@@ -37,6 +37,8 @@ pub struct SearchView {
     pub offset: u32,
     pub total: u32,
     pub hits: Vec<SearchHit>,
+    /// 応答のうち表示できない項目があった
+    pub partial: bool,
     pub loading: bool,
     pub error: Option<String>,
     /// 最後に送った検索の番号（App::api の id）。違う番号の結果は古いので捨てる
@@ -47,6 +49,29 @@ pub struct SearchView {
     pub rev: u64,
     /// 一度でも検索した
     pub searched: bool,
+}
+
+impl SearchView {
+    pub fn result_label(&self) -> String {
+        let count = self.hits.len();
+        if self.partial {
+            return format!("表示中: {count} 件（一部の結果を表示できません）");
+        }
+        if count == 0 {
+            return if self.total == 0 {
+                "一致するメッセージはありません".to_string()
+            } else {
+                format!("このページに表示できる結果はありません（全 {} 件）", self.total)
+            };
+        }
+        let from = u64::from(self.offset) + 1;
+        let to = u64::from(self.offset).saturating_add(count as u64);
+        if to > u64::from(self.total) {
+            format!("表示中: {count} 件（全件数は確認できません）")
+        } else {
+            format!("{from}–{to} 件目（全 {} 件）", self.total)
+        }
+    }
 }
 
 /// 検索語を解くときに名前から ID を引くもの
@@ -133,7 +158,7 @@ pub fn parse_search(q: &str, in_guild: bool, names: &dyn SearchNames) -> Result<
 }
 
 /// 検索結果を読む。索引の準備中なら Err(Some(待つ秒数))
-fn parse_results(v: &serde_json::Value) -> Result<(Vec<Message>, u32), Option<f64>> {
+fn parse_results(v: &serde_json::Value) -> Result<(Vec<Message>, u32, bool), Option<f64>> {
     if v["code"] == 110000 || (v.get("messages").is_none() && v.get("retry_after").is_some()) {
         return Err(Some(v["retry_after"].as_f64().unwrap_or(2.0)));
     }
@@ -150,7 +175,11 @@ fn parse_results(v: &serde_json::Value) -> Result<(Vec<Message>, u32), Option<f6
             out.push(m);
         }
     }
-    Ok((out, total))
+    let partial = out.len() != groups.len();
+    if partial && out.is_empty() {
+        return Err(None);
+    }
+    Ok((out, total, partial))
 }
 
 /// 今いる場所から名前を引く（スラッシュコマンドの引数でも使う）
@@ -195,6 +224,14 @@ impl SearchNames for SearchNamesFor<'_> {
 }
 
 impl App {
+    fn current_search_scope(&self) -> Option<SearchScope> {
+        match (&self.sel_guild, &self.sel_channel) {
+            (Some(g), _) => Some(SearchScope::Guild(g.clone())),
+            (None, Some(c)) => Some(SearchScope::Channel(c.clone())),
+            (None, None) => None,
+        }
+    }
+
     /// 検索の枠を出す・閉じる
     pub fn toggle_search(&mut self) {
         if self.side == SidePanel::Search {
@@ -210,8 +247,14 @@ impl App {
 
     /// 検索欄が変わった: 手を止めたら検索する
     pub fn search_typed(&mut self) {
-        self.search_due = Some(std::time::Instant::now() + SEARCH_DEBOUNCE);
-        self.repaint_after(SEARCH_DEBOUNCE);
+        let pending = !self.search_query.trim().is_empty();
+        if let Some(s) = self.search.as_mut() {
+            *s = SearchView { rev: s.rev + 1, loading: pending, ..Default::default() };
+        }
+        self.search_due = pending.then(|| std::time::Instant::now() + SEARCH_DEBOUNCE);
+        if pending {
+            self.repaint_after(SEARCH_DEBOUNCE);
+        }
     }
 
     /// 毎回の描画で呼ぶ: 待ち時間が過ぎた検索・やり直しを送る
@@ -220,6 +263,14 @@ impl App {
         if self.search_due.is_some_and(|t| now >= t) {
             self.search_due = None;
             self.run_search();
+        }
+        let scope = self.current_search_scope();
+        let scope_changed = self.side == SidePanel::Search && !self.search_query.trim().is_empty() && self.search.as_ref().is_some_and(|s| {
+            (s.scope.is_some() || (!s.loading && s.error.is_some())) && s.scope != scope
+        });
+        if scope_changed {
+            self.run_search();
+            return;
         }
         let Some(s) = self.search.as_mut() else { return };
         if s.retry_at.is_some_and(|t| now >= t) {
@@ -232,28 +283,25 @@ impl App {
     pub fn run_search(&mut self) {
         self.search_due = None;
         let q = self.search_query.trim().to_string();
-        let scope = match (&self.sel_guild, &self.sel_channel) {
-            (Some(g), _) => SearchScope::Guild(g.clone()),
-            (None, Some(c)) => SearchScope::Channel(c.clone()),
-            (None, None) => return,
+        let scope = match self.current_search_scope() {
+            Some(scope) => scope,
+            None => {
+                if let Some(s) = self.search.as_mut() {
+                    *s = SearchView { rev: s.rev + 1, error: (!q.is_empty()).then(|| "検索するチャンネルを選択してください".into()), ..Default::default() };
+                }
+                return;
+            }
         };
         let parsed = parse_search(&q, matches!(scope, SearchScope::Guild(_)), &SearchNamesFor { app: self, guild: self.sel_guild.as_deref() });
         let s = self.search.get_or_insert_with(SearchView::default);
-        s.request = 0;
-        s.rev += 1;
-        s.retry_at = None;
-        s.retries = 0;
+        *s = SearchView { rev: s.rev + 1, scope: Some(scope), ..Default::default() };
         match parsed {
-            _ if q.is_empty() => {
-                // 空にしたら結果を消す（送らない）
-                *s = SearchView { rev: s.rev, ..Default::default() };
-            }
+            _ if q.is_empty() => {} // 初期化だけ行い、検索は送らない
             Err(e) => {
                 s.loading = false;
                 s.error = Some(e);
             }
             Ok(params) => {
-                s.scope = Some(scope);
                 s.params = params;
                 s.offset = 0;
                 s.searched = true;
@@ -274,11 +322,20 @@ impl App {
         self.send_search();
     }
 
+    /// 読み込めなかった検索を、同じ条件・ページからやり直す。
+    pub fn retry_search(&mut self) {
+        let scope = self.current_search_scope();
+        let Some(s) = self.search.as_mut().filter(|s| s.searched && !s.loading && (s.error.is_some() || s.partial) && s.scope == scope && scope.is_some()) else { return };
+        s.retries = 0;
+        self.send_search();
+    }
+
     fn send_search(&mut self) {
         let Some(s) = self.search.as_mut() else { return };
         let Some(scope) = s.scope.clone() else { return };
         s.loading = true;
         s.error = None;
+        s.hits.clear();
         s.rev += 1;
         let mut query = s.params.clone();
         if s.offset > 0 {
@@ -289,20 +346,30 @@ impl App {
             SearchScope::Guild(guild_id) => ApiCall::SearchGuild { guild_id, query },
             SearchScope::Channel(channel_id) => ApiCall::SearchChannel { channel_id, query },
         };
-        let id = self.api(call);
+        self.next_api_id += 1;
+        let id = self.next_api_id;
+        let queued = self.backend.as_ref().is_some_and(|b| b.cmd.send(Cmd::Api { id, call }).is_ok());
         if let Some(s) = self.search.as_mut() {
-            s.request = id;
+            if queued {
+                s.request = id;
+            } else {
+                s.request = 0;
+                s.loading = false;
+                s.error = Some("検索できませんでした。接続を確認して再試行してください".into());
+            }
         }
     }
 
     pub(super) fn on_search_result(&mut self, id: u64, result: Result<serde_json::Value, String>) {
-        let Some(s) = self.search.as_mut().filter(|s| s.request == id && s.loading) else { return };
+        let scope = self.current_search_scope();
+        let Some(s) = self.search.as_mut().filter(|s| s.request == id && s.loading && s.scope == scope) else { return };
         s.rev += 1;
         match result {
             Ok(v) => match parse_results(&v) {
-                Ok((messages, total)) => {
+                Ok((messages, total, partial)) => {
                     s.loading = false;
                     s.total = total;
+                    s.partial = partial;
                     let hits: Vec<SearchHit> = messages.into_iter().map(|m| SearchHit { place: String::new(), message: m }).collect();
                     s.hits = hits;
                     self.name_search_hits(&v);
@@ -423,10 +490,93 @@ mod tests {
     #[test]
     fn results_and_index_wait_are_read() {
         let m = serde_json::json!({ "id": "5", "channel_id": "c", "author": { "id": "u", "username": "u" }, "timestamp": "2026-01-01T00:00:00+00:00" });
-        let (list, total) = parse_results(&serde_json::json!({ "total_results": 120, "messages": [[m]] })).unwrap();
+        let (list, total, partial) = parse_results(&serde_json::json!({ "total_results": 120, "messages": [[m]] })).unwrap();
         assert_eq!((list.len(), total), (1, 120));
+        assert!(!partial);
         assert_eq!(parse_results(&serde_json::json!({ "code": 110000, "retry_after": 3 })).unwrap_err(), Some(3.0));
         assert_eq!(parse_results(&serde_json::json!({})).unwrap_err(), None);
+    }
+
+    #[test]
+    fn search_summary_does_not_claim_empty_when_a_message_is_present() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 0)).unwrap();
+        app.poll();
+        let s = app.search.as_ref().unwrap();
+        assert_eq!(s.hits.len(), 1);
+        assert!(!s.result_label().contains("ありません"));
+        assert!(s.result_label().contains("表示中: 1 件"));
+    }
+
+    #[test]
+    fn empty_page_with_nonzero_total_does_not_show_an_inverted_range() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"total_results":60,"messages":[]})) }).unwrap();
+        app.poll();
+        let label = app.search.as_ref().unwrap().result_label();
+        assert!(!label.contains("1–0"));
+        assert!(label.contains("表示できる"));
+    }
+
+    #[test]
+    fn result_count_shrinking_between_pages_does_not_show_a_contradictory_range() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 60)).unwrap();
+        app.poll();
+        app.search_page(true);
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        let label = app.search.as_ref().unwrap().result_label();
+        assert!(!label.contains("26–26 件目（全 1 件）"));
+        assert!(label.contains("全件数は確認できません"));
+    }
+
+    #[test]
+    fn malformed_search_items_do_not_look_like_a_complete_page() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
+        let valid = serde_json::json!({ "id":"5", "channel_id":"c", "author":{"id":"u","username":"u"}, "timestamp":"2026-01-01T00:00:00+00:00" });
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"total_results":2,"messages":[[{"id":"broken"}],[valid]]})) }).unwrap();
+        app.poll();
+        let s = app.search.as_ref().unwrap();
+        assert_eq!(s.hits.len(), 1);
+        assert!(s.result_label().contains("一部"), "表示できなかった検索結果を知らせる");
+        app.retry_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        assert!(!app.search.as_ref().unwrap().result_label().contains("一部"));
+    }
+
+    #[test]
+    fn entirely_malformed_search_page_is_a_retryable_error() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(Event::Api { id, call, result: Ok(serde_json::json!({"total_results":1,"messages":[[{"id":"broken"}]]})) }).unwrap();
+        app.poll();
+        let s = app.search.as_ref().unwrap();
+        assert!(!s.loading && s.error.is_some() && s.hits.is_empty());
+        app.retry_search();
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { .. }, .. })));
     }
 
     fn harness() -> (App, std::sync::mpsc::Sender<Event>, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
@@ -464,10 +614,210 @@ mod tests {
         app.poll();
         let s = app.search.as_ref().unwrap();
         assert!(!s.loading && s.hits.len() == 1 && s.total == 60);
+        assert_eq!(s.result_label(), "1–1 件目（全 60 件）");
         // 次のページは offset=25
         app.search_page(true);
         let Cmd::Api { call: ApiCall::SearchGuild { query, .. }, .. } = rx.try_recv().unwrap() else { panic!() };
         assert!(query.contains(&("offset".into(), "25".into())));
+        assert!(app.search.as_ref().unwrap().hits.is_empty(), "ページの取得中は前のページを表示しない");
+    }
+
+    #[test]
+    fn typing_a_new_query_immediately_discards_the_previous_response() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id: old, .. } = rx.try_recv().unwrap() else { panic!() };
+        app.search_query = "犬".into();
+        app.search_typed();
+        tx.send(reply(old, 1)).unwrap();
+        app.poll();
+        assert!(app.search.as_ref().unwrap().hits.is_empty(), "旧検索の結果を新しい検索語の下に表示しない");
+    }
+
+    #[test]
+    fn invalid_new_query_does_not_leave_old_results_visible() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        assert_eq!(app.search.as_ref().unwrap().hits.len(), 1);
+        app.search_query = "has:cat".into();
+        app.run_search();
+        let s = app.search.as_ref().unwrap();
+        assert!(s.error.is_some());
+        assert!(s.hits.is_empty(), "入力エラーの下に以前の結果を残さない");
+    }
+
+    #[test]
+    fn clearing_the_query_cancels_pending_results_and_loading() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        app.search_query.clear();
+        app.search_typed();
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        let s = app.search.as_ref().unwrap();
+        assert!(!s.loading && s.hits.is_empty() && !s.searched);
+        assert!(app.search_due.is_none());
+    }
+
+    #[test]
+    fn leaving_the_search_scope_during_debounce_stops_loading() {
+        let (mut app, _tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.search_typed();
+        app.sel_guild = None;
+        app.sel_channel = None;
+        app.search_due = Some(std::time::Instant::now());
+        app.tick_search();
+        let s = app.search.as_ref().unwrap();
+        assert!(!s.loading && s.error.is_some());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn switching_guild_discards_inflight_results_and_searches_the_new_scope() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id: old, .. } = rx.try_recv().unwrap() else { panic!() };
+        app.sel_guild = Some("別サーバー".into());
+        tx.send(reply(old, 1)).unwrap();
+        app.poll();
+        assert!(app.search.as_ref().unwrap().hits.is_empty(), "別サーバーの見出しの下に古い結果を出さない");
+        app.tick_search();
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { guild_id, .. }, .. }) if guild_id == "別サーバー"));
+    }
+
+    #[test]
+    fn switching_scope_replaces_already_visible_results() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        assert_eq!(app.search.as_ref().unwrap().hits.len(), 1);
+        app.sel_guild = None;
+        app.sel_channel = Some("別DM".into());
+        app.tick_search();
+        assert!(app.search.as_ref().unwrap().hits.is_empty());
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchChannel { channel_id, .. }, .. }) if channel_id == "別DM"));
+    }
+
+    #[test]
+    fn switching_channels_within_one_guild_keeps_server_results() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        app.sel_channel = Some("別チャンネル".into());
+        app.tick_search();
+        assert_eq!(app.search.as_ref().unwrap().hits.len(), 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reopening_search_after_scope_change_refreshes_without_searching_in_the_background() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 1)).unwrap();
+        app.poll();
+        app.toggle_search();
+        app.sel_guild = Some("別サーバー".into());
+        app.tick_search();
+        assert!(rx.try_recv().is_err());
+        app.toggle_search();
+        app.tick_search();
+        assert!(app.search.as_ref().unwrap().hits.is_empty());
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { guild_id, .. }, .. }) if guild_id == "別サーバー"));
+    }
+
+    #[test]
+    fn failed_search_page_retries_the_same_query_without_double_submit() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, .. } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(reply(id, 60)).unwrap();
+        app.poll();
+        app.search_page(true);
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(Event::Api { id, call, result: Err("network unavailable".into()) }).unwrap();
+        app.poll();
+        assert!(app.search.as_ref().unwrap().error.is_some());
+        app.retry_search();
+        let Cmd::Api { id, call: ApiCall::SearchGuild { query, .. } } = rx.try_recv().unwrap() else { panic!() };
+        assert!(query.contains(&("content".into(), "猫".into())));
+        assert!(query.contains(&("offset".into(), "25".into())));
+        app.retry_search();
+        assert!(rx.try_recv().is_err());
+        tx.send(reply(id, 60)).unwrap();
+        app.poll();
+        let s = app.search.as_ref().unwrap();
+        assert!(!s.loading && s.error.is_none() && s.offset == 25 && s.hits.len() == 1);
+    }
+
+    #[test]
+    fn retry_ignores_invalid_input_and_an_outdated_scope() {
+        let (mut app, tx, mut rx) = harness();
+        app.toggle_search();
+        app.search_query = "has:cat".into();
+        app.run_search();
+        app.retry_search();
+        assert!(rx.try_recv().is_err());
+        app.search_query = "猫".into();
+        app.run_search();
+        let Cmd::Api { id, call } = rx.try_recv().unwrap() else { panic!() };
+        tx.send(Event::Api { id, call, result: Err("network unavailable".into()) }).unwrap();
+        app.poll();
+        app.sel_guild = Some("別サーバー".into());
+        app.retry_search();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn search_without_a_backend_reports_an_error_instead_of_loading_forever() {
+        let (mut app, _tx, mut rx) = harness();
+        let backend = app.backend.take();
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let s = app.search.as_ref().unwrap();
+        assert!(!s.loading && s.error.is_some());
+        app.backend = backend;
+        app.retry_search();
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Api { call: ApiCall::SearchGuild { .. }, .. })));
+        assert!(app.search.as_ref().unwrap().loading);
+    }
+
+    #[test]
+    fn search_with_a_closed_backend_reports_an_error() {
+        let (mut app, _tx, rx) = harness();
+        drop(rx);
+        app.toggle_search();
+        app.search_query = "猫".into();
+        app.run_search();
+        let s = app.search.as_ref().unwrap();
+        assert!(!s.loading && s.error.is_some());
     }
 
     #[test]

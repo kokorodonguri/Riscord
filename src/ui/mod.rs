@@ -314,6 +314,8 @@ impl Root {
         if primary {
             // 画像が届いたらこの区画を描き直す（ウィンドウごと描き直るので、もう片方の区画にも出る）
             crate::images::set_waker(waker.clone());
+            // GitHub の main の新しいコミット（読むだけなのでプロファイルに関係なく）
+            crate::commits::start(&waker);
             // 実行ファイルの置き換えが重ならないよう、更新は既定のプロファイルのウィンドウだけで行う
             if crate::profile::name().is_none() {
                 crate::update::start(&waker);

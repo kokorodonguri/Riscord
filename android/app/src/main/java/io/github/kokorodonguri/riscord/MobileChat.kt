@@ -66,6 +66,9 @@ import java.time.Duration
             MobileIconButton(Glyph.More,"チャンネル情報",{info=true},tint=MobileMuted)
         }
         HorizontalDivider(color=Color.White.copy(alpha=.05f))
+        if(s.messageLoadFailed && s.messages.isNotEmpty() && !s.loading) {
+            TextButton(onClick=model::retryMessages,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text("メッセージを再読み込み")}
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(state=list,reverseLayout=true,contentPadding=PaddingValues(top=12.dp,bottom=12.dp),modifier=Modifier.fillMaxSize().semantics {contentDescription="メッセージ履歴"}) {
                 itemsIndexed(s.messages.asReversed(),key={_,message->message.getString("id")}) {reverseIndex,message->
@@ -81,7 +84,12 @@ import java.time.Duration
                 item("older") {
                     Box(Modifier.fillMaxWidth().padding(vertical=12.dp),contentAlignment=Alignment.Center) {
                         if(s.loading) CircularProgressIndicator(Modifier.size(24.dp),strokeWidth=2.dp)
-                        else if(s.hasMore&&s.messages.isNotEmpty()) TextButton(onClick=model::older) {Text("以前のメッセージを読み込む",fontSize=12.sp)}
+                        else if(s.messageLoadFailed && s.messages.isEmpty()) Column(Modifier.padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                            Text("メッセージを読み込めませんでした",fontWeight=FontWeight.SemiBold,fontSize=16.sp)
+                            Text("通信状態を確認して再試行してください。",color=MobileMuted,fontSize=13.sp)
+                            TextButton(onClick=model::retryMessages) {Text("再読み込み")}
+                        }
+                        else if(!s.messageLoadFailed&&s.hasMore&&s.messages.isNotEmpty()) TextButton(onClick=model::older) {Text("以前のメッセージを読み込む",fontSize=12.sp)}
                         else if(s.messages.isEmpty()) Column(Modifier.padding(24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                             MobileIcon(if(dm) Glyph.Chat else Glyph.Hash,tint=MobileMuted,modifier=Modifier.size(44.dp))
                             Text(if(dm) channel.channelLabel() else "#${channel.channelLabel()} へようこそ",fontSize=24.sp,fontWeight=FontWeight.Bold)

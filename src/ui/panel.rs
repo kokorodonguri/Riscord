@@ -104,9 +104,8 @@ impl Root {
             }
             None => {
                 let foot = if let Some(e) = &p.error {
-                    let retry = p.items.last().map(|i| i.pinned_at.clone());
                     div().flex().flex_col().items_center().gap(z(8.0)).p(z(16.0)).child(text(e.clone(), 14.0, RED())).child(small_button("pins_retry", "再試行").on_click(cx.listener(move |this, _, _, cx| {
-                        this.app.load_pins(retry.clone());
+                        this.app.retry_pins();
                         cx.notify();
                     })))
                 } else if p.loading.is_some() {
@@ -157,22 +156,25 @@ impl Root {
         let Some(s) = a.search.as_ref() else { return div() };
         // 状態の一行（件数・ページ送り）
         let status: Option<Div> = if let Some(e) = &s.error {
-            Some(div().px(z(14.0)).py(z(8.0)).child(text(e.clone(), 13.0, RED())))
+            Some(div().px(z(14.0)).py(z(8.0)).flex().flex_col().items_start().gap(z(8.0)).child(text(e.clone(), 13.0, RED())).when(s.searched && s.scope.is_some(), |d| {
+                d.child(small_button("search_retry", "再試行").on_click(cx.listener(|this, _, _, cx| {
+                    this.app.retry_search();
+                    cx.notify();
+                })))
+            }))
         } else if s.loading {
             Some(div().px(z(14.0)).py(z(8.0)).flex().items_center().gap(z(8.0)).child(spinner(16.0)).child(text(if s.retry_at.is_some() { "検索の準備中…" } else { "検索中…" }, 13.0, MUTED())))
         } else if s.searched {
-            let (from, to) = (s.offset + 1, s.offset + s.hits.len() as u32);
-            let label = if s.total == 0 { "一致するメッセージはありません".to_string() } else { format!("{from}–{to} 件目（全 {} 件）", s.total) };
+            let label = s.result_label();
             let can_prev = s.offset > 0;
             let can_next = s.offset + SEARCH_PAGE < s.total && s.offset + SEARCH_PAGE <= SEARCH_MAX_OFFSET;
-            Some(
-                div()
-                    .px(z(14.0))
-                    .py(z(8.0))
+            let summary = if s.partial { text(label, 13.0, MUTED()) } else { line(label, 13.0, MUTED()) };
+            let row = div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .gap(z(6.0))
-                    .child(line(label, 13.0, MUTED()).flex_1().min_w_0())
+                    .child(summary.flex_1().min_w_0())
                     .when(can_prev, |d| {
                         d.child(small_button("search_prev", "前へ").on_click(cx.listener(|this, _, _, cx| {
                             this.app.search_page(false);
@@ -184,8 +186,13 @@ impl Root {
                             this.app.search_page(true);
                             cx.notify();
                         })))
-                    }),
-            )
+                    });
+            Some(div().px(z(14.0)).py(z(8.0)).flex().flex_col().items_start().gap(z(8.0)).child(row).when(s.partial, |d| {
+                d.child(small_button("search_retry_partial", "再試行").on_click(cx.listener(|this, _, _, cx| {
+                    this.app.retry_search();
+                    cx.notify();
+                })))
+            }))
         } else {
             Some(div().px(z(14.0)).py(z(10.0)).flex().flex_col().gap(z(4.0)).children(
                 [

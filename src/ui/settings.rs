@@ -564,8 +564,56 @@ impl Root {
             crate::update::Status::Failed(e) => format!("更新できませんでした: {e}"),
         };
         pages.push(self.profiles_section(cx));
-        pages.push(section(3, "バージョン").child(row(format!("Riscord v{}", crate::update::current_version()), Some(state), div())).into_any_element());
+        let version = match crate::commits::build_short() {
+            Some(sha) => format!("Riscord v{} ({sha})", crate::update::current_version()),
+            None => format!("Riscord v{}", crate::update::current_version()),
+        };
+        pages.push(section(3, "バージョン").child(row(version, Some(state), div())).child(Self::commits_rows()).into_any_element());
         pages
+    }
+
+    /// GitHub の main に来た新しいコミット（src/commits.rs）
+    fn commits_rows() -> Div {
+        use crate::commits::Status;
+        crate::commits::mark_seen();
+        let status = crate::commits::status();
+        let desc = match &status {
+            Status::Off => "ビルド元のコミットが分からないため確認していません".to_string(),
+            Status::Checking => "確認しています…".into(),
+            Status::UpToDate => "このビルドは main の最新です".into(),
+            Status::Behind { ahead_by, .. } => format!("main に {ahead_by} 件の新しいコミットがあります"),
+            Status::Unknown(e) => e.clone(),
+            Status::Failed(e) => format!("確認できませんでした: {e}"),
+        };
+        let open = match &status {
+            Status::Behind { compare_url, .. } => compare_url.clone(),
+            _ => "https://github.com/kokorodonguri/Riscord/commits/main".into(),
+        };
+        let mut d = div().flex().flex_col().child(row(
+            "GitHub の新しいコミット",
+            Some(desc),
+            button("commits_open", "GitHub で見る", false).on_click(move |_, _, cx| cx.open_url(&open)),
+        ));
+        if let Status::Behind { commits, .. } = status {
+            let mut list = div().flex().flex_col().gap(z(8.0)).mb(z(24.0));
+            for c in commits {
+                let url = c.url.clone();
+                list = list.child(
+                    div()
+                        .id(SharedString::from(format!("commit-{}", c.sha)))
+                        .flex()
+                        .items_center()
+                        .gap(z(12.0))
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .child(text(c.sha.chars().take(7).collect::<String>(), 14.0, LINK()).flex_none())
+                        .child(text(c.title, 14.0, WHITE()).flex_1().min_w_0().truncate())
+                        .child(text(c.date, 13.0, MUTED()).flex_none()),
+                );
+            }
+            d = d.child(list);
+        }
+        d
     }
 
     /// 別のアカウント。同じウィンドウで横に並べる（分割表示）か、別のウィンドウ（別のプロセス）で開く

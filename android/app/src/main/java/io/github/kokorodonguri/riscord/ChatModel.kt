@@ -22,6 +22,9 @@ fun JSONObject.channelLabel(): String = optString("name").takeIf { it.isNotBlank
 const val UPLOAD_LIMIT=10L*1024*1024
 private const val INCOMING_CALL_NOTIFICATION=30
 private const val CHANNEL_LOAD_ERROR="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。"
+private const val HOME_LOAD_ERROR="メッセージとサーバーを読み込めませんでした。通信状態を確認して再試行してください。"
+private const val MESSAGE_LOAD_ERROR="メッセージを読み込めませんでした。通信状態を確認して再試行してください。"
+private const val OLDER_LOAD_ERROR="以前のメッセージを読み込めませんでした。再試行してください。"
 
 data class PendingAttachment(val uri:android.net.Uri,val name:String,val size:Long)
 data class ChatState(
@@ -34,7 +37,8 @@ data class ChatState(
     val me: JSONObject? = null, val guilds: List<JSONObject> = emptyList(),
     val channels: List<JSONObject> = emptyList(), val dms: List<JSONObject> = emptyList(),
     val guild: JSONObject? = null, val channel: JSONObject? = null,
-    val messages: List<JSONObject> = emptyList(), val loading: Boolean = false, val channelLoadFailed:Boolean=false,
+    val messages: List<JSONObject> = emptyList(), val loading: Boolean = false, val channelLoadFailed:Boolean=false, val messageLoadFailed:Boolean=false,
+    val homeLoading:Boolean=false, val homeLoadFailed:Boolean=false,
     val sending: Boolean = false, val error: String? = null, val connection: String = "未接続",
     val ticket: String? = null, val qr: JSONObject? = null, val loginBusy: Boolean = false,
     val drafts: Map<String, String> = emptyMap(), val reply: JSONObject? = null,
@@ -189,6 +193,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val owner=state.value.me?.optString("id")
         val version=++homeRefreshVersion
         fun current()=session==handle && owner!=null && owner==state.value.me?.optString("id") && version==homeRefreshVersion
+        if(current()) state.update {it.copy(homeLoading=true,homeLoadFailed=false,error=if(it.error==HOME_LOAD_ERROR) null else it.error)}
         try {
             val (gs,ds)=coroutineScope {
                 val guilds = async { (rest("/users/@me/guilds") as JSONArray).objects() }
@@ -198,12 +203,22 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             currentCoroutineContext().ensureActive()
             if(current()) {
                 lastHomeRefresh = System.currentTimeMillis()
-                state.update { it.copy(guilds = gs, dms = ds) }
+                state.update { it.copy(guilds = gs, dms = ds,homeLoading=false,homeLoadFailed=false) }
             }
-        } catch(e:CancellationException) {throw e}
-        catch(e:Exception) {
-            if(current()) throw e
+        } catch(e:CancellationException) {
+            if(current()) state.update {it.copy(homeLoading=false,homeLoadFailed=true)}
+            throw e
         }
+        catch(e:AuthExpiredException) {
+            if(current()) {state.update {it.copy(homeLoading=false,homeLoadFailed=true)};throw e}
+        }
+        catch(e:Exception) {
+            if(current()) state.update {it.copy(homeLoading=false,homeLoadFailed=true,error=if(it.channel==null && it.guild==null && it.dms.isEmpty()) it.error else HOME_LOAD_ERROR)}
+        }
+    }
+    fun retryHome() {
+        val s=state.value
+        if(s.me!=null && !s.homeLoading && s.homeLoadFailed) task {refreshHome()}
     }
 
     /** 画面を閉じていて常駐も通話もしていないときは、少し待ってから Gateway を切る */
@@ -352,7 +367,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             val session=handle
             val owner=state.value.me?.optString("id")
             refreshHome()
-            if(session==handle && owner==state.value.me?.optString("id")) state.value.channel?.let { refreshMessages(it.getString("id")) }
+            if(session==handle && owner==state.value.me?.optString("id") && !state.value.loading) state.value.channel?.let { loadLatestMessages(it.getString("id")) }
         }
     }
     fun selectGuild(guild: JSONObject?) {
@@ -360,7 +375,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         cacheMessages()
         historyJob?.cancel()
         channelsJob?.cancel()
-        state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null, loading = guild != null,channelLoadFailed=false,error=if(it.error==CHANNEL_LOAD_ERROR) null else it.error) }
+        state.update { it.copy(guild = guild, channel = null, channels = emptyList(), messages = emptyList(), reply = null, loading = guild != null,channelLoadFailed=false,messageLoadFailed=false,error=if(it.error==CHANNEL_LOAD_ERROR || it.error==MESSAGE_LOAD_ERROR || it.error==OLDER_LOAD_ERROR) null else it.error) }
         if (guild != null) refreshChannels(guild)
     }
     private fun refreshChannels(guild:JSONObject) {
@@ -391,13 +406,22 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         cacheMessages()
         historyJob?.cancel()
         val id=channel.getString("id")
-        state.update { it.copy(channel = channel, lastChannelId=id, messages = messageCache[id].orEmpty(), loading = true, hasMore = true, reply = null, editing=null,editDraft="",typing = null, unreadChannels=it.unreadChannels-id) }
+        state.update { it.copy(channel = channel, lastChannelId=id, messages = messageCache[id].orEmpty(), loading = true, hasMore = true, messageLoadFailed=false, reply = null, editing=null,editDraft="",typing = null, unreadChannels=it.unreadChannels-id) }
         subscribeTyping()
-        historyJob = viewModelScope.launch { try { refreshMessages(channel.getString("id")) } catch(e: Exception) {
+        loadLatestMessages(id)
+    }
+    private fun loadLatestMessages(id:String) {
+        historyJob?.cancel()
+        state.update {it.copy(loading=true,messageLoadFailed=false,error=if(it.error==MESSAGE_LOAD_ERROR || it.error==OLDER_LOAD_ERROR) null else it.error)}
+        historyJob = viewModelScope.launch { try { refreshMessages(id) } catch(e: Exception) {
             if(e is CancellationException) throw e
             if(e is AuthExpiredException) { expire(e.message); return@launch }
-            if(state.value.channel?.optString("id")==id) state.update { it.copy(error = "メッセージを読み込めませんでした。通信状態を確認して再試行してください。", loading = false) }
+            if(state.value.channel?.optString("id")==id) state.update { it.copy(error = if(it.messages.isEmpty()) it.error else MESSAGE_LOAD_ERROR, loading = false,messageLoadFailed=true) }
         } }
+    }
+    fun retryMessages() {
+        val s=state.value
+        if(!s.loading && s.messageLoadFailed) s.channel?.optString("id")?.let(::loadLatestMessages)
     }
     private suspend fun refreshMessages(id: String, before: String? = null) {
         val list = (rest("/channels/$id/messages?limit=50" + (before?.let { "&before=$it" } ?: "")) as JSONArray).objects()
@@ -410,27 +434,27 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 fetchedMin!=null && fetchedMax!=null && (key<fetchedMin || key>fetchedMax)
             }
             val merged = (list + retained).distinctBy { it.optString("id") }.sortedBy { it.optString("id").padStart(20, '0') }
-            old.copy(messages = merged, loading = false, hasMore = list.size == 50)
+            old.copy(messages = merged, loading = false, hasMore = list.size == 50,messageLoadFailed=if(before==null) false else old.messageLoadFailed)
         }
     }
     fun older() {
         val s=state.value; val id=s.channel?.optString("id") ?: return
-        if (s.loading || !s.hasMore) return
-        state.update { it.copy(loading = true) }
+        if (s.loading || s.messageLoadFailed || !s.hasMore) return
+        state.update { it.copy(loading = true,error=if(it.error==OLDER_LOAD_ERROR) null else it.error) }
         historyJob=viewModelScope.launch {
             try { refreshMessages(id,s.messages.firstOrNull()?.optString("id")) }
             catch (e: CancellationException) { throw e }
             catch (e: AuthExpiredException) { expire(e.message) }
             catch (e: Exception) {
                 if(state.value.channel?.optString("id")==id)
-                    state.update { it.copy(loading=false,error="以前のメッセージを読み込めませんでした。再試行してください。") }
+                    state.update { it.copy(loading=false,error=OLDER_LOAD_ERROR) }
             }
         }
     }
     fun back() {
         clearTyping(); cacheMessages(); historyJob?.cancel()
         val guild=state.value.guild
-        state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",loading = guild!=null && it.channels.isEmpty()) }
+        state.update { it.copy(channel = null, reply = null, editing=null,editDraft="",messageLoadFailed=false,error=if(it.error==MESSAGE_LOAD_ERROR || it.error==OLDER_LOAD_ERROR) null else it.error,loading = guild!=null && it.channels.isEmpty()) }
         if(guild!=null && state.value.channels.isEmpty() && channelsJob?.isActive!=true) {
             refreshChannels(guild)
         }

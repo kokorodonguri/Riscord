@@ -72,7 +72,11 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                         }
                         if(s.guild==null) FilledIconButton(onClick={newDm=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.size(48.dp),colors=IconButtonDefaults.filledIconButtonColors(containerColor=MobileAccent)) {MobileIcon(Glyph.Plus,"新しいDM",tint=Color.White)}
                     }
-                    if(s.loading) LinearProgressIndicator(Modifier.fillMaxWidth(),color=MobileAccent)
+                    val homeLoading=s.guild==null && s.homeLoading
+                    if(s.loading || homeLoading) LinearProgressIndicator(Modifier.fillMaxWidth(),color=MobileAccent)
+                    if(s.guild==null && s.homeLoadFailed && s.dms.isNotEmpty() && !homeLoading) {
+                        TextButton(onClick=model::retryHome,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text("メッセージを再読み込み")}
+                    }
                     if(s.guild!=null && s.channelLoadFailed && s.channels.isNotEmpty() && !s.loading) {
                         TextButton(onClick=model::retryChannels,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text("チャンネルを再読み込み")}
                     }
@@ -93,7 +97,13 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                                 }
                             }
                             items(dms,key={"dm-${it.optString("id")}"}) {dm->DmRow(dm,s,{model.openChannel(dm)})}
-                            if(dms.isEmpty()&&!s.loading) item {HomeEmpty(if(query.isNotEmpty()) "メッセージが見つかりません" else "会話をはじめよう",if(query.isNotEmpty()) "別の名前で検索してください" else "右上の＋からDMを開けます")}
+                            if(dms.isEmpty()&&!s.loading&&!homeLoading) item {
+                                if(s.homeLoadFailed && s.dms.isEmpty()) Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=36.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                                    Text("メッセージを読み込めませんでした",fontWeight=FontWeight.SemiBold,fontSize=16.sp)
+                                    Text("通信状態を確認して再試行してください。",color=MobileMuted,fontSize=13.sp)
+                                    TextButton(onClick=model::retryHome) {Text("再読み込み")}
+                                } else HomeEmpty(if(query.isNotEmpty()) "メッセージが見つかりません" else "会話をはじめよう",if(query.isNotEmpty()) "別の名前で検索してください" else "右上の＋からDMを開けます")
+                            }
                         } else {
                             sections.forEach {section->
                                 section.category?.let {category->

@@ -78,6 +78,147 @@ class MobileUxTest {
         File(directory,"$name.png").outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}
         bitmap.recycle()
     }
+    @Test fun olderHistoryErrorClearsWhenRetrySucceeds() {
+        val retry=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var olderCalls=0
+        restHandler={path,_,_->
+            if(path.contains("&before=")) {
+                if(++olderCalls==1) throw java.io.IOException("offline") else retry.await()
+            } else JSONArray().apply {(51..100).reversed().forEach {put(message(it))}}
+        }
+        render();open()
+        compose.waitUntil(5000) {!model.state.value.loading && model.state.value.messages.size==50}
+        compose.onNodeWithContentDescription("メッセージ履歴").performScrollToNode(hasText("以前のメッセージを読み込む"))
+        compose.onNodeWithText("以前のメッセージを読み込む").performClick()
+        compose.waitUntil(5000) {olderCalls==1 && !model.state.value.loading}
+        compose.onNodeWithText("以前のメッセージを読み込めませんでした。再試行してください。").assertIsDisplayed()
+        screenshot("older-history-failure")
+        compose.onNodeWithContentDescription("メッセージ履歴").performScrollToNode(hasText("以前のメッセージを読み込む"))
+        compose.onNodeWithText("以前のメッセージを読み込む").assertIsDisplayed()
+        compose.onNodeWithText("以前のメッセージを読み込む").performClick()
+        compose.waitForIdle()
+        Assert.assertEquals("loading=${model.state.value.loading}, hasMore=${model.state.value.hasMore}, failed=${model.state.value.messageLoadFailed}",2,olderCalls)
+        Assert.assertTrue(model.state.value.loading)
+        retry.complete(JSONArray().put(message(50)))
+        compose.waitUntil(5000) {!model.state.value.loading && model.state.value.messages.size==51}
+        compose.onNodeWithText("以前のメッセージを読み込めませんでした。再試行してください。").assertDoesNotExist()
+        Assert.assertNull(model.state.value.error)
+        screenshot("older-history-recovered")
+    }
+    @Test fun loadingOlderMessagesDoesNotClearAnUnrelatedError() {
+        val gate=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        restHandler={_,_,_->gate.await()}
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(channel=dm,messages=listOf(message(51)),hasMore=true,error="別の操作のエラー")
+            model.older()
+        }
+        Assert.assertEquals("別の操作のエラー",model.state.value.error)
+        gate.complete(JSONArray())
+        compose.waitUntil(5000) {!model.state.value.loading}
+        Assert.assertEquals("別の操作のエラー",model.state.value.error)
+    }
+    @Test fun olderHistoryErrorDoesNotFollowTheUserToAnotherConversation() {
+        restHandler={path,_,_->if(path.contains("&before=")) throw java.io.IOException("offline") else JSONArray()}
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(channel=dm,messages=listOf(message(51)),hasMore=true)
+            model.older()
+        }
+        compose.waitUntil(5000) {model.state.value.error!=null}
+        compose.runOnUiThread {model.back()}
+        Assert.assertNull(model.state.value.error)
+        compose.runOnUiThread {model.openChannel(JSONObject().put("id","200").put("type",1))}
+        compose.waitUntil(5000) {!model.state.value.loading}
+        Assert.assertNull(model.state.value.error)
+    }
+    @Test fun messageLoadFailureOffersRetryInsteadOfShowingAnEmptyConversation() {
+        val retry=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var calls=0
+        restHandler={path,_,_->
+            check(path=="/channels/100/messages?limit=50")
+            if(++calls==1) throw java.io.IOException("offline") else retry.await()
+        }
+        render();open()
+        compose.waitUntil(5000) {calls==1 && !model.state.value.loading}
+        compose.onNodeWithText("ここから会話をはじめましょう。").assertDoesNotExist()
+        compose.onNodeWithText("メッセージを読み込めませんでした").assertIsDisplayed()
+        screenshot("messages-load-failure")
+        compose.onNodeWithText("再読み込み").performClick()
+        compose.waitUntil(5000) {calls==2 && model.state.value.loading}
+        compose.onNodeWithText("再読み込み").assertDoesNotExist()
+        retry.complete(JSONArray().put(message(1,"読み込み後")))
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithText("読み込み後").assertIsDisplayed()
+    }
+    @Test fun anEmptyConversationAfterSuccessfulLoadIsNotAnError() {
+        restHandler={_,_,_->JSONArray()}
+        render();open()
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithText("ここから会話をはじめましょう。").assertIsDisplayed()
+        compose.onNodeWithText("再読み込み").assertDoesNotExist()
+    }
+    @Test fun failedMessageRefreshKeepsCachedMessagesAndCanRetry() {
+        val retry=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var calls=0
+        restHandler={path,_,_->
+            check(path=="/channels/100/messages?limit=50")
+            when(++calls) {
+                1 -> JSONArray().put(message(1,"保存された履歴"))
+                2 -> throw java.io.IOException("offline")
+                else -> retry.await()
+            }
+        }
+        render();open()
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithContentDescription("チャンネル一覧に戻る").performClick()
+        open()
+        compose.waitUntil(5000) {model.state.value.messageLoadFailed}
+        compose.onNodeWithText("保存された履歴").assertIsDisplayed()
+        compose.onNodeWithText("以前のメッセージを読み込む").assertDoesNotExist()
+        compose.onNodeWithText("メッセージを再読み込み").performClick()
+        compose.waitUntil(5000) {calls==3 && model.state.value.loading}
+        retry.complete(JSONArray().put(message(2,"更新された履歴")))
+        compose.waitUntil(5000) {!model.state.value.loading}
+        compose.onNodeWithText("更新された履歴").assertIsDisplayed()
+        Assert.assertFalse(model.state.value.messageLoadFailed)
+        Assert.assertNull(model.state.value.error)
+    }
+    @Test fun switchingConversationsDiscardsAnOldRetryResult() {
+        val retry=kotlinx.coroutines.CompletableDeferred<JSONArray>()
+        var calls=0
+        val other=JSONObject().put("id","200").put("type",1).put("name","別の会話")
+        restHandler={path,_,_->when(path) {
+            "/channels/100/messages?limit=50" -> if(++calls==1) throw java.io.IOException("offline") else kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {retry.await()}
+            "/channels/200/messages?limit=50" -> JSONArray()
+            else -> error("unexpected request: $path")
+        }}
+        compose.runOnUiThread {model.openChannel(dm)}
+        compose.waitUntil(5000) {model.state.value.messageLoadFailed}
+        compose.runOnUiThread {model.retryMessages()}
+        compose.waitUntil(5000) {calls==2}
+        compose.runOnUiThread {model.openChannel(other)}
+        compose.waitUntil(5000) {model.state.value.channel?.optString("id")=="200" && !model.state.value.loading}
+        retry.complete(JSONArray().put(message(1,"古い履歴")))
+        compose.waitForIdle()
+        Assert.assertEquals("200",model.state.value.channel?.optString("id"))
+        Assert.assertTrue(model.state.value.messages.isEmpty())
+        Assert.assertFalse(model.state.value.messageLoadFailed)
+    }
+    @Test fun failedReconnectRefreshOffersMessageRetry() {
+        var fail=false
+        restHandler={path,_,_->when {
+            path.startsWith("/channels/100/messages") -> if(fail) throw java.io.IOException("offline") else JSONArray().put(message(1,"履歴"))
+            path=="/users/@me/guilds" -> JSONArray()
+            path=="/users/@me/channels" -> JSONArray().put(dm)
+            else -> error("unexpected request: $path")
+        }}
+        render();open()
+        compose.waitUntil(5000) {!model.state.value.loading}
+        fail=true
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.messageLoadFailed}
+        compose.onNodeWithText("履歴").assertIsDisplayed()
+        compose.onNodeWithText("メッセージを再読み込み").assertIsDisplayed()
+    }
     @Test fun olderHomeRefreshCannotOverwriteANewerResult() {
         val oldGuilds=kotlinx.coroutines.CompletableDeferred<JSONArray>()
         val oldDms=kotlinx.coroutines.CompletableDeferred<JSONArray>()
@@ -138,8 +279,68 @@ class MobileUxTest {
     @Test fun currentHomeRefreshFailureIsReported() {
         restHandler={_,_,_->throw java.io.IOException("offline")}
         compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
-        compose.waitUntil(5000) {model.state.value.error!=null}
+        compose.waitUntil(5000) {model.state.value.homeLoadFailed}
         Assert.assertTrue(model.state.value.error!!.contains("再試行"))
+    }
+    @Test fun homeLoadFailureOffersRetryInsteadOfClaimingThereAreNoConversations() {
+        val retry=kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fail=true
+        restHandler={path,_,_->
+            if(fail) throw java.io.IOException("offline")
+            retry.await()
+            if(path=="/users/@me/channels") JSONArray().put(dm) else JSONArray()
+        }
+        compose.runOnUiThread {model.state.value=model.state.value.copy(dms=emptyList())}
+        render()
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.homeLoadFailed}
+        compose.onNodeWithText("会話をはじめよう").assertDoesNotExist()
+        compose.onNodeWithText("メッセージを読み込めませんでした").assertIsDisplayed()
+        screenshot("home-load-failure")
+        fail=false
+        compose.onNodeWithText("再読み込み").performClick()
+        compose.waitUntil(5000) {model.state.value.homeLoading}
+        compose.onNodeWithText("再読み込み").assertDoesNotExist()
+        retry.complete(Unit)
+        compose.waitUntil(5000) {model.state.value.dms.isNotEmpty()}
+        compose.onNodeWithText("Mika").assertIsDisplayed()
+        Assert.assertFalse(model.state.value.homeLoadFailed)
+    }
+    @Test fun emptyHomeAfterSuccessfulLoadIsNotAnError() {
+        restHandler={_,_,_->JSONArray()}
+        compose.runOnUiThread {model.state.value=model.state.value.copy(dms=emptyList())}
+        render()
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {!model.state.value.homeLoading}
+        compose.onNodeWithText("会話をはじめよう").assertIsDisplayed()
+        compose.onNodeWithText("再読み込み").assertDoesNotExist()
+    }
+    @Test fun cancelledHomeRefreshDoesNotLeaveLoadingActive() {
+        restHandler={_,_,_->throw kotlinx.coroutines.CancellationException("cancelled")}
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.homeLoadFailed}
+        Assert.assertFalse(model.state.value.homeLoading)
+    }
+    @Test fun failedHomeRefreshKeepsExistingConversationsAndCanRetry() {
+        val retry=kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fail=true
+        restHandler={path,_,_->
+            if(fail) throw java.io.IOException("offline")
+            retry.await()
+            if(path=="/users/@me/channels") JSONArray().put(dm) else JSONArray()
+        }
+        render()
+        compose.runOnUiThread {model.receiveEvent(JSONObject().put("t","RESYNC"))}
+        compose.waitUntil(5000) {model.state.value.homeLoadFailed}
+        compose.onNodeWithText("Mika").assertIsDisplayed()
+        fail=false
+        compose.onNodeWithText("メッセージを再読み込み").performClick()
+        compose.waitUntil(5000) {model.state.value.homeLoading}
+        compose.onNodeWithText("メッセージを再読み込み").assertDoesNotExist()
+        retry.complete(Unit)
+        compose.waitUntil(5000) {!model.state.value.homeLoading}
+        compose.onNodeWithText("Mika").assertIsDisplayed()
+        Assert.assertNull(model.state.value.error)
     }
     @Test fun olderChannelUpdateCannotOverwriteANewerResult() {
         val old=kotlinx.coroutines.CompletableDeferred<JSONArray>()

@@ -68,6 +68,8 @@ pub enum Msg {
     Picked(u64, Result<media::Source, String>),
     Live(u64),
     Ended(u64, Option<String>),
+    /// 接続情報（STREAM_CREATE / STREAM_SERVER_UPDATE）を待ちきれなかった
+    Timeout(u64),
 }
 
 impl std::fmt::Debug for Msg {
@@ -77,6 +79,7 @@ impl std::fmt::Debug for Msg {
             Msg::Picked(n, r) => write!(f, "Picked({n}, {})", if r.is_ok() { "ok" } else { "err" }),
             Msg::Live(n) => write!(f, "Live({n})"),
             Msg::Ended(n, e) => write!(f, "Ended({n}, {e:?})"),
+            Msg::Timeout(n) => write!(f, "Timeout({n})"),
             Msg::Start => f.write_str("Start"),
             Msg::Stop => f.write_str("Stop"),
             Msg::Watch(k) => write!(f, "Watch({k})"),
@@ -165,8 +168,27 @@ impl Manager {
                     self.stop_watch(err);
                 }
             }
+            Msg::Timeout(id) => {
+                const WHY: &str = "配信サーバーの情報が届きません。少し待ってからもう一度試してください";
+                if self.broadcast.as_ref().is_some_and(|s| s.id == id && !s.started && !s.picking) {
+                    conn::debug(format_args!("配信: 接続情報が来ない rtc={:?} server={}", self.broadcast.as_ref().and_then(|s| s.rtc_server_id.clone()), self.broadcast.as_ref().is_some_and(|s| s.server.is_some())));
+                    self.stop_broadcast(Some(WHY.into()));
+                } else if let Some(s) = self.watch.as_ref().filter(|s| s.id == id && !s.started) {
+                    conn::debug(format_args!("視聴: 接続情報が来ない rtc={:?} server={}", s.rtc_server_id, s.server.is_some()));
+                    self.stop_watch(Some(WHY.into()));
+                }
+            }
             Msg::Gateway(t, d) => self.gateway(&t, &d, place),
         }
+    }
+
+    /// しばらくして接続を始められていなければ、あきらめる（「接続中」のまま止まらないように）
+    fn arm_timeout(&self, id: u64) {
+        let back = self.back.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            back(Msg::Timeout(id));
+        });
     }
 
     /// ボイスから抜けたとき
@@ -216,6 +238,7 @@ impl Manager {
         let kind = if p.guild_id.is_some() { "guild" } else { "call" };
         let _ = self.gw.send(json!({ "op": 18, "d": { "type": kind, "guild_id": p.guild_id, "channel_id": p.channel_id, "preferred_region": null } }));
         let _ = self.gw.send(json!({ "op": 22, "d": { "stream_key": s.key, "paused": false } }));
+        self.arm_timeout(id);
     }
 
     fn start_watch(&mut self, key: String, place: Option<Place<'_>>) {
@@ -233,6 +256,7 @@ impl Manager {
         let id = self.id();
         self.watch = Some(Session::new(id, key.clone()));
         let _ = self.gw.send(json!({ "op": 20, "d": { "stream_key": key } }));
+        self.arm_timeout(id);
         (self.emit)(StreamEvent::Watch(key, Phase::Starting));
     }
 
@@ -253,6 +277,8 @@ impl Manager {
     }
 
     fn gateway(&mut self, t: &str, d: &Value, place: Option<Place<'_>>) {
+        // token はログに出さない
+        conn::debug(format_args!("{t}: key={} rtc={} endpoint={} reason={} viewers={}", d["stream_key"], d["rtc_server_id"], d["endpoint"], d["reason"], d["viewer_ids"]));
         let Some(key) = d["stream_key"].as_str() else { return };
         let mine = self.broadcast.as_ref().is_some_and(|s| s.key == key);
         let watching = self.watch.as_ref().is_some_and(|s| s.key == key);
@@ -310,7 +336,10 @@ impl Manager {
 
     /// 情報がそろったら接続を始める
     fn try_connect(&mut self, mine: bool, place: Option<Place<'_>>) {
-        let Some(place) = place else { return };
+        let Some(place) = place else {
+            conn::debug(format_args!("ボイスの session_id が無いので配信に接続できない"));
+            return;
+        };
         let me: u64 = self.me.parse().unwrap_or(0);
         let s = if mine { self.broadcast.as_mut() } else { self.watch.as_mut() };
         let Some(s) = s else { return };

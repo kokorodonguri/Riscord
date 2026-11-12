@@ -159,6 +159,7 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
         }
     }
     let ready = ready.unwrap();
+    debug(format_args!("Ready: {}", ready));
     let hb_every = Duration::from_secs_f64(hello.unwrap().max(1000.0) / 1000.0);
     let ssrc = ready["ssrc"].as_u64().ok_or_else(|| anyhow!("ssrc がありません"))? as u32;
     let stream = &ready["streams"][0];
@@ -204,6 +205,7 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
                 }
                 if v["op"].as_u64() == Some(4) {
                     let d = &v["d"];
+                    debug(format_args!("Session Description: mode={} video_codec={} dave={}", d["mode"], d["video_codec"], d["dave_protocol_version"]));
                     let key: Vec<u8> = d["secret_key"].as_array().into_iter().flatten().filter_map(|b| b.as_u64().map(|b| b as u8)).collect();
                     let m = d["mode"].as_str().unwrap_or(mode);
                     if let Some(c) = d["video_codec"].as_str() {
@@ -233,6 +235,7 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     let mut got_key = false;
     let mut last_pli = Instant::now() - Duration::from_secs(10);
     let mut live = false;
+    let mut stats = WatchStats::default();
     match &mut role {
         Role::Broadcast { quality: q, capture, .. } => {
             send_json(
@@ -303,8 +306,10 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
                                 }
                             }
                         }
-                        if !live && started.elapsed() > Duration::from_secs(20) && streamer_video.is_none() {
-                            bail!("配信の映像が届きません");
+                        // 何が足りないのかを伝えて終える（「接続中」のまま待ち続けない）
+                        if !live && started.elapsed() > Duration::from_secs(20) {
+                            debug(format_args!("視聴が始まらない: {stats:?} streamer_video={streamer_video:?} dave={}", dave.version));
+                            bail!(stats.stall_reason(dave.version));
                         }
                     }
                 }
@@ -343,25 +348,41 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
                     }
                     Role::Watch { streamer, decoder } => {
                         let Some(r) = rtp::parse_rtp(pkt) else { continue };
-                        if r.pt != rtp::PT_H264 || streamer_video.is_some_and(|v| v != r.ssrc) {
+                        if r.pt != rtp::PT_H264 {
+                            // 音声と再送は映像の代わりにならないので数えない
+                            if r.pt != rtp::PT_OPUS && r.pt != rtp::PT_H264_RTX && !stats.other_pt.contains(&r.pt) && stats.other_pt.len() < 8 {
+                                stats.other_pt.push(r.pt);
+                            }
+                            continue;
+                        }
+                        if streamer_video.is_some_and(|v| v != r.ssrc) {
                             continue;
                         }
                         streamer_video.get_or_insert(r.ssrc);
-                        let Some(payload) = r.decrypt(&cipher) else { continue };
+                        stats.rtp += 1;
+                        let Some(payload) = r.decrypt(&cipher) else {
+                            stats.transport_fail += 1;
+                            continue;
+                        };
                         match depack.push(r.seq, r.timestamp, r.marker, &payload) {
                             Push::Frame(au) => {
+                                stats.frames += 1;
                                 let data = if dave.version != 0 {
                                     match dave.session.as_mut().map(|s| s.decrypt(*streamer, MediaType::VIDEO, &au.data)) {
                                         Some(Ok(d)) => d,
                                         // 暗号化されていないフレーム（DAVE への切り替え中）はそのまま使う
                                         _ if !au.data.ends_with(&[0xFA, 0xFA]) => au.data,
-                                        _ => continue,
+                                        _ => {
+                                            stats.dave_fail += 1;
+                                            continue;
+                                        }
                                     }
                                 } else {
                                     au.data
                                 };
                                 if !got_key {
                                     if !au.keyframe {
+                                        stats.no_key += 1;
                                         continue;
                                     }
                                     got_key = true;
@@ -413,6 +434,53 @@ pub async fn run(p: Params, mut role: Role, report: impl Fn(Report) + Send, mut 
     Ok(())
 }
 
+/// RISCORD_DEBUG_STREAM を付けて起動したときだけ、視聴・配信の様子を標準エラーに出す
+pub(super) fn debug(args: std::fmt::Arguments<'_>) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("RISCORD_DEBUG_STREAM").is_some()) {
+        eprintln!("[golive] {args}");
+    }
+}
+
+/// 視聴で受け取ったものの数（映らないときに、どこで止まっているかを知らせる）
+#[derive(Debug, Default)]
+struct WatchStats {
+    /// 配信者の H264 の RTP
+    rtp: u32,
+    /// H264 以外の payload type
+    other_pt: Vec<u8>,
+    /// 通信の暗号を解けなかった RTP
+    transport_fail: u32,
+    /// 組み上がったフレーム
+    frames: u32,
+    /// DAVE を解けなかったフレーム
+    dave_fail: u32,
+    /// キーフレームを待つ間に捨てたフレーム
+    no_key: u32,
+}
+
+impl WatchStats {
+    fn stall_reason(&self, dave_version: u16) -> String {
+        if self.rtp == 0 {
+            return if self.other_pt.is_empty() {
+                "配信の映像が届きません（配信サーバーから映像が来ていません）".into()
+            } else {
+                format!("配信の映像が H264 ではないため表示できません（payload type {:?}）", self.other_pt)
+            };
+        }
+        if self.transport_fail >= self.rtp {
+            return "配信の映像の暗号を解けません".into();
+        }
+        if self.frames == 0 {
+            return "配信の映像を組み立てられません（パケットが欠けています）".into();
+        }
+        if dave_version != 0 && self.dave_fail >= self.frames {
+            return "エンドツーエンド暗号（DAVE）の鍵がそろわず、配信の映像を解けません".into();
+        }
+        "配信のキーフレームが届きません".into()
+    }
+}
+
 async fn recv_frame(role: &mut Role) -> Option<Encoded> {
     match role {
         Role::Broadcast { frames, .. } => frames.recv().await,
@@ -422,6 +490,7 @@ async fn recv_frame(role: &mut Role) -> Option<Encoded> {
 
 async fn handle_json(ws: &mut Ws, dave: &mut Dave, v: &Value, role: &mut Role, streamer_video: &mut Option<u32>) -> Result<()> {
     let d = &v["d"];
+    debug(format_args!("op {}: {}", v["op"], d));
     match v["op"].as_u64() {
         // CLIENTS_CONNECT
         Some(11) => {
@@ -485,6 +554,7 @@ async fn handle_binary(ws: &mut Ws, dave: &mut Dave, b: &[u8], seq_ack: &mut i64
     *seq_ack = u16::from_be_bytes([b[0], b[1]]) as i64;
     let op = b[2];
     let body = &b[3..];
+    debug(format_args!("binary op {op} ({} bytes)", body.len()));
     let transition = |body: &[u8]| if body.len() >= 2 { u16::from_be_bytes([body[0], body[1]]) } else { 0 };
     match op {
         // MLS_EXTERNAL_SENDER

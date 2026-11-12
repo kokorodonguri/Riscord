@@ -4,6 +4,7 @@ mod app;
 mod cache;
 mod clip;
 mod color;
+mod commits;
 mod demo;
 mod download;
 mod emoji;

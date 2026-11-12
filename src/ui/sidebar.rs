@@ -596,10 +596,19 @@ impl Root {
         row = row
             .child(self.toggle_with_menu("mic", IconName::Mic, IconName::MicOff, mic_off, if mic_off { "ミュート解除" } else { "ミュート" }, "入力オプション", PopMenu::Mic, cx))
             .child(self.toggle_with_menu("head", IconName::Headphones, IconName::HeadphoneOff, deaf, if deaf { "スピーカーミュート解除" } else { "スピーカーミュート" }, "出力オプション", PopMenu::Headset, cx))
-            .child(icon_button("settings_btn", IconName::Settings, 32.0).tooltip(tip("ユーザー設定")).on_click(cx.listener(|this, _, _, cx| {
-                this.app.settings_open = true;
-                cx.notify();
-            })));
+            .child({
+                // GitHub の main に新しいコミットがあれば、歯車の右上に赤い点を付ける
+                let badge = crate::commits::badge();
+                let btn = icon_button("settings_btn", IconName::Settings, 32.0)
+                    .tooltip(tip(if badge { "ユーザー設定（新しいコミットがあります）" } else { "ユーザー設定" }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.settings_open = true;
+                        cx.notify();
+                    }));
+                div().relative().child(btn).when(badge, |d| {
+                    d.child(div().absolute().top(z(4.0)).right(z(4.0)).size(z(8.0)).rounded_full().bg(RED()))
+                })
+            });
         div().flex_none().bg(BG()).pl(z(8.0)).pr(z(8.0)).pt(z(6.0)).pb(z(8.0)).child(card.child(row))
     }
 

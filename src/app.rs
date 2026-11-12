@@ -2089,7 +2089,7 @@ impl App {
         use net::ApiCall as A;
         // 結果を自分で扱うもの（失敗の知らせ方もそれぞれ）
         let call = match call {
-            A::GetChannelPins { channel_id, before, .. } => return self.on_pins_loaded(channel_id, before, result),
+            A::GetChannelPins { channel_id, before, .. } => return self.on_pins_loaded(id, channel_id, before, result),
             A::Pin { channel_id, message_id } => return self.on_pin_result(channel_id, message_id, true, result),
             A::Unpin { channel_id, message_id } => return self.on_pin_result(channel_id, message_id, false, result),
             A::GetMessages { channel_id, around: Some(id), .. } => return self.on_around_loaded(channel_id, id, result),

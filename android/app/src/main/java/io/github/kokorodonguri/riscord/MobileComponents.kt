@@ -74,6 +74,21 @@ internal fun openUrl(context:android.content.Context,url:String) {
 }
 internal fun JSONObject.nonNull(key:String):String? = optString(key).takeIf {it.isNotBlank()&&it!="null"}
 internal fun channelUser(channel:JSONObject):JSONObject = channel.optJSONArray("recipients")?.optJSONObject(0) ?: channel
+/**
+ * 添付画像の表示用 URL。Discord のメディアプロキシに縮小版を頼み、原寸（数 MB）を落とさない。
+ * 画面の幅（maxPx）に収まる大きさで取るので見た目は変わらない。GIF はアニメを残すため、
+ * 大きさが分からないものは縮めずにそのまま返す（デスクトップ版の app::resized と同じ方針）
+ */
+internal fun previewUrl(proxy:String?,url:String,width:Int,height:Int,maxPx:Int):String {
+    val base=proxy?.takeIf {it.contains("media.discordapp.net")} ?: return url
+    val path=base.substringBefore('?').substringBefore('#').lowercase()
+    if(path.endsWith(".gif")||width<=0||height<=0||maxPx<=0) return base
+    val scale=minOf(1.0,maxPx.toDouble()/maxOf(width,height))
+    val (w,h)=maxOf(1,(width*scale).toInt()) to maxOf(1,(height*scale).toInt())
+    // WebP は animated=true がないとプロキシが 1 枚目だけにする
+    val anim=if(path.endsWith(".webp")) "&animated=true" else ""
+    return "$base${if('?' in base) '&' else '?'}width=$w&height=$h$anim"
+}
 internal fun avatarUrl(user:JSONObject):String? = user.nonNull("avatar")?.let { "https://cdn.discordapp.com/avatars/${user.optString("id")}/$it.png?size=128" }
 @Composable internal fun MobileAvatar(user:JSONObject,size:Dp=40.dp,group:Boolean=false) {
     val url=if(group) user.nonNull("icon")?.let {"https://cdn.discordapp.com/channel-icons/${user.optString("id")}/$it.png?size=128"} else avatarUrl(user)

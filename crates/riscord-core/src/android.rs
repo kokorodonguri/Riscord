@@ -18,7 +18,17 @@ fn clients() -> &'static Mutex<HashMap<i64, Arc<Client>>> {
 }
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("runtime"))
+    // 通信の待ちが中心なので、コア数ぶん（8 コア機なら 8 本）は要らない。スレッドとメモリを抑える
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(
+                std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4)),
+            )
+            .thread_name("riscord-net")
+            .enable_all()
+            .build()
+            .expect("runtime")
+    })
 }
 #[no_mangle]
 pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_create(

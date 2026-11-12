@@ -2009,6 +2009,10 @@ impl App {
     }
 
     pub fn poll(&mut self) {
+        self.poll_with_limit(256);
+    }
+
+    fn poll_with_limit(&mut self, max_events: usize) {
         for item in self.translator.drain() {
             match item.target {
                 crate::translator::Target::Message {
@@ -2135,7 +2139,12 @@ impl App {
             }
         }
         let Some(b) = &self.backend else { return };
-        let events: Vec<Event> = b.ev.try_iter().collect();
+        // 大量受信時も一度の描画で UI スレッドを独占しない。上限に達した場合は
+        // キューがちょうど空でも次の描画を予約し、残りのイベントを順番に処理する。
+        let events: Vec<Event> = b.ev.try_iter().take(max_events).collect();
+        if events.len() == max_events {
+            self.waker.wake();
+        }
         if !events.is_empty() {
             self.cache_dirty = true;
         }
@@ -5330,6 +5339,30 @@ mod settings_recovery_tests {
 mod reaction_tests {
     use super::*;
     use crate::net::ApiCall;
+
+    #[test]
+    fn poll_continues_a_full_batch_in_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_count = wakes.clone();
+        let mut app = App {
+            waker: Waker::new(move |_| {
+                wake_count.fetch_add(1, Ordering::Relaxed);
+            }),
+            ..App::default()
+        };
+        let (tx, ev) = std::sync::mpsc::channel();
+        let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.backend = Some(Backend { cmd, ev });
+        for i in 0..300 {
+            tx.send(Event::Status(i.to_string())).unwrap();
+        }
+        app.poll();
+        assert_eq!(app.status, "255");
+        assert!(wakes.load(Ordering::Relaxed) > 0);
+        app.poll();
+        assert_eq!(app.status, "299");
+    }
 
     fn harness() -> (
         App,

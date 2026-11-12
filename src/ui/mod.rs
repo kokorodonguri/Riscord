@@ -25,7 +25,7 @@ mod split;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, Ordering, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,6 +40,80 @@ use crate::color::Color32;
 use crate::theme::*;
 use crate::wake::Waker;
 pub use kit::*;
+
+// 即時通知は受信側が取り出すまで一つにまとめる。遅延通知はそのまま送る。
+fn enqueue_wake(
+    tx: &futures_channel::mpsc::UnboundedSender<Option<Duration>>,
+    immediate_pending: &AtomicBool,
+    delay: Option<Duration>,
+) {
+    if delay.is_none() && immediate_pending.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if tx.unbounded_send(delay).is_err() && delay.is_none() {
+        immediate_pending.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod wake_queue_tests {
+    use super::enqueue_wake;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn immediate_wakes_coalesce_and_rearm_without_losing_delayed_wakes() {
+        let (tx, mut rx) = futures_channel::mpsc::unbounded();
+        let pending = AtomicBool::new(false);
+        for _ in 0..10_000 {
+            enqueue_wake(&tx, &pending, None);
+        }
+        let delay = Duration::from_millis(250);
+        enqueue_wake(&tx, &pending, Some(delay));
+        assert_eq!(rx.try_recv().unwrap(), None);
+        assert_eq!(rx.try_recv().unwrap(), Some(delay));
+        assert!(rx.try_recv().is_err());
+
+        // 受信側は notify 前に解除するので、その直後の通知も別に届く。
+        pending.store(false, Ordering::Release);
+        enqueue_wake(&tx, &pending, None);
+        assert_eq!(rx.try_recv().unwrap(), None);
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn bench_wake_burst() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        for coalesce in [false, true] {
+            let mut times = Vec::new();
+            let mut count = 0;
+            for _ in 0..20 {
+                let (tx, mut rx) = futures_channel::mpsc::unbounded();
+                let pending = AtomicBool::new(false);
+                let start = Instant::now();
+                for _ in 0..100_000 {
+                    if coalesce {
+                        enqueue_wake(&tx, &pending, None);
+                    } else {
+                        tx.unbounded_send(None).unwrap();
+                    }
+                }
+                count = 0;
+                while rx.try_recv().is_ok() {
+                    count += 1;
+                }
+                black_box(count);
+                times.push(start.elapsed());
+            }
+            times.sort_unstable();
+            eprintln!(
+                "coalesce={coalesce}: queued={count}, median={:?}, p95={:?}",
+                times[10], times[19]
+            );
+        }
+    }
+}
 
 gpui::assets::icon_assets!(
     ExtraIcons,
@@ -177,7 +251,7 @@ pub struct BodyCache {
     pub blocks: Rc<[crate::markdown::Block]>,
 }
 
-/// 本文の控えの上限（超えたら捨てて作り直す。見えている行の分だけすぐ戻る）
+/// 本文の控えの上限。
 pub const BODY_CACHE_MAX: usize = 2048;
 
 /// 入力欄（gpui-component）。中身は AppState の文字列と同期する
@@ -272,6 +346,8 @@ pub struct Root {
     pub revealed: std::collections::HashSet<String>,
     /// メッセージ ID ごとの本文の控え（BodyCache）
     pub body_cache: HashMap<String, BodyCache>,
+    /// 最初に挿入した順。既存項目の更新では順序を変えない。
+    pub body_cache_order: std::collections::VecDeque<String>,
     pub menu: Option<(PopMenu, Point<Pixels>)>,
     /// PopMenu::Guild の対象のサーバー
     pub menu_guild: Option<String>,
@@ -475,8 +551,10 @@ impl Root {
     ) -> Self {
         // 別スレッドからの「描き直して」を受け取る。急がないものは期限までにまとめて1回にする
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<Option<Duration>>();
+        let immediate_pending = Arc::new(AtomicBool::new(false));
+        let sender_pending = immediate_pending.clone();
         let waker = Waker::new(move |d| {
-            let _ = tx.unbounded_send(d);
+            enqueue_wake(&tx, &sender_pending, d);
         });
         if primary {
             // 画像が届いたらこの区画を描き直す（ウィンドウごと描き直るので、もう片方の区画にも出る）
@@ -493,6 +571,8 @@ impl Root {
             while let Some(d) = rx.next().await {
                 match d {
                     None => {
+                        // notify より前に解除する。描画中に届いたイベントも次の描画を起こせる。
+                        immediate_pending.store(false, Ordering::Release);
                         // notify は次の描画までまとめられるので、続けて届いても描くのは1回
                         if this.update(cx, |_, cx| cx.notify()).is_err() {
                             break;
@@ -876,6 +956,7 @@ impl Root {
             hover_msg: None,
             revealed: Default::default(),
             body_cache: HashMap::new(),
+            body_cache_order: Default::default(),
             menu: None,
             menu_guild: None,
             menu_from_header: false,

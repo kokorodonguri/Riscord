@@ -366,12 +366,21 @@ pub fn spawn(
     let tx = Tx { tx: ev_tx, ctx };
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(io_workers())
+            .thread_name("net")
             .enable_all()
             .build()
             .expect("tokio");
         rt.block_on(run(token, status, tx, cmd_rx, ctl));
     });
     (cmd_tx, ev_rx)
+}
+
+/// 通信用ランタイムのワーカー数。仕事はほぼ通信の待ちで、重いデコードは spawn_blocking に逃がしているので、
+/// コア数に合わせて増やしても速くならない（実測で CPU 時間は 2〜8 で差なし）。
+/// 一方ワーカー 1 つごとに RSS が約 2MB 増え、アカウント（区画）ごとに積み上がるので 2〜4 に抑える
+pub fn io_workers() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4))
 }
 
 #[derive(Clone)]

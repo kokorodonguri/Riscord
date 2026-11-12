@@ -20,8 +20,13 @@ const MAX_FRAME_PIXELS: u32 = 840 * 640;
 const MAX_BACKGROUND_PIXELS: u32 = 3840 * 2160;
 /// 1枚のアニメーションに使うメモリの上限。超えるならフレームを間引く
 const MAX_BYTES: usize = 64 * 1024 * 1024;
-/// 同時にデコードする数（CPU を食い尽くさないよう少なめ）
-const DECODERS: usize = 2;
+/// 同時にデコードする数。UI と通信のために 2 コアを残し、残りを 1〜4 本まで使う。
+/// 実測（480×270・30 フレームの GIF 24 枚）: 1 本 286ms、2 本 137ms、4 本 77ms。
+/// 2 コア機では 1 本にして描画を詰まらせず、多コア機では画像の多いチャンネルを早く出す。
+/// 4 本より増やすと、大きなアニメの一時メモリ（1 枚最大 MAX_BYTES）が重なるので止める
+fn decoders() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2).clamp(1, 4))
+}
 const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 const DOWNLOADS: usize = 4;
 
@@ -68,7 +73,7 @@ fn store() -> &'static Store {
             .build()
             .expect("tokio"),
         http: image_client(Duration::from_secs(30)).expect("http client"),
-        decode: Arc::new(tokio::sync::Semaphore::new(DECODERS)),
+        decode: Arc::new(tokio::sync::Semaphore::new(decoders())),
         downloads: tokio::sync::Semaphore::new(DOWNLOADS),
     })
 }
@@ -363,6 +368,38 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同時デコード数ごとの所要時間（GIF の多いチャンネルを開いたときの代わり）。
+    /// `cargo test --release bench_decode_concurrency -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn bench_decode_concurrency() {
+        let bytes = Arc::new(gif(30, 480, 270));
+        const IMAGES: usize = 24;
+        for workers in [1usize, 2, 3, 4, 6] {
+            let mut runs = Vec::new();
+            for _ in 0..3 {
+                let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let start = std::time::Instant::now();
+                let threads: Vec<_> = (0..workers)
+                    .map(|_| {
+                        let (next, bytes) = (next.clone(), bytes.clone());
+                        std::thread::spawn(move || {
+                            while next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < IMAGES {
+                                decode(&bytes, MAX_FRAME_PIXELS).unwrap();
+                            }
+                        })
+                    })
+                    .collect();
+                for t in threads {
+                    t.join().unwrap();
+                }
+                runs.push(start.elapsed());
+            }
+            runs.sort();
+            eprintln!("decoders={workers}: {IMAGES} GIF in {:?} (median)", runs[1]);
+        }
+    }
 
     fn gif(frames: usize, w: u16, h: u16) -> Vec<u8> {
         let mut out = Vec::new();

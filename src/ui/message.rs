@@ -1153,8 +1153,13 @@ impl Root {
                 .app
                 .plugins
                 .transform("on_display", &m.content, &m.channel_id);
-            if self.body_cache.len() >= super::BODY_CACHE_MAX {
-                self.body_cache.clear();
+            if !self.body_cache.contains_key(&m.id) {
+                if self.body_cache.len() >= super::BODY_CACHE_MAX {
+                    if let Some(oldest) = self.body_cache_order.pop_front() {
+                        self.body_cache.remove(&oldest);
+                    }
+                }
+                self.body_cache_order.push_back(m.id.clone());
             }
             self.body_cache.insert(
                 m.id.clone(),

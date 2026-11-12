@@ -20,6 +20,51 @@ fn bench_app(n_msgs: usize) -> App {
 }
 
 #[test]
+#[ignore = "manual performance measurement"]
+fn bench_poll_message_updates() {
+    use std::time::Instant;
+    const EVENTS: usize = 1024;
+    for limit in [usize::MAX, 256] {
+        let mut polls = Vec::new();
+        let mut totals = Vec::new();
+        for _ in 0..12 {
+            let mut app = bench_app(5000);
+            let (tx, ev) = std::sync::mpsc::channel();
+            let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+            app.backend = Some(Backend { cmd, ev });
+            for i in 0..EVENTS {
+                tx.send(Event::MessageUpdate {
+                    channel_id: "c".into(),
+                    id: (104_999 - i % 100).to_string(),
+                    content: None,
+                    embeds: Some(Vec::new()),
+                    pinned: None,
+                })
+                .unwrap();
+            }
+            let mut total = std::time::Duration::ZERO;
+            for _ in 0..EVENTS.div_ceil(limit) {
+                let start = Instant::now();
+                app.poll_with_limit(limit);
+                let elapsed = start.elapsed();
+                polls.push(elapsed);
+                total += elapsed;
+            }
+            totals.push(total);
+        }
+        polls.sort_unstable();
+        totals.sort_unstable();
+        eprintln!(
+            "limit={limit}: poll median={:?}, p95={:?}, p99={:?}; total median={:?}",
+            polls[polls.len() / 2],
+            polls[(polls.len() - 1) * 95 / 100],
+            polls[(polls.len() - 1) * 99 / 100],
+            totals[totals.len() / 2],
+        );
+    }
+}
+
+#[test]
 fn repeated_delete_preserves_logged_deleted_message() {
     let mut app = bench_app(1);
     app.messages.get_mut("c").unwrap()[0].log = Some(Box::new(crate::model::LogMark {

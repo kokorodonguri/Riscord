@@ -172,14 +172,17 @@ import java.time.Duration
             }
             val attachments=message.optJSONArray("attachments")?.objects().orEmpty()
             val images=attachments.filter {it.optString("content_type").startsWith("image/")}
+            // 画面幅ぶんの画素で取れば十分（押したときは原寸の url を開く）
+            val maxPx=with(LocalDensity.current) {LocalConfiguration.current.screenWidthDp.dp.roundToPx()}
+            val preview={image:JSONObject->previewUrl(image.nonNull("proxy_url"),image.optString("url"),image.optInt("width"),image.optInt("height"),maxPx)}
             if(images.size>1) Column(Modifier.padding(top=6.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
                 images.chunked(2).forEach {row->Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                    row.forEach {image->AsyncImage(image.optString("url"),image.optString("filename"),Modifier.weight(1f).aspectRatio(1.1f).clip(RoundedCornerShape(12.dp)).background(MobileRaised).clickable {openUrl(context,image.optString("url"))},contentScale=androidx.compose.ui.layout.ContentScale.Crop)}
+                    row.forEach {image->AsyncImage(preview(image),image.optString("filename"),Modifier.weight(1f).aspectRatio(1.1f).clip(RoundedCornerShape(12.dp)).background(MobileRaised).clickable {openUrl(context,image.optString("url"))},contentScale=androidx.compose.ui.layout.ContentScale.Crop)}
                     if(row.size==1) Spacer(Modifier.weight(1f))
                 }}
             } else images.firstOrNull()?.let {image->
                 val ratio=if(image.optInt("height")>0) (image.optDouble("width",1.0)/image.optDouble("height",1.0)).toFloat().coerceIn(.7f,2.4f) else 1.4f
-                AsyncImage(image.optString("url"),image.optString("filename"),Modifier.padding(top=6.dp).fillMaxWidth().heightIn(max=300.dp).aspectRatio(ratio).clip(RoundedCornerShape(14.dp)).background(MobileRaised).clickable {openUrl(context,image.optString("url"))},contentScale=androidx.compose.ui.layout.ContentScale.Fit)
+                AsyncImage(preview(image),image.optString("filename"),Modifier.padding(top=6.dp).fillMaxWidth().heightIn(max=300.dp).aspectRatio(ratio).clip(RoundedCornerShape(14.dp)).background(MobileRaised).clickable {openUrl(context,image.optString("url"))},contentScale=androidx.compose.ui.layout.ContentScale.Fit)
             }
             attachments.filterNot {it in images}.forEach {attachment->Surface(onClick={openUrl(context,attachment.optString("url"))},shape=RoundedCornerShape(12.dp),color=MobileRaised,modifier=Modifier.fillMaxWidth().padding(top=6.dp)) {
                 Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {MobileIcon(Glyph.File,tint=MobileMuted);Text(attachment.optString("filename","添付ファイル"),Modifier.weight(1f),fontSize=13.sp,maxLines=2,overflow=TextOverflow.Ellipsis);MobileIcon(Glyph.Download,tint=MobileMuted)}

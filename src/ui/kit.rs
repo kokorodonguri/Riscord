@@ -80,7 +80,13 @@ pub fn loaded(uri: &str) -> Option<std::sync::Arc<RenderImage>> {
 pub fn avatar(url: Option<&str>, size: f32, fallback: &str, radius: f32, bg: Color32) -> Div {
     let base = div().size(z(size)).flex_none().rounded(z(radius));
     match url.and_then(loaded) {
-        Some(i) => base.child(img(i).size_full().rounded(z(radius)).object_fit(ObjectFit::Cover)),
+        Some(i) => base.child(
+            img(i)
+                .id(SharedString::from(url.unwrap_or("av").to_string()))
+                .size_full()
+                .rounded(z(radius))
+                .object_fit(ObjectFit::Cover),
+        ),
         None => base
             .bg(bg)
             .flex()
@@ -90,6 +96,32 @@ pub fn avatar(url: Option<&str>, size: f32, fallback: &str, radius: f32, bg: Col
             .text_color(WHITE())
             .child(initials(fallback)),
     }
+}
+
+/// アバターにデコレーション（エフェクト枠）を重ねる
+pub fn with_decoration(av: Div, size: f32, deco_url: Option<&str>) -> Div {
+    let Some(u) = deco_url else { return av };
+    let Some(i) = loaded(u) else { return av };
+    let deco_size = size * 1.2;
+    let off = -size * 0.1;
+    div()
+        .relative()
+        .flex_none()
+        .size(z(size))
+        .child(av)
+        .child(
+            div()
+                .absolute()
+                .left(z(off))
+                .top(z(off))
+                .size(z(deco_size))
+                .child(
+                    img(i)
+                        .id(SharedString::from(format!("deco:{u}")))
+                        .size_full()
+                        .object_fit(ObjectFit::Contain),
+                ),
+        )
 }
 
 /// アバター右下の状態マーク（ring は背景色。くり抜いたように見せる）。中心の半径 r

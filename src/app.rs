@@ -4,745 +4,24 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc::Receiver, Arc};
 
-use chrono::{DateTime, Local};
-use gpui::{Bounds, Pixels, RenderImage};
 use std::sync::atomic::Ordering::Relaxed;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::color::Color32;
-use crate::login::{self, LoginEvent};
-use crate::model::{self, Channel, Embed, Guild, Member, Message, Presence, ProfileData, Role, User, VoiceState};
+use crate::model::{Channel, Embed, Guild, Member, Message, Presence, Role, User, VoiceState};
 use crate::net::{self, Cmd, Event, VoiceStatus};
 use crate::wake::Waker;
 use crate::{cache, clip, images, theme, voice};
 
+mod events;
+mod helpers;
+mod member_list;
+mod settings;
+#[path = "app/voice.rs"]
+mod app_voice;
 
-pub const MESSAGE_RELOAD_ERROR: &str = "エラー: メッセージを更新できませんでした。再読み込みしてください。";
-
-/// 選べるステータス（キー, 表示名）
-pub const STATUSES: [(&str, &str); 4] =
-    [("online", "オンライン"), ("idle", "退席中"), ("dnd", "取り込み中"), ("invisible", "オフライン表示")];
-
-pub fn status_label(s: &str) -> &'static str {
-    match s {
-        "online" => "オンライン",
-        "idle" => "退席中",
-        "dnd" => "取り込み中",
-        "invisible" => "オフライン表示",
-        _ => "オフライン",
-    }
-}
-
-// ---- トークン ----
-pub fn token_path(profile: Option<&str>) -> PathBuf {
-    crate::profile::account_dir(profile).join("token")
-}
-
-/// 設定フォルダの親。テスト中は本物の設定（トークン・settings.json・テーマ）に触らないよう一時フォルダにする
-pub fn config_root() -> PathBuf {
-    if cfg!(test) {
-        return std::env::temp_dir().join(format!("riscord-test-config-{}", std::process::id()));
-    }
-    if crate::demo::enabled() {
-        // デモでは本物の設定・トークンを読み書きしない
-        return std::env::temp_dir().join(format!("riscord-demo-config-{}", std::process::id()));
-    }
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// 控え（起動用のスナップショット・アイコン）を置くフォルダの親。テスト・デモでは本物に触らない
-pub fn cache_root() -> PathBuf {
-    if cfg!(test) {
-        return std::env::temp_dir().join(format!("riscord-test-cache-{}", std::process::id()));
-    }
-    if crate::demo::enabled() {
-        return std::env::temp_dir().join(format!("riscord-demo-cache-{}", std::process::id()));
-    }
-    dirs::cache_dir().unwrap_or_else(config_root)
-}
-
-pub fn load_token(profile: Option<&str>) -> Option<String> {
-    std::fs::read_to_string(token_path(profile)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
-}
-
-pub fn save_token(profile: Option<&str>, token: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let p = token_path(profile);
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600); // 自分だけ読める
-    }
-    opts.open(&p)?.write_all(token.as_bytes())
-}
-
-// ---- 設定 ----
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub enabled_plugins: Vec<String>,
-    pub zoom: f32,
-    pub font_size: f32,
-    pub compact: bool,
-    /// スクロールの速さ（既定に掛ける倍率）。マウスホイールとタッチパッドで別
-    pub wheel_speed: f32,
-    pub touchpad_speed: f32,
-    /// テーマ: "builtin:black" などの組み込み、または themes/ のファイル名
-    pub theme: String,
-    /// 設定画面で色ごとに変えたもの（キー → #rrggbb）。テーマより優先
-    pub color_overrides: std::collections::BTreeMap<String, String>,
-    /// 設定画面で指定したチャット欄の背景画像（テーマより優先）
-    pub background: theme::Background,
-    pub status: String,
-    /// アクティビティに「Riscord をプレイ中」を出す
-    pub show_activity: bool,
-    // ---- 音声 ----
-    pub input_device: Option<String>,
-    pub output_device: Option<String>,
-    /// true = プッシュトゥトーク
-    pub ptt: bool,
-    pub ptt_key: Option<String>,
-    /// 音声検出のしきい値 (dB)
-    pub vad_db: f32,
-    pub in_gain: f32,
-    pub out_gain: f32,
-    pub self_mute: bool,
-    pub self_deaf: bool,
-    /// サーバーレールの並び（ドラッグで並べ替えたもの）。ここにないサーバーは後ろに元の順で並ぶ。
-    /// Riscord の中だけの並びで、Discord の設定には書かない
-    pub guild_order: Vec<String>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            enabled_plugins: Vec::new(),
-            zoom: 1.0,
-            font_size: 16.0,
-            compact: false,
-            // 1ノッチ 100px（ブラウザ版 Discord と同じくらい）
-            wheel_speed: 2.5,
-            touchpad_speed: 2.0,
-            theme: "builtin:black".into(),
-            color_overrides: Default::default(),
-            background: Default::default(),
-            status: "online".into(),
-            show_activity: true,
-            input_device: None,
-            output_device: None,
-            ptt: false,
-            ptt_key: None,
-            vad_db: -40.0,
-            in_gain: 1.0,
-            out_gain: 1.0,
-            self_mute: false,
-            self_deaf: false,
-            guild_order: Vec::new(),
-        }
-    }
-}
-
-pub fn db_to_lin(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
-}
-
-pub fn lin_to_db(v: f32) -> f32 {
-    20.0 * v.max(1e-6).log10()
-}
-
-pub fn settings_path(profile: Option<&str>) -> PathBuf {
-    token_path(profile).with_file_name("settings.json")
-}
-
-pub fn load_settings(profile: Option<&str>) -> Settings {
-    std::fs::read_to_string(settings_path(profile)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
-}
-
-pub fn save_settings(profile: Option<&str>, s: &Settings) {
-    let p = settings_path(profile);
-    let _ = std::fs::create_dir_all(p.parent().unwrap());
-    let _ = std::fs::write(p, serde_json::to_string_pretty(s).unwrap_or_default());
-}
-
-
-pub fn themes_dir() -> PathBuf {
-    // テーマはどのプロファイル（アカウント）でも共有する
-    theme::themes_dir(&crate::profile::shared_dir())
-}
-
-/// themes/ の中身が変わったら知らせる（1秒ごとに更新時刻を見るだけの軽いスレッド）
-pub fn watch_themes(ctx: Waker) -> Receiver<()> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let dir = themes_dir();
-    let stamp = move || -> Vec<(PathBuf, std::time::SystemTime)> {
-        let mut v: Vec<_> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| Some((e.path(), e.metadata().ok()?.modified().ok()?)))
-            .collect();
-        v.sort();
-        v
-    };
-    let _ = std::thread::Builder::new().name("theme-watch".into()).spawn(move || {
-        let mut last = stamp();
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            let now = stamp();
-            if now != last {
-                last = now;
-                if tx.send(()).is_err() {
-                    return;
-                }
-                ctx.wake();
-            }
-        }
-    });
-    rx
-}
-
-/// OS のファイル選択ダイアログを別スレッドで開く（開いている間も画面を止めない）。選ばれたファイルが届く（取り消しなら空）
-pub fn spawn_file_dialog(ctx: &Waker, title: &str, many: bool, filter: Option<(&str, &[&str])>) -> Receiver<Vec<PathBuf>> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let ctx = ctx.clone();
-    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
-    if let Some((name, exts)) = filter {
-        dialog = dialog.add_filter(name, exts);
-    }
-    std::thread::spawn(move || {
-        // Linux では xdg-desktop-portal と D-Bus でやり取りするので、その間だけ小さなランタイムを使う
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
-        let paths: Vec<PathBuf> = if many {
-            rt.block_on(dialog.pick_files()).unwrap_or_default().into_iter().map(|f| f.path().to_path_buf()).collect()
-        } else {
-            rt.block_on(dialog.pick_file()).into_iter().map(|f| f.path().to_path_buf()).collect()
-        };
-        let _ = tx.send(paths);
-        ctx.wake();
-    });
-    rx
-}
-
-/// フォルダをファイルマネージャで開く
-pub fn open_folder(path: &std::path::Path) {
-    let _ = std::fs::create_dir_all(path);
-    #[cfg(windows)]
-    let cmd = "explorer";
-    #[cfg(target_os = "macos")]
-    let cmd = "open";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let cmd = "xdg-open";
-    let _ = std::process::Command::new(cmd).arg(path).spawn();
-}
-
-
-// ---- ヘルパー ----
-pub fn local_dt(ts: &str) -> Option<DateTime<Local>> {
-    DateTime::parse_from_rfc3339(ts).ok().map(|t| t.with_timezone(&Local))
-}
-
-pub fn fmt_time(ts: &str) -> String {
-    let Some(t) = local_dt(ts) else { return String::new() };
-    let today = Local::now().date_naive();
-    let d = t.date_naive();
-    if d == today {
-        format!("今日 {}", t.format("%H:%M"))
-    } else if today.pred_opt() == Some(d) {
-        format!("昨日 {}", t.format("%H:%M"))
-    } else {
-        t.format("%Y/%m/%d %H:%M").to_string()
-    }
-}
-
-pub fn name_color(id: &str) -> Color32 {
-    let h = id.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
-    let palette = [
-        Color32::from_rgb(0x5a, 0xb4, 0xf0),
-        Color32::from_rgb(0xf0, 0x8c, 0x5a),
-        Color32::from_rgb(0x7c, 0xd0, 0x7a),
-        Color32::from_rgb(0xd0, 0x7a, 0xc8),
-        Color32::from_rgb(0xe8, 0xc8, 0x50),
-        Color32::from_rgb(0x8a, 0x9c, 0xf5),
-    ];
-    palette[(h as usize) % palette.len()]
-}
-
-pub fn initials(name: &str) -> String {
-    let words: Vec<&str> = name.split_whitespace().collect();
-    if words.len() > 1 {
-        words.iter().filter_map(|w| w.chars().next()).take(3).collect()
-    } else {
-        name.chars().take(2).collect()
-    }
-}
-
-pub fn user_avatar_url(u: &User) -> String {
-    match &u.avatar {
-        Some(h) => format!("https://cdn.discordapp.com/avatars/{}/{}.png?size=80", u.id, h),
-        None => {
-            let n = u.id.parse::<u64>().map(|i| (i >> 22) % 6).unwrap_or(0);
-            format!("https://cdn.discordapp.com/embed/avatars/{n}.png")
-        }
-    }
-}
-
-pub fn guild_icon_url(g: &Guild) -> Option<String> {
-    g.icon.as_ref().map(|h| format!("https://cdn.discordapp.com/icons/{}/{}.png?size=96", g.id, h))
-}
-
-pub fn dm_icon_url(c: &Channel) -> Option<String> {
-    if let Some(h) = &c.icon {
-        Some(format!("https://cdn.discordapp.com/channel-icons/{}/{}.png?size=80", c.id, h))
-    } else if c.recipients.len() == 1 {
-        Some(user_avatar_url(&c.recipients[0]))
-    } else {
-        None
-    }
-}
-
-pub fn member_role_color(member: &Member, roles: &[Role]) -> Option<Color32> {
-    let role = roles.iter().filter(|r| member.roles.contains(&r.id)).max_by_key(|r| r.position)?;
-    (role.color != 0).then(|| Color32::from_rgb((role.color >> 16) as u8, (role.color >> 8) as u8, role.color as u8))
-}
-
-
-/// 幅・高さを最大サイズに収まるよう縮める
-pub fn fit_size(w: Option<u32>, h: Option<u32>, max: (f32, f32)) -> Option<(f32, f32)> {
-    let (w, h) = (w? as f32, h? as f32);
-    if w <= 0.0 || h <= 0.0 {
-        return None;
-    }
-    let scale = (max.0 / w).min(max.1 / h).min(1.0);
-    Some((w * scale, h * scale))
-}
-
-/// Discordのメディアプロキシで縮小版を取る（GIFはアニメを残すため原寸）
-pub fn resized(proxy: Option<&str>, url: &str, size: (f32, f32)) -> String {
-    let base = proxy.unwrap_or(url);
-    let path = base.split(['?', '#']).next().unwrap_or("").to_lowercase();
-    if base.contains("media.discordapp.net") && !path.ends_with(".gif") {
-        let sep = if base.contains('?') { '&' } else { '?' };
-        let ppp = 2.0; // 高DPI用に倍で取る
-        // WebP は animated=true を付けないとプロキシが1枚目だけにしてしまう
-        let anim = if path.ends_with(".webp") { "&animated=true" } else { "" };
-        format!("{base}{sep}width={}&height={}{anim}", (size.0 * ppp) as u32, (size.1 * ppp) as u32)
-    } else {
-        base.to_string()
-    }
-}
-
-/// スタンプ（Lottie・APNG・GIF をデコードしたもの。アニメは gpui が進める）
-pub enum StickerState {
-    Loading,
-    Ready(Arc<RenderImage>),
-    Failed,
-}
-
-impl Drop for StickerState {
-    fn drop(&mut self) {
-        if let Self::Ready(image) = self {
-            images::release(image.clone());
-        }
-    }
-}
-
-pub fn embed_big_media(e: &Embed) -> Option<&model::EmbedMedia> {
-    e.image.as_ref().or_else(|| if e.kind.as_deref() == Some("video") || e.video.is_some() { e.thumbnail.as_ref() } else { None })
-}
-
-pub enum Seg<'a> {
-    Text(&'a str),
-    Emoji { name: &'a str, id: &'a str, animated: bool },
-}
-
-/// 本文を文字列とカスタム絵文字 `<:名前:id>` / `<a:名前:id>` に分ける
-pub fn split_emoji(s: &str) -> Vec<Seg<'_>> {
-    let mut out = Vec::new();
-    let mut rest = s;
-    let mut text_start = 0usize;
-    let mut pos = 0usize;
-    while let Some(i) = rest.find('<') {
-        let at = pos + i;
-        let tail = &s[at..];
-        if let Some((len, seg)) = parse_emoji(tail) {
-            if text_start < at {
-                out.push(Seg::Text(&s[text_start..at]));
-            }
-            out.push(seg);
-            pos = at + len;
-            text_start = pos;
-        } else {
-            pos = at + 1;
-        }
-        rest = &s[pos..];
-    }
-    if text_start < s.len() {
-        out.push(Seg::Text(&s[text_start..]));
-    }
-    out
-}
-
-pub fn parse_emoji(t: &str) -> Option<(usize, Seg<'_>)> {
-    let end = t.find('>')?;
-    let inner = &t[1..end];
-    let (animated, inner) = match inner.strip_prefix("a:") {
-        Some(r) => (true, r),
-        None => (false, inner.strip_prefix(':')?),
-    };
-    let (name, id) = inner.split_once(':')?;
-    let ok_name = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    let ok_id = !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit());
-    (ok_name && ok_id).then_some((end + 1, Seg::Emoji { name, id, animated }))
-}
-
-pub fn emoji_url(id: &str, animated: bool) -> String {
-    // GIFは末尾が .gif でないとアニメ再生されないので、サイズ指定を付けない
-    if animated {
-        format!("https://cdn.discordapp.com/emojis/{id}.gif")
-    } else {
-        format!("https://cdn.discordapp.com/emojis/{id}.png?size=64")
-    }
-}
-
-/// 本文の <#id>・<@id>・<@!id>・<@&id> を本家と同じく「#チャンネル名」「@名前」「@ロール名」にする（ID のまま見せない）
-pub fn resolve_mentions<'a>(content: &'a str, m: &Message, channels: &HashMap<String, Vec<Channel>>, roles: &[Role]) -> std::borrow::Cow<'a, str> {
-    if !content.contains("<#") && !content.contains("<@") {
-        return std::borrow::Cow::Borrowed(content);
-    }
-    let mut out = String::with_capacity(content.len());
-    let mut rest = content;
-    while let Some(i) = rest.find('<') {
-        out.push_str(&rest[..i]);
-        let tail = &rest[i..];
-        let end = tail.find('>');
-        let token = end.map(|e| &tail[1..e]);
-        let name = token.and_then(|t| {
-            let (kind, id) = if let Some(id) = t.strip_prefix("@&") {
-                ('&', id)
-            } else if let Some(id) = t.strip_prefix("@!") {
-                ('@', id)
-            } else if let Some(id) = t.strip_prefix('@') {
-                ('@', id)
-            } else if let Some(id) = t.strip_prefix('#') {
-                ('#', id)
-            } else {
-                return None;
-            };
-            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            Some(match kind {
-                '#' => format!("#{}", channels.values().flatten().find(|c| c.id == id).and_then(|c| c.name.clone()).unwrap_or_else(|| "不明なチャンネル".into())),
-                '&' => format!("@{}", roles.iter().find(|r| r.id == id).map_or("不明なロール", |r| r.name.as_str())),
-                _ => format!("@{}", m.mentions.iter().find(|u| u.id == id).map_or("不明なユーザー", |u| u.display())),
-            })
-        });
-        match (name, end) {
-            (Some(name), Some(e)) => {
-                out.push_str(&name);
-                rest = &tail[e + 1..];
-            }
-            _ => {
-                out.push('<');
-                rest = &tail[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    std::borrow::Cow::Owned(out)
-}
-
-/// 本文中の http(s) URL の位置（バイト範囲）。末尾の句読点や対応しない ) は含めない
-pub fn find_links(s: &str) -> Vec<std::ops::Range<usize>> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(i) = s[from..].find("http").map(|i| from + i) {
-        let t = &s[i..];
-        let boundary = i == 0 || !s[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric());
-        if !boundary || !(t.starts_with("https://") || t.starts_with("http://")) {
-            from = i + 4;
-            continue;
-        }
-        let mut end = t.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`')).unwrap_or(t.len());
-        while let Some(c) = t[..end].chars().next_back() {
-            let unbalanced = c == ')' && t[..end].matches('(').count() < t[..end].matches(')').count();
-            if matches!(c, '.' | ',' | ':' | ';' | '!' | '?' | '\'' | '*' | '_' | '~' | '|') || unbalanced {
-                end -= c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if end > t.find("://").unwrap() + 3 {
-            out.push(i..i + end);
-        }
-        from = i + end.max(4);
-    }
-    out
-}
-
-pub const MEMBER_ROW_H: f32 = 42.0;
-pub const MEMBER_HEAD_H: f32 = 40.0;
-
-/// メンバーリストの1行。Member は members[gid] の添字
-pub enum MemberRow {
-    Header(String),
-    Member(usize),
-    /// Discord からまだ届いていない行
-    Placeholder,
-}
-
-/// Discord が並べて送ってくるメンバー一覧（GUILD_MEMBER_LIST_UPDATE を当てたもの）
-#[derive(Default)]
-pub struct ServerMemberList {
-    /// どのチャンネルの一覧として購読したか
-    pub channel_id: String,
-    /// 一覧の ID（見える人が同じチャンネルは同じ一覧）。最初の SYNC で決まり、違う ID の差分は無視する
-    pub list_id: Option<String>,
-    pub groups: Vec<(String, u32)>,
-    /// 行ごとの中身。None はまだ届いていない
-    pub items: Vec<Option<net::ListItem>>,
-}
-
-impl ServerMemberList {
-    /// 差分を当てる。当てたら true
-    pub fn apply(&mut self, list_id: &str, groups: Vec<(String, u32)>, ops: Vec<net::ListOp>) -> bool {
-        match &self.list_id {
-            Some(id) if id != list_id => return false,
-            None if !ops.iter().any(|o| matches!(o, net::ListOp::Sync { .. })) => return false,
-            _ => {}
-        }
-        self.list_id = Some(list_id.to_string());
-        for op in ops {
-            match op {
-                net::ListOp::Sync { range, items } => {
-                    let start = range[0] as usize;
-                    if self.items.len() < start + items.len() {
-                        self.items.resize(start + items.len(), None);
-                    }
-                    for (k, item) in items.into_iter().enumerate() {
-                        self.items[start + k] = Some(item);
-                    }
-                }
-                net::ListOp::Insert { index, item } => {
-                    let i = index.min(self.items.len());
-                    self.items.insert(i, Some(item));
-                }
-                net::ListOp::Update { index, item } => {
-                    if index >= self.items.len() {
-                        self.items.resize(index + 1, None);
-                    }
-                    self.items[index] = Some(item);
-                }
-                net::ListOp::Delete { index } => {
-                    if index < self.items.len() {
-                        self.items.remove(index);
-                    }
-                }
-                net::ListOp::Invalidate { range } => {
-                    let end = (range[1] as usize + 1).min(self.items.len());
-                    for item in self.items.iter_mut().take(end).skip(range[0] as usize) {
-                        *item = None;
-                    }
-                }
-            }
-        }
-        // 全体の行数 = 各グループの見出し + 人数。まだ届いていない所は None のまま
-        if !groups.is_empty() {
-            let total: usize = groups.iter().filter(|g| g.1 > 0).map(|g| g.1 as usize + 1).sum();
-            self.items.resize(total, None);
-            self.groups = groups;
-        }
-        true
-    }
-}
-
-/// グループ分け・並べ替え済みのメンバーリスト（ver が変わるまで使い回す）
-#[derive(Default)]
-pub struct MemberListCache {
-    pub gid: String,
-    pub ver: u64,
-    pub rows: Vec<MemberRow>,
-    /// 各行の上端（仮想スクロール用の累積高さ）
-    pub tops: Vec<f32>,
-    pub height: f32,
-}
-
-impl MemberListCache {
-    /// Discord が並べた一覧から作る（行の順番 = 一覧の順番。見えている行の番号をそのまま購読に使える）
-    pub fn from_server(gid: &str, ver: u64, list: &ServerMemberList, members: &[Member], roles: &[Role]) -> Self {
-        let index: HashMap<&str, usize> = members.iter().enumerate().filter_map(|(i, m)| m.user.as_ref().map(|u| (u.id.as_str(), i))).collect();
-        let mut out = MemberListCache { gid: gid.to_string(), ver, ..Default::default() };
-        for item in &list.items {
-            out.tops.push(out.height);
-            match item {
-                Some(net::ListItem::Group(id, count)) => {
-                    // 一覧の中の見出しの行には人数が入っていないことがある。人数は一緒に届く groups のほうが正しい
-                    let count = list.groups.iter().find(|g| &g.0 == id).map_or(*count, |g| g.1);
-                    let name = match id.as_str() {
-                        "online" => "オンライン",
-                        "offline" => "オフライン",
-                        id => roles.iter().find(|r| r.id == id).map_or("メンバー", |r| r.name.as_str()),
-                    };
-                    out.height += MEMBER_HEAD_H;
-                    out.rows.push(MemberRow::Header(format!("{name} — {count}")));
-                }
-                Some(net::ListItem::Member(uid)) => {
-                    out.height += MEMBER_ROW_H;
-                    out.rows.push(index.get(uid.as_str()).map_or(MemberRow::Placeholder, |&i| MemberRow::Member(i)));
-                }
-                None => {
-                    out.height += MEMBER_ROW_H;
-                    out.rows.push(MemberRow::Placeholder);
-                }
-            }
-        }
-        out.height += 8.0;
-        out
-    }
-
-    pub fn build(gid: &str, ver: u64, members: &[Member], roles: &[Role], presences: &HashMap<String, Presence>) -> Self {
-        let mut hoisted: Vec<&Role> = roles.iter().filter(|r| r.hoist).collect();
-        hoisted.sort_by_key(|r| std::cmp::Reverse(r.position));
-        let online_index = hoisted.len();
-        let mut groups: Vec<Vec<usize>> = vec![Vec::new(); online_index + 2];
-        for (i, member) in members.iter().enumerate() {
-            let Some(user) = &member.user else { continue };
-            let online = presences.get(&user.id).is_some_and(|p| p.status != "offline");
-            let index = if online {
-                hoisted.iter().position(|r| member.roles.contains(&r.id)).unwrap_or(online_index)
-            } else {
-                online_index + 1
-            };
-            groups[index].push(i);
-        }
-        let names = hoisted.iter().map(|r| r.name.as_str()).chain(["オンライン", "オフライン"]);
-        let mut out = MemberListCache { gid: gid.to_string(), ver, ..Default::default() };
-        for (name, mut group) in names.zip(groups) {
-            if group.is_empty() {
-                continue;
-            }
-            group.sort_by_cached_key(|&i| members[i].display().to_lowercase());
-            out.tops.push(out.height);
-            out.height += MEMBER_HEAD_H;
-            out.rows.push(MemberRow::Header(format!("{name} — {}", group.len())));
-            for i in group {
-                out.tops.push(out.height);
-                out.height += MEMBER_ROW_H;
-                out.rows.push(MemberRow::Member(i));
-            }
-        }
-        out.height += 8.0;
-        out
-    }
-}
-
-pub fn author_name(m: &Message) -> &str {
-    m.member.as_ref().and_then(|member| member.nick.as_deref()).unwrap_or_else(|| m.author.display())
-}
-
-pub fn is_reply(m: &Message) -> bool {
-    m.kind == 19 || m.referenced_message.is_some()
-}
-
-pub fn rgb(c: u32) -> Color32 {
-    Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
-}
-
-pub fn darken(c: Color32) -> Color32 {
-    Color32::from_rgb((c.r() as f32 * 0.55) as u8, (c.g() as f32 * 0.55) as u8, (c.b() as f32 * 0.55) as u8)
-}
-
-/// ユーザーIDからアカウント作成日を出す
-pub fn snowflake_date(id: &str) -> String {
-    let ms = id.parse::<u64>().map(|i| (i >> 22) + 1_420_070_400_000).unwrap_or(0);
-    chrono::DateTime::from_timestamp_millis(ms as i64)
-        .map(|t| t.with_timezone(&Local).format("%Y年%-m月%-d日").to_string())
-        .unwrap_or_default()
-}
-
-pub enum ProfileState {
-    Loading,
-    Ready(ProfileData),
-    Failed,
-}
-
-#[derive(Clone)]
-pub struct ProfilePopup {
-    pub user: User,
-    pub guild_id: Option<String>,
-    pub anchor: Bounds<Pixels>,
-    /// 左下の自分のアバターから開いたときは上に出す
-    pub above: bool,
-}
-
-/// 既読を送る最短の間隔。新着が続いても、この間隔で最新のものだけ送る
-pub const ACK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1500);
-const ACK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// 過去ログの読み足し
-#[derive(Default)]
-pub struct History {
-    /// 読み込み中の起点（このIDより前を頼んでいる）
-    pub pending: Option<String>,
-    /// チャンネルの始まりまで読んだ
-    pub end: bool,
-    /// 失敗したらしばらく待ってから取り直す
-    pub retry_at: Option<std::time::Instant>,
-}
-
-/// 上端からこの行数まで近づいたら古いメッセージを読み足す
-pub const HISTORY_TRIGGER_ROWS: usize = 20;
-/// 一覧の先頭に置く、読み込み中の表示・チャンネルの始まりの表示の高さ（どちらでも同じにして行がずれないようにする）
-pub const HISTORY_HEAD_H: f32 = 72.0;
-/// 表示中のチャンネルで遡って持てるメッセージ数の上限
-pub const MAX_HISTORY: usize = 5000;
-/// 1チャンネルで保持するメッセージ数の上限
-pub const MAX_MSGS: usize = 1000;
-/// メッセージを保持しておくチャンネル数の上限
-pub const MAX_CHANNELS: usize = 30;
-/// 1メッセージに添付できるファイル数（Discord の上限）
-pub const MAX_UPLOADS: usize = 10;
-pub const MIB: u64 = 1024 * 1024;
-/// サーバーのブーストを最大にしても送れないファイルの大きさ
-pub const GUILD_MAX_UPLOAD: u64 = 100 * MIB;
-
-/// アカウントの種類ごとの、1ファイルの上限（0/なし = 無料、1 = Nitro Classic、2 = Nitro、3 = Nitro Basic）
-pub fn account_upload_limit(premium_type: Option<u8>) -> u64 {
-    match premium_type {
-        Some(2) => 500 * MIB,
-        Some(1) | Some(3) => 50 * MIB,
-        _ => 10 * MIB,
-    }
-}
-
-/// 1メッセージの文字数の上限（Nitro は 4000）
-pub fn message_text_limit(premium_type: Option<u8>) -> usize {
-    if premium_type == Some(2) { 4000 } else { 2000 }
-}
-
-/// Discord と同じ数え方（JavaScript の文字列の長さ = UTF-16 の単位数）
-pub fn message_text_len(s: &str) -> usize {
-    s.encode_utf16().count()
-}
-
-pub fn fmt_size(bytes: u64) -> String {
-    if bytes >= MIB { format!("{:.1}MB", bytes as f64 / MIB as f64) } else { format!("{}KB", bytes.div_ceil(1024)) }
-}
-/// 入力欄の上のお知らせ（添付や文字数の上限）を出しておく時間
-/// 「コピーしました」などを出しておく時間
-pub const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(1600);
-pub const COMPOSE_NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
-/// 受信中のメンバー索引は、更新が止まってから短時間で破棄する。
-pub const MEMBER_INDEX_TTL: std::time::Duration = std::time::Duration::from_secs(5);
-
-pub struct RecentMemberIndex {
-    pub guild_id: String,
-    pub index: HashMap<String, usize>,
-    pub updated: std::time::Instant,
-}
+pub use helpers::*;
+pub use member_list::*;
+pub use settings::*;
 
 // ---- アプリ本体 ----
 pub struct Backend {
@@ -821,6 +100,8 @@ pub struct App {
     pub roles: HashMap<String, Vec<Role>>,
     pub members: HashMap<String, Vec<Member>>,
     pub member_index: Option<RecentMemberIndex>,
+    /// メッセージ作者のメンバー情報を op 8 で問い合わせ済みのユーザーID（サーバーごと）
+    pub requested_members: HashMap<String, HashSet<String>>,
     /// サーバーごとのメンバー一覧（Discord が並べて送ってくるもの。購読中のチャンネルの分）
     pub member_lists: HashMap<String, ServerMemberList>,
     /// 最後に送った購読（サーバー, チャンネル, 範囲）
@@ -911,6 +192,8 @@ pub struct App {
     pub guild_settings: HashMap<String, GuildSettings>,
     /// 未読のメンション数（チャンネル → (サーバー, 件数)。DM はサーバーが None で、メッセージごとに数える）
     pub mention_counts: HashMap<String, (Option<String>, u32)>,
+    /// READY の read_state / MESSAGE_ACK から得たチャンネルごとの既読位置（last_viewed, last_message_id）
+    pub channel_read_rank: HashMap<String, (u64, u64)>,
     /// サーバーごとの自分のロール（ロールへのメンションを見分ける）
     pub my_roles: HashMap<String, Vec<String>>,
     /// ウィンドウにフォーカスがあるか（見ているチャンネルの通知は出さない）
@@ -1357,533 +640,6 @@ impl App {
         self.reset();
     }
 
-    pub fn poll(&mut self) {
-        for item in self.translator.drain() {
-            match item.target {
-                crate::translator::Target::Message { channel, id, original, generation } => {
-                    if self.plugins.generation == generation && self.plugins.translator_enabled() && self.messages.get(&channel).is_some_and(|items| items.iter().any(|m| m.id == id && m.content == original)) {
-                        match item.result {
-                            Ok(result) => { if self.translator.messages.len() >= 512 { self.translator.messages.clear(); } self.translator.messages.insert((channel, id), (original, result)); self.plugins.revision = self.plugins.revision.wrapping_add(1); },
-                            Err(error) => self.show_toast(&error),
-                        }
-                    }
-                }
-                crate::translator::Target::Outgoing { channel, request_id, generation } => {
-                    if self.translator.outgoing.get(&channel) != Some(&request_id) { continue; }
-                    self.translator.outgoing.remove(&channel);
-                    if let Some(sub) = self.compose_submissions.get_mut(&channel).filter(|s| !s.failed) {
-                        let result = if self.plugins.translator_enabled() && self.plugins.generation == generation { item.result } else { Err("翻訳中にプラグインが無効になりました".into()) };
-                        match result {
-                            Ok(text) if !text.trim().is_empty() && message_text_len(&text) <= message_text_limit(self.me.as_ref().and_then(|u| u.premium_type)) => {
-                                let cmd = Cmd::Send { channel_id: channel.clone(), content: text.clone(), reply_to: sub.reply.as_ref().map(|m| m.id.clone()), files: sub.uploads.iter().map(|u| (u.name.clone(), u.data.clone())).collect() };
-                                sub.content = text;
-                                if self.backend.as_ref().is_none_or(|b| b.cmd.send(cmd).is_err()) { sub.failed = true; sub.rejected = Some("送信できませんでした".into()); }
-                            }
-                            Ok(_) => { sub.failed = true; sub.rejected = Some("翻訳結果が空か文字数制限を超えています".into()); }
-                            Err(error) => { sub.failed = true; sub.rejected = Some(error); }
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(delay) = self.message_log.save_if_due() { self.repaint_after(delay); }
-        let (actions, next) = self.plugins.tick();
-        for action in actions {
-            match action { crate::plugins::Action::Send(channel_id, content) => self.send(Cmd::Send { channel_id, content, reply_to: None, files: Vec::new() }) }
-        }
-        if let Some(delay) = next { self.repaint_after(delay); }
-        if self.login_retry_at.is_some_and(|t| t <= std::time::Instant::now()) {
-            self.login_retry_at = None;
-            if let Some(t) = self.load_token() {
-                self.retry_login(t);
-            }
-        }
-        if let Some(cache) = &self.member_index {
-            let elapsed = cache.updated.elapsed();
-            if elapsed >= MEMBER_INDEX_TTL {
-                self.member_index = None;
-            } else {
-                self.repaint_after(MEMBER_INDEX_TTL - elapsed);
-            }
-        }
-        let Some(b) = &self.backend else { return };
-        let events: Vec<Event> = b.ev.try_iter().collect();
-        if !events.is_empty() {
-            self.cache_dirty = true;
-        }
-        let mut voice_index_dirty = false;
-        let mut sticker_cache_dirty = false;
-        let mut member_indexes: HashMap<String, HashMap<String, usize>> = HashMap::new();
-        let mut last_member_guild = None;
-        if events.iter().any(|event| matches!(event, Event::GuildMembers(..))) {
-            if let Some(cache) = self.member_index.take() {
-                member_indexes.insert(cache.guild_id, cache.index);
-            }
-        }
-        for e in events {
-            if matches!(
-                e,
-                Event::ComposeResult { .. }
-                    | Event::Messages(..)
-                    | Event::NoAccess(..)
-                    | Event::OlderMessages { .. }
-                    | Event::MessageCreate(..)
-                    | Event::MessageUpdate { .. }
-                    | Event::MessageDelete { .. }
-            ) {
-                self.bump_msgs();
-            }
-            match e {
-                Event::Api { id: _, call, result } => self.on_api_result(call, result),
-                Event::Gateway { t, d } => self.on_gateway_event(&t, d),
-                Event::GuildEmojis(list) => {
-                    self.guild_emojis.extend(list);
-                    self.emoji_rev += 1;
-                }
-                Event::ReadyExtra(d) => {
-                    if let Some(map) = d["my_roles"].as_object() {
-                        for (gid, roles) in map {
-                            let roles = roles.as_array().into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
-                            self.my_roles.insert(gid.clone(), roles);
-                        }
-                    }
-                    let rs = &d["read_state"];
-                    if let Some(entries) = rs["entries"].as_array().or(rs.as_array()) {
-                        let cg = &d["channel_guild"];
-                        self.mention_counts.clear();
-                        for e in entries {
-                            // read_state_type が 0（チャンネル）以外は通知の既読などなので数えない
-                            if e["read_state_type"].as_u64().unwrap_or(0) != 0 {
-                                continue;
-                            }
-                            let (Some(cid), Some(n)) = (e["id"].as_str(), e["mention_count"].as_u64()) else { continue };
-                            if n > 0 {
-                                let gid = cg[cid].as_str().map(String::from);
-                                self.mention_counts.insert(cid.to_string(), (gid, n as u32));
-                            }
-                        }
-                    }
-                    let ugs = &d["user_guild_settings"];
-                    let entries = ugs["entries"].as_array().or(ugs.as_array());
-                    for e in entries.into_iter().flatten() {
-                        if let Some((gid, s)) = GuildSettings::parse(e) {
-                            self.guild_settings.insert(gid, s);
-                        }
-                    }
-                }
-                Event::AckFailed { channel_id, message_id } => {
-                    // より新しい ACK を既に出していれば古い失敗は無視する。
-                    if self.acked.get(&channel_id) == Some(&message_id) {
-                        self.acked.remove(&channel_id);
-                        self.ack_retry_at.insert(channel_id, std::time::Instant::now() + ACK_RETRY_DELAY);
-                        self.repaint_after(ACK_RETRY_DELAY);
-                    }
-                }
-                Event::Me(u) => {
-                    if self.remember && !self.token_input.is_empty() {
-                        if let Err(e) = save_token(self.profile.as_deref(), self.token_input.trim()) {
-                            eprintln!("トークン保存失敗: {e}");
-                            self.status = "エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。".into();
-                        }
-                    }
-                    self.token_input.clear();
-                    // 別アカウントの一覧に名前を出すため、プロファイルのフォルダに覚えておく
-                    crate::profile::remember_account(self.profile.as_deref(), u.display());
-                    self.me = Some(u);
-                    self.status = self.gateway_status.clone();
-                }
-                Event::AuthFailed => {
-                    cache::remove(self.profile.as_deref());
-                    self.reset();
-                    self.login_error = Some("ログイン情報が無効です。もう一度ログインしてください。".into());
-                    return;
-                }
-                Event::LoginFailed if self.me.is_some() => {
-                    // 前回の控えを出している：画面はそのままにして、少し待ってつなぎ直す
-                    self.backend = None;
-                    for s in self.compose_submissions.values_mut() { s.failed = true; }
-                    self.status = "接続できませんでした。もう一度つないでいます…".into();
-                    self.gateway_status = self.status.clone();
-                    self.login_retry_at = Some(std::time::Instant::now() + LOGIN_RETRY_DELAY);
-                    self.repaint_after(LOGIN_RETRY_DELAY);
-                    return;
-                }
-                Event::LoginFailed => {
-                    self.backend = None;
-                    self.login_error = Some("接続できませんでした。通信状態を確認して、もう一度お試しください。".into());
-                }
-                Event::MessagesFailed(cid) => {
-                    self.pending_message_loads.remove(&cid);
-                    if self.loaded_channels.iter().any(|id| id == &cid) {
-                        if self.messages.contains_key(&cid) {
-                            self.status = MESSAGE_RELOAD_ERROR.into();
-                            self.message_status_channel = Some(cid.clone());
-                        }
-                        self.message_errors.insert(cid);
-                    }
-                }
-                Event::ProfileSaved(r) => {
-                    self.profile_saving = false;
-                    match r {
-                        Ok(()) => {
-                            // 次の描画で、保存後のプロフィールを読み直して編集を始め直す
-                            self.profile_draft = None;
-                            self.profile_error = None;
-                            self.profile_saved_at = Some(std::time::Instant::now());
-                            if let Some(me) = &self.me {
-                                let prefix = format!("{}/", me.id);
-                                self.profiles.retain(|k, _| !k.starts_with(&prefix));
-                            }
-                        }
-                        Err(e) => self.profile_error = Some(e),
-                    }
-                }
-                Event::ComposeRejected { channel_id, reason } => {
-                    if let Some(submission) = self.compose_submissions.get_mut(&channel_id) {
-                        submission.rejected = Some(reason);
-                    }
-                }
-                Event::ComposeResult { channel_id, result } => {
-                    if let Err(()) = result {
-                        if let Some(submission) = self.compose_submissions.get_mut(&channel_id) {
-                            submission.failed = true;
-                        }
-                    } else if let Some(submission) = self.compose_submissions.remove(&channel_id) {
-                        if let Ok(Some(message)) = result {
-                            if let Some(changes) = self.pending_message_loads.get_mut(&channel_id) {
-                                if let Some(original) = &submission.editing {
-                                    let already_changed = changes.iter().any(|change| match change {
-                                        MessageChange::Update { id, .. } | MessageChange::Delete(id) => id == &original.id,
-                                        _ => false,
-                                    });
-                                    if !already_changed && message.id == original.id {
-                                        changes.push(MessageChange::Update { id: message.id.clone(), content: Some(message.content.clone()), embeds: None });
-                                    }
-                                } else {
-                                    changes.push(MessageChange::Create(message.clone()));
-                                }
-                            }
-                            if let Some(list) = self.messages.get_mut(&channel_id) {
-                                if let Some(original) = submission.editing {
-                                    if let Some(current) = list.iter_mut().find(|m| m.id == original.id) {
-                                        // ゲートウェイから新しい更新が先に届いていれば上書きしない。
-                                        if current.content == original.content && message.id == original.id {
-                                            current.content = message.content;
-                                            current.edited_timestamp = message.edited_timestamp;
-                                        }
-                                    }
-                                } else if !list.iter().any(|m| m.id == message.id) {
-                                    // REST の応答が後続のゲートウェイ通知より遅れても時系列を保つ。
-                                    let at = list.partition_point(|m| (m.id.len(), m.id.as_str()) < (message.id.len(), message.id.as_str()));
-                                    list.insert(at, message);
-                                    let cap = if self.sel_channel.as_deref() == Some(&channel_id) { MAX_HISTORY } else { MAX_MSGS };
-                                    if list.len() > cap {
-                                        let cut = list.len() - cap;
-                                        if let Some(h) = self.history.get_mut(&channel_id) { h.end = false; }
-                                        sticker_cache_dirty |= list[..cut].iter().any(|m| !m.sticker_items.is_empty());
-                                        list.drain(..cut);
-                                    }
-                                }
-                            }
-                        } else {
-                            self.status = "処理は完了しました。表示が更新されない場合は再読み込みしてください。".into();
-                        }
-                    }
-                }
-                Event::Guilds(g) => {
-                    self.guilds = g;
-                    self.apply_guild_order();
-                }
-                Event::Dms(mut d) => {
-                    d.sort_by_cached_key(|c| std::cmp::Reverse(c.last_id()));
-                    self.dms = d;
-                    self.dms_loaded = true;
-                }
-                Event::GuildChannels(gid, mut c) => {
-                    // 表示順（テキスト→ボイス、position順）に一度だけ並べておく
-                    c.sort_by_key(|c| (c.is_voice(), c.position));
-                    self.stale_guilds.remove(&gid);
-                    self.channels.insert(gid, c);
-                }
-                Event::GuildRoles(gid, roles) => {
-                    self.roles.insert(gid, roles);
-                    self.member_ver += 1;
-                }
-                Event::MemberList { guild_id, list_id, groups, ops } => {
-                    if let Some(list) = self.member_lists.get_mut(&guild_id) {
-                        if list.apply(&list_id, groups, ops) {
-                            self.member_ver += 1;
-                        }
-                    }
-                }
-                Event::GatewayReady => {
-                    // 一からつながったときは購読が消えているので、次の描画で送り直す
-                    self.member_sub = None;
-                }
-                Event::GuildMembers(gid, members) => {
-                    last_member_guild = Some(gid.clone());
-                    let list = self.members.entry(gid.clone()).or_default();
-                    // 同じ描画前に複数の塊が届いた場合、索引を共有する
-                    let index = member_indexes.entry(gid).or_insert_with(||
-                        list.iter().enumerate().filter_map(|(i, m)| m.user.as_ref().map(|u| (u.id.clone(), i))).collect());
-                    for member in members {
-                        let Some(id) = member.user.as_ref().map(|u| u.id.clone()) else { continue };
-                        match index.get(&id) {
-                            Some(&i) => list[i] = member,
-                            None => {
-                                index.insert(id, list.len());
-                                list.push(member);
-                            }
-                        }
-                    }
-                    self.member_ver += 1;
-                }
-                Event::Messages(cid, mut m) => {
-                    let changes = self.pending_message_loads.remove(&cid).unwrap_or_default();
-                    // 応答待ちの間に破棄されたチャンネルは復活させない
-                    if !self.loaded_channels.iter().any(|id| id == &cid) {
-                        continue;
-                    }
-                    let end = m.len() < net::HISTORY_PAGE;
-                    for change in changes { change.apply(&mut m); }
-                    let cap = if self.sel_channel.as_deref() == Some(&cid) { MAX_HISTORY } else { MAX_MSGS };
-                    let trimmed = m.len() > cap;
-                    if trimmed { m.drain(..m.len() - cap); }
-                    if self.plugins.logger_enabled() {
-                        for x in &m { self.message_log.remember(x); }
-                        self.message_log.restore(&cid, &mut m, end && !trimmed);
-                    }
-                    self.history.insert(cid.clone(), History { end: end && !trimmed, ..Default::default() });
-                    self.stale_channels.remove(&cid);
-                    self.no_access.remove(&cid);
-                    self.clear_message_error_status(&cid);
-                    self.message_errors.remove(&cid);
-                    if let Some(old) = self.messages.insert(cid, m) {
-                        sticker_cache_dirty |= old.iter().any(|m| !m.sticker_items.is_empty());
-                    }
-                }
-                Event::NoAccess(cid) => {
-                    self.pending_message_loads.remove(&cid);
-                    if !self.loaded_channels.iter().any(|id| id == &cid) {
-                        continue;
-                    }
-                    self.history.insert(cid.clone(), History { end: true, ..Default::default() });
-                    self.clear_message_error_status(&cid);
-                    self.message_errors.remove(&cid);
-                    self.no_access.insert(cid.clone());
-                    self.stale_channels.remove(&cid);
-                    self.messages.insert(cid, Vec::new());
-                }
-                Event::OlderMessages { channel_id, before, messages } => {
-                    let Some(h) = self.history.get_mut(&channel_id) else { continue };
-                    // 一覧を読み直した後などに届いた、今は待っていない応答は捨てる
-                    if h.pending.as_deref() != Some(before.as_str()) {
-                        continue;
-                    }
-                    h.pending = None;
-                    let Some(older) = messages else {
-                        h.retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
-                        continue;
-                    };
-                    h.end = older.len() < net::HISTORY_PAGE;
-                    // 待っている間に一覧が入れ替わっていたら捨てる（次のスクロールで取り直す）
-                    let Some(list) = self.messages.get_mut(&channel_id) else { continue };
-                    if list.first().map(|m| m.id.as_str()) != Some(before.as_str()) {
-                        h.end = false;
-                        continue;
-                    }
-                    let have: HashSet<&str> = list.iter().map(|m| m.id.as_str()).collect();
-                    let older: Vec<Message> = older.into_iter().filter(|m| !have.contains(m.id.as_str())).collect();
-                    list.splice(0..0, older);
-                    if self.plugins.logger_enabled() {
-                        for x in list.iter().take(net::HISTORY_PAGE) { self.message_log.remember(x); }
-                        self.message_log.restore(&channel_id, list, h.end);
-                    }
-                }
-                Event::MessageCreate(m) => {
-                    self.plugins.event(&m);
-                    if self.plugins.logger_enabled() {
-                        self.message_log.remember(&m);
-                    }
-                    self.waker.wake();
-                    if let Some(changes) = self.pending_message_loads.get_mut(&m.channel_id) {
-                        changes.push(MessageChange::Create(m.clone()));
-                    }
-                    let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
-                    if !mine && self.sel_channel.as_deref() != Some(&m.channel_id) {
-                        self.unread.insert(m.channel_id.clone(), m.guild_id.clone());
-                    }
-                    if !mine {
-                        self.on_new_message(&m);
-                    }
-                    // 新着の DM は必ず最新なので、全体を並べ直さず先頭へ移すだけでよい
-                    if let Some(i) = self.dms.iter().position(|c| c.id == m.channel_id) {
-                        let mut dm = self.dms.remove(i);
-                        dm.last_message_id = Some(m.id.clone());
-                        self.dms.insert(0, dm);
-                    }
-                    if let Some(list) = self.messages.get_mut(&m.channel_id) {
-                        // 重複は自分の送信の折り返しなので末尾側から探す
-                        if !list.iter().rev().any(|x| x.id == m.id) {
-                            let viewing = self.sel_channel.as_deref() == Some(m.channel_id.as_str());
-                            list.push(m);
-                            // 表示中のチャンネルは遡って読んだ分を消さない（読んでいる行が消えるため）
-                            let cap = if viewing { MAX_HISTORY } else { MAX_MSGS };
-                            if list.len() > cap {
-                                let cut = list.len() - cap;
-                                if let Some(h) = self.history.get_mut(&list[0].channel_id) {
-                                    h.end = false;
-                                }
-                                sticker_cache_dirty |= list[..cut].iter().any(|m| !m.sticker_items.is_empty());
-                                list.drain(..cut);
-                            }
-                        }
-                    }
-                }
-                Event::MessageUpdate { channel_id, id, content, embeds } => {
-                    if let Some(changes) = self.pending_message_loads.get_mut(&channel_id) {
-                        changes.push(MessageChange::Update { id: id.clone(), content: content.clone(), embeds: embeds.clone() });
-                    }
-                    let logged = content.as_deref().is_some_and(|c| self.on_message_edit(&channel_id, &id, c));
-                    if let Some(m) = self.messages.get_mut(&channel_id).and_then(|l| l.iter_mut().find(|m| m.id == id)) {
-                        if let Some(c) = content {
-                            if c != m.content {
-                                m.content = c;
-                                m.edited_timestamp = Some(String::new());
-                            }
-                        }
-                        if logged {
-                            m.log = self.message_log.mark_for(&id);
-                        }
-                        if let Some(e) = embeds {
-                            m.embeds = e;
-                        }
-                    }
-                }
-                Event::MessageDelete { channel_id, id } => {
-                    sticker_cache_dirty |= self.on_message_delete(&channel_id, &id);
-                }
-                Event::Status(s) => {
-                    self.gateway_status = s.clone();
-                    self.status = s;
-                }
-                Event::Error(s) => {
-                    eprintln!("操作失敗: {s}");
-                    let action = if s.starts_with("サーバー一覧:") { "サーバー一覧を取得できませんでした。" }
-                        else if s.starts_with("DM一覧:") { "DM一覧を取得できませんでした。" }
-                        else if s.starts_with("呼び出し失敗:") { "呼び出しに失敗しました。" }
-                        else { "操作を完了できませんでした。" };
-                    self.status = format!("エラー: {action}通信状態を確認して、もう一度お試しください。");
-                }
-                Event::Profile { key, result } => {
-                    let st = match result {
-                        Ok(d) => ProfileState::Ready(d),
-                        Err(e) => {
-                            eprintln!("プロフィール取得失敗: {e}");
-                            ProfileState::Failed
-                        }
-                    };
-                    self.profiles.insert(key, st);
-                }
-                Event::VoiceStates(list) => {
-                    for v in list {
-                        let previous = self.voice_states.get(&v.user_id).and_then(|old| old.channel_id.as_deref());
-                        voice_index_dirty |= previous != v.channel_id.as_deref();
-                        if v.channel_id.is_some() {
-                            self.voice_states.insert(v.user_id.clone(), v);
-                        } else {
-                            self.voice_states.remove(&v.user_id);
-                        }
-                    }
-                }
-                Event::Voice(st) => {
-                    match st {
-                        VoiceStatus::Disconnected => self.voice_status = None,
-                        VoiceStatus::Error(e) => {
-                            self.voice_status = None;
-                            eprintln!("ボイス接続失敗: {e}");
-                            self.status = "エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。".into();
-                        }
-                        st => {
-                            if let (VoiceStatus::Connected { channel_id, .. }, Some(me)) = (&st, &self.me) {
-                                if let Some(r) = self.calls.get_mut(channel_id) {
-                                    r.retain(|u| u != &me.id);
-                                }
-                            }
-                            self.voice_status = Some(st);
-                        }
-                    }
-                    self.update_voice_call_started();
-                },
-                Event::Call { channel_id, ringing } => {
-                    self.calls.insert(channel_id, ringing);
-                }
-                Event::CallEnded(cid) => {
-                    self.calls.remove(&cid);
-                    self.voice_states.retain(|_, v| v.channel_id.as_deref() != Some(&cid) || v.guild_id.is_some());
-                    voice_index_dirty = true;
-                }
-                Event::OwnPresence(p) => {
-                    if let Some(id) = self.me.as_ref().map(|u| u.id.clone()) {
-                        self.presences.insert(id, p);
-                        self.member_ver += 1;
-                    }
-                }
-                Event::Presences(list) => {
-                    // 並びが変わるのはオンライン/オフラインが入れ替わったときだけ
-                    let flips = list.iter().any(|(id, p)| {
-                        let was = self.presences.get(id).is_some_and(|o| o.status != "offline");
-                        was != (p.status != "offline")
-                    });
-                    if flips {
-                        self.member_ver += 1;
-                    }
-                    self.presences.extend(list);
-                }
-                Event::Sticker(id, r) => {
-                    // チャンネル破棄後に到着した結果はテクスチャ化しない
-                    if !matches!(self.stickers.get(&id), Some(StickerState::Loading)) {
-                        continue;
-                    }
-                    let state = match r {
-                        Ok(f) => {
-                            let [w, h] = f.size;
-                            let frames: Vec<image::Frame> = f
-                                .frames
-                                .into_iter()
-                                .filter_map(|(rgba, ms)| {
-                                    let img = image::RgbaImage::from_raw(w as u32, h as u32, rgba)?;
-                                    Some(images::bgra_frame(img, std::time::Duration::from_millis(ms.max(10) as u64)))
-                                })
-                                .collect();
-                            if frames.is_empty() {
-                                StickerState::Failed
-                            } else {
-                                StickerState::Ready(Arc::new(RenderImage::new(frames)))
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("スタンプ {id} の読み込み失敗: {e}");
-                            StickerState::Failed
-                        }
-                    };
-                    self.stickers.insert(id, state);
-                }
-            }
-        }
-        if voice_index_dirty {
-            self.reindex_voice();
-        }
-        if let Some(guild_id) = last_member_guild {
-            if let Some(index) = member_indexes.remove(&guild_id) {
-                self.member_index = Some(RecentMemberIndex { guild_id, index, updated: std::time::Instant::now() });
-                self.repaint_after(MEMBER_INDEX_TTL);
-            }
-        }
-        if sticker_cache_dirty {
-            self.prune_stickers();
-        }
-    }
 
     /// クリップボードの画像を添付に加える。画像がなければ false
     pub fn paste_image(&mut self) -> bool {
@@ -2014,163 +770,114 @@ impl App {
         id
     }
 
-    fn on_api_result(&mut self, call: net::ApiCall, result: Result<serde_json::Value, String>) {
-        use net::ApiCall as A;
-        let v = match result {
-            Ok(v) => v,
-            Err(e) => {
-                let what = match &call {
-                    A::CreateInvite { .. } => "招待リンクを作れませんでした",
-                    A::LeaveGuild(_) => "サーバーから脱退できませんでした",
-                    A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => "通知設定を変えられませんでした",
-                    A::AckGuild(_) | A::AckBulk(_) => "既読にできませんでした",
-                    _ => "Discord への操作に失敗しました",
-                };
-                eprintln!("{what}: {call:?}: {e}");
-                self.show_toast(what);
-                return;
-            }
-        };
-        match call {
-            A::CreateInvite { .. } => {
-                if let Some(code) = v["code"].as_str() {
-                    self.clipboard_out = Some(format!("https://discord.gg/{code}"));
-                    self.show_toast("招待リンクをコピーしました");
-                }
-            }
-            A::LeaveGuild(gid) => self.remove_guild(&gid),
-            A::GetEmojis(gid) => self.set_guild_emojis(gid, v),
-            A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => {
-                if let Some((gid, s)) = GuildSettings::parse(&v) {
-                    self.guild_settings.insert(gid, s);
-                }
-            }
-            _ => {}
-        }
-    }
 
-    /// 編集を受け取ったとき（一覧を書き換える前）。MessageLogger が記録したら true
-    fn on_message_edit(&mut self, channel_id: &str, id: &str, content: &str) -> bool {
-        let old = self.messages.get(channel_id).and_then(|l| l.iter().find(|m| m.id == id)).or_else(|| self.message_log.cached(id)).cloned();
-        let Some(old) = old.filter(|o| o.content != content) else { return false };
-        self.plugins.message_hook("on_edit", &old, Some(content));
-        let Some(opt) = self.plugins.logger_options() else { return false };
-        let me = self.me.as_ref().map(|u| u.id.as_str());
-        if !crate::message_log::MessageLog::wanted(&old, me, opt) {
-            return false;
-        }
-        self.message_log.on_edit(&old, content);
-        true
-    }
-
-    /// 削除を受け取ったとき。MessageLogger が記録したら一覧に削除済みとして残し、そうでなければ消す。
-    /// 消したメッセージにスタンプがあれば true（スタンプの画像を手放すため）
-    fn on_message_delete(&mut self, channel_id: &str, id: &str) -> bool {
-        if let Some(changes) = self.pending_message_loads.get_mut(channel_id) {
-            changes.push(MessageChange::Delete(id.to_string()));
-        }
-        let old = self.messages.get(channel_id).and_then(|l| l.iter().find(|m| m.id == id)).or_else(|| self.message_log.cached(id)).cloned();
-        if old.as_ref().and_then(|m| m.log.as_ref()).is_some_and(|log| log.deleted_at.is_some()) {
-            return false;
-        }
-        let mut keep = false;
-        if let Some(old) = old.filter(|o| o.log.as_ref().is_none_or(|l| l.deleted_at.is_none())) {
-            self.plugins.message_hook("on_delete", &old, None);
-            if let Some(opt) = self.plugins.logger_options() {
-                let me = self.me.as_ref().map(|u| u.id.as_str());
-                if crate::message_log::MessageLog::wanted(&old, me, opt) {
-                    self.message_log.on_delete(&old);
-                    keep = true;
-                }
-            }
-        }
-        let Some(l) = self.messages.get_mut(channel_id) else { return false };
-        if keep {
-            if let Some(m) = l.iter_mut().find(|m| m.id == id) {
-                m.log = self.message_log.mark_for(id);
-            }
-            return false;
-        }
-        let stickers = l.iter().any(|m| m.id == id && !m.sticker_items.is_empty());
-        l.retain(|m| m.id != id);
-        stickers
-    }
-
-    fn on_gateway_event(&mut self, t: &str, mut d: serde_json::Value) {
-        match t {
-            "MESSAGE_DELETE_BULK" => {
-                let Some(cid) = d["channel_id"].as_str().map(String::from) else { return };
-                let ids: Vec<String> = d["ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
-                let mut stickers = false;
-                for id in ids {
-                    stickers |= self.on_message_delete(&cid, &id);
-                }
-                self.bump_msgs();
-                if stickers {
-                    self.prune_stickers();
-                }
-            }
-            "GUILD_EMOJIS_UPDATE" => {
-                if let Some(gid) = d["guild_id"].as_str().map(String::from) {
-                    let list = d.get_mut("emojis").map(serde_json::Value::take).unwrap_or_default();
-                    self.set_guild_emojis(gid, list);
-                }
-            }
-            "GUILD_CREATE" if d["emojis"].is_array() => {
-                if let Some(gid) = d["id"].as_str().map(String::from) {
-                    let list = d.get_mut("emojis").map(serde_json::Value::take).unwrap_or_default();
-                    self.set_guild_emojis(gid, list);
-                }
-            }
-            "USER_GUILD_SETTINGS_UPDATE" => {
-                if let Some((gid, s)) = GuildSettings::parse(&d) {
-                    self.guild_settings.insert(gid, s);
-                }
-            }
-            // unavailable のときは障害で一時的に見えないだけなので残す
-            "GUILD_DELETE" if d["unavailable"] != true => {
-                if let Some(gid) = d["id"].as_str() {
-                    self.remove_guild(gid);
-                }
-            }
-            // 公式クライアントなど別の端末で既読にした
-            "MESSAGE_ACK" => {
-                if let Some(cid) = d["channel_id"].as_str() {
-                    if d["manual"] != true {
-                        self.unread.remove(cid);
-                    }
-                    match d["mention_count"].as_u64() {
-                        Some(n) if n > 0 => {
-                            if let Some(e) = self.mention_counts.get_mut(cid) {
-                                e.1 = n as u32;
-                            }
-                        }
-                        _ => {
-                            self.mention_counts.remove(cid);
-                        }
-                    }
-                }
-            }
-            // 自分のロールが変わった
-            "GUILD_MEMBER_UPDATE" => {
-                let me = self.me.as_ref().map(|u| u.id.as_str());
-                if me.is_some() && d["user"]["id"].as_str() == me {
-                    if let Some(gid) = d["guild_id"].as_str() {
-                        let roles = d["roles"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
-                        self.my_roles.insert(gid.to_string(), roles);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// 保存してある並び（settings.guild_order）にサーバーを並べる
+    /// 保存してある並び（settings.guild_folders または settings.guild_order）にサーバーを並べる
     pub fn apply_guild_order(&mut self) {
-        let pos: HashMap<&str, usize> = self.settings.guild_order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
-        let mut keyed: Vec<(usize, Guild)> = std::mem::take(&mut self.guilds).into_iter().map(|g| (pos.get(g.id.as_str()).copied().unwrap_or(usize::MAX), g)).collect();
+        let folder_order: Vec<&str> = self
+            .settings
+            .guild_folders
+            .iter()
+            .flat_map(|f| f.guild_ids.iter().map(String::as_str))
+            .collect();
+        let pos: HashMap<&str, usize> = if !folder_order.is_empty() {
+            folder_order.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
+        } else {
+            self.settings.guild_order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect()
+        };
+        let mut keyed: Vec<(usize, Guild)> = std::mem::take(&mut self.guilds)
+            .into_iter()
+            .map(|g| (pos.get(g.id.as_str()).copied().unwrap_or(usize::MAX), g))
+            .collect();
         keyed.sort_by_key(|(k, _)| *k);
         self.guilds = keyed.into_iter().map(|(_, g)| g).collect();
+    }
+
+    /// 公式設定（user_settings_proto / user_settings）から受け取ったフォルダと並び順を反映する
+    pub fn apply_guild_folders(&mut self, folders: Vec<GuildFolder>) {
+        if folders.is_empty() {
+            return;
+        }
+        let mut order: Vec<String> = folders.iter().flat_map(|f| f.guild_ids.iter().cloned()).collect();
+        let in_folders: HashSet<String> = order.iter().cloned().collect();
+        order.extend(self.settings.guild_order.iter().filter(|id| !in_folders.contains(*id)).cloned());
+        self.settings.guild_folders = folders;
+        self.settings.guild_order = order;
+        self.apply_guild_order();
+        self.save_settings();
+        self.cache_dirty = true;
+    }
+
+    /// サーバーレールに並べる一覧（公式設定のフォルダ構造があればフォルダごとにまとめる）
+    pub fn rail_items(&self) -> Vec<RailItem<'_>> {
+        if self.settings.guild_folders.is_empty() {
+            return self.guilds.iter().map(RailItem::Guild).collect();
+        }
+        let by_id: HashMap<&str, &Guild> = self.guilds.iter().map(|g| (g.id.as_str(), g)).collect();
+        let mut out = Vec::new();
+        let mut placed: HashSet<&str> = HashSet::new();
+        for (idx, f) in self.settings.guild_folders.iter().enumerate() {
+            let guilds: Vec<&Guild> = f
+                .guild_ids
+                .iter()
+                .filter_map(|id| {
+                    let g = *by_id.get(id.as_str())?;
+                    placed.insert(g.id.as_str()).then_some(g)
+                })
+                .collect();
+            if guilds.is_empty() {
+                continue;
+            }
+            if f.id.is_none() && guilds.len() == 1 {
+                out.push(RailItem::Guild(guilds[0]));
+            } else {
+                let id = f.id.unwrap_or(-((idx as i64) + 1));
+                let name = f
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| guilds.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join("、"));
+                let open = self.settings.open_folders.contains(&id);
+                out.push(RailItem::Folder { id, name, color: f.color, open, guilds });
+            }
+        }
+        for g in &self.guilds {
+            if placed.insert(g.id.as_str()) {
+                out.push(RailItem::Guild(g));
+            }
+        }
+        out
+    }
+
+    /// サーバーフォルダの開閉を切り替える
+    pub fn toggle_folder(&mut self, id: i64) {
+        if let Some(pos) = self.settings.open_folders.iter().position(|&x| x == id) {
+            self.settings.open_folders.remove(pos);
+        } else {
+            self.settings.open_folders.push(id);
+        }
+        self.save_settings();
+    }
+
+    /// チャンネルカテゴリが閉じているか
+    pub fn is_category_collapsed(&self, id: &str) -> bool {
+        self.settings.collapsed_categories.contains(id)
+    }
+
+    /// チャンネルカテゴリの開閉を切り替える
+    pub fn toggle_category(&mut self, id: &str) {
+        if !self.settings.collapsed_categories.remove(id) {
+            self.settings.collapsed_categories.insert(id.to_string());
+        }
+        self.save_settings();
+    }
+
+    /// 閉じたカテゴリの中でも表示し続けるチャンネルか（選択中・未読あり・通話参加者がいるボイスチャンネル）
+    pub fn channel_visible_in_collapsed_category(&self, c: &Channel, cur_voice: Option<&str>) -> bool {
+        self.sel_channel.as_deref() == Some(c.id.as_str())
+            || self.unread.contains_key(&c.id)
+            || (c.is_voice() && (cur_voice == Some(c.id.as_str()) || self.voice_members(&c.id).next().is_some()))
     }
 
     /// サーバー from を to の位置へ動かす（下へ動かしたら to の後ろ、上へなら前）。
@@ -2182,6 +889,21 @@ impl App {
         }
         let g = self.guilds.remove(fi);
         self.guilds.insert(ti, g);
+        // フォルダがある場合は、同じフォルダ内の並び替え・トップレベルの単体サーバーの移動も反映する
+        if !self.settings.guild_folders.is_empty() {
+            if let Some(folder) = self.settings.guild_folders.iter_mut().find(|f| f.guild_ids.iter().any(|x| x == from) && f.guild_ids.iter().any(|x| x == to)) {
+                if let (Some(a), Some(b)) = (folder.guild_ids.iter().position(|x| x == from), folder.guild_ids.iter().position(|x| x == to)) {
+                    let id = folder.guild_ids.remove(a);
+                    folder.guild_ids.insert(b, id);
+                }
+            } else if let (Some(a), Some(b)) = (
+                self.settings.guild_folders.iter().position(|f| f.id.is_none() && f.guild_ids.len() == 1 && f.guild_ids[0] == from),
+                self.settings.guild_folders.iter().position(|f| f.guild_ids.iter().any(|x| x == to)),
+            ) {
+                let entry = self.settings.guild_folders.remove(a);
+                self.settings.guild_folders.insert(b, entry);
+            }
+        }
         // 抜けたサーバーの分も含めて覚えておく（一時的に一覧にないだけかもしれないので）
         let shown: std::collections::HashSet<&str> = self.guilds.iter().map(|g| g.id.as_str()).collect();
         let mut order: Vec<String> = self.guilds.iter().map(|g| g.id.clone()).collect();
@@ -2197,7 +919,12 @@ impl App {
         self.unread.retain(|_, g| g.as_deref() != Some(gid));
         self.mention_counts.retain(|_, (g, _)| g.as_deref() != Some(gid));
         self.my_roles.remove(gid);
+        self.members.remove(gid);
+        self.requested_members.remove(gid);
         self.guild_settings.remove(gid);
+        if self.settings.last_channels.remove(gid).is_some() {
+            self.save_settings();
+        }
         if self.guild_emojis.remove(gid).is_some() {
             self.emoji_rev += 1;
         }
@@ -2241,45 +968,6 @@ impl App {
             .collect()
     }
 
-    /// 他の人の新着メッセージ: メンション数を数え、必要ならデスクトップ通知を出す
-    fn on_new_message(&mut self, m: &Message) {
-        let viewing = self.window_focused && self.sel_channel.as_deref() == Some(m.channel_id.as_str());
-        let mentioned = self.mentions_me(m);
-        // DM はすべてがメンション扱い（公式と同じ）
-        if !viewing && (mentioned || m.guild_id.is_none()) {
-            let e = self.mention_counts.entry(m.channel_id.clone()).or_insert((m.guild_id.clone(), 0));
-            e.1 += 1;
-        }
-        let Some(gid) = m.guild_id.as_deref() else { return };
-        if viewing {
-            return;
-        }
-        let set = self.guild_settings.get(gid).cloned().unwrap_or_default();
-        let wanted = match set.notifications {
-            _ if set.muted => false,
-            2 => false,
-            0 => true,
-            // 1 = @メンションのみ、3 = サーバーの既定（多くのサーバーはメンションのみ）
-            _ => mentioned,
-        };
-        if !wanted {
-            return;
-        }
-        let author = m.member.as_ref().and_then(|x| x.nick.as_deref()).unwrap_or_else(|| m.author.display()).to_string();
-        let guild = self.guilds.iter().find(|g| g.id == gid).map(|g| g.name.as_str()).unwrap_or("");
-        let channel = self.channels.get(gid).and_then(|cs| cs.iter().find(|c| c.id == m.channel_id)).and_then(|c| c.name.as_deref()).unwrap_or("");
-        let title = match (channel.is_empty(), guild.is_empty()) {
-            (false, false) => format!("{author}（#{channel}・{guild}）"),
-            (true, false) => format!("{author}（{guild}）"),
-            _ => author,
-        };
-        let roles = self.roles.get(gid).map(Vec::as_slice).unwrap_or_default();
-        let mut body = crate::notify::excerpt(&resolve_mentions(&m.content, m, &self.channels, roles), 200);
-        if body.is_empty() {
-            body = if m.is_call() { "通話を開始しました".into() } else if !m.attachments.is_empty() { "添付ファイルを送信しました".into() } else if !m.sticker_items.is_empty() { "スタンプを送信しました".into() } else { "新しいメッセージ".into() };
-        }
-        crate::notify::show(title, body, (m.guild_id.clone(), m.channel_id.clone()), self.notify_clicked.clone(), self.waker.clone());
-    }
 
     /// サーバーの通知設定を変える（先に画面へ反映し、結果で上書きする）
     pub fn set_guild_settings(&mut self, gid: &str, muted: Option<bool>, notifications: Option<u8>) {
@@ -2449,6 +1137,11 @@ impl App {
             self.load_messages(id.clone());
         }
         self.touch_channel(&id);
+        let key = self.sel_guild.as_deref().unwrap_or("");
+        if self.settings.last_channels.get(key).map(String::as_str) != Some(id.as_str()) {
+            self.settings.last_channels.insert(key.to_string(), id.clone());
+            self.save_settings();
+        }
         self.sel_channel = Some(id);
         self.focus_input = true;
         self.cache_dirty = true;
@@ -2496,6 +1189,59 @@ impl App {
         self.stickers.retain(|id, _| used.contains(id.as_str()));
     }
 
+    /// そのサーバーで最初に開くテキストチャンネル（最後に開いたもの → 公式クライアントの read_state で最後に見たもの → 一番上のチャンネル）
+    pub fn default_guild_channel(&self, gid: &str) -> Option<String> {
+        let Some(chs) = self.channels.get(gid) else {
+            return self.settings.last_channels.get(gid).cloned();
+        };
+        if let Some(saved) = self.settings.last_channels.get(gid) {
+            if chs.iter().any(|c| &c.id == saved && c.is_text()) {
+                return Some(saved.clone());
+            }
+        }
+        if let Some(best) = chs
+            .iter()
+            .filter(|c| c.is_text())
+            .filter_map(|c| self.channel_read_rank.get(&c.id).copied().filter(|&r| r > (0, 0)).map(|r| (r, &c.id)))
+            .max_by_key(|(r, _)| *r)
+            .map(|(_, id)| id.clone())
+        {
+            return Some(best);
+        }
+        if let Some(c) = chs.iter().find(|c| c.is_text() && c.parent_id.is_none()) {
+            return Some(c.id.clone());
+        }
+        let mut cats: Vec<&Channel> = chs.iter().filter(|c| c.kind == Channel::CATEGORY).collect();
+        cats.sort_by_key(|c| c.position);
+        for cat in cats {
+            if let Some(c) = chs.iter().find(|c| c.is_text() && c.parent_id.as_deref() == Some(cat.id.as_str())) {
+                return Some(c.id.clone());
+            }
+        }
+        chs.iter().find(|c| c.is_text()).map(|c| c.id.clone())
+    }
+
+    /// サーバー（None なら DM）を切り替え、そのサーバーで最後に開いていたチャンネルを自動で開く
+    pub fn pick_guild(&mut self, guild: Option<String>) {
+        let channel = match &guild {
+            Some(gid) => self.default_guild_channel(gid),
+            None => self.settings.last_channels.get("").filter(|cid| self.dms.iter().any(|c| &c.id == *cid)).cloned(),
+        };
+        self.select(guild, channel);
+    }
+
+    /// チャンネル一覧ペインの横幅（最小 160px〜最大 480px）
+    pub fn channel_pane_width(&self) -> f32 {
+        let w = if self.settings.channel_pane_width > 0.0 { self.settings.channel_pane_width } else { 240.0 };
+        w.clamp(160.0, 480.0)
+    }
+
+    /// メンバー一覧ペインの横幅（最小 180px〜最大 480px）
+    pub fn member_pane_width(&self) -> f32 {
+        let w = if self.settings.member_pane_width > 0.0 { self.settings.member_pane_width } else { 240.0 };
+        w.clamp(180.0, 480.0)
+    }
+
     pub fn current_channel(&self) -> Option<&Channel> {
         let id = self.sel_channel.as_deref()?;
         match &self.sel_guild {
@@ -2509,417 +1255,118 @@ impl App {
         self.unread.values().map(|g| g.as_deref()).collect()
     }
 
-    /// 開いているテキストチャンネルのメンバー一覧を、見えている範囲だけ購読する（公式と同じく全員は取らない）。
-    /// 先頭の 100 人は常に、スクロールしたらその辺りの 100 人ずつを足す
-    pub fn subscribe_member_list(&mut self) {
-        let (Some(gid), Some(cid)) = (self.sel_guild.clone(), self.sel_channel.clone()) else { return };
-        if !self.current_channel().is_some_and(|c| c.is_text()) {
-            return;
+    /// チャンネルIDが属するサーバーIDを返す（DM なら None）
+    pub fn guild_for_channel(&self, channel_id: &str) -> Option<String> {
+        if self.sel_channel.as_deref() == Some(channel_id) && self.sel_guild.is_some() {
+            return self.sel_guild.clone();
         }
-        let same_channel = self.member_sub.as_ref().is_some_and(|(g, c, _)| *g == gid && *c == cid);
-        let (first, last) = if same_channel { self.member_view } else { (0, 0) };
-        let mut ranges = vec![[0u32, 99]];
-        for chunk in [first / 100, last / 100] {
-            let r = [chunk as u32 * 100, chunk as u32 * 100 + 99];
-            if !ranges.contains(&r) {
-                ranges.push(r);
+        self.channels
+            .iter()
+            .find_map(|(gid, chs)| chs.iter().any(|c| c.id == channel_id).then(|| gid.clone()))
+    }
+
+    /// サーバー内のメンバー情報をユーザーIDで引く
+    pub fn find_member(&self, guild_id: &str, user_id: &str) -> Option<&Member> {
+        self.members
+            .get(guild_id)?
+            .iter()
+            .find(|m| m.user.as_ref().is_some_and(|u| u.id == user_id))
+    }
+
+    /// チャットメッセージの投稿者のロール色（サーバーのメンバー一覧・メッセージ付属メンバー・自分のロールから求める）
+    pub fn message_author_color(&self, m: &Message) -> Option<crate::color::Color32> {
+        let gid = m.guild_id.as_deref().or(self.sel_guild.as_deref())?;
+        let roles = self.roles.get(gid)?.as_slice();
+        if let Some(member) = self.find_member(gid, &m.author.id) {
+            if !member.roles.is_empty() {
+                return member_role_color(member, roles);
             }
         }
-        if self.member_sub.as_ref().is_some_and(|(g, c, r)| *g == gid && *c == cid && *r == ranges) {
-            return;
+        if let Some(color) = m.member.as_ref().and_then(|member| member_role_color(member, roles)) {
+            return Some(color);
         }
-        if !same_channel || !self.member_lists.get(&gid).is_some_and(|l| l.channel_id == cid) {
-            // 別のチャンネルの一覧は、新しい一覧が届くまで出さない
-            self.member_lists.insert(gid.clone(), ServerMemberList { channel_id: cid.clone(), ..Default::default() });
-            self.member_ver += 1;
-        }
-        self.send(Cmd::SubscribeMembers { guild_id: gid.clone(), channel_id: cid.clone(), ranges: ranges.clone() });
-        self.member_sub = Some((gid, cid, ranges));
-    }
-
-    // ---- ログイン画面 ----
-    /// ログインの通信（QR コード・メールアドレス・二段階認証）の結果を受け取る
-    pub fn poll_login(&mut self) {
-        let mut token = None;
-        if let Some(rx) = &self.login.busy {
-            match rx.try_recv() {
-                Ok(e) => {
-                    self.login.busy = None;
-                    match e {
-                        LoginEvent::Token(t) => token = Some(t),
-                        LoginEvent::Mfa { ticket } => {
-                            self.login.mfa_ticket = Some(ticket);
-                            self.login.mfa_code.clear();
-                            self.login_error = None;
-                        }
-                        LoginEvent::Error(e) => self.login_error = Some(e),
-                        _ => {}
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.login.busy = None;
-                    self.login_error = Some("ログインできませんでした。もう一度お試しください。".into());
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        if self.me.as_ref().is_some_and(|me| me.id == m.author.id) {
+            if let Some(my_roles) = self.my_roles.get(gid) {
+                return role_color(my_roles, roles);
             }
         }
-        if let Some(qr) = self.login.qr.as_mut() {
-            while let Ok(e) = qr.rx.try_recv() {
-                match e {
-                    LoginEvent::QrUrl(url) => {
-                        qr.modules = login::qr_modules(&url);
-                        qr.scanned = None;
-                    }
-                    LoginEvent::QrScanned { name, avatar_url } => qr.scanned = Some((name, avatar_url)),
-                    LoginEvent::QrEnded(m) | LoginEvent::Error(m) => qr.ended = Some(m),
-                    LoginEvent::Token(t) => token = Some(t),
-                    LoginEvent::Mfa { .. } => {}
-                }
+        None
+    }
+
+    /// チャットメッセージの投稿者の表示名（サーバーニックネーム → グローバル表示名 → ユーザー名）
+    pub fn message_author_name<'a>(&'a self, m: &'a Message) -> &'a str {
+        if let Some(nick) = m.member.as_ref().and_then(|member| member.nick.as_deref()).filter(|s| !s.is_empty()) {
+            return nick;
+        }
+        if let Some(gid) = m.guild_id.as_deref().or(self.sel_guild.as_deref()) {
+            if let Some(nick) = self.find_member(gid, &m.author.id).and_then(|member| member.nick.as_deref()).filter(|s| !s.is_empty()) {
+                return nick;
             }
         }
-        if let Some(t) = token {
-            self.finish_login(t);
-        }
+        author_name(m)
     }
 
-    /// 受け取ったトークンでつなぐ。保存は今までどおり、自分の情報が届いたとき（Event::Me）に token_input から行う
-    pub fn finish_login(&mut self, token: String) {
-        self.login.qr = None;
-        self.login.password.clear();
-        self.login.mfa_ticket = None;
-        self.login_error = None;
-        self.token_input = token.clone();
-        self.start(token);
-    }
-
-
-    pub fn sidebar_order(&self) -> Vec<String> {
-        match &self.sel_guild {
-            None => self.dms.iter().map(|c| c.id.clone()).collect(),
-            Some(g) => {
-                let Some(chs) = self.channels.get(g) else { return Vec::new() };
-                let mut out: Vec<String> = chs.iter().filter(|c| c.is_text() && c.parent_id.is_none()).map(|c| c.id.clone()).collect();
-                let mut cats: Vec<&Channel> = chs.iter().filter(|c| c.kind == Channel::CATEGORY).collect();
-                cats.sort_by_key(|c| c.position);
-                for cat in cats {
-                    out.extend(chs.iter().filter(|c| c.is_text() && c.parent_id.as_deref() == Some(&cat.id)).map(|c| c.id.clone()));
-                }
-                out
+    /// チャットメッセージの投稿者のアバター URL（サーバー別アバター → ユーザーアバター）
+    pub fn message_author_avatar_url(&self, m: &Message) -> String {
+        if let Some(gid) = m.guild_id.as_deref().or(self.sel_guild.as_deref()) {
+            let guild_av = m
+                .member
+                .as_ref()
+                .and_then(|mem| mem.avatar.as_deref())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    self.find_member(gid, &m.author.id)
+                        .and_then(|mem| mem.avatar.as_deref())
+                        .filter(|s| !s.is_empty())
+                });
+            if let Some(h) = guild_av {
+                let ext = if h.starts_with("a_") { "gif" } else { "png" };
+                return format!(
+                    "https://cdn.discordapp.com/guilds/{gid}/users/{}/avatars/{h}.{ext}?size=80",
+                    m.author.id
+                );
             }
         }
+        user_avatar_url(&m.author)
     }
 
-    pub fn select(&mut self, guild: Option<String>, channel: Option<String>) {
-        if let Some(gid) = &guild {
-            self.ensure_guild_channels(gid);
+    /// チャットメッセージの投稿者のアバターデコレーション URL（サーバー別 → ユーザー設定）
+    pub fn message_author_decoration_url(&self, m: &Message) -> Option<String> {
+        if let Some(asset) = m.member.as_ref().and_then(Member::decoration_asset) {
+            return Some(decoration_url(asset));
         }
-        self.sel_guild = guild;
-        self.sel_channel = None;
-        self.cache_dirty = true;
-        if let Some(c) = channel {
-            self.open_channel(c);
-        } else if self.screen_w < 700.0 {
-            self.compact_sidebar_closed = false;
-        }
-    }
-
-    /// (チャンネル名, サーバー名)
-    pub fn voice_place(&self, guild_id: Option<&str>, channel_id: &str) -> (String, String) {
-        match guild_id {
-            Some(g) => {
-                let ch = self.channels.get(g).and_then(|l| l.iter().find(|c| c.id == channel_id)).and_then(|c| c.name.clone());
-                let gn = self.guilds.iter().find(|x| x.id == g).map(|x| x.name.clone());
-                (ch.unwrap_or_else(|| "ボイス".into()), gn.unwrap_or_default())
-            }
-            None => {
-                let n = self.dms.iter().find(|c| c.id == channel_id).map(|c| c.dm_label()).unwrap_or_default();
-                (n, "ダイレクトメッセージ".into())
+        if let Some(gid) = m.guild_id.as_deref().or(self.sel_guild.as_deref()) {
+            if let Some(asset) = self.find_member(gid, &m.author.id).and_then(Member::decoration_asset) {
+                return Some(decoration_url(asset));
             }
         }
+        user_decoration_url(&m.author)
     }
 
-    pub fn apply_voice_settings(&self) {
-        let (v, s) = (&self.voice, &self.settings);
-        v.mute.store(s.self_mute, Relaxed);
-        v.deaf.store(s.self_deaf, Relaxed);
-        if v.ptt.load(Relaxed) != s.ptt {
-            // 入力モードの切り替えをまたいで古い押下状態を引き継がない。
-            v.ptt_down.store(false, Relaxed);
-            v.ptt.store(s.ptt, Relaxed);
-        }
-        v.set_vad_threshold(db_to_lin(s.vad_db));
-        v.set_in_gain(s.in_gain);
-        v.set_out_gain(s.out_gain);
-        let mut changed = false;
-        for (slot, val) in [(&v.input_device, &s.input_device), (&v.output_device, &s.output_device)] {
-            let mut g = slot.lock().unwrap();
-            if *g != *val {
-                *g = val.clone();
-                changed = true;
-            }
-        }
-        if changed {
-            v.restart.store(true, Relaxed);
-        }
-    }
-
-    pub fn voice_changed(&mut self) {
-        self.apply_voice_settings();
-        self.save_settings();
-        self.send(Cmd::VoiceFlags);
-    }
-
-    pub fn toggle_mute(&mut self) {
-        if self.settings.self_deaf {
-            self.settings.self_deaf = false;
-            self.settings.self_mute = false;
-        } else {
-            self.settings.self_mute = !self.settings.self_mute;
-        }
-        self.voice_changed();
-    }
-
-    pub fn toggle_deaf(&mut self) {
-        self.settings.self_deaf = !self.settings.self_deaf;
-        self.voice_changed();
-    }
-
-    pub fn mic_off(&self) -> bool {
-        self.settings.self_mute || self.settings.self_deaf
-    }
-
-    pub fn join_voice(&mut self, guild_id: Option<String>, channel_id: String, ring: bool) {
-        self.voice_status = Some(VoiceStatus::Connecting { guild_id: guild_id.clone(), channel_id: channel_id.clone() });
-        self.update_voice_call_started();
-        self.send(Cmd::JoinVoice { guild_id, channel_id, ring });
-    }
-
-    pub fn leave_voice(&mut self) {
-        self.voice_status = None;
-        self.update_voice_call_started();
-        self.send(Cmd::LeaveVoice);
-    }
-
-    fn update_voice_call_started(&mut self) {
-        match &self.voice_status {
-            Some(VoiceStatus::Connected { guild_id, channel_id }) => {
-                if !self.voice_call_started.as_ref().is_some_and(|(g, c, _)| g == guild_id && c == channel_id) {
-                    self.voice_call_started = Some((guild_id.clone(), channel_id.clone(), std::time::Instant::now()));
-                }
-            }
-            _ => self.voice_call_started = None,
-        }
-    }
-
-    /// 接続中（または接続しようとしている）チャンネル
-    pub fn voice_channel(&self) -> Option<(&Option<String>, &String, bool)> {
-        match self.voice_status.as_ref()? {
-            VoiceStatus::Connecting { guild_id, channel_id } => Some((guild_id, channel_id, false)),
-            VoiceStatus::Connected { guild_id, channel_id } => Some((guild_id, channel_id, true)),
-            _ => None,
-        }
-    }
-
-    /// channel_id → そこにいる user_id（並び順固定）。voice_states が変わったら作り直す
-    pub fn reindex_voice(&mut self) {
-        self.voice_index.clear();
-        for v in self.voice_states.values() {
-            if let Some(c) = &v.channel_id {
-                self.voice_index.entry(c.clone()).or_default().push(v.user_id.clone());
-            }
-        }
-        for l in self.voice_index.values_mut() {
-            l.sort();
-        }
-    }
-
-    pub fn find_user(&self, id: &str) -> Option<User> {
-        if let Some(me) = self.me.as_ref().filter(|m| m.id == id) {
-            return Some(me.clone());
-        }
-        if let Some(u) = self.voice_states.get(id).and_then(|v| v.user.clone()) {
-            return Some(u);
-        }
-        self.dms.iter().flat_map(|c| c.recipients.iter()).find(|u| u.id == id).cloned()
-    }
-
-    pub fn is_speaking(&self, id: &str) -> bool {
-        if self.me.as_ref().is_some_and(|m| m.id == id) {
-            return self.voice.transmitting.load(Relaxed);
-        }
-        self.voice.speaking.lock().unwrap().contains(id)
-    }
-
-    /// あるボイスチャンネルにいる人
-    pub fn voice_members<'a>(&'a self, channel_id: &str) -> impl Iterator<Item = &'a VoiceState> + 'a {
-        self.voice_index
-            .get(channel_id)
+    /// REST で取得したメッセージ群について、まだメンバー情報（ロール・ニックネーム）を持たない投稿者をゲートウェイ（op 8）でまとめて問い合わせる
+    pub fn request_missing_message_members(&mut self, channel_id: &str, messages: &[Message]) {
+        let Some(gid) = self.guild_for_channel(channel_id) else { return };
+        let known: HashSet<&str> = self
+            .members
+            .get(&gid)
             .into_iter()
             .flatten()
-            .filter_map(|id| self.voice_states.get(id))
-    }
-
-    pub fn set_status(&mut self, st: String) {
-        self.send(Cmd::SetStatus(st.clone()));
-        self.settings.status = st;
-        self.save_settings();
-    }
-
-    pub fn open_profile(&mut self, user: User, anchor: Bounds<Pixels>, above: bool) {
-        let guild_id = self.sel_guild.clone();
-        let key = net::profile_key(&user.id, guild_id.as_deref());
-        if !self.profiles.contains_key(&key) {
-            self.profiles.insert(key, ProfileState::Loading);
-            self.send(Cmd::LoadProfile { user_id: user.id.clone(), guild_id: guild_id.clone() });
+            .filter_map(|m| m.user.as_ref().map(|u| u.id.as_str()))
+            .collect();
+        let requested = self.requested_members.entry(gid.clone()).or_default();
+        let mut to_fetch = Vec::new();
+        for m in messages {
+            for uid in std::iter::once(m.author.id.as_str()).chain(m.referenced_message.as_deref().map(|r| r.author.id.as_str())) {
+                if !uid.is_empty() && !known.contains(uid) && requested.insert(uid.to_string()) {
+                    to_fetch.push(uid.to_string());
+                }
+            }
         }
-        self.popup = Some(ProfilePopup { user, guild_id, anchor, above });
-    }
-
-    pub fn save_profile(&mut self) {
-        let Some(d) = &self.profile_draft else { return };
-        let changed = |i: usize| (d.fields[i].trim() != d.base[i].trim()).then(|| d.fields[i].trim().to_string());
-        let avatar = match &d.avatar {
-            Some(AvatarEdit::Set { uri, .. }) => Some(Some(uri.clone())),
-            Some(AvatarEdit::Remove) => Some(None),
-            None => None,
-        };
-        self.send(Cmd::UpdateProfile { global_name: changed(0), pronouns: changed(1), bio: changed(2), avatar });
-        self.profile_saving = true;
-        self.profile_error = None;
-    }
-
-
-}
-
-// ---- ログイン画面の部品 ----
-/// ログイン画面の状態（QR コード・メールアドレス・二段階認証）
-#[derive(Default)]
-pub struct LoginState {
-    pub email: String,
-    pub password: String,
-    /// 二段階認証のコードを待っている（/auth/login が返した ticket）
-    pub mfa_ticket: Option<String>,
-    pub mfa_code: String,
-    /// 送信中のメールアドレス・二段階認証の結果の受け口
-    pub busy: Option<Receiver<LoginEvent>>,
-    pub qr: Option<QrSession>,
-}
-
-/// QR コードでのログイン 1回分。捨てると通信も止まる
-pub struct QrSession {
-    pub rx: Receiver<LoginEvent>,
-    pub cancel: Arc<std::sync::atomic::AtomicBool>,
-    /// QR コードのマス目（1辺の数, 黒か）
-    pub modules: Option<(usize, Vec<bool>)>,
-    /// 読み取ったアカウント（名前, アバター）
-    pub scanned: Option<(String, Option<String>)>,
-    /// 期限切れ・取り消し（説明）
-    pub ended: Option<String>,
-}
-
-impl QrSession {
-    pub fn start(ctx: &Waker) -> Self {
-        let (rx, cancel) = login::start_qr(ctx);
-        QrSession { rx, cancel, modules: None, scanned: None, ended: None }
-    }
-}
-
-impl Drop for QrSession {
-    fn drop(&mut self) {
-        self.cancel.store(true, Relaxed);
-    }
-}
-
-
-pub const PROFILE_NAME_MAX: usize = 32;
-pub const PROFILE_PRONOUNS_MAX: usize = 40;
-pub const PROFILE_BIO_MAX: usize = 190;
-/// アバターは正方形に切り抜き、この大きさまで縮めて送る
-pub const AVATAR_SIZE: u32 = 512;
-
-pub enum AvatarEdit {
-    /// 新しい画像（送る data URI と、プレビュー用の画像）
-    Set { uri: String, tex: Arc<RenderImage> },
-    Remove,
-}
-
-// プレビューを差し替え・取消・保存したら GPUI の GPU キャッシュも解放する。
-impl Drop for AvatarEdit {
-    fn drop(&mut self) {
-        if let Self::Set { tex, .. } = self {
-            images::release(tex.clone());
+        for chunk in to_fetch.chunks(100) {
+            self.send(Cmd::Gateway(net::request_guild_members(&gid, None, Some(chunk), 0, false)));
         }
     }
-}
-
-/// 編集中のプロフィール。fields / base = [表示名, 代名詞, 自己紹介]
-pub struct ProfileDraft {
-    pub fields: [String; 3],
-    pub base: [String; 3],
-    pub avatar: Option<AvatarEdit>,
-}
-
-impl ProfileDraft {
-    pub fn dirty(&self) -> bool {
-        self.avatar.is_some() || self.fields.iter().zip(&self.base).any(|(a, b)| a.trim() != b.trim())
-    }
-}
-
-pub fn make_avatar(path: &std::path::Path) -> Result<AvatarEdit, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("画像を読めません: {e}"))?;
-    let img = image::load_from_memory(&bytes).map_err(|_| "画像として読み込めませんでした（PNG・JPEG・GIF・WebP が使えます）".to_string())?;
-    let s = img.width().min(img.height());
-    if s == 0 {
-        return Err("画像が空です".into());
-    }
-    let mut sq = img.crop_imm((img.width() - s) / 2, (img.height() - s) / 2, s, s);
-    if s > AVATAR_SIZE {
-        sq = sq.resize_exact(AVATAR_SIZE, AVATAR_SIZE, image::imageops::FilterType::Lanczos3);
-    }
-    let rgba = sq.to_rgba8();
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(rgba.clone())
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("画像を変換できませんでした: {e}"))?;
-    let tex = images::render_image(rgba);
-    Ok(AvatarEdit::Set { uri: format!("data:image/png;base64,{}", base64_encode(&png)), tex })
-}
-
-pub fn base64_encode(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 {
-            out.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
-        }
-    }
-    out
 }
 
 #[cfg(test)]
 mod regression_tests;
-
-/// サーバーごとの自分の通知設定
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct GuildSettings {
-    pub muted: bool,
-    /// 0 = すべてのメッセージ、1 = @メンションのみ、2 = なし、3 = サーバーの既定
-    pub notifications: u8,
-}
-
-impl GuildSettings {
-    /// user_guild_settings の1件から（サーバーID, 設定）。DM の分（guild_id が null）は除く
-    pub fn parse(v: &serde_json::Value) -> Option<(String, GuildSettings)> {
-        let gid = v["guild_id"].as_str()?.to_string();
-        let mut muted = v["muted"].as_bool().unwrap_or(false);
-        // 期限つきのミュートは、期限を過ぎていれば解けている
-        if let Some(end) = v["mute_config"]["end_time"].as_str().and_then(|t| DateTime::parse_from_rfc3339(t).ok()) {
-            if end < chrono::Utc::now() {
-                muted = false;
-            }
-        }
-        let notifications = v["message_notifications"].as_u64().unwrap_or(3).min(3) as u8;
-        Some((gid, GuildSettings { muted, notifications }))
-    }
-}

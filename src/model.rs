@@ -20,7 +20,14 @@ pub struct ProfileData {
     pub roles: Vec<(String, u32)>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
+/// アバターデコレーション（アイコンの周りに出るエフェクト枠）
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct AvatarDecorationData {
+    #[serde(default)]
+    pub asset: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -28,6 +35,8 @@ pub struct User {
     pub global_name: Option<String>,
     #[serde(default)]
     pub avatar: Option<String>,
+    #[serde(default)]
+    pub avatar_decoration_data: Option<AvatarDecorationData>,
     /// Nitro の種類（0/なし = 無料、1 = Classic、2 = Nitro、3 = Basic）。自分の情報にだけ入る
     #[serde(default)]
     pub premium_type: Option<u8>,
@@ -38,6 +47,13 @@ pub struct User {
 impl User {
     pub fn display(&self) -> &str {
         self.global_name.as_deref().unwrap_or(&self.username)
+    }
+
+    pub fn decoration_asset(&self) -> Option<&str> {
+        self.avatar_decoration_data
+            .as_ref()
+            .map(|d| d.asset.as_str())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -74,12 +90,16 @@ pub struct Role {
 }
 
 /// サーバーメンバー
-#[derive(Clone, Debug, Deserialize, Serialize, Hash)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
 pub struct Member {
     #[serde(default)]
     pub user: Option<User>,
     #[serde(default)]
     pub nick: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub avatar_decoration_data: Option<AvatarDecorationData>,
     #[serde(default)]
     pub roles: Vec<String>,
 }
@@ -87,6 +107,14 @@ pub struct Member {
 impl Member {
     pub fn display(&self) -> &str {
         self.nick.as_deref().or_else(|| self.user.as_ref().map(User::display)).unwrap_or("")
+    }
+
+    pub fn decoration_asset(&self) -> Option<&str> {
+        self.avatar_decoration_data
+            .as_ref()
+            .map(|d| d.asset.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.user.as_ref().and_then(User::decoration_asset))
     }
 }
 

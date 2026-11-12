@@ -13,7 +13,7 @@ pub fn enabled() -> bool {
 }
 
 fn user(id: &str, name: &str) -> User {
-    User { id: id.into(), username: name.into(), global_name: Some(name.into()), avatar: None, premium_type: None, bot: false }
+    User { id: id.into(), username: name.into(), global_name: Some(name.into()), ..Default::default() }
 }
 
 fn channel(id: &str, kind: u8, name: &str, parent: Option<&str>, position: i32) -> Channel {
@@ -142,7 +142,7 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     all.extend(others.iter().cloned());
                     let members: Vec<Member> = all
                         .iter()
-                        .map(|u| Member { user: Some(u.clone()), nick: None, roles: if u.id == "2" { vec!["500".into()] } else { vec![] } })
+                        .map(|u| Member { user: Some(u.clone()), roles: if u.id == "2" { vec!["500".into()] } else { vec![] }, ..Default::default() })
                         .collect();
                     send(Event::GuildMembers(guild_id.clone(), members));
                     send(Event::MemberList {

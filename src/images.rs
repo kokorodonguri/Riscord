@@ -3,7 +3,7 @@
 //! 終わるまでは読み込み中として扱う。大きすぎるものは縮小・フレームの間引きをしてメモリも抑える。
 //! 出来上がった画像は gpui の RenderImage（BGRA）で持ち、`img()` にそのまま渡せる（アニメも gpui が進める）
 use gpui::RenderImage;
-use image::{codecs::gif::GifDecoder, codecs::webp::WebPDecoder, AnimationDecoder as _, Delay, Frame, ImageDecoder as _, RgbaImage};
+use image::{codecs::gif::GifDecoder, codecs::png::PngDecoder, codecs::webp::WebPDecoder, AnimationDecoder as _, Delay, Frame, ImageDecoder as _, RgbaImage};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -196,11 +196,13 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
 /// アイコン（ユーザー・サーバー・グループ DM）はディスクにも控え、次の起動ですぐ出す。
 /// URL にハッシュが入っていて中身が変わらないので、期限なしで使ってよい
 fn disk_path(uri: &str) -> Option<std::path::PathBuf> {
-    const KEPT: [&str; 4] = [
+    const KEPT: [&str; 6] = [
         "https://cdn.discordapp.com/avatars/",
         "https://cdn.discordapp.com/embed/avatars/",
         "https://cdn.discordapp.com/icons/",
         "https://cdn.discordapp.com/channel-icons/",
+        "https://cdn.discordapp.com/avatar-decoration-presets/",
+        "https://cdn.discordapp.com/guilds/",
     ];
     if !KEPT.iter().any(|k| uri.starts_with(k)) {
         return None;
@@ -250,6 +252,10 @@ fn is_webp(b: &[u8]) -> bool {
     b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP"
 }
 
+fn is_png(b: &[u8]) -> bool {
+    b.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
 /// 全フレームをデコードする。メモリの上限を超えそうなら、表示時間を足し合わせながらフレームを間引く
 pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
     let (frames, (w, h)): (image::Frames<'_>, (u32, u32)) = if is_gif(bytes) {
@@ -265,6 +271,14 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
         }
         d.set_background_color(image::Rgba([0, 0, 0, 0])).map_err(|e| format!("WebP decode failure ({e})"))?;
         (d.into_frames(), dims)
+    } else if is_png(bytes) {
+        let d = PngDecoder::new(Cursor::new(bytes)).map_err(|e| format!("PNG decode failure ({e})"))?;
+        let dims = d.dimensions();
+        if !d.is_apng().unwrap_or(false) {
+            let img = image::DynamicImage::from_decoder(d).map_err(|e| format!("PNG decode failure ({e})"))?.to_rgba8();
+            return Ok(vec![bgra_frame(shrink(img, max_pixels), Duration::ZERO)]);
+        }
+        (d.apng().map_err(|e| format!("APNG decode failure ({e})"))?.into_frames(), dims)
     } else {
         let img = image::load_from_memory(bytes).map_err(|e| format!("decode failure ({e})"))?.to_rgba8();
         return Ok(vec![bgra_frame(shrink(img, max_pixels), Duration::ZERO)]);

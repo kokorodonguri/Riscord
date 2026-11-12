@@ -8,7 +8,7 @@ use gpui::*;
 
 use super::sidebar::speaking_avatar;
 use super::*;
-use crate::app::{author_name, dm_icon_url, ProfileState, MAX_HISTORY, HISTORY_TRIGGER_ROWS};
+use crate::app::{dm_icon_url, ProfileState, MAX_HISTORY, HISTORY_TRIGGER_ROWS};
 use crate::color::Color32;
 use chrono::{DateTime, Local};
 use crate::model::{Message, User};
@@ -23,23 +23,49 @@ fn row_key(m: &Message, prev: Option<&Message>, t: Option<DateTime<Local>>, pt: 
     h.finish()
 }
 
+fn id_key(id: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish().max(1)
+}
+
 /// 前の行の目印と比べて、変わった所だけ list に知らせる（先頭に読み足しても見ている行は動かない）
-fn sync_list(l: &mut MsgList, keys: Vec<u64>) {
+fn sync_list(l: &mut MsgList, keys: Vec<u64>, ids: Vec<u64>) {
     let old = &l.keys;
     let p = old.iter().zip(&keys).take_while(|(a, b)| a == b).count();
     let max_s = old.len().min(keys.len()) - p;
     let s = old.iter().rev().zip(keys.iter().rev()).take(max_s).take_while(|(a, b)| a == b).count();
     if p + s != old.len() || p + s != keys.len() {
+        let following = l.state.is_following_tail();
         let top = l.state.logical_scroll_top();
-        let added = keys.len() - p - s;
-        l.state.splice(p..old.len() - s, added);
-        // 先頭の読み込み中表示を見ているときに古いメッセージが前に入ったら、元の一番上のメッセージへ位置を移す。
-        // そのままだと上端に張り付いたままになり、読み足しが止まらなくなる
-        if top.item_ix == 0 && p == 1 && s == old.len() - 1 {
-            l.state.scroll_to(ListOffset { item_ix: 1 + added, offset_in_item: px(0.0) });
+        let anchor = if following {
+            None
+        } else if top.item_ix == 0 {
+            l.ids.get(1).copied().filter(|&id| id != 0).map(|id| (id, px(0.0), true))
+        } else {
+            l.ids.get(top.item_ix).copied().filter(|&id| id != 0).map(|id| (id, top.offset_in_item, false))
+        };
+        // 先頭行（ix = 0）だけ計測済みのまま後ろに未計測の行が入ると、上へスクロールしたとき未計測区間を飛び越えて先頭へ飛ぶため 0 から入れ替える
+        let start = if p == 1 { 0 } else { p };
+        let added = keys.len() - start - s;
+        l.state.splice(start..old.len() - s, added);
+        // 古いメッセージが前に入ったとき（元の一番上の行は日付区切りや連投のまとまり方が変わって key も変わる）、
+        // 見えていたメッセージの位置へスクロール位置を移す。そのままだと上端に張り付いて読み足しが止まらなくなる
+        if let Some((anchor_id, offset, from_head)) = anchor {
+            if let Some(new_ix) = ids.iter().position(|&id| id == anchor_id) {
+                if from_head {
+                    if new_ix > 1 {
+                        l.state.scroll_to(ListOffset { item_ix: new_ix, offset_in_item: px(0.0) });
+                    }
+                } else if l.state.logical_scroll_top().item_ix != new_ix {
+                    let keep = if keys.get(new_ix) == old.get(top.item_ix) { offset } else { px(0.0) };
+                    l.state.scroll_to(ListOffset { item_ix: new_ix, offset_in_item: keep });
+                }
+            }
         }
     }
     l.keys = keys;
+    l.ids = ids;
 }
 
 impl Root {
@@ -125,8 +151,9 @@ impl Root {
         }
         let mut body = div().flex_1().min_h_0().flex().flex_row().relative();
         body = body.child(self.chat_column(members_shown, narrow_members, dm_user.as_ref(), window, cx));
+        let mem_w = self.app.member_pane_width();
         if self.app.sel_guild.is_some() && members_shown && !narrow_members {
-            body = body.child(self.members_panel(cx).w(z(240.0)).flex_none());
+            body = body.child(self.members_panel(cx).w(z(mem_w)).flex_none());
         }
         if let Some(u) = dm_user.as_ref().filter(|_| !self.app.hide_dm_profile && self.app.screen_w > 980.0) {
             let key = net::profile_key(&u.id, None);
@@ -139,7 +166,8 @@ impl Root {
         right = right.child(body);
         // 狭い画面ではチャット幅を縮めず、ヘッダーの下に一覧を重ねる。
         if self.app.sel_guild.is_some() && members_shown && narrow_members {
-            right = right.child(self.members_panel(cx).absolute().right_0().top(z(48.0)).bottom_0().w(z(240.0)).bg(opaque(BG())).border_l_1().border_color(DIVIDER()));
+            let w = mem_w.min((self.app.screen_w - 40.0).max(180.0));
+            right = right.child(self.members_panel(cx).absolute().right_0().top(z(48.0)).bottom_0().w(z(w)).bg(opaque(BG())).border_l_1().border_color(DIVIDER()));
         }
 
         let mut row = div().flex_1().min_h_0().flex().flex_row().relative();
@@ -148,7 +176,7 @@ impl Root {
         }
         row = row.child(right);
         if compact && !self.app.compact_sidebar_closed {
-            let w = self.app.screen_w.min(312.0);
+            let w = self.app.screen_w.min(72.0 + self.app.channel_pane_width());
             row = row.child(div().absolute().left_0().top_0().bottom_0().w(z(w)).bg(opaque(BG())).border_r_1().border_color(DIVIDER()).occlude().child(self.sidebar(window, cx).w_full()));
         }
 
@@ -483,21 +511,25 @@ impl Root {
             self.lists[&cid].keys.len()
         } else {
             let mut keys = Vec::with_capacity(msgs.len() + 2);
+            let mut ids = Vec::with_capacity(msgs.len() + 2);
             {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 (no_access, hist_end, prefix, cname).hash(&mut h);
                 keys.push(h.finish());
+                ids.push(0);
             }
             let mut pt = None;
             for (i, m) in msgs.iter().enumerate() {
                 let t = crate::app::local_dt(&m.timestamp);
                 keys.push(row_key(m, i.checked_sub(1).map(|j| &msgs[j]), t, pt, compact, self.app.plugins.revision));
+                ids.push(id_key(&m.id));
                 pt = t;
             }
             keys.push(1);
+            ids.push(0);
             let n = keys.len();
             match self.lists.get_mut(&cid) {
-                Some(l) => sync_list(l, keys),
+                Some(l) => sync_list(l, keys, ids),
                 None => {
                     let state = ListState::new(n, ListAlignment::Bottom, px(600.0));
                     state.set_follow_mode(FollowMode::Tail);
@@ -508,7 +540,7 @@ impl Root {
                             let _ = root.update(cx, |_, cx| cx.notify());
                         }
                     });
-                    self.lists.insert(cid.clone(), MsgList { state, keys, stamp: 0 });
+                    self.lists.insert(cid.clone(), MsgList { state, keys, ids, stamp: 0 });
                 }
             }
             self.lists.get_mut(&cid).unwrap().stamp = stamp;
@@ -547,6 +579,7 @@ impl Root {
                     let Some(e) = this.upgrade() else { return div().into_any_element() };
                     e.update(cx, |r, cx| r.list_item(&cid, ix, n, &prefix, &cname, window, cx))
                 })
+                .with_sizing_behavior(ListSizingBehavior::Auto)
                 .size_full(),
             )
             .into_any_element()
@@ -623,7 +656,7 @@ impl Root {
         // 返信中・編集中の帯（入力欄の上にくっつく）
         let bar = match (&a.editing, &a.reply_to) {
             (Some(_), _) => Some(("メッセージを編集中".to_string(), "Esc でキャンセル・Enter で保存".to_string())),
-            (None, Some(m)) => Some((format!("返信: {}", author_name(m)), "Esc でキャンセル".to_string())),
+            (None, Some(m)) => Some((format!("返信: {}", a.message_author_name(m)), "Esc でキャンセル".to_string())),
             _ => None,
         };
         if let Some((label, sub)) = &bar {
@@ -828,4 +861,35 @@ fn round_button(id: &'static str, name: IconName, bg: Color32, fg: Color32) -> S
         .justify_center()
         .cursor_pointer()
         .child(icon(name, 24.0, fg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{px, sync_list, FollowMode, ListAlignment, ListOffset, ListState, MsgList};
+
+    #[test]
+    fn sync_list_preserves_anchor_when_older_prepended_and_first_row_key_changes() {
+        // Initial 3 messages: [head(10), m1(101), m2(102), m3(103), tail(1)]
+        let keys = vec![10, 101, 102, 103, 1];
+        let ids = vec![0, 1001, 1002, 1003, 0];
+        let state = ListState::new(keys.len(), ListAlignment::Bottom, px(600.0));
+        state.set_follow_mode(FollowMode::Tail);
+        let mut l = MsgList { state, keys, ids, stamp: 0 };
+
+        // Case 1: User scrolled to the first message (item_ix = 1), then 2 older messages are prepended
+        // and old first message m1's key changes from 101 to 101_999 (due to new_day/grouped change).
+        l.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(12.0) });
+        let new_keys = vec![10, 91, 92, 101_999, 102, 103, 1];
+        let new_ids = vec![0, 901, 902, 1001, 1002, 1003, 0];
+        sync_list(&mut l, new_keys, new_ids);
+        assert_eq!(l.state.logical_scroll_top().item_ix, 3);
+
+        // Case 2: User scrolled to the top spinner (item_ix = 0), then 2 more older messages are prepended
+        // and the previous top message (901)'s key changes from 91 to 91_999.
+        l.state.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.0) });
+        let new_keys2 = vec![10, 81, 82, 91_999, 92, 101_999, 102, 103, 1];
+        let new_ids2 = vec![0, 801, 802, 901, 902, 1001, 1002, 1003, 0];
+        sync_list(&mut l, new_keys2, new_ids2);
+        assert_eq!(l.state.logical_scroll_top().item_ix, 3);
+    }
 }

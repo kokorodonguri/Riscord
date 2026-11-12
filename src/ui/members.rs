@@ -3,12 +3,12 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::*;
-use crate::app::{darken, emoji_url, member_role_color, name_color, rgb, snowflake_date, split_emoji, user_avatar_url, MemberListCache, MemberRow, ProfileState, Seg, MEMBER_HEAD_H, MEMBER_ROW_H};
+use crate::app::{darken, emoji_url, member_avatar_url, member_decoration_url, member_role_color, name_color, rgb, snowflake_date, split_emoji, user_avatar_url, user_decoration_url, MemberListCache, MemberRow, ProfileState, Seg, MEMBER_HEAD_H, MEMBER_ROW_H};
 use crate::model::{ProfileData, User};
 
 impl Root {
     /// メンバー一覧（見えている行だけ描き、見えている範囲を購読する）
-    pub fn members_panel(&mut self, _cx: &mut Context<Self>) -> Div {
+    pub fn members_panel(&mut self, cx: &mut Context<Self>) -> Div {
         let Some(gid) = self.app.sel_guild.clone() else { return div() };
         // グループ分けと並べ替えは、メンバー・ロール・オンライン状態が変わったときだけやり直す
         let a = &mut self.app;
@@ -52,14 +52,26 @@ impl Root {
             }
         });
         let this = self.this.clone();
-        div().h_full().flex().flex_col().border_l_1().border_t_1().border_color(DIVIDER()).bg(BG()).part(Part::MembersPanel).child(
-            list(self.member_list.clone(), move |ix, _, cx| {
-                let Some(e) = this.upgrade() else { return div().into_any_element() };
-                e.update(cx, |r, cx| r.member_row(ix, cx))
-            })
-            .flex_1()
-            .pb(z(8.0)),
-        )
+        div()
+            .h_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .border_l_1()
+            .border_t_1()
+            .border_color(DIVIDER())
+            .bg(BG())
+            .part(Part::MembersPanel)
+            .child(
+                list(self.member_list.clone(), move |ix, _, cx| {
+                    let Some(e) = this.upgrade() else { return div().into_any_element() };
+                    e.update(cx, |r, cx| r.member_row(ix, cx))
+                })
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .flex_1()
+                .pb(z(8.0)),
+            )
+            .child(self.pane_resizer(ResizeTarget::Members, cx))
     }
 
     fn member_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -89,7 +101,18 @@ impl Root {
                 let offline = presence.is_none_or(|p| p.status == "offline");
                 let color = member_role_color(member, roles).unwrap_or(TEXT());
                 let name = member.display().to_string();
-                let av = with_status(avatar(Some(&user_avatar_url(&user)), 32.0, &name, 16.0, name_color(&user.id)), 32.0, presence.map_or("offline", |p| p.status.as_str()), BG());
+                let av_url = member_avatar_url(member, &gid);
+                let deco_url = member_decoration_url(member);
+                let av = with_status(
+                    with_decoration(
+                        avatar(av_url.as_deref(), 32.0, &name, 16.0, name_color(&user.id)),
+                        32.0,
+                        deco_url.as_deref(),
+                    ),
+                    32.0,
+                    presence.map_or("offline", |p| p.status.as_str()),
+                    BG(),
+                );
                 let names = match presence.and_then(|p| p.activity.clone()) {
                     Some(act) => div().flex_1().min_w_0().flex().flex_col().child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM)).child(line(act, 12.0, MUTED())),
                     None => div().flex_1().min_w_0().child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM)),
@@ -146,7 +169,16 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .child(with_status(avatar(Some(&user_avatar_url(u)), 80.0, u.display(), 40.0, name_color(&u.id)), 80.0, &status, ring));
+            .child(with_status(
+                with_decoration(
+                    avatar(Some(&user_avatar_url(u)), 80.0, u.display(), 40.0, name_color(&u.id)),
+                    80.0,
+                    user_decoration_url(u).as_deref(),
+                ),
+                80.0,
+                &status,
+                ring,
+            ));
         let mut info = div().px(z(16.0)).pt(z(48.0)).flex().flex_col().gap(z(4.0)).child(line(u.display().to_string(), 20.0, WHITE()).font_weight(FontWeight::MEDIUM).part(Part::ProfileName));
         let mut l = u.username.clone();
         if let Some(p) = data.as_ref().and_then(|d| d.pronouns.as_deref()).filter(|p| !p.is_empty()) {

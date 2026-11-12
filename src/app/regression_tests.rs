@@ -1,5 +1,6 @@
 //! UI に依存しない既存動作の回帰テスト。
 use super::*;
+use crate::model;
 
 fn bench_app(n_msgs: usize) -> App {
     let mut app = App::default();
@@ -33,12 +34,12 @@ fn repeated_delete_preserves_logged_deleted_message() {
         let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });
         let member = |id: &str, name: &str| Member {
-            user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None, bot: false }),
-            nick: None, roles: Vec::new(),
+            user: Some(User { id: id.into(), username: name.into(), global_name: None, ..Default::default() }),
+            roles: Vec::new(), ..Default::default()
         };
         tx.send(Event::GuildMembers("a".into(), vec![member("1", "old"), member("2", "two")])).unwrap();
         tx.send(Event::GuildMembers("b".into(), vec![member("1", "other")])).unwrap();
-        tx.send(Event::GuildMembers("a".into(), vec![member("1", "new"), member("3", "three"), Member { user: None, nick: None, roles: vec![] }])).unwrap();
+        tx.send(Event::GuildMembers("a".into(), vec![member("1", "new"), member("3", "three"), Member { user: None, roles: vec![], ..Default::default() }])).unwrap();
         app.poll();
         let a: Vec<_> = app.members["a"].iter().map(|m| (m.user.as_ref().unwrap().id.as_str(), m.display())).collect();
         assert_eq!(a, [("1", "new"), ("2", "two"), ("3", "three")]);
@@ -53,8 +54,8 @@ fn repeated_delete_preserves_logged_deleted_message() {
         let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });
         let member = |id: &str, name: &str| Member {
-            user: Some(User { id: id.into(), username: name.into(), global_name: None, avatar: None, premium_type: None, bot: false }),
-            nick: None, roles: vec![],
+            user: Some(User { id: id.into(), username: name.into(), global_name: None, ..Default::default() }),
+            roles: vec![], ..Default::default()
         };
         tx.send(Event::GuildMembers("a".into(), vec![member("1", "old")])).unwrap();
         app.poll();
@@ -592,7 +593,7 @@ fn server_member_list_headers_use_group_counts() {
     let items = vec![net::ListItem::Group("online".into(), 0), net::ListItem::Member("m0".into()), net::ListItem::Member("m1".into())];
     assert!(list.apply("l", vec![("online".into(), 2)], vec![net::ListOp::Sync { range: [0, 99], items }]));
     let members: Vec<Member> = (0..2)
-        .map(|i| Member { user: Some(User { id: format!("m{i}"), username: format!("u{i}"), global_name: None, avatar: None, premium_type: None, bot: false }), nick: None, roles: vec![] })
+        .map(|i| Member { user: Some(User { id: format!("m{i}"), username: format!("u{i}"), global_name: None, ..Default::default() }), roles: vec![], ..Default::default() })
         .collect();
     let cache = MemberListCache::from_server("g", 1, &list, &members, &[]);
     assert!(matches!(&cache.rows[0], MemberRow::Header(h) if h == "オンライン — 2"));
@@ -622,7 +623,7 @@ fn status_notice_keeps_gateway_state_and_dms_loaded_is_tracked() {
 fn snapshot_restores_recent_conversation_and_refreshes_it() {
     let mut app = bench_app(80);
     app.token_owner = Some("1".into());
-    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, ..Default::default() });
     let s = app.build_snapshot().expect("snapshot");
     assert_eq!(s.messages.len(), 1);
     assert_eq!(s.messages[0].1.len(), cache::MESSAGES_PER_CHANNEL);
@@ -658,7 +659,7 @@ fn snapshot_restores_recent_conversation_and_refreshes_it() {
 #[test]
 fn login_failure_with_snapshot_keeps_view_and_retries() {
     let mut app = bench_app(3);
-    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, ..Default::default() });
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
@@ -681,7 +682,7 @@ fn snapshot_is_tied_to_account() {
     assert_eq!(cache::token_owner(&tok("123456789012345678", "a.b")).as_deref(), Some("123456789012345678"));
     assert_eq!(cache::token_owner("not a token"), None);
     let mut app = bench_app(2);
-    app.me = Some(User { id: "123456789012345678".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
+    app.me = Some(User { id: "123456789012345678".into(), username: "me".into(), global_name: None, ..Default::default() });
     app.token_owner = cache::token_owner(&tok("123456789012345678", "old.sig"));
     let bytes = serde_json::to_vec(&app.build_snapshot().unwrap()).unwrap();
     cache::write(None, &bytes).unwrap();
@@ -731,7 +732,7 @@ fn home_is_shown_while_connecting() {
 #[test]
 fn own_presence_is_stored_under_my_id() {
     let mut app = App::default();
-    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
+    app.me = Some(User { id: "1".into(), username: "me".into(), global_name: None, ..Default::default() });
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
@@ -771,7 +772,7 @@ fn mentions_are_counted_per_server() {
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
-    app.me = Some(User { id: "me".into(), username: "me".into(), global_name: None, avatar: None, premium_type: None, bot: false });
+    app.me = Some(User { id: "me".into(), username: "me".into(), global_name: None, ..Default::default() });
     tx.send(Event::ReadyExtra(serde_json::json!({
         "my_roles": { "g": ["r1"] },
         "channel_guild": { "c1": "g" },
@@ -956,4 +957,319 @@ fn viewing_already_acked_channel_clears_leftover_unread_marks() {
     app.sync_read_state(true);
     assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
     assert!(rx.try_recv().is_err(), "既読は送り直さない");
+}
+
+#[test]
+fn guild_folders_decode_from_proto_and_order_rail_items() {
+    use base64::Engine as _;
+    // Build a synthetic PreloadedUserSettings proto with field 14 (guild_folders):
+    // Folder 1: id=42, name="Dev", color=0x5865f2, guild_ids=[300, 100]
+    // Folder 2 (standalone): id=None, guild_ids=[200]
+    fn varint(mut v: u64, out: &mut Vec<u8>) {
+        while v >= 0x80 {
+            out.push((v as u8) | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+    fn len_field(field: u64, body: &[u8], out: &mut Vec<u8>) {
+        varint((field << 3) | 2, out);
+        varint(body.len() as u64, out);
+        out.extend_from_slice(body);
+    }
+    let mut f1 = Vec::new();
+    let mut packed_ids = Vec::new();
+    packed_ids.extend_from_slice(&300u64.to_le_bytes());
+    packed_ids.extend_from_slice(&100u64.to_le_bytes());
+    len_field(1, &packed_ids, &mut f1);
+    let mut id_wrap = Vec::new();
+    varint((1 << 3) | 0, &mut id_wrap);
+    varint(42, &mut id_wrap);
+    len_field(2, &id_wrap, &mut f1);
+    let mut name_wrap = Vec::new();
+    len_field(1, b"Dev", &mut name_wrap);
+    len_field(3, &name_wrap, &mut f1);
+    let mut color_wrap = Vec::new();
+    varint((1 << 3) | 0, &mut color_wrap);
+    varint(0x5865f2, &mut color_wrap);
+    len_field(4, &color_wrap, &mut f1);
+
+    let mut f2 = Vec::new();
+    varint((1 << 3) | 1, &mut f2); // fixed64
+    f2.extend_from_slice(&200u64.to_le_bytes());
+
+    let mut gf_msg = Vec::new();
+    len_field(1, &f1, &mut gf_msg);
+    len_field(1, &f2, &mut gf_msg);
+
+    let mut root = Vec::new();
+    len_field(14, &gf_msg, &mut root);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&root);
+
+    let decoded = GuildFolder::from_proto_base64(&b64).expect("decode proto");
+    assert_eq!(decoded, vec![
+        GuildFolder { id: Some(42), name: Some("Dev".into()), color: Some(0x5865f2), guild_ids: vec!["300".into(), "100".into()] },
+        GuildFolder { id: None, name: None, color: None, guild_ids: vec!["200".into()] },
+    ]);
+
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    tx.send(Event::Guilds(["100", "200", "300", "400"].map(guild).to_vec())).unwrap();
+    tx.send(Event::ReadyExtra(serde_json::json!({ "user_settings_proto": b64 }))).unwrap();
+    app.poll();
+
+    assert_eq!(guild_ids(&app), ["300", "100", "200", "400"]);
+    let rail = app.rail_items();
+    assert_eq!(rail.len(), 3);
+    match &rail[0] {
+        RailItem::Folder { id, name, color, guilds, open } => {
+            assert_eq!(*id, 42);
+            assert_eq!(name, "Dev");
+            assert_eq!(*color, Some(0x5865f2));
+            assert_eq!(guilds.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), ["300", "100"]);
+            assert!(!open);
+        }
+        RailItem::Guild(_) => panic!("expected folder"),
+    }
+    assert!(matches!(&rail[1], RailItem::Guild(g) if g.id == "200"));
+    assert!(matches!(&rail[2], RailItem::Guild(g) if g.id == "400"));
+
+    app.toggle_folder(42);
+    assert!(matches!(&app.rail_items()[0], RailItem::Folder { open: true, .. }));
+}
+
+#[test]
+fn switching_guilds_restores_last_channel_or_read_state_channel() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+
+    let ch = |id: &str, kind: u8, pos: i32| -> Channel {
+        serde_json::from_value(serde_json::json!({ "id": id, "type": kind, "name": id, "position": pos })).unwrap()
+    };
+
+    // ReadyExtra gives read_state: in guild "g1", channel "c2" was read more recently than "c1"
+    tx.send(Event::ReadyExtra(serde_json::json!({
+        "channel_guild": { "c1": "g1", "c2": "g1", "v1": "g1" },
+        "read_state": { "entries": [
+            { "id": "c1", "last_viewed": 3900, "last_message_id": "100" },
+            { "id": "c2", "last_viewed": 3910, "last_message_id": "200" },
+            { "id": "v1", "last_viewed": 3920, "last_message_id": "300" }
+        ] }
+    }))).unwrap();
+    app.poll();
+
+    // Switch to g1 before its channels arrive; once GuildChannels arrives, it picks "c2" (most recently viewed text channel)
+    app.pick_guild(Some("g1".into()));
+    assert_eq!(app.sel_guild.as_deref(), Some("g1"));
+    assert_eq!(app.sel_channel, None);
+    tx.send(Event::GuildChannels("g1".into(), vec![ch("c1", 0, 0), ch("c2", 0, 1), ch("v1", 2, 0)])).unwrap();
+    app.poll();
+    assert_eq!(app.sel_channel.as_deref(), Some("c2"));
+
+    // User manually opens "c1" in g1
+    app.open_channel("c1".into());
+    assert_eq!(app.settings.last_channels.get("g1").map(String::as_str), Some("c1"));
+
+    // Switch to g2 (no read_state, channels already loaded -> picks first text channel "g2_c1")
+    tx.send(Event::GuildChannels("g2".into(), vec![ch("g2_c1", 0, 0), ch("g2_c2", 0, 1)])).unwrap();
+    app.poll();
+    app.pick_guild(Some("g2".into()));
+    assert_eq!(app.sel_guild.as_deref(), Some("g2"));
+    assert_eq!(app.sel_channel.as_deref(), Some("g2_c1"));
+    app.open_channel("g2_c2".into());
+
+    // Switch back to g1 -> restores "c1"
+    app.pick_guild(Some("g1".into()));
+    assert_eq!(app.sel_channel.as_deref(), Some("c1"));
+
+    // Switch back to g2 -> restores "g2_c2"
+    app.pick_guild(Some("g2".into()));
+    assert_eq!(app.sel_channel.as_deref(), Some("g2_c2"));
+}
+
+#[test]
+fn channel_and_member_pane_widths_clamp_and_persist() {
+    let mut app = App::default();
+    app.set_profile(Some("pane-width-test".into()));
+    assert_eq!(app.channel_pane_width(), 240.0);
+    assert_eq!(app.member_pane_width(), 240.0);
+
+    app.settings.channel_pane_width = 320.0;
+    app.settings.member_pane_width = 280.0;
+    app.save_settings();
+
+    let loaded = crate::app::load_settings(Some("pane-width-test"));
+    assert_eq!(loaded.channel_pane_width, 320.0);
+    assert_eq!(loaded.member_pane_width, 280.0);
+
+    app.settings.channel_pane_width = 50.0;
+    app.settings.member_pane_width = 900.0;
+    assert_eq!(app.channel_pane_width(), 160.0);
+    assert_eq!(app.member_pane_width(), 480.0);
+
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some("pane-width-test")));
+}
+
+#[test]
+fn message_author_color_resolves_from_guild_members_and_ignores_colorless_top_roles() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+
+    app.sel_guild = Some("g1".into());
+    app.sel_channel = Some("c1".into());
+    app.touch_channel("c1");
+
+    let roles: Vec<Role> = serde_json::from_value(serde_json::json!([
+        { "id": "r_low_color", "name": "Blue", "color": 0x3498db, "position": 2, "hoist": false, "permissions": "0" },
+        { "id": "r_mid_color", "name": "Gold", "color": 0xf1c40f, "position": 5, "hoist": true, "permissions": "0" },
+        { "id": "r_top_no_color", "name": "AdminPerm", "color": 0, "position": 10, "hoist": false, "permissions": "8" }
+    ])).unwrap();
+    tx.send(Event::GuildRoles("g1".into(), roles)).unwrap();
+
+    // REST-loaded message has member: None
+    let msg: Message = serde_json::from_value(serde_json::json!({
+        "id": "m1",
+        "channel_id": "c1",
+        "timestamp": "2026-11-11T12:00:00Z",
+        "author": { "id": "u1", "username": "alice", "global_name": "Alice" },
+        "content": "hello"
+    })).unwrap();
+    tx.send(Event::Messages("c1".into(), vec![msg.clone()])).unwrap();
+    app.poll();
+
+    // Missing member u1 should have triggered a Gateway op 8 request
+    let sent_op8 = std::iter::from_fn(|| rx.try_recv().ok()).any(|c| match c {
+        Cmd::Gateway(v) => v["op"] == 8 && v["d"]["user_ids"] == serde_json::json!(["u1"]),
+        _ => false,
+    });
+    assert!(sent_op8, "should request missing author member via gateway op 8");
+
+    // Once GuildMembers arrives for u1 (with a colorless top role and colored lower roles),
+    // message_author_color picks the highest role with color != 0 (0xf1c40f) and message_author_name uses nick
+    let member: Member = serde_json::from_value(serde_json::json!({
+        "user": { "id": "u1", "username": "alice", "global_name": "Alice" },
+        "nick": "Alice (Server)",
+        "roles": ["r_low_color", "r_mid_color", "r_top_no_color"]
+    })).unwrap();
+    tx.send(Event::GuildMembers("g1".into(), vec![member])).unwrap();
+    app.poll();
+
+    assert_eq!(app.message_author_color(&msg), Some(crate::color::Color32::from_rgb(0xf1, 0xc4, 0x0f)));
+    assert_eq!(app.message_author_name(&msg), "Alice (Server)");
+}
+
+#[test]
+fn avatar_and_decoration_urls_resolve_user_and_guild_overrides() {
+    let mut app = App::default();
+    app.sel_guild = Some("g1".into());
+    app.sel_channel = Some("c1".into());
+
+    let msg: Message = serde_json::from_value(serde_json::json!({
+        "id": "m1",
+        "channel_id": "c1",
+        "timestamp": "2026-11-11T12:00:00Z",
+        "author": {
+            "id": "u1",
+            "username": "alice",
+            "avatar": "a_userhash",
+            "avatar_decoration_data": { "asset": "a_userdeco" }
+        },
+        "content": "hello"
+    })).unwrap();
+
+    assert_eq!(
+        app.message_author_avatar_url(&msg),
+        "https://cdn.discordapp.com/avatars/u1/a_userhash.gif?size=80"
+    );
+    assert_eq!(
+        app.message_author_decoration_url(&msg).as_deref(),
+        Some("https://cdn.discordapp.com/avatar-decoration-presets/a_userdeco.png?size=96&passthrough=true")
+    );
+
+    let member: Member = serde_json::from_value(serde_json::json!({
+        "user": { "id": "u1", "username": "alice" },
+        "avatar": "guildhash",
+        "avatar_decoration_data": { "asset": "a_guilddeco" },
+        "roles": []
+    })).unwrap();
+    app.members.insert("g1".into(), vec![member]);
+
+    assert_eq!(
+        app.message_author_avatar_url(&msg),
+        "https://cdn.discordapp.com/guilds/g1/users/u1/avatars/guildhash.png?size=80"
+    );
+    assert_eq!(
+        app.message_author_decoration_url(&msg).as_deref(),
+        Some("https://cdn.discordapp.com/avatar-decoration-presets/a_guilddeco.png?size=96&passthrough=true")
+    );
+}
+
+#[test]
+fn category_collapse_hides_normal_channels_and_keeps_selected_or_unread() {
+    let mut app = App::default();
+    app.set_profile(Some("category-collapse-test".into()));
+    app.sel_guild = Some("g1".into());
+
+    let ch = |id: &str, kind: u8, pos: i32, parent: Option<&str>| -> Channel {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "type": kind,
+            "name": id,
+            "position": pos,
+            "parent_id": parent,
+        }))
+        .unwrap()
+    };
+
+    let cat = ch("cat1", 4, 0, None);
+    let c1 = ch("c1", 0, 0, Some("cat1"));
+    let c2 = ch("c2", 0, 1, Some("cat1"));
+    let c3 = ch("c3", 0, 2, Some("cat1"));
+    let v1 = ch("v1", 2, 0, Some("cat1"));
+    app.channels.insert("g1".into(), vec![cat, c1.clone(), c2.clone(), c3.clone(), v1.clone()]);
+
+    assert!(!app.is_category_collapsed("cat1"));
+    app.toggle_category("cat1");
+    assert!(app.is_category_collapsed("cat1"));
+
+    // Persisted to settings
+    let loaded = crate::app::load_settings(Some("category-collapse-test"));
+    assert!(loaded.collapsed_categories.contains("cat1"));
+
+    // Normal channels are hidden when collapsed
+    assert!(!app.channel_visible_in_collapsed_category(&c1, None));
+    assert!(!app.channel_visible_in_collapsed_category(&c2, None));
+    assert!(!app.channel_visible_in_collapsed_category(&v1, None));
+
+    // Selected channel remains visible
+    app.sel_channel = Some("c1".into());
+    assert!(app.channel_visible_in_collapsed_category(&c1, None));
+
+    // Unread channel remains visible
+    app.unread.insert("c2".into(), None);
+    assert!(app.channel_visible_in_collapsed_category(&c2, None));
+
+    // Voice channel with active participants remains visible
+    app.voice_states.insert("u1".into(), model::VoiceState {
+        user_id: "u1".into(),
+        channel_id: Some("v1".into()),
+        guild_id: Some("g1".into()),
+        user: None,
+        self_mute: false,
+        self_deaf: false,
+    });
+    app.reindex_voice();
+    assert!(app.channel_visible_in_collapsed_category(&v1, None));
+
+    // Toggle back open
+    app.toggle_category("cat1");
+    assert!(!app.is_category_collapsed("cat1"));
+
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some("category-collapse-test")));
 }

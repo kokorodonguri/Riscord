@@ -4,7 +4,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::*;
-use crate::app::{darken, local_dt, name_color, rgb, snowflake_date, status_label, user_avatar_url, ProfileState, STATUSES};
+use crate::app::{darken, local_dt, member_avatar_url, member_decoration_url, name_color, rgb, snowflake_date, status_label, user_avatar_url, user_decoration_url, ProfileState, STATUSES};
 use crate::color::Color32;
 use crate::model::ProfileData;
 use crate::net::{self, Cmd};
@@ -363,7 +363,25 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .child(with_status(avatar(Some(&user_avatar_url(&user)), 80.0, user.display(), 40.0, BLURPLE()), 80.0, &status, ring));
+            .child({
+                let member = pp.guild_id.as_deref().and_then(|gid| self.app.find_member(gid, &user.id));
+                let av_url = pp
+                    .guild_id
+                    .as_deref()
+                    .and_then(|gid| member.and_then(|m| member_avatar_url(m, gid)))
+                    .unwrap_or_else(|| user_avatar_url(&user));
+                let deco_url = member.and_then(member_decoration_url).or_else(|| user_decoration_url(&user));
+                with_status(
+                    with_decoration(
+                        avatar(Some(&av_url), 80.0, user.display(), 40.0, BLURPLE()),
+                        80.0,
+                        deco_url.as_deref(),
+                    ),
+                    80.0,
+                    &status,
+                    ring,
+                )
+            });
         let name = data.as_ref().and_then(|d| d.nick.clone()).unwrap_or_else(|| user.display().to_string());
         let mut sub = user.username.clone();
         if let Some(pr) = data.as_ref().and_then(|d| d.pronouns.as_deref()) {

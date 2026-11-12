@@ -5,7 +5,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::*;
-use crate::app::{dm_icon_url, guild_icon_url, status_label, user_avatar_url};
+use crate::app::{dm_icon_url, guild_icon_url, status_label, user_avatar_url, user_decoration_url};
 use crate::color::Color32;
 use crate::model::{Channel, Presence, User};
 
@@ -137,16 +137,19 @@ impl Root {
 
     /// 左列（サーバーレール＋チャンネル欄。下にユーザー欄がまたがる）
     pub fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let ch_w = self.app.channel_pane_width();
         div()
-            .w(z(312.0))
+            .w(z(72.0 + ch_w))
             .h_full()
             .flex_none()
+            .relative()
             .flex()
             .flex_col()
             .bg(BG())
             .part(Part::SidebarPane)
             .child(div().flex_1().min_h_0().flex().flex_row().child(self.rail(cx)).child(self.channel_pane(window, cx)))
             .child(self.userbar(cx))
+            .child(self.pane_resizer(ResizeTarget::Channels, cx))
     }
 
     /// round = 丸いアイコン（未読の DM の相手）。サーバーはテーマの形に従う
@@ -200,6 +203,170 @@ impl Root {
             .when(mentions > 0, |d| d.child(mention_badge(mentions)))
     }
 
+    fn rail_guild(
+        &self,
+        g: &crate::model::Guild,
+        unread: &std::collections::HashSet<Option<&str>>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let a = &self.app;
+        let sel = a.sel_guild.as_deref() == Some(&g.id);
+        let url = guild_icon_url(g);
+        let gid = g.id.clone();
+        let gid2 = gid.clone();
+        let gid3 = gid.clone();
+        let drag = GuildDrag { id: gid.clone(), name: g.name.clone(), url: url.clone() };
+        Self::rail_item(
+            SharedString::from(format!("g{}", g.id)),
+            sel,
+            unread.contains(&Some(g.id.as_str())),
+            a.mention_count(Some(&g.id)),
+            &g.name,
+            url.as_deref(),
+            false,
+        )
+        // ドラッグして別のサーバーの上で離すと、そこへ動かす（並びは settings.json に残す）
+        .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
+        .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))
+        .on_drop(cx.listener(move |this, d: &GuildDrag, _, cx| {
+            if this.app.move_guild(&d.id, &gid3) {
+                this.app.save_settings();
+            }
+            cx.notify();
+        }))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.pick_guild(Some(gid.clone()));
+            cx.notify();
+        }))
+        .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+            this.menu = Some((PopMenu::Guild, ev.position));
+            this.menu_guild = Some(gid2.clone());
+            this.app.ensure_guild_channels(&gid2);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+    }
+
+    /// サーバーフォルダの1項目（閉じているときは最大4個のミニアイコン格子、開いているときは縦長の枠にサーバーを並べる）
+    #[allow(clippy::too_many_arguments)]
+    fn rail_folder(
+        &self,
+        id: i64,
+        name: &str,
+        color: Option<u32>,
+        open: bool,
+        guilds: &[&crate::model::Guild],
+        unread: &std::collections::HashSet<Option<&str>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let accent = color.filter(|&c| c != 0).map(crate::app::rgb).unwrap_or(BLURPLE());
+        let radius = part_style(Part::SidebarServer).radius.unwrap_or(12.0);
+        let any_selected = guilds.iter().any(|g| self.app.sel_guild.as_deref() == Some(g.id.as_str()));
+        let any_unread = guilds.iter().any(|g| unread.contains(&Some(g.id.as_str())));
+        let mentions: u32 = guilds.iter().map(|g| self.app.mention_count(Some(&g.id))).sum();
+
+        if !open {
+            let mut grid = div()
+                .size(z(40.0))
+                .rounded(z(radius))
+                .bg(accent.gamma_multiply(0.28))
+                .group_hover("rail", move |s| s.bg(accent.gamma_multiply(0.42)))
+                .p(z(4.0))
+                .flex()
+                .flex_col()
+                .justify_between();
+            for row_idx in 0..2 {
+                let mut r = div().flex().justify_between();
+                for col_idx in 0..2 {
+                    let idx = row_idx * 2 + col_idx;
+                    if let Some(g) = guilds.get(idx) {
+                        let url = guild_icon_url(g);
+                        r = r.child(avatar(url.as_deref(), 14.0, &g.name, 4.0, SIDEBAR()));
+                    } else {
+                        r = r.child(div().size(z(14.0)));
+                    }
+                }
+                grid = grid.child(r);
+            }
+            let pill_h = if any_selected { 40.0 } else if any_unread { 8.0 } else { 0.0 };
+            let pill = div()
+                .absolute()
+                .left_0()
+                .w(z(4.0))
+                .h(z(pill_h))
+                .rounded_r(z(4.0))
+                .bg(WHITE())
+                .when(!any_selected, |d| d.group_hover("rail", |s| s.h(z(20.0))));
+            return div()
+                .id(SharedString::from(format!("folder_{id}")))
+                .group("rail")
+                .relative()
+                .w(z(72.0))
+                .h(z(48.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .tooltip(tip(name.to_string()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.app.toggle_folder(id);
+                    cx.notify();
+                }))
+                .child(pill)
+                .child(grid)
+                .when(mentions > 0, |d| d.child(mention_badge(mentions)))
+                .into_any_element();
+        }
+
+        let head_face = div()
+            .size(z(40.0))
+            .rounded(z(radius))
+            .bg(accent.gamma_multiply(0.22))
+            .group_hover("rail", move |s| s.bg(accent.gamma_multiply(0.36)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon(IconName::Folder, 20.0, accent));
+        let head = div()
+            .id(SharedString::from(format!("folder_{id}")))
+            .group("rail")
+            .relative()
+            .w(z(72.0))
+            .h(z(48.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .tooltip(tip(name.to_string()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.app.toggle_folder(id);
+                cx.notify();
+            }))
+            .child(head_face);
+        let mut items = div().relative().flex().flex_col().gap(z(2.0)).child(head);
+        for g in guilds {
+            items = items.child(self.rail_guild(g, unread, cx));
+        }
+        div()
+            .relative()
+            .w(z(72.0))
+            .flex_none()
+            .child(
+                div()
+                    .absolute()
+                    .left(z(16.0))
+                    .w(z(40.0))
+                    .top(z(4.0))
+                    .bottom(z(4.0))
+                    .rounded(z(radius))
+                    .bg(HOVER()),
+            )
+            .child(items)
+            .into_any_element()
+    }
+
     /// サーバーレール
     fn rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let a = &self.app;
@@ -216,42 +383,20 @@ impl Root {
         for (c, n) in unread_dms {
             let cid = c.id.clone();
             col = col.child(Self::rail_item(SharedString::from(format!("rdm{}", c.id)), false, true, n, &c.dm_label(), dm_icon_url(c).as_deref(), true).on_click(cx.listener(move |this, _, _, cx| {
-                this.pick_guild(None);
-                this.open_channel(cid.clone());
+                this.select_place(None, Some(cid.clone()));
                 cx.notify();
             })));
         }
         col = col.child(div().h(z(6.0)).flex_none().flex().items_center().justify_center().child(div().w(z(32.0)).h(px(1.0)).bg(DIVIDER())));
-        for g in &a.guilds {
-            let sel = a.sel_guild.as_deref() == Some(&g.id);
-            let url = guild_icon_url(g);
-            let gid = g.id.clone();
-            let gid2 = gid.clone();
-            let gid3 = gid.clone();
-            let drag = GuildDrag { id: gid.clone(), name: g.name.clone(), url: url.clone() };
-            col = col.child(
-                Self::rail_item(SharedString::from(format!("g{}", g.id)), sel, unread.contains(&Some(g.id.as_str())), a.mention_count(Some(&g.id)), &g.name, url.as_deref(), false)
-                    // ドラッグして別のサーバーの上で離すと、そこへ動かす（並びは settings.json に残す）
-                    .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
-                    .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))
-                    .on_drop(cx.listener(move |this, d: &GuildDrag, _, cx| {
-                        if this.app.move_guild(&d.id, &gid3) {
-                            this.app.save_settings();
-                        }
-                        cx.notify();
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.pick_guild(Some(gid.clone()));
-                        cx.notify();
-                    }))
-                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        this.menu = Some((PopMenu::Guild, ev.position));
-                        this.menu_guild = Some(gid2.clone());
-                        this.app.ensure_guild_channels(&gid2);
-                        cx.stop_propagation();
-                        cx.notify();
-                    })),
-            );
+        for item in self.app.rail_items() {
+            match item {
+                crate::app::RailItem::Guild(g) => {
+                    col = col.child(self.rail_guild(g, &unread, cx));
+                }
+                crate::app::RailItem::Folder { id, name, color, open, guilds } => {
+                    col = col.child(self.rail_folder(id, &name, color, open, &guilds, &unread, cx));
+                }
+            }
         }
         col
     }
@@ -364,19 +509,46 @@ impl Root {
                     }
                     for cat in cats {
                         let Some(l) = by_parent.get(cat.id.as_str()) else { continue };
+                        let collapsed = a.is_category_collapsed(&cat.id);
+                        let cat_id = cat.id.clone();
+                        let chevron = if collapsed { IconName::ChevronRight } else { IconName::ChevronDown };
                         rows.push(
                             div()
+                                .id(SharedString::from(format!("cat{}", cat.id)))
+                                .group("cat")
                                 .mt(z(14.0))
                                 .h(z(20.0))
                                 .flex_none()
-                                .pl(z(16.0))
+                                .pl(z(2.0))
+                                .pr(z(8.0))
                                 .flex()
                                 .items_center()
-                                .child(line(cat.name.as_deref().unwrap_or("").to_uppercase(), 12.0, FAINT()).part(Part::SidebarCategory))
+                                .gap(z(2.0))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.app.toggle_category(&cat_id);
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .w(z(12.0))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(chevron, 12.0, FAINT()).group_hover("cat", |s| s.text_color(TEXT()))),
+                                )
+                                .child(
+                                    line(cat.name.as_deref().unwrap_or("").to_uppercase(), 12.0, FAINT())
+                                        .group_hover("cat", |s| s.text_color(TEXT()))
+                                        .part(Part::SidebarCategory),
+                                )
                                 .into_any_element(),
                         );
                         for c in l {
-                            self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                            if !collapsed || a.channel_visible_in_collapsed_category(c, cur_voice.as_deref()) {
+                                self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                            }
                         }
                     }
                     list = list.overflow_y_scroll().children(rows);
@@ -529,7 +701,16 @@ impl Root {
                         }
                         cx.notify();
                     }))
-                    .child(with_status(avatar(Some(&user_avatar_url(me)), 32.0, me.display(), 16.0, BLURPLE()), 32.0, &cur, USERBAR()))
+                    .child(with_status(
+                        with_decoration(
+                            avatar(Some(&user_avatar_url(me)), 32.0, me.display(), 16.0, BLURPLE()),
+                            32.0,
+                            user_decoration_url(me).as_deref(),
+                        ),
+                        32.0,
+                        &cur,
+                        USERBAR(),
+                    ))
                     .child(div().flex_1().min_w_0().flex().flex_col().child(line(me.display().to_string(), 14.0, WHITE()).font_weight(FontWeight::MEDIUM)).child(line(status_label(&cur), 12.0, MUTED()))),
             );
         } else {
@@ -610,7 +791,8 @@ impl Root {
 fn dm_row(c: &Channel, selected: bool, unread: bool, presence: Option<&Presence>) -> Stateful<Div> {
     let label = c.dm_label();
     let one_to_one = c.recipients.len() == 1;
-    let av = avatar(dm_icon_url(c).as_deref(), 32.0, &label, 16.0, BLURPLE());
+    let deco = one_to_one.then(|| user_decoration_url(&c.recipients[0])).flatten();
+    let av = with_decoration(avatar(dm_icon_url(c).as_deref(), 32.0, &label, 16.0, BLURPLE()), 32.0, deco.as_deref());
     // 1対1のDMだけ相手の状態を出す（情報が無ければオフライン扱い）
     let av = if one_to_one {
         with_status(av, 32.0, presence.map_or("offline", |p| p.status.as_str()), if selected { SELECTED() } else { BG() })
@@ -636,8 +818,9 @@ fn dm_row(c: &Channel, selected: bool, unread: bool, presence: Option<&Presence>
 /// 話しているときの緑の輪付きアバター
 pub fn speaking_avatar(u: Option<&User>, fallback: &str, size: f32, speaking: bool) -> Div {
     let url = u.map(user_avatar_url);
+    let deco = u.and_then(user_decoration_url);
     let name = u.map(|u| u.display()).unwrap_or(fallback);
-    let av = avatar(url.as_deref(), size, name, size / 2.0, BLURPLE());
+    let av = with_decoration(avatar(url.as_deref(), size, name, size / 2.0, BLURPLE()), size, deco.as_deref());
     let w = (size * 0.06).max(2.0);
     div()
         .flex_none()

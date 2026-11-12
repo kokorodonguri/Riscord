@@ -1,5 +1,4 @@
 //! メッセージの1行（本文のリンク・絵文字、添付画像、埋め込み、スタンプ、返信、操作ボタン）
-use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::assets::IconName;
@@ -8,8 +7,8 @@ use gpui::*;
 
 use super::*;
 use crate::app::{
-    author_name, embed_big_media, emoji_url, find_links, fit_size, fmt_time, is_reply, local_dt, member_role_color, name_color, resized, resolve_mentions, rgb, split_emoji,
-    user_avatar_url, Seg, StickerState,
+    embed_big_media, emoji_url, fit_size, fmt_time, is_reply, local_dt, name_color, resized, resolve_mentions, rgb, split_emoji,
+    Seg, StickerState,
 };
 use crate::color::Color32;
 use crate::images::{self as imgs, Img};
@@ -17,6 +16,10 @@ use crate::markdown as md;
 use crate::model::{self, Embed, Message, Role};
 use crate::net::Cmd;
 
+
+mod rich;
+pub use rich::Rich;
+use rich::{embed_line, embed_text, preview_rich};
 const EMBED_MAX_W: f32 = 432.0;
 const EMBED_THUMB: f32 = 80.0;
 
@@ -66,201 +69,6 @@ fn call_length(d: chrono::Duration) -> String {
     }
 }
 
-/// 文字と、色や太さを変える範囲・押せるリンクの範囲（バイト位置）
-#[derive(Default)]
-pub struct Rich {
-    pub text: String,
-    pub styles: Vec<(Range<usize>, HighlightStyle)>,
-    pub links: Vec<(Range<usize>, String)>,
-    /// 等幅フォントで出す範囲（`コード`）
-    pub mono: Vec<Range<usize>>,
-    /// 押すまで隠す範囲（||スポイラー||）
-    pub spoilers: Vec<Range<usize>>,
-}
-
-/// 記法の飾りを、文字の色や太さに直す
-fn highlight(st: md::Style) -> Option<HighlightStyle> {
-    if st == md::Style::default() {
-        return None;
-    }
-    let mut h = HighlightStyle::default();
-    if st.bold {
-        h.color = Some(WHITE().into());
-        h.font_weight = Some(FontWeight::BOLD);
-    }
-    if st.italic {
-        h.font_style = Some(FontStyle::Italic);
-    }
-    if st.underline {
-        h.underline = Some(UnderlineStyle { thickness: px(1.0), ..Default::default() });
-    }
-    if st.strike {
-        h.strikethrough = Some(StrikethroughStyle { thickness: px(1.0), ..Default::default() });
-    }
-    if st.code || st.spoiler {
-        h.background_color = Some(WIDGET().into());
-    }
-    Some(h)
-}
-
-impl Rich {
-    fn push(&mut self, s: &str, style: Option<HighlightStyle>) {
-        let start = self.text.len();
-        self.text.push_str(s);
-        if let Some(st) = style {
-            if !s.is_empty() {
-                self.styles.push((start..self.text.len(), st));
-            }
-        }
-    }
-
-    /// text を足す。URL は色を変えて押せるようにする。埋め込みを抑止する <URL> の山かっこは本家と同じく表示しない
-    pub fn linked(&mut self, text: &str, style: Option<HighlightStyle>) {
-        let mut last = 0;
-        for r in find_links(text) {
-            let wrapped = text[..r.start].ends_with('<') && text[r.end..].starts_with('>');
-            let before = if wrapped { r.start - 1 } else { r.start };
-            self.push(&text[last..before], style);
-            let start = self.text.len();
-            let url = &text[r.clone()];
-            self.push(url, Some(HighlightStyle { color: Some(LINK().into()), ..style.unwrap_or_default() }));
-            self.links.push((start..self.text.len(), url.to_string()));
-            last = if wrapped { r.end + 1 } else { r.end };
-        }
-        self.push(&text[last..], style);
-    }
-
-    /// [文字](https://...) を文字だけ青くして押せるようにする。それ以外は linked に任せる
-    pub fn masked(&mut self, text: &str, style: Option<HighlightStyle>) {
-        let mut rest = text;
-        while let Some(open) = rest.find('[') {
-            let Some(close) = rest[open..].find("](").map(|i| open + i) else { break };
-            let after = &rest[close + 2..];
-            let Some(end) = after.find(')') else { break };
-            let url = after[..end].trim().trim_start_matches('<').trim_end_matches('>');
-            let label = &rest[open + 1..close];
-            if label.contains('[') || !(url.starts_with("https://") || url.starts_with("http://")) {
-                self.linked(&rest[..open + 1], style);
-                rest = &rest[open + 1..];
-                continue;
-            }
-            self.linked(&rest[..open], style);
-            let start = self.text.len();
-            self.push(label, Some(HighlightStyle { color: Some(LINK().into()), ..style.unwrap_or_default() }));
-            self.links.push((start..self.text.len(), url.to_string()));
-            rest = &after[end + 1..];
-        }
-        self.linked(rest, style);
-    }
-
-    /// 記法を解いた文字を足す。`コード` の中はリンクにしない。revealed でなければスポイラーは塗りつぶす
-    pub fn span(&mut self, s: &md::Span, revealed: bool) {
-        let start = self.text.len();
-        let style = highlight(s.style);
-        if s.style.spoiler && !revealed {
-            let hidden: Hsla = WIDGET().into();
-            self.push(&s.text, Some(HighlightStyle { color: Some(hidden), background_color: Some(hidden), ..Default::default() }));
-            self.spoilers.push(start..self.text.len());
-        } else if s.style.code {
-            self.push(&s.text, style);
-            self.mono.push(start..self.text.len());
-        } else {
-            self.masked(&s.text, style);
-        }
-    }
-
-    /// 押せるリンク付きの文字の要素
-    pub fn element(self, id: impl Into<ElementId>) -> AnyElement {
-        self.element_with(id, None)
-    }
-
-    /// on_spoiler は、隠れているスポイラーを押したときに呼ぶ
-    pub fn element_with(self, id: impl Into<ElementId>, on_spoiler: Option<Rc<dyn Fn(&mut Window, &mut App)>>) -> AnyElement {
-        let id = id.into();
-        if self.links.is_empty()
-            && (self.spoilers.is_empty() || on_spoiler.is_none())
-            && self.mono.is_empty()
-            && self.styles.is_empty()
-        {
-            return gpui::base::SelectableText::new(id, self.text).into_any_element();
-        }
-        let mut styled = StyledText::new(self.text).with_highlights(self.styles);
-        if !self.mono.is_empty() {
-            let family = mono_family();
-            styled = styled.with_font_family_overrides(self.mono.into_iter().map(|r| (r, family.clone())));
-        }
-        let spoilers = if on_spoiler.is_some() { self.spoilers } else { Vec::new() };
-        if self.links.is_empty() && spoilers.is_empty() {
-            return styled.into_any_element();
-        }
-        let (ranges, urls): (Vec<_>, Vec<_>) = self.links.into_iter().unzip();
-        let urls2 = urls.clone();
-        let ranges2 = ranges.clone();
-        let clickable = ranges.iter().cloned().chain(spoilers).collect();
-        InteractiveText::new(id, styled)
-            .on_click(clickable, move |i, window, cx| match urls.get(i) {
-                Some(url) => cx.open_url(url),
-                None => {
-                    if let Some(f) = &on_spoiler {
-                        f(window, cx)
-                    }
-                }
-            })
-            .tooltip(move |ix, window, cx| {
-                let i = ranges2.iter().position(|r| r.contains(&ix))?;
-                Some(gpui::component::tooltip::Tooltip::new(urls2[i].clone()).build(window, cx))
-            })
-            .into_any_element()
-    }
-}
-
-/// 返信のプレビュー用に、本文を記法を解いた1行にする。リンクは色だけで、押せない
-fn preview_rich(content: &str, revealed: bool) -> Rich {
-    let mut r = Rich::default();
-    for block in md::blocks(content) {
-        if !r.text.is_empty() {
-            r.push(" ", None);
-        }
-        let spans = match block {
-            md::Block::Code(code) => vec![md::Span { text: code, style: md::Style { code: true, ..Default::default() } }],
-            md::Block::Text { spans, .. } => spans,
-        };
-        for mut span in spans {
-            // カスタム絵文字は画像を並べられないので :名前: で出す
-            span.text = split_emoji(&span.text)
-                .into_iter()
-                .map(|seg| match seg {
-                    Seg::Text(t) => t.replace('\n', " "),
-                    Seg::Emoji { name, .. } => format!(":{name}:"),
-                })
-                .collect();
-            r.span(&span, revealed);
-        }
-    }
-    r.links.clear();
-    r
-}
-
-/// 埋め込みの本文。URL・[文字](URL) の伏せリンクと、文中の記法（太字・`コード` など）を解釈する
-fn embed_text(id: impl Into<ElementId>, s: &str, size: f32, color: Color32) -> Div {
-    let mut r = Rich::default();
-    for span in md::inline(s) {
-        r.span(&span, true);
-    }
-    div().text_size(z(size)).text_color(color).child(r.element(id))
-}
-
-/// 押すとブラウザで開く1行の文字
-fn embed_line(id: impl Into<ElementId>, s: impl Into<SharedString>, size: f32, color: Color32, url: Option<&str>) -> AnyElement {
-    let t = text(s, size, color);
-    match url {
-        Some(u) => {
-            let u = u.to_string();
-            t.id(id).cursor_pointer().hover(|s| s.underline()).on_click(move |_, _, cx| cx.open_url(&u)).into_any_element()
-        }
-        None => t.into_any_element(),
-    }
-}
 
 /// 動画・画像の右上に重ねるダウンロードのボタン（押したときの動きは呼ぶ側で付ける）
 fn download_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
@@ -334,7 +142,7 @@ impl Root {
         let hovered = self.hover_msg.as_deref() == Some(m.id.as_str());
         let highlight = self.app.editing.as_ref().or(self.app.reply_to.as_ref()).is_some_and(|x| x.id == m.id);
         // ロールは行ごとに複製せず、色を決める間だけ借りる（ロールの多いサーバーで見えている行の数だけ Vec を作っていた）
-        let name_col = m.member.as_ref().and_then(|member| member_role_color(member, self.guild_roles())).unwrap_or(WHITE());
+        let name_col = self.app.message_author_color(m).unwrap_or(WHITE());
         let mut outer = div().flex().flex_col().w_full();
         if new_day {
             if let Some(t) = local_dt(&m.timestamp) {
@@ -417,7 +225,7 @@ impl Root {
                         this.app.open_profile(author.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                         cx.notify();
                     }))
-                    .child(author_name(m).to_string())
+                    .child(self.app.message_author_name(m).to_string())
                     .into_any_element()
             };
             let mut body = div().flex_1().min_w_0();
@@ -451,9 +259,18 @@ impl Root {
                 let t = if hovered { local_dt(&m.timestamp).map(|t| t.format("%H:%M").to_string()).unwrap_or_default() } else { String::new() };
                 div().w(z(40.0)).h(z(22.0)).flex_none().flex().items_center().justify_center().child(text(t, 11.0, FAINT()).part(Part::MessageTime)).into_any_element()
             } else {
-                let url = user_avatar_url(&m.author);
+                let url = self.app.message_author_avatar_url(m);
+                let deco = self.app.message_author_decoration_url(m);
+                self.note_image(&url);
+                if let Some(d) = &deco {
+                    self.note_image(d);
+                }
                 let author = author.clone();
-                avatar(Some(&url), 40.0, m.author.display(), 20.0, name_color(&m.author.id))
+                with_decoration(
+                    avatar(Some(&url), 40.0, self.app.message_author_name(m), 20.0, name_color(&m.author.id)),
+                    40.0,
+                    deco.as_deref(),
+                )
                     .id(SharedString::from(format!("av{}", m.id)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -484,7 +301,7 @@ impl Root {
                                     this.app.open_profile(author.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                                     cx.notify();
                                 }))
-                                .child(author_name(m).to_string()),
+                                .child(self.app.message_author_name(m).to_string()),
                         )
                         .child(text(fmt_time(&m.timestamp), 12.0, FAINT()).part(Part::MessageTime)),
                 );
@@ -553,7 +370,7 @@ impl Root {
                 this.app.open_profile(author.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                 cx.notify();
             }))
-            .child(author_name(m).to_string());
+            .child(self.app.message_author_name(m).to_string());
         let color = if missed { MUTED() } else { GREEN() };
         // アイコンは、ふつうの行のアバターの列（幅 40）の中央に置く
         let left = if compact { div().w(z(COMPACT_TIME_W)).flex_none().flex().justify_end() } else { div().w(z(40.0)).flex_none().flex().justify_center() };
@@ -672,7 +489,7 @@ impl Root {
         let Some(r) = m.referenced_message.as_deref() else {
             return row.child(text("元のメッセージは削除されました", 13.0, FAINT()));
         };
-        let nc = r.member.as_ref().and_then(|member| member_role_color(member, roles)).unwrap_or(TEXT());
+        let nc = self.app.message_author_color(r).unwrap_or(TEXT());
         let mut rich = Rich::default();
         let body = if !r.content.is_empty() {
             let content = resolve_mentions(&r.content, r, &self.app.channels, roles);
@@ -686,7 +503,17 @@ impl Root {
             String::new()
         };
         let author = r.author.clone();
-        row.child(avatar(Some(&user_avatar_url(&r.author)), 16.0, r.author.display(), 8.0, name_color(&r.author.id)))
+        let av_url = self.app.message_author_avatar_url(r);
+        let deco_url = self.app.message_author_decoration_url(r);
+        self.note_image(&av_url);
+        if let Some(d) = &deco_url {
+            self.note_image(d);
+        }
+        row.child(with_decoration(
+            avatar(Some(&av_url), 16.0, self.app.message_author_name(r), 8.0, name_color(&r.author.id)),
+            16.0,
+            deco_url.as_deref(),
+        ))
             .child(
                 div()
                     .id(SharedString::from(format!("rp{}", m.id)))
@@ -701,7 +528,7 @@ impl Root {
                         this.app.open_profile(author.clone(), Bounds::new(p, size(px(0.), px(0.))), false);
                         cx.notify();
                     }))
-                    .child(format!("@{}", author_name(r))),
+                    .child(format!("@{}", self.app.message_author_name(r))),
             )
             .child(if rich.text.is_empty() { line(body, 13.0, MUTED()) } else { div().text_size(z(13.0)).text_color(MUTED()).min_w_0().truncate().child(rich.element(SharedString::from(format!("rb{}", m.id)))) }.flex_1().ml(z(2.0)))
     }

@@ -61,9 +61,7 @@ impl Root {
 
     fn switcher_go(&mut self, target: (Option<String>, Option<String>)) {
         self.app.switcher = None;
-        let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
-        self.app.select(target.0, target.1);
-        self.after_move(before);
+        self.select_place(target.0, target.1);
         self.app.focus_input = true;
     }
 

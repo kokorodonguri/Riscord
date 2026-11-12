@@ -81,6 +81,8 @@ pub struct MsgList {
     pub state: ListState,
     /// 前に渡した行の中身の目印（変わった行だけ測り直す）
     pub keys: Vec<u64>,
+    /// 前に渡した各行のメッセージ ID の目印（先頭・末尾の番兵は 0）
+    pub ids: Vec<u64>,
     /// keys を作ったときの一覧の状態（AppState::msg_rev など）。同じなら keys は作り直さない
     pub stamp: u64,
 }
@@ -103,6 +105,12 @@ pub struct Inputs {
 }
 
 /// ポップアップ（開いている間だけ出す小さなメニュー）
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ResizeTarget {
+    Channels,
+    Members,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum PopMenu {
     Plus,
@@ -123,7 +131,9 @@ pub struct Root {
     pub inp: Inputs,
     pub lists: HashMap<String, MsgList>,
     /// 行の高さに効く設定（変わったら全部測り直す）
-    pub list_key: (u32, u32, bool),
+    pub list_key: (u32, u32, bool, u32, u32),
+    /// ペイン境界のドラッグ状態（対象, 開始マウスX, 開始幅）
+    pub resize_drag: Option<(ResizeTarget, f32, f32)>,
     pub member_list: ListState,
     pub member_key: (String, u64),
     /// マウスが乗っているメッセージ（ツールバーを出す）
@@ -395,7 +405,8 @@ impl Root {
             focus,
             inp,
             lists: HashMap::new(),
-            list_key: (0, 0, false),
+            list_key: (0, 0, false, 0, 0),
+            resize_drag: None,
             member_list: ListState::new(0, ListAlignment::Top, px(400.0)),
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
@@ -548,8 +559,7 @@ impl Root {
         if let Some((gid, cid)) = clicked {
             // 押された通知のチャンネルを開いて、ウィンドウを前に出す
             self.app.settings_open = false;
-            self.pick_guild(gid);
-            self.open_channel(cid);
+            self.select_place(gid, Some(cid));
             window.activate_window();
         }
         self.app.poll_file_pick();
@@ -582,7 +592,13 @@ impl Root {
             cx.drop_image(img, Some(window));
         }
         // 行の高さに効く設定が変わったら測り直す
-        let key = (self.app.settings.font_size.to_bits(), zoom().to_bits(), self.app.settings.compact);
+        let key = (
+            self.app.settings.font_size.to_bits(),
+            zoom().to_bits(),
+            self.app.settings.compact,
+            self.app.channel_pane_width() as u32,
+            self.app.member_pane_width() as u32,
+        );
         if key != self.list_key {
             self.list_key = key;
             for l in self.lists.values() {
@@ -748,17 +764,23 @@ impl Root {
         self.after_nav();
     }
 
-    /// サーバーを選ぶ（None = DM）
+    /// サーバーを選ぶ（None = DM）。最後に開いていたチャンネルを復元する
     pub fn pick_guild(&mut self, g: Option<String>) {
-        let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
-        let a = &mut self.app;
-        if let Some(gid) = &g {
-            a.ensure_guild_channels(gid);
+        if self.app.sel_guild == g && self.app.sel_channel.is_some() {
+            return;
         }
-        if a.sel_guild != g {
-            a.sel_guild = g;
-            a.cache_dirty = true;
-            a.sel_channel = None;
+        let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
+        self.app.pick_guild(g);
+        self.after_move(before);
+    }
+
+    /// 指定したサーバーとチャンネルを直接開く
+    pub fn select_place(&mut self, g: Option<String>, c: Option<String>) {
+        let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
+        if c.is_some() {
+            self.app.select(g, c);
+        } else {
+            self.app.pick_guild(g);
         }
         self.after_move(before);
     }
@@ -939,6 +961,118 @@ impl Root {
         }
         let rx = crate::download::start(url.clone(), filename, kind, self.app.waker.clone());
         self.downloads.push((url, rx));
+    }
+
+    /// チャンネル一覧・メンバー一覧の横幅をドラッグで変える境界ハンドル（ダブルクリックで既定幅 240px に戻す）
+    pub fn pane_resizer(&self, target: ResizeTarget, cx: &mut Context<Self>) -> Stateful<Div> {
+        let active = self.resize_drag.is_some_and(|(t, _, _)| t == target);
+        let (id, group_name) = match target {
+            ResizeTarget::Channels => ("resize_channels", "resize_ch_grp"),
+            ResizeTarget::Members => ("resize_members", "resize_mem_grp"),
+        };
+        let bar = div()
+            .w(z(2.0))
+            .h_full()
+            .bg(if active { BLURPLE() } else { Color32::TRANSPARENT })
+            .group_hover(group_name, |s| s.bg(BLURPLE()));
+        let base = div()
+            .id(id)
+            .group(group_name)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(z(6.0))
+            .flex()
+            .cursor(CursorStyle::ResizeLeftRight)
+            .occlude();
+        let base = match target {
+            ResizeTarget::Channels => base.right_0().justify_end(),
+            ResizeTarget::Members => base.left_0().justify_start(),
+        };
+        let tracker = active.then(|| {
+            let this = self.this.clone();
+            let this2 = self.this.clone();
+            gpui::canvas(
+                |_, _, _| (),
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let Some(e) = this.upgrade() else { return };
+                        e.update(cx, |r, cx| {
+                            let Some((t, start_x, start_w)) = r.resize_drag else { return };
+                            if t != target {
+                                return;
+                            }
+                            if ev.pressed_button != Some(MouseButton::Left) {
+                                r.resize_drag = None;
+                                r.app.save_settings();
+                                cx.notify();
+                                return;
+                            }
+                            let delta = (f32::from(ev.position.x) - start_x) / zoom();
+                            match target {
+                                ResizeTarget::Channels => {
+                                    let max_w = (r.app.screen_w - 360.0).clamp(160.0, 480.0);
+                                    let w = (start_w + delta).clamp(160.0, max_w).round();
+                                    if (r.app.settings.channel_pane_width - w).abs() >= 0.5 {
+                                        r.app.settings.channel_pane_width = w;
+                                        cx.notify();
+                                    }
+                                }
+                                ResizeTarget::Members => {
+                                    let max_w = (r.app.screen_w - 360.0).clamp(180.0, 480.0);
+                                    let w = (start_w - delta).clamp(180.0, max_w).round();
+                                    if (r.app.settings.member_pane_width - w).abs() >= 0.5 {
+                                        r.app.settings.member_pane_width = w;
+                                        cx.notify();
+                                    }
+                                }
+                            }
+                        });
+                    });
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let Some(e) = this2.upgrade() else { return };
+                        e.update(cx, |r, cx| {
+                            if r.resize_drag.take().is_some() {
+                                r.app.save_settings();
+                                cx.notify();
+                            }
+                        });
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        });
+        base.child(bar)
+            .children(tracker)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if ev.click_count >= 2 {
+                        this.resize_drag = None;
+                        match target {
+                            ResizeTarget::Channels => this.app.settings.channel_pane_width = 240.0,
+                            ResizeTarget::Members => this.app.settings.member_pane_width = 240.0,
+                        }
+                        this.app.save_settings();
+                        cx.notify();
+                        return;
+                    }
+                    let start_w = match target {
+                        ResizeTarget::Channels => this.app.channel_pane_width(),
+                        ResizeTarget::Members => this.app.member_pane_width(),
+                    };
+                    this.resize_drag = Some((target, f32::from(ev.position.x), start_w));
+                    cx.notify();
+                }),
+            )
     }
 
     /// テーマで「ウィンドウ全体」に敷く背景画像

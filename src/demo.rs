@@ -20,6 +20,7 @@ fn user(id: &str, name: &str) -> User {
         avatar: None,
         premium_type: None,
         bot: false,
+        avatar_decoration_data: None,
     }
 }
 
@@ -193,6 +194,8 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                         .map(|u| Member {
                             user: Some(u.clone()),
                             nick: None,
+                            avatar: None,
+                            avatar_decoration_data: None,
                             roles: if u.id == "2" {
                                 vec!["500".into()]
                             } else {

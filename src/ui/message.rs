@@ -8,9 +8,9 @@ use gpui::*;
 
 use super::*;
 use crate::app::{
-    author_name, embed_big_media, emoji_url, find_links, fit_size, fmt_time, is_reply, local_dt,
-    member_role_color, name_color, resized, resolve_mentions, rgb, split_emoji, user_avatar_url,
-    Seg, StickerState,
+    author_name, decoration_for, embed_big_media, emoji_url, find_links, fit_size, fmt_time,
+    is_reply, local_dt, member_avatar_url, member_role_color, name_color, resized,
+    resolve_mentions, rgb, split_emoji, user_avatar_url, Seg, StickerState,
 };
 use crate::color::Color32;
 use crate::images::{self as imgs, Img};
@@ -655,14 +655,22 @@ impl Root {
                     .child(text(t, 11.0, FAINT()).part(Part::MessageTime))
                     .into_any_element()
             } else {
-                let url = user_avatar_url(&m.author);
+                let url = match self.app.sel_guild.as_deref() {
+                    Some(g) => member_avatar_url(g, &m.author, m.member.as_ref()),
+                    None => user_avatar_url(&m.author),
+                };
+                let deco = decoration_for(&m.author, m.member.as_ref());
                 let author = author.clone();
-                avatar(
-                    Some(&url),
+                with_decoration(
+                    avatar(
+                        Some(&url),
+                        40.0,
+                        m.author.display(),
+                        20.0,
+                        name_color(&m.author.id),
+                    ),
                     40.0,
-                    m.author.display(),
-                    20.0,
-                    name_color(&m.author.id),
+                    deco.as_deref(),
                 )
                 .id(SharedString::from(format!("av{}", m.id)))
                 .cursor_pointer()
@@ -1078,8 +1086,12 @@ impl Root {
             String::new()
         };
         let author = r.author.clone();
+        let reply_av = match self.app.sel_guild.as_deref() {
+            Some(g) => member_avatar_url(g, &r.author, r.member.as_ref()),
+            None => user_avatar_url(&r.author),
+        };
         row.child(avatar(
-            Some(&user_avatar_url(&r.author)),
+            Some(&reply_av),
             16.0,
             r.author.display(),
             8.0,

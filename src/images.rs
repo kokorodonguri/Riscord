@@ -240,11 +240,13 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
 /// アイコン（ユーザー・サーバー・グループ DM）はディスクにも控え、次の起動ですぐ出す。
 /// URL にハッシュが入っていて中身が変わらないので、期限なしで使ってよい
 fn disk_path(uri: &str) -> Option<std::path::PathBuf> {
-    const KEPT: [&str; 4] = [
+    const KEPT: [&str; 6] = [
         "https://cdn.discordapp.com/avatars/",
         "https://cdn.discordapp.com/embed/avatars/",
         "https://cdn.discordapp.com/icons/",
         "https://cdn.discordapp.com/channel-icons/",
+        "https://cdn.discordapp.com/avatar-decoration-presets/",
+        "https://cdn.discordapp.com/guilds/",
     ];
     if !KEPT.iter().any(|k| uri.starts_with(k)) {
         return None;

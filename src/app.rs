@@ -434,6 +434,38 @@ pub fn user_avatar_url(u: &User) -> String {
     }
 }
 
+/// CDN のハッシュ（英数字と _）だけを URL に入れる
+fn cdn_hash(h: &str) -> Option<&str> {
+    (!h.is_empty() && h.len() <= 64 && h.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then_some(h)
+}
+
+/// サーバー別のアバター。なければユーザーのアバター（動くアバターも軽くするため静止画で取る）
+pub fn member_avatar_url(guild_id: &str, user: &User, member: Option<&Member>) -> String {
+    match member.and_then(|m| m.avatar.as_deref()).and_then(cdn_hash) {
+        Some(h) => format!(
+            "https://cdn.discordapp.com/guilds/{guild_id}/users/{}/avatars/{h}.png?size=80",
+            user.id
+        ),
+        None => user_avatar_url(user),
+    }
+}
+
+/// アバターデコレーションの画像（静止画。動く版は CPU とメモリを使うので取らない）
+pub fn decoration_url(asset: &str) -> Option<String> {
+    cdn_hash(asset).map(|a| {
+        format!("https://cdn.discordapp.com/avatar-decoration-presets/{a}.png?size=96&passthrough=false")
+    })
+}
+
+/// メンバー（サーバー別 → ユーザー）か、ユーザーのデコレーション
+pub fn decoration_for(user: &User, member: Option<&Member>) -> Option<String> {
+    member
+        .and_then(Member::decoration_asset)
+        .or_else(|| user.decoration_asset())
+        .and_then(decoration_url)
+}
+
 pub fn guild_icon_url(g: &Guild) -> Option<String> {
     g.icon.as_ref().map(|h| {
         format!(

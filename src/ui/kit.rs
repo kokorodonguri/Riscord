@@ -85,6 +85,23 @@ pub fn loaded(uri: &str) -> Option<std::sync::Arc<RenderImage>> {
     }
 }
 
+/// アバターにデコレーション（周りの枠）を重ねる。画像がまだなら何も重ねない
+pub fn with_decoration(av: Div, size: f32, deco_url: Option<&str>) -> Div {
+    let Some(i) = deco_url.and_then(loaded) else {
+        return av;
+    };
+    // 枠はアバターより 2 割大きく、中心を合わせる
+    let off = -size * 0.1;
+    div().relative().flex_none().size(z(size)).child(av).child(
+        div()
+            .absolute()
+            .left(z(off))
+            .top(z(off))
+            .size(z(size * 1.2))
+            .child(img(i).size_full().object_fit(ObjectFit::Contain)),
+    )
+}
+
 /// 画像が読めればそれを、無理なら頭文字入りの図形を出す
 pub fn avatar(url: Option<&str>, size: f32, fallback: &str, radius: f32, bg: Color32) -> Div {
     let base = div().size(z(size)).flex_none().rounded(z(radius));

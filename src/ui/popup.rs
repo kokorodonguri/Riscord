@@ -5,8 +5,8 @@ use gpui::*;
 
 use super::*;
 use crate::app::{
-    darken, local_dt, name_color, rgb, snowflake_date, status_label, user_avatar_url, MemberAction,
-    ProfileState, STATUSES,
+    darken, decoration_for, local_dt, member_avatar_url, name_color, rgb, snowflake_date,
+    status_label, user_avatar_url, MemberAction, ProfileState, STATUSES,
 };
 use crate::color::Color32;
 use crate::model::ProfileData;
@@ -824,18 +824,30 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .child(with_status(
-                avatar(
-                    Some(&user_avatar_url(&user)),
+            .child({
+                // サーバーで開いたときは、サーバー別のアバターとデコレーションを使う
+                let member = pp.guild_id.as_deref().and_then(|g| {
+                    self.app
+                        .members
+                        .get(g)?
+                        .iter()
+                        .find(|m| m.user.as_ref().is_some_and(|u| u.id == user.id))
+                });
+                let av_url = match pp.guild_id.as_deref() {
+                    Some(g) => member_avatar_url(g, &user, member),
+                    None => user_avatar_url(&user),
+                };
+                with_status(
+                    with_decoration(
+                        avatar(Some(&av_url), 80.0, user.display(), 40.0, BLURPLE()),
+                        80.0,
+                        decoration_for(&user, member).as_deref(),
+                    ),
                     80.0,
-                    user.display(),
-                    40.0,
-                    BLURPLE(),
-                ),
-                80.0,
-                &status,
-                ring,
-            ));
+                    &status,
+                    ring,
+                )
+            });
         let name = data
             .as_ref()
             .and_then(|d| d.nick.clone())

@@ -50,8 +50,11 @@ fn member_chunks_preserve_order_and_latest_updates() {
             avatar: None,
             premium_type: None,
             bot: false,
+            avatar_decoration_data: None,
         }),
         nick: None,
+        avatar: None,
+        avatar_decoration_data: None,
         roles: Vec::new(),
     };
     tx.send(Event::GuildMembers(
@@ -69,6 +72,8 @@ fn member_chunks_preserve_order_and_latest_updates() {
             Member {
                 user: None,
                 nick: None,
+                avatar: None,
+                avatar_decoration_data: None,
                 roles: vec![],
             },
         ],
@@ -97,8 +102,11 @@ fn member_index_reuses_then_expires_and_handles_interleaved_guilds() {
             avatar: None,
             premium_type: None,
             bot: false,
+            avatar_decoration_data: None,
         }),
         nick: None,
+        avatar: None,
+        avatar_decoration_data: None,
         roles: vec![],
     };
     tx.send(Event::GuildMembers("a".into(), vec![member("1", "old")]))
@@ -846,8 +854,11 @@ fn server_member_list_headers_use_group_counts() {
                 avatar: None,
                 premium_type: None,
                 bot: false,
+                avatar_decoration_data: None,
             }),
             nick: None,
+            avatar: None,
+            avatar_decoration_data: None,
             roles: vec![],
         })
         .collect();
@@ -889,6 +900,7 @@ fn snapshot_restores_recent_conversation_and_refreshes_it() {
         avatar: None,
         premium_type: None,
         bot: false,
+        avatar_decoration_data: None,
     });
     let s = app.build_snapshot().expect("snapshot");
     assert_eq!(s.messages.len(), 1);
@@ -945,6 +957,7 @@ fn login_failure_with_snapshot_keeps_view_and_retries() {
         avatar: None,
         premium_type: None,
         bot: false,
+        avatar_decoration_data: None,
     });
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -986,6 +999,7 @@ fn snapshot_is_tied_to_account() {
         avatar: None,
         premium_type: None,
         bot: false,
+        avatar_decoration_data: None,
     });
     app.token_owner = cache::token_owner(&tok("123456789012345678", "old.sig"));
     let bytes = serde_json::to_vec(&app.build_snapshot().unwrap()).unwrap();
@@ -1054,6 +1068,7 @@ fn own_presence_is_stored_under_my_id() {
         avatar: None,
         premium_type: None,
         bot: false,
+        avatar_decoration_data: None,
     });
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1122,6 +1137,7 @@ fn mentions_are_counted_per_server() {
         avatar: None,
         premium_type: None,
         bot: false,
+        avatar_decoration_data: None,
     });
     tx.send(Event::ReadyExtra(serde_json::json!({
         "my_roles": { "g": ["r1"] },
@@ -1920,4 +1936,43 @@ fn pane_widths_leave_room_for_chat_and_persist() {
     assert_eq!(loaded.channel_pane_width, app.settings.channel_pane_width);
     assert_eq!(loaded.member_pane_width, app.settings.member_pane_width);
     let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+}
+
+#[test]
+fn avatar_and_decoration_urls_resolve_user_and_guild_overrides() {
+    let user: User = serde_json::from_value(serde_json::json!({
+        "id": "10", "username": "u", "avatar": "a_abc",
+        "avatar_decoration_data": {"asset": "a_userdeco"}
+    }))
+    .unwrap();
+    let member: Member = serde_json::from_value(serde_json::json!({
+        "nick": "n", "avatar": "guildav", "avatar_decoration_data": {"asset": "guilddeco"}
+    }))
+    .unwrap();
+    // サーバー別のアバターとデコレーションが優先。どちらも静止画で取る
+    assert_eq!(
+        member_avatar_url("1", &user, Some(&member)),
+        "https://cdn.discordapp.com/guilds/1/users/10/avatars/guildav.png?size=80"
+    );
+    assert!(decoration_for(&user, Some(&member))
+        .unwrap()
+        .contains("/avatar-decoration-presets/guilddeco.png"));
+    // サーバー別がなければユーザーのもの
+    assert_eq!(member_avatar_url("1", &user, None), user_avatar_url(&user));
+    let plain: Member = serde_json::from_value(serde_json::json!({"roles": []})).unwrap();
+    assert!(decoration_for(&user, Some(&plain))
+        .unwrap()
+        .contains("a_userdeco.png?size=96&passthrough=false"));
+    // URL に入れられない値は使わない
+    let bad: Member = serde_json::from_value(
+        serde_json::json!({"avatar": "../x", "avatar_decoration_data": {"asset": "a/b"}}),
+    )
+    .unwrap();
+    assert_eq!(
+        member_avatar_url("1", &user, Some(&bad)),
+        user_avatar_url(&user)
+    );
+    let nobody: User =
+        serde_json::from_value(serde_json::json!({"id": "11", "username": "x"})).unwrap();
+    assert!(decoration_for(&nobody, Some(&bad)).is_none());
 }

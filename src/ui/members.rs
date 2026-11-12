@@ -4,8 +4,9 @@ use gpui::*;
 
 use super::*;
 use crate::app::{
-    darken, emoji_url, member_role_color, name_color, rgb, snowflake_date, split_emoji,
-    user_avatar_url, MemberListCache, MemberRow, ProfileState, Seg, MEMBER_HEAD_H, MEMBER_ROW_H,
+    darken, decoration_for, emoji_url, member_avatar_url, member_role_color, name_color, rgb,
+    snowflake_date, split_emoji, user_avatar_url, MemberListCache, MemberRow, ProfileState, Seg,
+    MEMBER_HEAD_H, MEMBER_ROW_H,
 };
 use crate::model::{ProfileData, User};
 
@@ -136,13 +137,13 @@ impl Root {
                 let offline = presence.is_none_or(|p| p.status == "offline");
                 let color = member_role_color(member, roles).unwrap_or(TEXT());
                 let name = member.display().to_string();
+                let av_url = member_avatar_url(&gid, &user, Some(member));
+                let deco = decoration_for(&user, Some(member));
                 let av = with_status(
-                    avatar(
-                        Some(&user_avatar_url(&user)),
+                    with_decoration(
+                        avatar(Some(&av_url), 32.0, &name, 16.0, name_color(&user.id)),
                         32.0,
-                        &name,
-                        16.0,
-                        name_color(&user.id),
+                        deco.as_deref(),
                     ),
                     32.0,
                     presence.map_or("offline", |p| p.status.as_str()),
@@ -243,12 +244,16 @@ impl Root {
             .items_center()
             .justify_center()
             .child(with_status(
-                avatar(
-                    Some(&user_avatar_url(u)),
+                with_decoration(
+                    avatar(
+                        Some(&user_avatar_url(u)),
+                        80.0,
+                        u.display(),
+                        40.0,
+                        name_color(&u.id),
+                    ),
                     80.0,
-                    u.display(),
-                    40.0,
-                    name_color(&u.id),
+                    decoration_for(u, None).as_deref(),
                 ),
                 80.0,
                 &status,

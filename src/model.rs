@@ -20,6 +20,13 @@ pub struct ProfileData {
     pub roles: Vec<(String, u32)>,
 }
 
+/// アバターデコレーション（アイコンの周りに重ねる枠）
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct AvatarDecorationData {
+    #[serde(default)]
+    pub asset: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 pub struct User {
     pub id: String,
@@ -33,11 +40,20 @@ pub struct User {
     pub premium_type: Option<u8>,
     #[serde(default)]
     pub bot: bool,
+    #[serde(default)]
+    pub avatar_decoration_data: Option<AvatarDecorationData>,
 }
 
 impl User {
     pub fn display(&self) -> &str {
         self.global_name.as_deref().unwrap_or(&self.username)
+    }
+
+    pub fn decoration_asset(&self) -> Option<&str> {
+        self.avatar_decoration_data
+            .as_ref()
+            .map(|d| d.asset.as_str())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -83,6 +99,12 @@ pub struct Member {
     pub user: Option<User>,
     #[serde(default)]
     pub nick: Option<String>,
+    /// サーバー別のアバター
+    #[serde(default)]
+    pub avatar: Option<String>,
+    /// サーバー別のアバターデコレーション
+    #[serde(default)]
+    pub avatar_decoration_data: Option<AvatarDecorationData>,
     #[serde(default)]
     pub roles: Vec<String>,
 }
@@ -93,6 +115,15 @@ impl Member {
             .as_deref()
             .or_else(|| self.user.as_ref().map(User::display))
             .unwrap_or("")
+    }
+
+    /// サーバー別のデコレーション。なければユーザーのもの
+    pub fn decoration_asset(&self) -> Option<&str> {
+        self.avatar_decoration_data
+            .as_ref()
+            .map(|d| d.asset.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.user.as_ref().and_then(User::decoration_asset))
     }
 }
 

@@ -750,20 +750,51 @@ impl Root {
                         let cat_id = cat.id.clone();
                         let cat_gid = gid.clone();
                         let can_edit = a.may_edit_channel_permissions(gid, &cat_id);
+                        let collapsed = a.is_category_collapsed(&cat.id);
+                        let toggle_id = cat.id.clone();
                         rows.push(
                             div()
+                                .id(SharedString::from(format!("cat{}", cat.id)))
+                                .group("cat")
                                 .mt(z(14.0))
                                 .h(z(20.0))
                                 .flex_none()
-                                .pl(z(16.0))
+                                .pl(z(2.0))
                                 .flex()
                                 .items_center()
+                                .gap(z(2.0))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.app.toggle_category(&toggle_id);
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .w(z(12.0))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            icon(
+                                                if collapsed {
+                                                    IconName::ChevronRight
+                                                } else {
+                                                    IconName::ChevronDown
+                                                },
+                                                12.0,
+                                                FAINT(),
+                                            )
+                                            .group_hover("cat", |s| s.text_color(TEXT())),
+                                        ),
+                                )
                                 .child(
                                     line(
                                         cat.name.as_deref().unwrap_or("").to_uppercase(),
                                         12.0,
                                         FAINT(),
                                     )
+                                    .group_hover("cat", |s| s.text_color(TEXT()))
                                     .part(Part::SidebarCategory)
                                     .flex_1()
                                     .min_w_0(),
@@ -780,6 +811,8 @@ impl Root {
                                         .tooltip(tip("カテゴリの権限"))
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
+                                                // 見出しのクリック（開閉）まで届かせない
+                                                cx.stop_propagation();
                                                 this.app
                                                     .open_channel_permissions(&cat_gid, &cat_id);
                                                 cx.notify();
@@ -791,7 +824,14 @@ impl Root {
                         );
                         if let Some(l) = by_parent.get(cat.id.as_str()) {
                             for c in l {
-                                self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                                if !collapsed
+                                    || a.channel_visible_in_collapsed_category(
+                                        c,
+                                        cur_voice.as_deref(),
+                                    )
+                                {
+                                    self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                                }
                             }
                         }
                     }

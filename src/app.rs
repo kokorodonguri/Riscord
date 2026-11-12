@@ -151,6 +151,8 @@ pub struct Settings {
     /// Riscord の中だけの並びで、Discord の設定には書かない
     pub guild_order: Vec<String>,
     pub guild_folders: Vec<GuildFolder>,
+    /// 閉じているチャンネルカテゴリ
+    pub collapsed_categories: std::collections::BTreeSet<String>,
 }
 
 impl Default for Settings {
@@ -181,6 +183,7 @@ impl Default for Settings {
             self_deaf: false,
             guild_order: Vec::new(),
             guild_folders: Vec::new(),
+            collapsed_categories: Default::default(),
         }
     }
 }
@@ -4327,6 +4330,31 @@ impl App {
         self.start(token);
     }
 
+    /// チャンネルカテゴリが閉じているか
+    pub fn is_category_collapsed(&self, id: &str) -> bool {
+        self.settings.collapsed_categories.contains(id)
+    }
+
+    /// チャンネルカテゴリの開閉を切り替えて保存する
+    pub fn toggle_category(&mut self, id: &str) {
+        if !self.settings.collapsed_categories.remove(id) {
+            self.settings.collapsed_categories.insert(id.to_string());
+        }
+        self.save_settings();
+    }
+
+    /// 閉じたカテゴリの中でも出し続けるチャンネルか（選択中・未読あり・人がいるボイスチャンネル）
+    pub fn channel_visible_in_collapsed_category(
+        &self,
+        c: &Channel,
+        cur_voice: Option<&str>,
+    ) -> bool {
+        self.sel_channel.as_deref() == Some(c.id.as_str())
+            || self.unread.contains_key(&c.id)
+            || (c.is_voice()
+                && (cur_voice == Some(c.id.as_str()) || self.voice_members(&c.id).next().is_some()))
+    }
+
     pub fn sidebar_order(&self) -> Vec<String> {
         match &self.sel_guild {
             None => self.dms.iter().map(|c| c.id.clone()).collect(),
@@ -4343,9 +4371,15 @@ impl App {
                     chs.iter().filter(|c| c.kind == Channel::CATEGORY).collect();
                 cats.sort_by_key(|c| c.position);
                 for cat in cats {
+                    let collapsed = self.is_category_collapsed(&cat.id);
                     out.extend(
                         chs.iter()
-                            .filter(|c| c.is_text() && c.parent_id.as_deref() == Some(&cat.id))
+                            .filter(|c| {
+                                c.is_text()
+                                    && c.parent_id.as_deref() == Some(&cat.id)
+                                    && (!collapsed
+                                        || self.channel_visible_in_collapsed_category(c, None))
+                            })
                             .map(|c| c.id.clone()),
                     );
                 }

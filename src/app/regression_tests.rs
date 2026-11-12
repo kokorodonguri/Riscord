@@ -1753,3 +1753,66 @@ fn friend_success_during_refresh_triggers_a_fresh_snapshot() {
     );
     assert_eq!(app.friends.relationships[0].kind, 1);
 }
+
+#[test]
+fn category_collapse_hides_normal_channels_and_keeps_selected_or_unread() {
+    let profile = "category-collapse-test";
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+    let mut app = App::default();
+    app.set_profile(Some(profile.into()));
+    app.sel_guild = Some("g1".into());
+    let ch = |id: &str, kind: u8, pos: i32, parent: Option<&str>| -> Channel {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "type": kind, "name": id, "position": pos, "parent_id": parent,
+        }))
+        .unwrap()
+    };
+    let (c1, c2, v1) = (
+        ch("c1", 0, 0, Some("cat1")),
+        ch("c2", 0, 1, Some("cat1")),
+        ch("v1", 2, 0, Some("cat1")),
+    );
+    app.channels.insert(
+        "g1".into(),
+        vec![
+            ch("cat1", 4, 0, None),
+            c1.clone(),
+            c2.clone(),
+            ch("c3", 0, 2, Some("cat1")),
+            v1.clone(),
+        ],
+    );
+    assert_eq!(app.sidebar_order(), ["c1", "c2", "c3"]);
+    app.toggle_category("cat1");
+    assert!(app.is_category_collapsed("cat1"));
+    assert!(load_settings(Some(profile))
+        .collapsed_categories
+        .contains("cat1"));
+    assert!(app.sidebar_order().is_empty());
+    assert!(!app.channel_visible_in_collapsed_category(&c1, None));
+    assert!(!app.channel_visible_in_collapsed_category(&v1, None));
+    // 選択中・未読あり・人がいるボイスチャンネルは閉じていても出す
+    app.sel_channel = Some("c1".into());
+    assert!(app.channel_visible_in_collapsed_category(&c1, None));
+    app.unread.insert("c2".into(), None);
+    assert!(app.channel_visible_in_collapsed_category(&c2, None));
+    assert_eq!(app.sidebar_order(), ["c1", "c2"]);
+    assert!(app.channel_visible_in_collapsed_category(&v1, Some("v1")));
+    app.voice_states.insert(
+        "u1".into(),
+        model::VoiceState {
+            user_id: "u1".into(),
+            channel_id: Some("v1".into()),
+            guild_id: Some("g1".into()),
+            user: None,
+            self_mute: false,
+            self_deaf: false,
+            self_stream: false,
+        },
+    );
+    app.reindex_voice();
+    assert!(app.channel_visible_in_collapsed_category(&v1, None));
+    app.toggle_category("cat1");
+    assert!(!app.is_category_collapsed("cat1"));
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+}

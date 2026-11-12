@@ -21,6 +21,7 @@ mod settings;
 mod sidebar;
 mod soundboard;
 mod split;
+mod voice_stage;
 
 use std::cell::Cell;
 use std::collections::HashMap;

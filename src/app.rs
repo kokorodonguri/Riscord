@@ -1394,6 +1394,8 @@ pub struct App {
     pub member_action_pending: Option<(u64, &'static str)>,
     /// サウンドボードの一覧（開いているとき）と、自分が最後に鳴らした音
     pub soundboard: Option<Soundboard>,
+    /// ボイスチャンネルの画面（招待・アクティビティの案内・接続の失敗）
+    pub voice_view: VoiceView,
     pub recent_sound: Option<(String, std::time::Instant)>,
     pub friends: Friends,
     pub poll_draft: Option<PollDraft>,
@@ -2704,11 +2706,22 @@ impl App {
                     match st {
                         VoiceStatus::Disconnected => self.voice_status = None,
                         VoiceStatus::Error(e) => {
+                            // どのチャンネルでつなげなかったかを、ボイスの画面に出す
+                            if let Some((g, c, _)) = self.voice_channel() {
+                                self.voice_view.error = Some((
+                                    g.clone(),
+                                    c.clone(),
+                                    "ボイスに接続できませんでした".into(),
+                                ));
+                            }
                             self.voice_status = None;
                             eprintln!("ボイス接続失敗: {e}");
                             self.status = "エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。".into();
                         }
                         st => {
+                            if matches!(st, VoiceStatus::Connected { .. }) {
+                                self.voice_view.error = None;
+                            }
                             if let (VoiceStatus::Connected { channel_id, .. }, Some(me)) =
                                 (&st, &self.me)
                             {
@@ -3014,6 +3027,10 @@ impl App {
         }
         if self.is_soundboard_request(id) {
             self.soundboard_result(id, result);
+            return;
+        }
+        if self.is_voice_view_request(id) {
+            self.voice_view_result(id, result);
             return;
         }
         if self.is_boost_request(id) {
@@ -4308,13 +4325,14 @@ impl App {
         }
         self.unread.remove(&id);
         self.mention_counts.remove(&id);
-        // フォーラムにはメッセージが無い（投稿の一覧は ensure_forum が読む）
-        let forum = self
+        // フォーラムにはメッセージが無い（投稿の一覧は ensure_forum が読む）。
+        // ボイスチャンネルは専用の画面を出し、チャットは読まない
+        let no_messages = self
             .sel_guild
             .as_deref()
             .and_then(|g| self.find_guild_channel(g, &id))
-            .is_some_and(|c| c.is_forum());
-        if !forum && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id)) {
+            .is_some_and(|c| c.is_forum() || c.is_voice());
+        if !no_messages && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id)) {
             self.load_messages(id.clone());
         }
         self.touch_channel(&id);
@@ -4820,6 +4838,7 @@ impl App {
     }
 
     pub fn join_voice(&mut self, guild_id: Option<String>, channel_id: String, ring: bool) {
+        self.voice_view.error = None;
         self.voice_status = Some(VoiceStatus::Connecting {
             guild_id: guild_id.clone(),
             channel_id: channel_id.clone(),
@@ -4833,6 +4852,7 @@ impl App {
     }
 
     pub fn leave_voice(&mut self) {
+        self.voice_view.error = None;
         self.voice_status = None;
         self.my_stream = None;
         self.stream_viewers.clear();
@@ -5239,8 +5259,10 @@ mod official_folders;
 mod server_settings;
 pub use server_settings::SettingsTab;
 mod soundboard;
+mod voice_view;
 pub use moderation::{MemberAction, ModTab, ServerModeration};
 pub use soundboard::{Sound, Soundboard};
+pub use voice_view::{invite_link, VoiceView};
 mod commands;
 mod jump;
 mod pins;

@@ -357,6 +357,8 @@ impl Root {
         v.extend(self.channel_create_dialog(cx));
         v.extend(self.guild_profile_dialog(cx));
         v.extend(self.soundboard_dialog(cx));
+        v.extend(self.voice_invite_dialog(cx));
+        v.extend(self.voice_activity_dialog(cx));
         v.extend(self.leave_dialog(cx));
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
@@ -475,6 +477,13 @@ impl Root {
             &cname,
             cx,
         ));
+        // サーバーのボイスチャンネルは、チャットの代わりに専用の画面
+        if let Some(c) = cur
+            .as_ref()
+            .filter(|c| c.is_voice() && self.app.sel_guild.is_some())
+        {
+            return col.child(self.voice_stage(c, cx));
+        }
         if let (None, Some(c)) = (&self.app.sel_guild, &cur) {
             col = col.children(self.call_area(&c.id, cx));
         }
@@ -610,6 +619,8 @@ impl Root {
             } else {
                 av
             });
+        } else if c.is_voice() {
+            left = left.child(icon(IconName::Volume2, 20.0, FAINT()));
         } else {
             left = left.child(text(prefix, 22.0, FAINT()));
         }
@@ -807,7 +818,7 @@ impl Root {
     }
 
     /// 視聴中の画面共有（チャット欄の上に出す）
-    fn stream_view(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn stream_view(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (key, phase) = self.app.watching.clone()?;
         let uid = crate::golive::key_user(&key)
             .unwrap_or_default()

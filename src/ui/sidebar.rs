@@ -933,9 +933,11 @@ impl Root {
         let id = c.id.clone();
         if c.is_voice() {
             let here = cur_voice == Some(c.id.as_str());
+            // 開いているだけ（未参加）のときも、開いている印を付ける
+            let open = here || a.sel_channel.as_deref() == Some(c.id.as_str());
             let gid = gid.to_string();
             rows.push(
-                row_frame(SharedString::from(format!("ch{}", c.id)), 34.0, here, false)
+                row_frame(SharedString::from(format!("ch{}", c.id)), 34.0, open, false)
                     .tooltip(tip(if here {
                         "接続しています"
                     } else {
@@ -944,8 +946,9 @@ impl Root {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !here {
                             this.app.join_voice(Some(gid.clone()), id.clone(), false);
-                            cx.notify();
                         }
+                        this.open_channel(id.clone());
+                        cx.notify();
                     }))
                     .child(div().w(z(34.0)).flex().justify_center().child(icon(
                         IconName::Volume2,
@@ -953,7 +956,7 @@ impl Root {
                         MUTED(),
                     )))
                     .child(
-                        line(name, 15.0, row_color(here, false))
+                        line(name, 15.0, row_color(open, false))
                             .group_hover("row", |s| s.text_color(TEXT())),
                     )
                     .into_any_element(),
@@ -1085,7 +1088,12 @@ impl Root {
         {
             let (cname, place) = a.voice_place(gid.as_deref(), &cid);
             let in_guild = gid.is_some();
-            let color = if connected { GREEN() } else { ORANGE() };
+            // 通話はつながっていても、ゲートウェイが再接続中なら「接続済み」と出さない
+            let (label, color) = match (connected, a.gateway_ok()) {
+                (true, true) => ("ボイス接続済み", GREEN()),
+                (true, false) => ("再接続中…", ORANGE()),
+                (false, _) => ("接続中…", ORANGE()),
+            };
             card = card.child(
                 div()
                     .h(z(44.0))
@@ -1103,15 +1111,7 @@ impl Root {
                                     .items_center()
                                     .gap(z(6.0))
                                     .child(icon(IconName::SignalHigh, 16.0, color))
-                                    .child(medium(
-                                        if connected {
-                                            "ボイス接続済み"
-                                        } else {
-                                            "接続中…"
-                                        },
-                                        14.0,
-                                        color,
-                                    )),
+                                    .child(medium(label, 14.0, color)),
                             )
                             .child(
                                 div()
@@ -1132,9 +1132,8 @@ impl Root {
                                             a.sel_guild = gid.clone();
                                             a.sel_channel = None;
                                         }
-                                        if gid.is_none() {
-                                            a.open_channel(cid.clone());
-                                        }
+                                        // サーバーのボイスチャンネルも、そのチャンネルの画面を開く
+                                        a.open_channel(cid.clone());
                                         this.after_move(before);
                                         cx.notify();
                                     }))
@@ -1153,25 +1152,35 @@ impl Root {
                     })
                     .when(connected, |d| {
                         let sharing = a.my_stream.is_some();
+                        let b = icon_button(
+                            "screenshare",
+                            if sharing {
+                                IconName::MonitorOff
+                            } else {
+                                IconName::MonitorUp
+                            },
+                            32.0,
+                        );
+                        // 画面共有ができない OS では、押せないことをはっきり見せる
+                        if !super::voice_stage::SCREEN_SHARE {
+                            return d.child(
+                                b.opacity(0.4)
+                                    .cursor_default()
+                                    .tooltip(tip(super::voice_stage::SCREEN_SHARE_UNSUPPORTED)),
+                            );
+                        }
                         d.child(
-                            icon_button(
-                                "screenshare",
-                                if sharing {
-                                    IconName::MonitorOff
-                                } else {
-                                    IconName::MonitorUp
-                                },
-                                32.0,
-                            )
-                            .tooltip(tip(if sharing {
+                            b.tooltip(tip(if sharing {
                                 "画面共有を停止"
                             } else {
                                 "画面を共有"
                             }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.app.toggle_stream();
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.app.toggle_stream();
+                                    cx.notify();
+                                },
+                            )),
                         )
                     })
                     .child(
@@ -1218,6 +1227,44 @@ impl Root {
                 );
             }
             card = card.child(div().my(z(6.0)).child(hline(DIVIDER())));
+        } else if let Some((gid, cid, msg)) = a.voice_view.error.clone() {
+            // つなげなかったときは、黙って消さずに理由と再試行を出す
+            let (cname, _) = a.voice_place(gid.as_deref(), &cid);
+            card = card
+                .child(
+                    div()
+                        .h(z(44.0))
+                        .flex()
+                        .items_center()
+                        .gap(z(6.0))
+                        .child(icon(IconName::CircleAlert, 16.0, RED()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(medium(msg, 14.0, RED()))
+                                .child(line(cname, 12.0, MUTED())),
+                        )
+                        .child(
+                            icon_button("voice_retry", IconName::RefreshCw, 32.0)
+                                .tooltip(tip("再試行"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.app.join_voice(gid.clone(), cid.clone(), false);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            icon_button("voice_error_close", IconName::X, 32.0)
+                                .tooltip(tip("閉じる"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.app.voice_view.error = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(div().my(z(6.0)).child(hline(DIVIDER())));
         }
         let mut row = div().h(z(40.0)).w_full().flex().items_center();
         if let Some(me) = &a.me {

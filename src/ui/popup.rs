@@ -474,33 +474,11 @@ impl Root {
             item("gm_settings", IconName::Settings, "サーバー設定").on_click(cx.listener(
                 move |this, _, _, cx| {
                     close(this);
-                    this.app.open_guild_editor(&settings_gid);
+                    this.app.open_server_settings(&settings_gid);
                     cx.notify();
                 },
             )),
         );
-        let role_gid = gid.clone();
-        col = col.child(
-            item("gm_roles", IconName::Settings, "ロールを確認・管理").on_click(cx.listener(
-                move |this, _, _, cx| {
-                    close(this);
-                    this.app.open_role_admin(&role_gid);
-                    cx.notify();
-                },
-            )),
-        );
-        if self.app.can_moderate_guild(&gid) {
-            let mod_gid = gid.clone();
-            col = col.child(
-                item("gm_moderation", IconName::Settings, "サーバー管理").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        close(this);
-                        this.app.open_moderation(&mod_gid);
-                        cx.notify();
-                    },
-                )),
-            );
-        }
         if self.app.can_open_mod_tab(&gid, crate::app::ModTab::Events) {
             let g1 = gid.clone();
             col = col.child(

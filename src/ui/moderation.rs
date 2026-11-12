@@ -18,6 +18,19 @@ fn field(label: &'static str, child: impl IntoElement) -> Div {
 
 impl Root {
     pub fn moderation_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // サーバー設定の画面の中で出しているときは、そちらで描く
+        if self.app.server_settings.is_some() {
+            return None;
+        }
+        self.moderation_view(false, cx)
+    }
+
+    /// 監査ログ・BAN・招待・イベント・AutoMod の中身。embedded = サーバー設定の画面の右側に出す（枠・題・タブを付けない）
+    pub fn moderation_view(
+        &mut self,
+        embedded: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let m = self.app.moderation.as_ref()?;
         let width = (self.app.screen_w - 32.0).clamp(0.0, 640.0);
         let height = (self.pane_h - 200.0).clamp(100.0, 560.0);
@@ -29,53 +42,57 @@ impl Root {
             .find(|g| g.id == m.guild_id)
             .map(|g| g.name.clone())
             .unwrap_or_default();
-        let mut content = card(SIDEBAR(), BORDER(), 8.0)
-            .w(z(width))
-            .max_h(z((self.pane_h - 32.0).max(100.0)))
-            .p(z(16.0))
-            .flex()
-            .flex_col()
-            .gap(z(8.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(z(6.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(medium("サーバー管理", 20.0, WHITE()))
-                            .child(line(guild_name, 13.0, MUTED())),
-                    )
-                    .child(
-                        icon_button("moderation_reload", IconName::RefreshCw, 28.0)
-                            .tooltip(tip("再読み込み"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this
-                                    .app
-                                    .moderation
-                                    .as_ref()
-                                    .is_some_and(|m| m.mutation.is_none())
-                                {
-                                    this.app.reload_moderation();
-                                }
+        let mut content = if embedded {
+            div().flex_1().min_w_0().flex().flex_col().gap(z(8.0))
+        } else {
+            card(SIDEBAR(), BORDER(), 8.0)
+                .w(z(width))
+                .max_h(z((self.pane_h - 32.0).max(100.0)))
+                .p(z(16.0))
+                .flex()
+                .flex_col()
+                .gap(z(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(z(6.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(medium("サーバー管理", 20.0, WHITE()))
+                                .child(line(guild_name, 13.0, MUTED())),
+                        )
+                        .child(
+                            icon_button("moderation_reload", IconName::RefreshCw, 28.0)
+                                .tooltip(tip("再読み込み"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this
+                                        .app
+                                        .moderation
+                                        .as_ref()
+                                        .is_some_and(|m| m.mutation.is_none())
+                                    {
+                                        this.app.reload_moderation();
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(icon_button("moderation_close", IconName::X, 28.0).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.app.close_moderation();
                                 cx.notify();
-                            })),
-                    )
-                    .child(icon_button("moderation_close", IconName::X, 28.0).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.app.close_moderation();
-                            cx.notify();
-                        }),
-                    )),
-            );
+                            }),
+                        )),
+                )
+        };
 
         let mut tabs = div().flex().flex_wrap().gap(z(4.0));
         for tab in ModTab::ALL {
-            if !self.app.can_open_mod_tab(&m.guild_id, tab) {
+            if embedded || !self.app.can_open_mod_tab(&m.guild_id, tab) {
                 continue;
             }
             tabs = tabs.child(
@@ -92,7 +109,9 @@ impl Root {
                 })),
             );
         }
-        content = content.child(tabs);
+        if !embedded {
+            content = content.child(tabs);
+        }
         if let Some(e) = &m.error {
             content = content.child(text(e.clone(), 13.0, RED()));
         }
@@ -153,6 +172,9 @@ impl Root {
                 _ => {}
             }
             content = content.child(self.moderation_rows(height, busy, cx));
+        }
+        if embedded {
+            return Some(content.into_any_element());
         }
         let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.app.close_moderation();

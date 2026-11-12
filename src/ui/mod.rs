@@ -14,6 +14,7 @@ mod moderation;
 mod panel;
 mod popup;
 mod role_admin;
+mod server_settings;
 mod settings;
 mod sidebar;
 mod soundboard;

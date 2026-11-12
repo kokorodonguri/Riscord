@@ -353,6 +353,7 @@ impl Root {
         v.extend(self.folder_dialog(cx));
         v.extend(self.role_admin_dialog(cx));
         v.extend(self.moderation_dialog(cx));
+        v.extend(self.server_settings_dialog(cx));
         v.extend(self.soundboard_dialog(cx));
         v.extend(self.leave_dialog(cx));
         if self.app.settings_open {

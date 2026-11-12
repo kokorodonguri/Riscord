@@ -616,30 +616,8 @@ impl App {
         self.may(guild_id, tab.permission())
     }
 
-    /// サーバー管理画面への入口を出すか
-    pub fn can_moderate_guild(&self, guild_id: &str) -> bool {
-        ModTab::ALL
-            .iter()
-            .any(|t| self.can_open_mod_tab(guild_id, *t))
-    }
-
     pub fn can_member_action(&self, guild_id: &str, action: MemberAction) -> bool {
         self.may(guild_id, action.permission())
-    }
-
-    pub fn open_moderation(&mut self, guild_id: &str) {
-        if !self.guilds.iter().any(|g| g.id == guild_id) {
-            return;
-        }
-        let Some(tab) = ModTab::ALL
-            .into_iter()
-            .find(|t| self.can_open_mod_tab(guild_id, *t))
-        else {
-            self.show_toast("サーバーを管理する権限がありません");
-            return;
-        };
-        self.moderation = Some(ServerModeration::new(guild_id.to_owned(), tab));
-        self.reload_moderation();
     }
 
     /// イベントの作成画面を開く（サーバーのメニューの「イベントを作成」）
@@ -647,12 +625,17 @@ impl App {
         if !self.can_open_mod_tab(guild_id, ModTab::Events) {
             return;
         }
-        if !self.guilds.iter().any(|g| g.id == guild_id) {
+        self.open_moderation_tab(guild_id, ModTab::Events);
+        self.start_event_draft(None);
+    }
+
+    /// 指定したタブで開く（ほかのタブの一覧は取りに行かない）
+    pub fn open_moderation_tab(&mut self, guild_id: &str, tab: ModTab) {
+        if !self.guilds.iter().any(|g| g.id == guild_id) || !self.can_open_mod_tab(guild_id, tab) {
             return;
         }
-        self.moderation = Some(ServerModeration::new(guild_id.to_owned(), ModTab::Events));
+        self.moderation = Some(ServerModeration::new(guild_id.to_owned(), tab));
         self.reload_moderation();
-        self.start_event_draft(None);
     }
 
     pub fn close_moderation(&mut self) {
@@ -1118,20 +1101,19 @@ mod tests {
     }
 
     #[test]
-    fn tabs_follow_permissions_and_open_first_allowed() {
+    fn tabs_follow_permissions() {
         let (mut app, mut rx) = app(BAN_MEMBERS);
-        assert!(app.can_moderate_guild("1"));
         assert!(!app.can_open_mod_tab("1", ModTab::Audit));
-        app.open_moderation("1");
+        app.open_moderation_tab("1", ModTab::Audit);
+        assert!(app.moderation.is_none(), "権限のないタブでは開かない");
+        app.open_moderation_tab("1", ModTab::Bans);
         assert_eq!(app.moderation.as_ref().unwrap().tab, ModTab::Bans);
         assert!(matches!(next(&mut rx).1, net::ApiCall::GetBans(_)));
         // 権限のないタブには切り替えない
         app.set_mod_tab(ModTab::Audit);
         assert_eq!(app.moderation.as_ref().unwrap().tab, ModTab::Bans);
-        let (mut none, _) = self::app(0);
-        assert!(!none.can_moderate_guild("1"));
-        none.open_moderation("1");
-        assert!(none.moderation.is_none());
+        let (none, _) = self::app(0);
+        assert!(ModTab::ALL.iter().all(|t| !none.can_open_mod_tab("1", *t)));
         let (admin, _) = self::app(ADMINISTRATOR);
         assert!(ModTab::ALL.iter().all(|t| admin.can_open_mod_tab("1", *t)));
     }
@@ -1157,7 +1139,7 @@ mod tests {
     #[test]
     fn unban_needs_confirmation_and_reloads_after_success() {
         let (mut app, mut rx) = app(BAN_MEMBERS);
-        app.open_moderation("1");
+        app.open_moderation_tab("1", ModTab::Bans);
         let (id, _) = next(&mut rx);
         app.moderation_result(
             id,
@@ -1190,7 +1172,7 @@ mod tests {
     #[test]
     fn malformed_lists_are_errors_not_empty() {
         let (mut app, mut rx) = app(MANAGE_GUILD);
-        app.open_moderation("1");
+        app.open_moderation_tab("1", ModTab::Invites);
         let (id, _) = next(&mut rx);
         app.moderation_result(id, Ok(serde_json::json!([{"code":"../x"}])));
         let m = app.moderation.as_ref().unwrap();
@@ -1200,7 +1182,7 @@ mod tests {
     #[test]
     fn audit_log_pages_with_before_cursor() {
         let (mut app, mut rx) = app(VIEW_AUDIT_LOG);
-        app.open_moderation("1");
+        app.open_moderation_tab("1", ModTab::Audit);
         let (id, _) = next(&mut rx);
         let entries: Vec<_> = (0..AUDIT_PAGE)
             .map(|i| serde_json::json!({"id":(1000 - i).to_string(),"user_id":"10","action_type":22,"target_id":"55"}))
@@ -1307,9 +1289,7 @@ mod tests {
     #[test]
     fn rule_toggle_sends_opposite_state() {
         let (mut app, mut rx) = app(MANAGE_GUILD);
-        app.open_moderation("1");
-        next(&mut rx);
-        app.set_mod_tab(ModTab::AutoMod);
+        app.open_moderation_tab("1", ModTab::AutoMod);
         let (id, _) = next(&mut rx);
         app.moderation_result(
             id,

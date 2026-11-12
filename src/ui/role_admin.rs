@@ -64,6 +64,19 @@ pub(super) const PERMISSIONS: &[(u32, &str)] = &[
 
 impl Root {
     pub fn role_admin_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // サーバー設定の画面の中で出しているときは、そちらで描く
+        if self.app.server_settings.is_some() {
+            return None;
+        }
+        self.role_admin_view(false, cx)
+    }
+
+    /// ロール・サーバー設定・チャンネル権限の中身。embedded = サーバー設定の画面の右側に出す（枠と題を付けない）
+    pub fn role_admin_view(
+        &mut self,
+        embedded: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let a = self.app.role_admin.as_ref()?;
         let width = (self.app.screen_w - 32.0).clamp(0.0, 620.0);
         let height = (self.pane_h - 120.0).clamp(100.0, 600.0);
@@ -86,7 +99,9 @@ impl Root {
         } else {
             self.app.can_manage_roles()
         };
-        let mut content =
+        let mut content = if embedded {
+            div().flex_1().min_w_0().flex().flex_col().gap(z(8.0))
+        } else {
             card(SIDEBAR(), BORDER(), 8.0)
                 .w(z(width))
                 .max_h(z((self.pane_h - 32.0).max(100.0)))
@@ -128,7 +143,8 @@ impl Root {
                                 cx.notify();
                             }),
                         )),
-                );
+                )
+        };
         if let Some(error) = &a.error {
             content = content.child(
                 div()
@@ -164,18 +180,7 @@ impl Root {
         }
         if a.channel_permissions.is_some() {
             content = content.child(self.channel_permissions_form(height, cx));
-            let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                if this
-                    .app
-                    .role_admin
-                    .as_ref()
-                    .is_some_and(|a| a.mutation.is_none())
-                {
-                    this.app.role_admin = None;
-                }
-                cx.notify();
-            });
-            return Some(modal("role-admin-modal", content, close, 170).into_any_element());
+            return Some(self.role_admin_frame(content, embedded, cx));
         }
         if a.editing_guild {
             if let Some(draft) = &a.guild_edit {
@@ -313,18 +318,7 @@ impl Root {
                     ),
                 );
             }
-            let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                if this
-                    .app
-                    .role_admin
-                    .as_ref()
-                    .is_some_and(|a| a.mutation.is_none())
-                {
-                    this.app.role_admin = None;
-                }
-                cx.notify();
-            });
-            return Some(modal("role-admin-modal", content, close, 170).into_any_element());
+            return Some(self.role_admin_frame(content, embedded, cx));
         }
         if let Some(target) = &a.target {
             content = content.child(text(target.name.clone(), 15.0, WHITE()));
@@ -390,18 +384,7 @@ impl Root {
                 }
                 content = content.child(list);
             }
-            let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                if this
-                    .app
-                    .role_admin
-                    .as_ref()
-                    .is_some_and(|a| a.mutation.is_none())
-                {
-                    this.app.role_admin = None;
-                }
-                cx.notify();
-            });
-            return Some(modal("role-admin-modal", content, close, 170).into_any_element());
+            return Some(self.role_admin_frame(content, embedded, cx));
         }
         if let Some(draft) = &a.draft {
             let editable = self.app.role_draft_editable();
@@ -650,6 +633,13 @@ impl Root {
                 })),
             );
         }
+        Some(self.role_admin_frame(content, embedded, cx))
+    }
+
+    fn role_admin_frame(&self, content: Div, embedded: bool, cx: &mut Context<Self>) -> AnyElement {
+        if embedded {
+            return content.into_any_element();
+        }
         let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             if this
                 .app
@@ -661,6 +651,6 @@ impl Root {
             }
             cx.notify();
         });
-        Some(modal("role-admin-modal", content, close, 170).into_any_element())
+        modal("role-admin-modal", content, close, 170).into_any_element()
     }
 }

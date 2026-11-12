@@ -1375,6 +1375,8 @@ pub struct App {
     pub role_admin: Option<RoleAdmin>,
     /// サーバー管理画面（監査ログ・BAN・招待・イベント・AutoMod）
     pub moderation: Option<ServerModeration>,
+    /// サーバー設定の画面（サーバー, 開いているタブ）。中身は role_admin / moderation を使う
+    pub server_settings: Option<(String, SettingsTab)>,
     /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
     pub member_action_confirm: Option<String>,
     pub member_action_pending: Option<(u64, &'static str)>,
@@ -3896,6 +3898,9 @@ impl App {
         if self.moderation.as_ref().is_some_and(|m| m.guild_id == gid) {
             self.moderation = None;
         }
+        if self.server_settings.as_ref().is_some_and(|(g, _)| g == gid) {
+            self.server_settings = None;
+        }
         if self.settings.last_channels.remove(gid).is_some() {
             self.save_settings();
         }
@@ -5137,6 +5142,8 @@ pub use friends::{FriendAction, Friends};
 mod authors;
 mod moderation;
 mod official_folders;
+mod server_settings;
+pub use server_settings::SettingsTab;
 mod soundboard;
 pub use moderation::{MemberAction, ModTab, ServerModeration};
 pub use soundboard::{Sound, Soundboard};

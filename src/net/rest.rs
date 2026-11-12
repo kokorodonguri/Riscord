@@ -84,6 +84,10 @@ pub enum ApiCall {
         around: Option<String>,
         limit: u32,
     },
+    GetMessage {
+        channel_id: String,
+        message_id: String,
+    },
     /// content / embeds / message_reference / sticker_ids / poll など
     SendMessage {
         channel_id: String,
@@ -545,6 +549,10 @@ impl ApiCall {
                     ("around", some(around))
                 ])
             )),
+            GetMessage {
+                channel_id,
+                message_id,
+            } => get(format!("/channels/{channel_id}/messages/{message_id}")),
             SendMessage { channel_id, body } => {
                 post(format!("/channels/{channel_id}/messages"), body.clone())
             }
@@ -704,7 +712,7 @@ impl ApiCall {
                 answer_ids,
             } => put(
                 format!("/channels/{channel_id}/polls/{message_id}/answers/@me"),
-                json!({ "answer_ids": answer_ids.iter().map(|a| a.to_string()).collect::<Vec<_>>() }),
+                json!({ "answer_ids": answer_ids }),
             ),
             EndPoll {
                 channel_id,
@@ -1019,6 +1027,21 @@ pub const FORWARDED_EVENTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poll_vote_route_uses_integer_answer_ids_and_empty_clears() {
+        for ids in [vec![1, 3], vec![]] {
+            let (method, path, body) = ApiCall::VotePoll {
+                channel_id: "1".into(),
+                message_id: "2".into(),
+                answer_ids: ids.clone(),
+            }
+            .route();
+            assert_eq!(method, Method::PUT);
+            assert_eq!(path, "/channels/1/polls/2/answers/@me");
+            assert_eq!(body, Some(json!({"answer_ids": ids})));
+        }
+    }
 
     #[test]
     fn routes() {

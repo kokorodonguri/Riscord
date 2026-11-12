@@ -1430,15 +1430,39 @@ impl Root {
                         )
                     })
                     .unwrap_or_default();
+                let cid = m.channel_id.clone();
+                let mid = m.id.clone();
+                let answer_id = answer.answer_id;
+                let pending = self
+                    .app
+                    .pending_poll_votes
+                    .contains(&(cid.clone(), mid.clone()));
+                let ended = poll
+                    .expiry
+                    .as_deref()
+                    .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                    .is_some_and(|end| end <= chrono::Utc::now());
+                let enabled =
+                    poll.results.as_ref().is_some_and(|r| !r.is_finalized) && !pending && !ended;
                 card = card.child(
                     div()
+                        .id(SharedString::from(format!("poll-{}-{answer_id}", m.id)))
                         .flex()
                         .gap(z(12.0))
+                        .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(HOVER())))
                         .child(text(label, 14.0, TEXT()).flex_1())
-                        .child(text(count, 12.0, MUTED())),
+                        .child(text(count, 12.0, MUTED()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if enabled {
+                                this.app.toggle_poll_vote(&cid, &mid, answer_id);
+                                cx.notify();
+                            }
+                        })),
                 );
             }
-            card = card.child(text("投票への回答はまだできません", 12.0, MUTED()));
+            if poll.results.is_none() {
+                card = card.child(text("投票結果を取得できませんでした", 12.0, MUTED()));
+            }
             col = col.child(card);
         }
         for (i, a) in m.attachments.iter().enumerate() {

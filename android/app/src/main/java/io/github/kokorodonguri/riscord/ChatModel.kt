@@ -39,6 +39,7 @@ data class ChatState(
     val guild: JSONObject? = null, val channel: JSONObject? = null,
     val messages: List<JSONObject> = emptyList(), val loading: Boolean = false, val channelLoadFailed:Boolean=false, val messageLoadFailed:Boolean=false,
     val homeLoading:Boolean=false, val homeLoadFailed:Boolean=false,
+    val pendingPollVotes:Set<String> = emptySet(),
     val sending: Boolean = false, val error: String? = null, val connection: String = "未接続",
     val ticket: String? = null, val qr: JSONObject? = null, val loginBusy: Boolean = false,
     val drafts: Map<String, String> = emptyMap(), val reply: JSONObject? = null,
@@ -306,6 +307,14 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 if (msg.optString("id") != d.optString("id")) msg else JSONObject(msg.toString()).apply { d.keys().forEach { key -> put(key, d.get(key)) } }
             }) }
             "MESSAGE_DELETE" -> state.update { old -> old.copy(messages = old.messages.filterNot { it.optString("id") == d.optString("id") && it.optString("channel_id") == d.optString("channel_id") }) }
+            "MESSAGE_POLL_VOTE_ADD", "MESSAGE_POLL_VOTE_REMOVE" -> {
+                val added=v.optString("t")=="MESSAGE_POLL_VOTE_ADD"
+                val mine=d.optString("user_id")==state.value.me?.optString("id")
+                state.update { old -> old.copy(messages=old.messages.map { msg ->
+                    if(msg.optString("id")!=d.optString("message_id") || msg.optString("channel_id")!=d.optString("channel_id")) msg
+                    else applyPollVote(msg,d.optInt("answer_id"),added,mine)
+                }) }
+            }
             "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE" -> {
                 val added=v.optString("t")=="MESSAGE_REACTION_ADD"
                 val mine=d.optString("user_id")==state.value.me?.optString("id")
@@ -703,6 +712,29 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         rest(reactionPath(message,emoji),"PUT",JSONObject())
     }
     /** 付いているリアクションを押したとき。自分が付けていれば外し、なければ付ける */
+    fun togglePollVote(message:JSONObject,answerId:Int) {
+        val channel=message.optString("channel_id"); val id=message.optString("id")
+        val key="$channel:$id"; val poll=message.optJSONObject("poll") ?: return
+        val results=poll.optJSONObject("results") ?: return
+        if(results.optBoolean("is_finalized") || key in state.value.pendingPollVotes) return
+        val expiry=poll.nonNull("expiry")?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant() }.getOrNull() }
+        if(expiry!=null && !expiry.isAfter(java.time.Instant.now())) return
+        if(poll.optJSONArray("answers")?.objects().orEmpty().none {it.optInt("answer_id")==answerId}) return
+        val selected=results.optJSONArray("answer_counts")?.objects().orEmpty().filter {it.optBoolean("me_voted")}.map {it.optInt("id")}.toMutableList()
+        if(answerId in selected) selected.remove(answerId) else { if(!poll.optBoolean("allow_multiselect")) selected.clear(); selected.add(answerId) }
+        state.update {it.copy(pendingPollVotes=it.pendingPollVotes+key)}
+        val session=handle
+        task {
+            try {
+                rest("/channels/$channel/polls/$id/answers/@me","PUT",JSONObject().put("answer_ids",JSONArray(selected)))
+                val fresh=rest("/channels/$channel/messages/$id") as JSONObject
+                if(session==handle) state.update { old -> old.copy(messages=old.messages.map { current ->
+                    if(current.optString("id")==id && current.optString("channel_id")==channel) fresh else current
+                }) }
+            } finally { if(session==handle) state.update {it.copy(pendingPollVotes=it.pendingPollVotes-key)} }
+        }
+    }
+
     fun toggleReaction(message: JSONObject, reaction: JSONObject) = task {
         val emoji=reaction.optJSONObject("emoji") ?: return@task
         val key=emoji.nonNull("id")?.let { "${emoji.optString("name")}:$it" } ?: emoji.optString("name")
@@ -761,5 +793,23 @@ internal fun applyReaction(message:JSONObject,emoji:JSONObject,added:Boolean,min
         if(count<=0) list.removeAt(index) else list[index]=JSONObject(list[index].toString()).put("count",count).put("me",list[index].optBoolean("me")&&!mine)
     }
     copy.put("reactions",JSONArray(list))
+    return copy
+}
+
+/** Apply a poll gateway event only when the server supplied a known count snapshot. */
+internal fun applyPollVote(message:JSONObject,answerId:Int,added:Boolean,mine:Boolean):JSONObject {
+    val copy=JSONObject(message.toString()); val poll=copy.optJSONObject("poll") ?: return message
+    val results=poll.optJSONObject("results") ?: return message
+    if(results.optBoolean("is_finalized") || poll.optJSONArray("answers")?.objects().orEmpty().none {it.optInt("answer_id")==answerId}) return message
+    val counts=results.optJSONArray("answer_counts") ?: JSONArray().also {results.put("answer_counts",it)}
+    var count=counts.objects().firstOrNull {it.optInt("id")==answerId}
+    if(count==null) {
+        if(!added) return message
+        count=JSONObject().put("id",answerId).put("count",0).put("me_voted",false)
+        counts.put(count)
+    }
+    if(mine && count.optBoolean("me_voted")==added) return message
+    count.put("count",(count.optLong("count")+if(added) 1 else -1).coerceAtLeast(0))
+    if(mine) count.put("me_voted",added)
     return copy
 }

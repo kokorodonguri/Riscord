@@ -684,6 +684,81 @@ pub struct Poll {
     pub results: Option<PollResults>,
 }
 
+impl Poll {
+    /// Gateway の票の増減を既知の集計に反映する。不明な集計は推測しない。
+    pub fn apply_vote(&mut self, answer_id: u32, added: bool, mine: bool) -> bool {
+        if !self
+            .answers
+            .iter()
+            .any(|answer| answer.answer_id == answer_id)
+        {
+            return false;
+        }
+        let Some(results) = self.results.as_mut() else {
+            return false;
+        };
+        if results.is_finalized {
+            return false;
+        }
+        let index = match results
+            .answer_counts
+            .iter()
+            .position(|count| count.id == answer_id)
+        {
+            Some(index) => index,
+            None if added => {
+                results.answer_counts.push(PollAnswerCount {
+                    id: answer_id,
+                    count: 0,
+                    me_voted: false,
+                });
+                results.answer_counts.len() - 1
+            }
+            None => return false,
+        };
+        let count = &mut results.answer_counts[index];
+        if mine && count.me_voted == added {
+            return false;
+        }
+        count.count = if added {
+            count.count.saturating_add(1)
+        } else {
+            count.count.saturating_sub(1)
+        };
+        if mine {
+            count.me_voted = added;
+        }
+        true
+    }
+
+    /// 現在の回答をもとに選択を切り替える。結果が不明なときは既存の回答を失わない。
+    pub fn toggled_answers(&self, answer_id: u32) -> Option<Vec<u32>> {
+        if !self
+            .answers
+            .iter()
+            .any(|answer| answer.answer_id == answer_id)
+        {
+            return None;
+        }
+        let results = self.results.as_ref()?;
+        let mut selected: Vec<u32> = results
+            .answer_counts
+            .iter()
+            .filter(|count| count.me_voted)
+            .map(|count| count.id)
+            .collect();
+        if selected.contains(&answer_id) {
+            selected.retain(|id| *id != answer_id);
+        } else {
+            if !self.allow_multiselect {
+                selected.clear();
+            }
+            selected.push(answer_id);
+        }
+        Some(selected)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Hash)]
 pub struct PollMedia {
     #[serde(default)]
@@ -1156,6 +1231,42 @@ mod layout_hash_tests {
         assert_eq!(list.len(), 1);
         assert!(apply_reaction(&mut list, ReactionOp::RemoveAll));
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn poll_gateway_votes_update_known_counts_and_ignore_duplicate_self_events() {
+        let mut poll: Poll = serde_json::from_value(serde_json::json!({
+            "question": {"text":"Q"}, "answers": [{"answer_id":1,"poll_media":{"text":"A"}}],
+            "results": {"answer_counts":[]}
+        }))
+        .unwrap();
+        assert!(poll.apply_vote(1, true, true));
+        assert!(!poll.apply_vote(1, true, true));
+        assert!(poll.apply_vote(1, true, false));
+        let count = &poll.results.as_ref().unwrap().answer_counts[0];
+        assert_eq!((count.count, count.me_voted), (2, true));
+        assert!(poll.apply_vote(1, false, true));
+        assert!(!poll.apply_vote(1, false, true));
+        assert_eq!(poll.results.as_ref().unwrap().answer_counts[0].count, 1);
+        assert!(!poll.apply_vote(42, true, false));
+        poll.results = None;
+        assert!(!poll.apply_vote(1, true, false));
+    }
+
+    #[test]
+    fn poll_selection_preserves_existing_votes_and_handles_unknown_results() {
+        let mut poll: Poll = serde_json::from_value(serde_json::json!({
+            "question": {"text":"Q"}, "allow_multiselect": true,
+            "answers": [{"answer_id":1,"poll_media":{"text":"A"}}, {"answer_id":2,"poll_media":{"text":"B"}}],
+            "results": {"answer_counts":[{"id":1,"count":1,"me_voted":true}]}
+        })).unwrap();
+        assert_eq!(poll.toggled_answers(2), Some(vec![1, 2]));
+        assert_eq!(poll.toggled_answers(1), Some(vec![]));
+        assert_eq!(poll.toggled_answers(99), None);
+        poll.allow_multiselect = false;
+        assert_eq!(poll.toggled_answers(2), Some(vec![2]));
+        poll.results = None;
+        assert_eq!(poll.toggled_answers(2), None);
     }
 
     #[test]

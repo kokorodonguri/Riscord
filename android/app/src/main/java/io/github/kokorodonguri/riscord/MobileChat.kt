@@ -78,7 +78,7 @@ import java.time.Duration
                     val grouped=!dateChanged && message.optJSONObject("referenced_message")==null && older?.optJSONObject("author")?.optString("id")==message.optJSONObject("author")?.optString("id") && runCatching {Duration.between(messageInstant(older!!),messageInstant(message)).seconds in 0..300}.getOrDefault(false)
                     Column {
                         if(dateChanged) DateDivider(messageDate(message))
-                        MobileMessage(message,grouped,{focusManager.clearFocus();keyboard?.hide();selected=message},{model.toggleReaction(message,it)})
+                        MobileMessage(message,grouped,{focusManager.clearFocus();keyboard?.hide();selected=message},{model.toggleReaction(message,it)},s.pendingPollVotes.contains("${message.optString("channel_id")}:${message.optString("id")}"),{model.togglePollVote(message,it)})
                     }
                 }
                 item("older") {
@@ -120,7 +120,7 @@ import java.time.Duration
     }
 }
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun MobileMessage(message:JSONObject,grouped:Boolean,onLongPress:()->Unit,onReaction:(JSONObject)->Unit) {
+@Composable private fun MobileMessage(message:JSONObject,grouped:Boolean,onLongPress:()->Unit,onReaction:(JSONObject)->Unit,pollPending:Boolean,onPollVote:(Int)->Unit) {
     val author=message.optJSONObject("author") ?: JSONObject()
     val context=LocalContext.current
     Row(Modifier.fillMaxWidth().combinedClickable(onClick={},onLongClick=onLongPress,onLongClickLabel="メッセージ操作").padding(start=12.dp,end=16.dp,top=if(grouped) 2.dp else 12.dp,bottom=2.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -153,12 +153,14 @@ import java.time.Duration
                             val count=counts.firstOrNull {it.optInt("id")==answer.optInt("answer_id")}
                             val emoji=media?.optJSONObject("emoji")?.optString("name").orEmpty()
                             val label=media?.optString("text").orEmpty()
-                            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                            val expired=poll.nonNull("expiry")?.let { runCatching { !java.time.OffsetDateTime.parse(it).toInstant().isAfter(java.time.Instant.now()) }.getOrDefault(false) } ?: false
+                            val enabled=poll.optJSONObject("results")?.optBoolean("is_finalized") == false && !expired && !pollPending
+                            Row(Modifier.fillMaxWidth().clickable(enabled=enabled) {onPollVote(answer.optInt("answer_id"))}.padding(vertical=4.dp),horizontalArrangement=Arrangement.SpaceBetween) {
                                 Text("$emoji $label",modifier=Modifier.weight(1f),fontSize=13.sp)
                                 if(count!=null) Text("${count.optInt("count")} 票${if(count.optBoolean("me_voted")) " · 回答済み" else ""}",fontSize=12.sp,color=MobileMuted)
                             }
                         }
-                        Text("投票への回答はまだできません",fontSize=11.sp,color=MobileMuted)
+                        if(poll.optJSONObject("results")==null) Text("投票結果を取得できませんでした",fontSize=11.sp,color=MobileMuted)
                     }
                 }
             }

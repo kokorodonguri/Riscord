@@ -977,6 +977,12 @@ pub enum MessageChange {
         id: String,
         op: model::ReactionOp,
     },
+    PollVote {
+        id: String,
+        answer: u32,
+        added: bool,
+        mine: bool,
+    },
 }
 
 impl MessageChange {
@@ -1012,6 +1018,20 @@ impl MessageChange {
                 }
             }
             Self::Delete(id) => messages.retain(|m| m.id != id),
+            Self::PollVote {
+                id,
+                answer,
+                added,
+                mine,
+            } => {
+                if let Some(poll) = messages
+                    .iter_mut()
+                    .find(|m| m.id == id)
+                    .and_then(|m| m.poll.as_mut())
+                {
+                    poll.apply_vote(answer, added, mine);
+                }
+            }
             Self::Reaction { id, op } => {
                 if let Some(message) = messages.iter_mut().find(|m| m.id == id) {
                     model::apply_reaction(&mut message.reactions, op);
@@ -1082,6 +1102,7 @@ pub struct App {
     pub pending_message_loads: HashMap<String, Vec<MessageChange>>,
     /// 自分で押したリアクションの API 呼び出し（id → チャンネル・メッセージ・当てた操作）。失敗したら戻す
     pub pending_reactions: HashMap<u64, (String, String, model::ReactionOp)>,
+    pub pending_poll_votes: HashSet<(String, String)>,
     /// チャンネルごとに表示した添付・埋め込み画像の URI。チャンネルを捨てるときに画像キャッシュも解放する
     pub channel_images: HashMap<String, HashSet<String>>,
     /// 未読チャンネル → 所属サーバー（DMならNone）
@@ -2133,7 +2154,10 @@ impl App {
                                     let already_changed =
                                         changes.iter().any(|change| match change {
                                             MessageChange::Update { id, .. }
-                                            | MessageChange::Delete(id) => id == &original.id,
+                                            | MessageChange::Delete(id)
+                                            | MessageChange::PollVote { id, .. } => {
+                                                id == &original.id
+                                            }
                                             _ => false,
                                         });
                                     if !already_changed && message.id == original.id {
@@ -2792,6 +2816,54 @@ impl App {
             A::GetUserCommands => return self.on_commands_loaded("u".into(), result),
             A::Interaction(body) => return self.on_interaction_sent(body, result),
             A::LeaveThread(t) => return self.on_thread_join_result(t, false, result),
+            A::VotePoll {
+                channel_id,
+                message_id,
+                ..
+            } => {
+                if let Err(e) = result {
+                    self.pending_poll_votes.remove(&(channel_id, message_id));
+                    eprintln!("投票できませんでした: {e}");
+                    self.show_toast("投票できませんでした");
+                } else {
+                    self.api(A::GetMessage {
+                        channel_id,
+                        message_id,
+                    });
+                }
+                self.bump_msgs();
+                return;
+            }
+            A::GetMessage {
+                channel_id,
+                message_id,
+            } => {
+                self.pending_poll_votes
+                    .remove(&(channel_id.clone(), message_id.clone()));
+                match result {
+                    Ok(value) => {
+                        if let Ok(fresh) = serde_json::from_value::<Message>(value) {
+                            if fresh.channel_id == channel_id && fresh.id == message_id {
+                                if let Some(existing) =
+                                    self.messages.get_mut(&channel_id).and_then(|messages| {
+                                        messages.iter_mut().find(|m| m.id == message_id)
+                                    })
+                                {
+                                    if let Some(poll) = fresh.poll {
+                                        existing.poll = Some(poll);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("投票結果を更新できませんでした: {e}");
+                        self.show_toast("投票結果を更新できませんでした");
+                    }
+                }
+                self.bump_msgs();
+                return;
+            }
             A::AddReaction { .. } | A::RemoveReaction { .. } => {
                 let pending = self.pending_reactions.remove(&id);
                 if let (Err(e), Some((cid, mid, op))) = (result, pending) {
@@ -2838,6 +2910,42 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub fn toggle_poll_vote(&mut self, channel: &str, message: &str, answer: u32) {
+        let key = (channel.to_owned(), message.to_owned());
+        if self.pending_poll_votes.contains(&key) {
+            return;
+        }
+        let ids = self
+            .messages
+            .get(channel)
+            .and_then(|items| items.iter().find(|m| m.id == message))
+            .and_then(|m| m.poll.as_ref())
+            .and_then(|poll| {
+                let expired = poll
+                    .expiry
+                    .as_deref()
+                    .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                    .is_some_and(|end| end <= chrono::Utc::now());
+                if expired || poll.results.as_ref().is_some_and(|r| r.is_finalized) {
+                    None
+                } else {
+                    poll.toggled_answers(answer)
+                }
+            });
+        let Some(answer_ids) = ids else { return };
+        if self.backend.is_none() {
+            self.show_toast("接続していません");
+            return;
+        }
+        self.pending_poll_votes.insert(key);
+        self.api(net::ApiCall::VotePoll {
+            channel_id: channel.into(),
+            message_id: message.into(),
+            answer_ids,
+        });
+        self.bump_msgs();
     }
 
     /// MESSAGE_REACTION_ADD / _ADD_MANY / _REMOVE / _REMOVE_ALL / _REMOVE_EMOJI
@@ -3020,6 +3128,34 @@ impl App {
 
     fn on_gateway_event(&mut self, t: &str, mut d: serde_json::Value) {
         match t {
+            "MESSAGE_POLL_VOTE_ADD" | "MESSAGE_POLL_VOTE_REMOVE" => {
+                if let (Some(channel), Some(message), Some(answer), Some(user)) = (
+                    d["channel_id"].as_str(),
+                    d["message_id"].as_str(),
+                    d["answer_id"].as_u64().and_then(|n| u32::try_from(n).ok()),
+                    d["user_id"].as_str(),
+                ) {
+                    let added = t == "MESSAGE_POLL_VOTE_ADD";
+                    let mine = self.me.as_ref().is_some_and(|me| me.id == user);
+                    if let Some(changes) = self.pending_message_loads.get_mut(channel) {
+                        changes.push(MessageChange::PollVote {
+                            id: message.into(),
+                            answer,
+                            added,
+                            mine,
+                        });
+                    }
+                    if self
+                        .messages
+                        .get_mut(channel)
+                        .and_then(|items| items.iter_mut().find(|m| m.id == message))
+                        .and_then(|m| m.poll.as_mut())
+                        .is_some_and(|poll| poll.apply_vote(answer, added, mine))
+                    {
+                        self.bump_msgs();
+                    }
+                }
+            }
             "CHANNEL_PINS_UPDATE" => self.on_channel_pins_update(&d),
             t if t.starts_with("MESSAGE_REACTION_") => self.on_reaction_event(t, &d),
             "INTERACTION_CREATE"

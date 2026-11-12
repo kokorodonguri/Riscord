@@ -1431,3 +1431,94 @@ fn viewing_already_acked_channel_clears_leftover_unread_marks() {
     assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
     assert!(rx.try_recv().is_err(), "既読は送り直さない");
 }
+
+#[test]
+fn poll_vote_waits_for_refresh_and_rejects_duplicate_clicks() {
+    use crate::net::ApiCall;
+    let mut app = bench_app(1);
+    let (_, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.messages.get_mut("c").unwrap()[0].poll = Some(
+        serde_json::from_value(serde_json::json!({
+            "question": {"text":"Q"}, "answers": [{"answer_id":1,"poll_media":{"text":"A"}}],
+            "results": {"answer_counts":[]}
+        }))
+        .unwrap(),
+    );
+    app.toggle_poll_vote("c", "100000", 1);
+    app.toggle_poll_vote("c", "100000", 1);
+    let Cmd::Api {
+        id,
+        call: call @ ApiCall::VotePoll { .. },
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("expected vote")
+    };
+    assert!(matches!(&call, ApiCall::VotePoll { answer_ids, .. } if answer_ids == &[1]));
+    assert!(rx.try_recv().is_err());
+    app.on_api_result(id, call, Ok(serde_json::Value::Null));
+    let Cmd::Api {
+        id,
+        call: call @ ApiCall::GetMessage { .. },
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("expected refresh")
+    };
+    assert!(app
+        .pending_poll_votes
+        .contains(&("c".into(), "100000".into())));
+    let mut fresh = serde_json::to_value(&app.messages["c"][0]).unwrap();
+    fresh["poll"]["results"]["answer_counts"] =
+        serde_json::json!([{"id":1,"count":1,"me_voted":true}]);
+    app.on_api_result(id, call, Ok(fresh));
+    assert!(app.pending_poll_votes.is_empty());
+    assert!(
+        app.messages["c"][0]
+            .poll
+            .as_ref()
+            .unwrap()
+            .results
+            .as_ref()
+            .unwrap()
+            .answer_counts[0]
+            .me_voted
+    );
+}
+
+#[test]
+fn poll_gateway_update_is_replayed_during_history_load() {
+    let mut app = bench_app(1);
+    app.me = Some(serde_json::from_value(serde_json::json!({"id":"me","username":"me"})).unwrap());
+    app.messages.get_mut("c").unwrap()[0].poll = Some(serde_json::from_value(serde_json::json!({
+        "question":{"text":"Q"},"answers":[{"answer_id":1,"poll_media":{"text":"A"}}],"results":{"answer_counts":[]}
+    })).unwrap());
+    let old = app.messages["c"].clone();
+    app.pending_message_loads.insert("c".into(), Vec::new());
+    app.on_gateway_event(
+        "MESSAGE_POLL_VOTE_ADD",
+        serde_json::json!({"channel_id":"c","message_id":"100000","answer_id":1,"user_id":"me"}),
+    );
+    let count = &app.messages["c"][0]
+        .poll
+        .as_ref()
+        .unwrap()
+        .results
+        .as_ref()
+        .unwrap()
+        .answer_counts[0];
+    assert_eq!((count.count, count.me_voted), (1, true));
+    let mut loaded = old;
+    for change in app.pending_message_loads.remove("c").unwrap() {
+        change.apply(&mut loaded);
+    }
+    let count = &loaded[0]
+        .poll
+        .as_ref()
+        .unwrap()
+        .results
+        .as_ref()
+        .unwrap()
+        .answer_counts[0];
+    assert_eq!((count.count, count.me_voted), (1, true));
+}

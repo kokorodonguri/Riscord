@@ -2218,6 +2218,7 @@ impl App {
                             self.guild_settings.insert(gid, s);
                         }
                     }
+                    self.import_official_folders(&d);
                 }
                 Event::AckFailed {
                     channel_id,
@@ -5135,6 +5136,7 @@ mod friends;
 pub use friends::{FriendAction, Friends};
 mod authors;
 mod moderation;
+mod official_folders;
 mod soundboard;
 pub use moderation::{MemberAction, ModTab, ServerModeration};
 pub use soundboard::{Sound, Soundboard};

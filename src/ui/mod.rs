@@ -1306,17 +1306,8 @@ impl Root {
 
     /// サーバーを選ぶ（None = DM）
     pub fn pick_guild(&mut self, g: Option<String>) {
-        self.app.friends.open = false;
         let before = (self.app.sel_guild.clone(), self.app.sel_channel.clone());
-        let a = &mut self.app;
-        if let Some(gid) = &g {
-            a.ensure_guild_channels(gid);
-        }
-        if a.sel_guild != g {
-            a.sel_guild = g;
-            a.cache_dirty = true;
-            a.sel_channel = None;
-        }
+        self.app.pick_guild(g);
         self.after_move(before);
     }
 

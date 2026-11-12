@@ -1816,3 +1816,68 @@ fn category_collapse_hides_normal_channels_and_keeps_selected_or_unread() {
     assert!(!app.is_category_collapsed("cat1"));
     let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
 }
+
+#[test]
+fn switching_guilds_restores_last_channel_or_read_state_channel() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let ch = |id: &str, kind: u8, pos: i32| -> Channel {
+        serde_json::from_value(
+            serde_json::json!({ "id": id, "type": kind, "name": id, "position": pos }),
+        )
+        .unwrap()
+    };
+    // g1 では c2 が c1 より最近見られている（ボイスは選ばない）
+    tx.send(Event::ReadyExtra(serde_json::json!({
+        "channel_guild": { "c1": "g1", "c2": "g1", "v1": "g1" },
+        "read_state": { "entries": [
+            { "id": "c1", "last_viewed": 3900, "last_message_id": "100" },
+            { "id": "c2", "last_viewed": 3910, "last_message_id": "200" },
+            { "id": "v1", "last_viewed": 3920, "last_message_id": "300" }
+        ] }
+    })))
+    .unwrap();
+    app.poll();
+    // チャンネル一覧が届く前に切り替えたら、届いたときに開く
+    app.pick_guild(Some("g1".into()));
+    assert_eq!(app.sel_guild.as_deref(), Some("g1"));
+    assert_eq!(app.sel_channel, None);
+    tx.send(Event::GuildChannels(
+        "g1".into(),
+        vec![ch("c1", 0, 0), ch("c2", 0, 1), ch("v1", 2, 0)],
+    ))
+    .unwrap();
+    app.poll();
+    assert_eq!(app.sel_channel.as_deref(), Some("c2"));
+    app.open_channel("c1".into());
+    assert_eq!(
+        app.settings.last_channels.get("g1").map(String::as_str),
+        Some("c1")
+    );
+    assert!(app.settings_dirty, "チャンネルを替えるたびには書かない");
+    // read_state のないサーバーは一番上のテキストチャンネル
+    tx.send(Event::GuildChannels(
+        "g2".into(),
+        vec![ch("g2_c1", 0, 0), ch("g2_c2", 0, 1)],
+    ))
+    .unwrap();
+    app.poll();
+    app.pick_guild(Some("g2".into()));
+    assert_eq!(app.sel_channel.as_deref(), Some("g2_c1"));
+    app.open_channel("g2_c2".into());
+    app.pick_guild(Some("g1".into()));
+    assert_eq!(app.sel_channel.as_deref(), Some("c1"));
+    app.pick_guild(Some("g2".into()));
+    assert_eq!(app.sel_channel.as_deref(), Some("g2_c2"));
+    // 同じサーバーをもう一度押しても、開いているチャンネルは変えない
+    app.open_channel("g2_c1".into());
+    app.pick_guild(Some("g2".into()));
+    assert_eq!(app.sel_channel.as_deref(), Some("g2_c1"));
+    // 消えたチャンネルを覚えていたら、他のチャンネルを選ぶ
+    app.settings
+        .last_channels
+        .insert("g1".into(), "gone".into());
+    assert_eq!(app.default_guild_channel("g1").as_deref(), Some("c2"));
+}

@@ -153,6 +153,8 @@ pub struct Settings {
     pub guild_folders: Vec<GuildFolder>,
     /// 閉じているチャンネルカテゴリ
     pub collapsed_categories: std::collections::BTreeSet<String>,
+    /// サーバーごとに最後に開いたチャンネル（DM はキー ""）
+    pub last_channels: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -184,6 +186,7 @@ impl Default for Settings {
             guild_order: Vec::new(),
             guild_folders: Vec::new(),
             collapsed_categories: Default::default(),
+            last_channels: Default::default(),
         }
     }
 }
@@ -1216,6 +1219,9 @@ pub struct App {
     pub guild_settings: HashMap<String, GuildSettings>,
     /// 未読のメンション数（チャンネル → (サーバー, 件数)。DM はサーバーが None で、メッセージごとに数える）
     pub mention_counts: HashMap<String, (Option<String>, u32)>,
+    /// READY の read_state と MESSAGE_ACK から得たチャンネルごとの既読位置（last_viewed, last_message_id）。
+    /// 初めて開くサーバーで、公式クライアントで最後に見ていたチャンネルを選ぶのに使う
+    pub channel_read_rank: HashMap<String, (u64, u64)>,
     /// サーバーごとの自分のロール（ロールへのメンションを見分ける）
     pub my_roles: HashMap<String, Vec<String>>,
     /// ウィンドウにフォーカスがあるか（見ているチャンネルの通知は出さない）
@@ -1334,6 +1340,8 @@ pub struct App {
     pub login_retry_at: Option<std::time::Instant>,
     /// 前回書いたあと、控えに入る中身が変わったかもしれない
     pub cache_dirty: bool,
+    /// 設定のうち、すぐには書かないもの（最後に開いたチャンネル）が変わった。控えと一緒に書く
+    pub settings_dirty: bool,
 }
 
 /// 控えを書き直す間隔
@@ -1494,6 +1502,9 @@ impl App {
             }
         }
         self.cache_dirty = false;
+        if self.settings_dirty {
+            self.save_settings();
+        }
         let Some(s) = self.snapshot() else { return };
         let bytes = match serde_json::to_vec(&s) {
             Ok(b) => b,
@@ -1592,6 +1603,7 @@ impl App {
     }
 
     pub fn save_settings(&mut self) {
+        self.settings_dirty = false;
         if let Err(e) = save_settings(self.profile.as_deref(), &self.settings) {
             eprintln!("設定を保存できませんでした: {e}");
             self.show_toast(&format!("設定を保存できませんでした: {e}"));
@@ -2093,10 +2105,22 @@ impl App {
                     if let Some(entries) = rs["entries"].as_array().or(rs.as_array()) {
                         let cg = &d["channel_guild"];
                         self.mention_counts.clear();
+                        self.channel_read_rank.clear();
                         for e in entries {
                             // read_state_type が 0（チャンネル）以外は通知の既読などなので数えない
                             if e["read_state_type"].as_u64().unwrap_or(0) != 0 {
                                 continue;
+                            }
+                            if let Some(cid) = e["id"].as_str() {
+                                let viewed = e["last_viewed"].as_u64().unwrap_or(0);
+                                let last = e["last_message_id"]
+                                    .as_str()
+                                    .and_then(|s| s.parse::<u64>().ok())
+                                    .unwrap_or(0);
+                                if viewed > 0 || last > 0 {
+                                    self.channel_read_rank
+                                        .insert(cid.to_string(), (viewed, last));
+                                }
                             }
                             let (Some(cid), Some(n)) =
                                 (e["id"].as_str(), e["mention_count"].as_u64())
@@ -2283,7 +2307,14 @@ impl App {
                     // 表示順（テキスト→ボイス、position順）に一度だけ並べておく
                     c.sort_by_key(|c| (c.is_voice(), c.position));
                     self.stale_guilds.remove(&gid);
-                    self.channels.insert(gid, c);
+                    self.channels.insert(gid.clone(), c);
+                    // チャンネル一覧が届く前にサーバーを選んでいたら、ここで最後に開いたチャンネルを開く
+                    if self.sel_guild.as_deref() == Some(gid.as_str()) && self.sel_channel.is_none()
+                    {
+                        if let Some(cid) = self.default_guild_channel(&gid) {
+                            self.open_channel(cid);
+                        }
+                    }
                 }
                 Event::GuildRoles(gid, roles) => {
                     self.roles.insert(gid, roles);
@@ -3530,6 +3561,10 @@ impl App {
                 if let Some(cid) = d["channel_id"].as_str() {
                     if d["manual"] != true {
                         self.unread.remove(cid);
+                        if let Some(mid) = d["message_id"].as_str().and_then(|s| s.parse().ok()) {
+                            let e = self.channel_read_rank.entry(cid.to_string()).or_default();
+                            e.1 = e.1.max(mid);
+                        }
                     }
                     match d["mention_count"].as_u64() {
                         Some(n) if n > 0 => {
@@ -3774,6 +3809,9 @@ impl App {
         }
         if self.moderation.as_ref().is_some_and(|m| m.guild_id == gid) {
             self.moderation = None;
+        }
+        if self.settings.last_channels.remove(gid).is_some() {
+            self.save_settings();
         }
         self.channels.remove(gid);
         self.unread.retain(|_, g| g.as_deref() != Some(gid));
@@ -4150,6 +4188,14 @@ impl App {
             self.load_messages(id.clone());
         }
         self.touch_channel(&id);
+        let key = self.sel_guild.as_deref().unwrap_or("");
+        if self.settings.last_channels.get(key) != Some(&id) {
+            self.settings
+                .last_channels
+                .insert(key.to_string(), id.clone());
+            // チャンネルを替えるたびに書かず、起動用の控えと一緒にまとめて書く
+            self.settings_dirty = true;
+        }
         self.sel_channel = Some(id);
         self.focus_input = true;
         self.cache_dirty = true;
@@ -4353,6 +4399,78 @@ impl App {
             || self.unread.contains_key(&c.id)
             || (c.is_voice()
                 && (cur_voice == Some(c.id.as_str()) || self.voice_members(&c.id).next().is_some()))
+    }
+
+    /// そのサーバーで最初に開くテキストチャンネル。最後に開いたもの → 公式クライアントの read_state で
+    /// 最後に見たもの → 一番上のチャンネルの順に選ぶ。一覧がまだ無いときは最後に開いたもの
+    pub fn default_guild_channel(&self, gid: &str) -> Option<String> {
+        let Some(chs) = self.channels.get(gid) else {
+            return self.settings.last_channels.get(gid).cloned();
+        };
+        if let Some(saved) = self.settings.last_channels.get(gid) {
+            if chs.iter().any(|c| &c.id == saved && c.is_text()) {
+                return Some(saved.clone());
+            }
+        }
+        if let Some((_, id)) = chs
+            .iter()
+            .filter(|c| c.is_text())
+            .filter_map(|c| {
+                self.channel_read_rank
+                    .get(&c.id)
+                    .copied()
+                    .filter(|&r| r > (0, 0))
+                    .map(|r| (r, &c.id))
+            })
+            .max_by_key(|(r, _)| *r)
+        {
+            return Some(id.clone());
+        }
+        if let Some(c) = chs.iter().find(|c| c.is_text() && c.parent_id.is_none()) {
+            return Some(c.id.clone());
+        }
+        let mut cats: Vec<&Channel> = chs.iter().filter(|c| c.kind == Channel::CATEGORY).collect();
+        cats.sort_by_key(|c| c.position);
+        cats.iter()
+            .find_map(|cat| {
+                chs.iter()
+                    .find(|c| c.is_text() && c.parent_id.as_deref() == Some(cat.id.as_str()))
+            })
+            .or_else(|| chs.iter().find(|c| c.is_text()))
+            .map(|c| c.id.clone())
+    }
+
+    /// サーバー（None は DM）に切り替え、そこで最後に開いていたチャンネルを開く
+    pub fn pick_guild(&mut self, guild: Option<String>) {
+        self.friends.open = false;
+        if let Some(gid) = &guild {
+            self.ensure_guild_channels(gid);
+        }
+        if self.sel_guild == guild && self.sel_channel.is_some() {
+            return;
+        }
+        if self.sel_guild != guild {
+            self.sel_guild = guild.clone();
+            self.cache_dirty = true;
+            self.sel_channel = None;
+        }
+        let channel = match &guild {
+            Some(gid) => self.default_guild_channel(gid).filter(|cid| {
+                // 一覧がまだ無いときは開かず、届いたときに開く（Event::GuildChannels）
+                self.channels
+                    .get(gid)
+                    .is_some_and(|chs| chs.iter().any(|c| &c.id == cid))
+            }),
+            None => self
+                .settings
+                .last_channels
+                .get("")
+                .filter(|cid| self.dms.iter().any(|c| &c.id == *cid))
+                .cloned(),
+        };
+        if let Some(c) = channel {
+            self.open_channel(c);
+        }
     }
 
     pub fn sidebar_order(&self) -> Vec<String> {

@@ -69,6 +69,7 @@ impl Root {
         let this = self.this.clone();
         div()
             .h_full()
+            .relative()
             .flex()
             .flex_col()
             .border_l_1()

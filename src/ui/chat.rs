@@ -226,7 +226,13 @@ impl Root {
             body = body.child(self.side_panel(window, cx).w(z(360.0)).flex_none());
         }
         if !side && self.app.sel_guild.is_some() && members_shown && !narrow_members {
-            body = body.child(self.members_panel(cx).w(z(240.0)).flex_none());
+            let (_, mem_w) = self.app.pane_widths();
+            body = body.child(
+                self.members_panel(cx)
+                    .child(self.pane_resizer(ResizeTarget::Members, cx))
+                    .w(z(mem_w))
+                    .flex_none(),
+            );
         }
         if let Some(u) = dm_user
             .as_ref()
@@ -262,7 +268,7 @@ impl Root {
                     .right_0()
                     .top(z(48.0))
                     .bottom_0()
-                    .w(z(240.0))
+                    .w(z(self.app.overlay_member_width()))
                     .bg(opaque(BG()))
                     .border_l_1()
                     .border_color(DIVIDER()),
@@ -275,7 +281,7 @@ impl Root {
         }
         row = row.child(right);
         if compact && !self.app.compact_sidebar_closed {
-            let w = self.app.screen_w.min(312.0);
+            let w = self.app.screen_w.min(st::RAIL_W + self.app.pane_widths().0);
             row = row.child(
                 div()
                     .absolute()

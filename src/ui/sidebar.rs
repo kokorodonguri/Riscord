@@ -193,10 +193,12 @@ impl Root {
 
     /// 左列（サーバーレール＋チャンネル欄。下にユーザー欄がまたがる）
     pub fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let (ch_w, _) = self.app.pane_widths();
         div()
-            .w(z(312.0))
+            .w(z(st::RAIL_W + ch_w))
             .h_full()
             .flex_none()
+            .relative()
             .flex()
             .flex_col()
             .bg(BG())
@@ -211,6 +213,7 @@ impl Root {
                     .child(self.channel_pane(window, cx)),
             )
             .child(self.userbar(cx))
+            .child(self.pane_resizer(ResizeTarget::Channels, cx))
     }
 
     /// round = 丸いアイコン（未読の DM の相手）。サーバーはテーマの形に従う

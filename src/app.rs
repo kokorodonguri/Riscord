@@ -155,6 +155,9 @@ pub struct Settings {
     pub collapsed_categories: std::collections::BTreeSet<String>,
     /// サーバーごとに最後に開いたチャンネル（DM はキー ""）
     pub last_channels: std::collections::BTreeMap<String, String>,
+    /// チャンネル一覧・メンバー一覧の横幅（境界をドラッグして変える。0 は既定の幅）
+    pub channel_pane_width: f32,
+    pub member_pane_width: f32,
 }
 
 impl Default for Settings {
@@ -187,6 +190,8 @@ impl Default for Settings {
             guild_folders: Vec::new(),
             collapsed_categories: Default::default(),
             last_channels: Default::default(),
+            channel_pane_width: PANE_DEFAULT,
+            member_pane_width: PANE_DEFAULT,
         }
     }
 }
@@ -201,6 +206,45 @@ pub fn lin_to_db(v: f32) -> f32 {
 
 pub fn settings_path(profile: Option<&str>) -> PathBuf {
     token_path(profile).with_file_name("settings.json")
+}
+
+/// ペインの横幅（チャンネル一覧・メンバー一覧）
+pub const PANE_DEFAULT: f32 = 240.0;
+pub const CHANNEL_PANE_RANGE: (f32, f32) = (160.0, 480.0);
+pub const MEMBER_PANE_RANGE: (f32, f32) = (180.0, 480.0);
+/// サーバーレールの幅
+pub const RAIL_W: f32 = 72.0;
+/// 横に並べるペインを広げても、チャット欄にはこれだけ残す
+pub const MIN_CHAT_W: f32 = 360.0;
+/// これより狭い画面ではチャンネル一覧を重ねて出す（幅を取り合わない）
+pub const COMPACT_W: f32 = 700.0;
+
+fn pane_clamp(w: f32, (lo, hi): (f32, f32)) -> f32 {
+    if w > 0.0 && w.is_finite() {
+        w.clamp(lo, hi)
+    } else {
+        PANE_DEFAULT
+    }
+}
+
+/// 保存した横幅を、画面に収まる実際の幅にする。メンバー一覧が横に並ぶときは mem に保存した幅を渡す。
+/// チャット欄が MIN_CHAT_W より狭くなるなら、先にメンバー一覧、次にチャンネル一覧を最小まで縮める
+pub fn fit_panes(screen_w: f32, ch: f32, mem: Option<f32>) -> (f32, f32) {
+    let mut ch = pane_clamp(ch, CHANNEL_PANE_RANGE);
+    let mut mem = mem.map_or(0.0, |m| pane_clamp(m, MEMBER_PANE_RANGE));
+    if screen_w < COMPACT_W {
+        return (ch, mem);
+    }
+    let mut over = ch + mem - (screen_w - RAIL_W - MIN_CHAT_W);
+    if over > 0.0 && mem > 0.0 {
+        let m = (mem - over).max(MEMBER_PANE_RANGE.0);
+        over -= mem - m;
+        mem = m;
+    }
+    if over > 0.0 {
+        ch = (ch - over).max(CHANNEL_PANE_RANGE.0);
+    }
+    (ch, mem)
 }
 
 pub fn load_settings(profile: Option<&str>) -> Settings {
@@ -4471,6 +4515,59 @@ impl App {
         if let Some(c) = channel {
             self.open_channel(c);
         }
+    }
+
+    /// メンバー一覧がチャット欄の横に並ぶか（狭い画面では重ねて出す）
+    pub fn members_inline(&self) -> bool {
+        let narrow = self.screen_w < 900.0;
+        let shown = if narrow {
+            self.show_members_narrow
+        } else {
+            self.show_members
+        };
+        self.sel_guild.is_some() && shown && !narrow && self.side == SidePanel::None
+    }
+
+    /// 今の画面での (チャンネル一覧, メンバー一覧) の横幅。メンバー一覧が横に並ばないときは 0
+    pub fn pane_widths(&self) -> (f32, f32) {
+        fit_panes(
+            self.screen_w,
+            self.settings.channel_pane_width,
+            self.members_inline()
+                .then_some(self.settings.member_pane_width),
+        )
+    }
+
+    /// 重ねて出すメンバー一覧の横幅
+    pub fn overlay_member_width(&self) -> f32 {
+        pane_clamp(self.settings.member_pane_width, MEMBER_PANE_RANGE)
+            .min((self.screen_w - 40.0).max(MEMBER_PANE_RANGE.0))
+    }
+
+    /// ドラッグで横幅を変える。もう一方のペインとチャット欄の分を残して収める
+    pub fn drag_pane(&mut self, channels: bool, w: f32) -> bool {
+        let (ch, mem) = self.pane_widths();
+        let room = self.screen_w - RAIL_W - MIN_CHAT_W;
+        let (slot, range, other) = if channels {
+            (
+                &mut self.settings.channel_pane_width,
+                CHANNEL_PANE_RANGE,
+                mem,
+            )
+        } else {
+            (&mut self.settings.member_pane_width, MEMBER_PANE_RANGE, ch)
+        };
+        let hi = if self.screen_w < COMPACT_W {
+            range.1
+        } else {
+            (room - other).clamp(range.0, range.1)
+        };
+        let w = w.clamp(range.0, hi).round();
+        if (*slot - w).abs() < 0.5 {
+            return false;
+        }
+        *slot = w;
+        true
     }
 
     pub fn sidebar_order(&self) -> Vec<String> {

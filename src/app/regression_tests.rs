@@ -1881,3 +1881,43 @@ fn switching_guilds_restores_last_channel_or_read_state_channel() {
         .insert("g1".into(), "gone".into());
     assert_eq!(app.default_guild_channel("g1").as_deref(), Some("c2"));
 }
+
+#[test]
+fn pane_widths_leave_room_for_chat_and_persist() {
+    // 900px で両方 480px に広げても、チャット欄は MIN_CHAT_W 残る
+    let (ch, mem) = fit_panes(900.0, 480.0, Some(480.0));
+    assert!(900.0 - RAIL_W - ch - mem >= MIN_CHAT_W - 0.01, "{ch} {mem}");
+    assert_eq!(mem, MEMBER_PANE_RANGE.0, "先にメンバー一覧を縮める");
+    // 広い画面では保存した幅のまま。範囲外・壊れた値は直す
+    assert_eq!(fit_panes(1920.0, 300.0, Some(280.0)), (300.0, 280.0));
+    assert_eq!(fit_panes(1920.0, 9999.0, None), (480.0, 0.0));
+    assert_eq!(fit_panes(1920.0, f32::NAN, None).0, PANE_DEFAULT);
+    assert_eq!(fit_panes(1920.0, 0.0, None).0, PANE_DEFAULT);
+    // とても狭い（重ねて出す）画面では幅を取り合わない
+    assert_eq!(fit_panes(600.0, 400.0, None), (400.0, 0.0));
+
+    let profile = "pane-width-test";
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+    let mut app = App::default();
+    app.set_profile(Some(profile.into()));
+    app.screen_w = 900.0;
+    app.sel_guild = Some("g1".into());
+    app.show_members = true;
+    assert!(app.members_inline());
+    // ドラッグでも、もう一方のペインとチャット欄の分は残す（既定の幅でほぼ埋まっている）
+    assert!(!app.drag_pane(true, 1000.0));
+    // メンバー一覧を縮めれば、空いた分だけチャンネル一覧を広げられる
+    assert!(app.drag_pane(false, 100.0));
+    assert_eq!(app.pane_widths().1, MEMBER_PANE_RANGE.0);
+    assert!(app.drag_pane(true, 1000.0));
+    let (ch, mem) = app.pane_widths();
+    assert_eq!(ch + mem, 900.0 - RAIL_W - MIN_CHAT_W);
+    app.drag_pane(false, 1000.0);
+    let (ch, mem) = app.pane_widths();
+    assert!(900.0 - RAIL_W - ch - mem >= MIN_CHAT_W - 0.01, "{ch} {mem}");
+    app.save_settings();
+    let loaded = load_settings(Some(profile));
+    assert_eq!(loaded.channel_pane_width, app.settings.channel_pane_width);
+    assert_eq!(loaded.member_pane_width, app.settings.member_pane_width);
+    let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+}

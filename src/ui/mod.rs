@@ -202,6 +202,13 @@ pub struct Inputs {
     pub post_body: Entity<TextareaState>,
 }
 
+/// 境界をドラッグして横幅を変えるペイン
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ResizeTarget {
+    Channels,
+    Members,
+}
+
 /// ポップアップ（開いている間だけ出す小さなメニュー）
 #[derive(Clone, Copy, PartialEq)]
 pub enum PopMenu {
@@ -224,7 +231,9 @@ pub struct Root {
     pub inp: Inputs,
     pub lists: HashMap<String, MsgList>,
     /// 行の高さに効く設定（変わったら全部測り直す）
-    pub list_key: (u32, u32, bool),
+    pub list_key: (u32, u32, bool, u32, u32),
+    /// ペインの境界のドラッグ（対象, 押したときのマウスの X, そのときの幅）
+    pub resize_drag: Option<(ResizeTarget, f32, f32)>,
     pub member_list: ListState,
     pub member_key: (String, u64),
     /// 右側の枠（ピン一覧・検索結果）の一覧と、作ったときの目印
@@ -802,7 +811,8 @@ impl Root {
             focus,
             inp,
             lists: HashMap::new(),
-            list_key: (0, 0, false),
+            list_key: (0, 0, false, 0, 0),
+            resize_drag: None,
             member_list: ListState::new(0, ListAlignment::Top, px(400.0)),
             side_list: ListState::new(0, ListAlignment::Top, px(400.0)),
             side_key: (0, String::new(), 0),
@@ -1050,10 +1060,13 @@ impl Root {
             cx.drop_image(img, Some(window));
         }
         // 行の高さに効く設定が変わったら測り直す
+        let (ch_w, mem_w) = self.app.pane_widths();
         let key = (
             self.app.settings.font_size.to_bits(),
             zoom().to_bits(),
             self.app.settings.compact,
+            ch_w as u32,
+            mem_w as u32,
         );
         if key != self.list_key {
             self.list_key = key;
@@ -1537,6 +1550,116 @@ impl Root {
         }
         let rx = crate::download::start(url.clone(), filename, kind, self.app.waker.clone());
         self.downloads.push((url, rx));
+    }
+
+    /// チャンネル一覧・メンバー一覧の横幅を変える境界（ダブルクリックで既定の幅に戻す）
+    pub fn pane_resizer(&self, target: ResizeTarget, cx: &mut Context<Self>) -> Stateful<Div> {
+        let active = self.resize_drag.is_some_and(|(t, _, _)| t == target);
+        let (id, group) = match target {
+            ResizeTarget::Channels => ("resize_channels", "resize_ch_grp"),
+            ResizeTarget::Members => ("resize_members", "resize_mem_grp"),
+        };
+        let bar = div()
+            .w(z(2.0))
+            .h_full()
+            .bg(if active {
+                BLURPLE()
+            } else {
+                Color32::TRANSPARENT
+            })
+            .group_hover(group, |s| s.bg(BLURPLE()));
+        let base = div()
+            .id(id)
+            .group(group)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(z(6.0))
+            .flex()
+            .cursor(CursorStyle::ResizeLeftRight)
+            .occlude();
+        let base = match target {
+            ResizeTarget::Channels => base.right_0().justify_end(),
+            ResizeTarget::Members => base.left_0().justify_start(),
+        };
+        // ドラッグ中だけ、ウィンドウ全体のマウスの動きを拾う
+        let tracker = active.then(|| {
+            let (this, this2) = (self.this.clone(), self.this.clone());
+            gpui::canvas(
+                |_, _, _| (),
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let Some(e) = this.upgrade() else { return };
+                        e.update(cx, |r, cx| {
+                            let Some((t, start_x, start_w)) = r.resize_drag else {
+                                return;
+                            };
+                            if t != target {
+                                return;
+                            }
+                            if ev.pressed_button != Some(MouseButton::Left) {
+                                r.resize_drag = None;
+                                r.app.save_settings();
+                                cx.notify();
+                                return;
+                            }
+                            let delta = (f32::from(ev.position.x) - start_x) / zoom();
+                            let changed = match target {
+                                ResizeTarget::Channels => r.app.drag_pane(true, start_w + delta),
+                                ResizeTarget::Members => r.app.drag_pane(false, start_w - delta),
+                            };
+                            if changed {
+                                cx.notify();
+                            }
+                        });
+                    });
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let Some(e) = this2.upgrade() else { return };
+                        e.update(cx, |r, cx| {
+                            if r.resize_drag.take().is_some() {
+                                r.app.save_settings();
+                                cx.notify();
+                            }
+                        });
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        });
+        base.child(bar).children(tracker).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                if ev.click_count >= 2 {
+                    this.resize_drag = None;
+                    match target {
+                        ResizeTarget::Channels => {
+                            this.app.settings.channel_pane_width = st::PANE_DEFAULT
+                        }
+                        ResizeTarget::Members => {
+                            this.app.settings.member_pane_width = st::PANE_DEFAULT
+                        }
+                    }
+                    this.app.save_settings();
+                    cx.notify();
+                    return;
+                }
+                let (ch, mem) = this.app.pane_widths();
+                let start_w = match target {
+                    ResizeTarget::Channels => ch,
+                    ResizeTarget::Members => mem,
+                };
+                this.resize_drag = Some((target, f32::from(ev.position.x), start_w));
+                cx.notify();
+            }),
+        )
     }
 
     /// テーマで「ウィンドウ全体」に敷く背景画像

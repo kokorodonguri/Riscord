@@ -479,6 +479,26 @@ impl Root {
                 },
             )),
         );
+        if self.app.can_create_channels(&gid) {
+            for (id, name, label, category) in [
+                (
+                    "gm_new_channel",
+                    IconName::CirclePlus,
+                    "チャンネルを作成",
+                    false,
+                ),
+                ("gm_new_category", IconName::Folder, "カテゴリを作成", true),
+            ] {
+                let g1 = gid.clone();
+                col = col.child(item(id, name, label).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        close(this);
+                        this.app.open_channel_create(&g1, category);
+                        cx.notify();
+                    },
+                )));
+            }
+        }
         if self.app.can_open_mod_tab(&gid, crate::app::ModTab::Events) {
             let g1 = gid.clone();
             col = col.child(

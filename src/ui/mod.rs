@@ -1,4 +1,5 @@
 //! 画面（gpui）。状態とロジックは crate::app にあり、ここではそれを描いて操作をつなぐ
+mod channel_create;
 mod channel_permissions;
 mod chat;
 mod commands;
@@ -190,6 +191,8 @@ pub struct Inputs {
     pub folder_name: Entity<InputState>,
     pub poll_question: Entity<InputState>,
     pub poll_answers: Entity<TextareaState>,
+    /// 作るチャンネル・カテゴリの名前
+    pub channel_name: Entity<InputState>,
     /// サーバー管理: イベントと AutoMod ルールの下書き
     pub event_name: Entity<InputState>,
     pub event_start: Entity<InputState>,
@@ -543,6 +546,7 @@ impl Root {
                     .auto_grow(2, 6)
                     .placeholder("選択肢を1行ずつ入力")
             }),
+            channel_name: new_input(window, cx, "名前", false),
             event_name: new_input(window, cx, "イベント名", false),
             event_start: new_input(window, cx, "開始 YYYY-MM-DD HH:MM", false),
             event_end: new_input(window, cx, "終了 YYYY-MM-DD HH:MM", false),
@@ -617,6 +621,9 @@ impl Root {
             }),
             bind(cx, window, &inp.poll_answers, None, |a| {
                 a.poll_draft.as_mut().map(|d| &mut d.answers)
+            }),
+            bind(cx, window, &inp.channel_name, Some(100), |a| {
+                a.channel_draft.as_mut().map(|d| &mut d.name)
             }),
             bind(cx, window, &inp.event_name, Some(100), |a| {
                 a.moderation
@@ -1114,6 +1121,9 @@ impl Root {
             }
         }
         sync(&self.inp.folder_name, &self.app.folder_name, window, cx);
+        if let Some(d) = &self.app.channel_draft {
+            sync(&self.inp.channel_name, &d.name, window, cx);
+        }
         if let Some(m) = self.app.moderation.as_ref() {
             if let Some(d) = &m.event_draft {
                 sync(&self.inp.event_name, &d.name, window, cx);

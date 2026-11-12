@@ -1377,6 +1377,8 @@ pub struct App {
     pub moderation: Option<ServerModeration>,
     /// サーバー設定の画面（サーバー, 開いているタブ）。中身は role_admin / moderation を使う
     pub server_settings: Option<(String, SettingsTab)>,
+    /// チャンネル・カテゴリを作る画面
+    pub channel_draft: Option<ChannelDraft>,
     /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
     pub member_action_confirm: Option<String>,
     pub member_action_pending: Option<(u64, &'static str)>,
@@ -2995,6 +2997,10 @@ impl App {
             self.soundboard_result(id, result);
             return;
         }
+        if self.is_channel_create_request(id) {
+            self.channel_create_result(result);
+            return;
+        }
         if self
             .friends
             .loading
@@ -3510,6 +3516,9 @@ impl App {
                 }
                 self.role_admin_event(guild_id);
             }
+        }
+        if matches!(t, "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE") {
+            self.on_guild_channel_event(t, &d);
         }
         if matches!(t, "CHANNEL_UPDATE" | "CHANNEL_DELETE") {
             let affected = self.role_admin.as_ref().and_then(|admin| {
@@ -5140,7 +5149,9 @@ pub use channel_permissions::{ChannelPermissionView, CHANNEL_PERMISSION_BITS};
 mod friends;
 pub use friends::{FriendAction, Friends};
 mod authors;
+mod channel_create;
 mod moderation;
+pub use channel_create::ChannelDraft;
 mod official_folders;
 mod server_settings;
 pub use server_settings::SettingsTab;

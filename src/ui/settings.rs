@@ -14,17 +14,27 @@ use crate::color::Color32;
 use crate::net::{self, Cmd};
 use crate::{theme, voice};
 
-/// 設定のページ。添字は settings_tab（一覧での並び順は SETTINGS_ORDER）
+/// 設定のページ。添字は settings_tab（一覧での並び順は SETTINGS_GROUPS）
 const SETTINGS_TABS: [(&str, IconName); 6] = [
     ("マイアカウント", IconName::UserRound),
     ("表示", IconName::Settings),
-    ("音声", IconName::Headphones),
+    ("音声・ビデオ", IconName::Mic),
     ("テーマ", IconName::Palette),
     ("プロフィール", IconName::Pencil),
-    ("プラグイン", IconName::Settings),
+    ("プラグイン", IconName::Cpu),
 ];
-/// 左の一覧に並べる順（本家と同じく「マイアカウント」の次に「プロフィール」）
-const SETTINGS_ORDER: [usize; 6] = [0, 4, 1, 2, 3, 5];
+/// 左の一覧のカテゴリ（見出し, ページの添字）。見出しが None の組は見出しを出さない（公式の先頭と同じ）。
+/// 本家と同じく「マイアカウント」の次に「プロフィール」
+const SETTINGS_GROUPS: [(Option<&str>, &[usize]); 3] = [
+    (None, &[0, 4]),
+    (Some("体験"), &[2, 1, 3]),
+    (Some("Riscord"), &[5]),
+];
+
+/// カテゴリを平たくした並び（狭い画面の横並びタブ）
+fn settings_order() -> impl Iterator<Item = usize> {
+    SETTINGS_GROUPS.iter().flat_map(|(_, p)| p.iter().copied())
+}
 /// 設定検索で各ページに含まれる項目を探すための見出し
 const SETTINGS_SECTIONS: [&[&str]; 6] = [
     &[
@@ -431,7 +441,7 @@ impl Root {
                 .flex()
                 .gap(z(4.0))
                 .overflow_x_scroll();
-            for i in SETTINGS_ORDER {
+            for i in settings_order() {
                 let on = tab == i;
                 tabs = tabs.child(
                     div()
@@ -599,7 +609,22 @@ impl Root {
                                 line(me.display().to_string(), 16.0, WHITE())
                                     .font_weight(FontWeight::MEDIUM),
                             )
-                            .child(line(me.username.clone(), 14.0, MUTED())),
+                            .child(
+                                div()
+                                    .id("nav_edit_profile")
+                                    .flex()
+                                    .items_center()
+                                    .gap(z(4.0))
+                                    .cursor_pointer()
+                                    .text_color(MUTED())
+                                    .hover(|s| s.text_color(TEXT()))
+                                    .child(div().text_size(z(14.0)).child("プロフィールを編集"))
+                                    .child(icon(IconName::Pencil, 14.0, MUTED()))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.jump(4);
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             );
         }
@@ -629,37 +654,50 @@ impl Root {
             .mt(z(12.0))
             .flex()
             .flex_col()
-            .gap(z(2.0))
-            .child(text("ユーザー設定", 13.0, MUTED()).mb(z(6.0)));
+            .gap(z(2.0));
         let mut any = false;
-        for i in SETTINGS_ORDER {
-            let (name, ic) = SETTINGS_TABS[i];
-            let secs = SETTINGS_SECTIONS[i];
-            let hit: Vec<usize> = (0..secs.len()).filter(|&j| matches(secs[j])).collect();
-            if !matches(name) && hit.is_empty() {
+        for (head, pages) in SETTINGS_GROUPS {
+            // 検索に当たったページだけ出す。1件も無いカテゴリは見出しも区切り線も出さない
+            let shown: Vec<usize> = pages
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    matches(SETTINGS_TABS[i].0) || SETTINGS_SECTIONS[i].iter().any(|s| matches(s))
+                })
+                .collect();
+            if shown.is_empty() {
                 continue;
             }
+            if any {
+                list = list.child(div().my(z(8.0)).child(hline(DIVIDER())));
+            }
             any = true;
-            let selected = query.is_empty() && a.settings_tab == i;
-            list = list.child(
-                div()
-                    .id(("nav", i))
-                    .h(z(36.0))
-                    .px(z(10.0))
-                    .rounded(z(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(z(12.0))
-                    .cursor_pointer()
-                    .when(selected, |d| d.bg(SELECTED()))
-                    .hover(|s| s.bg(if selected { SELECTED() } else { HOVER() }))
-                    .child(icon(ic, 20.0, if selected { WHITE() } else { TEXT() }))
-                    .child(text(name, 16.0, if selected { WHITE() } else { TEXT() }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.jump(i);
-                        cx.notify();
-                    })),
-            );
+            if let Some(head) = head {
+                list = list.child(text(head, 13.0, MUTED()).pl(z(10.0)).mb(z(6.0)));
+            }
+            for i in shown {
+                let (name, ic) = SETTINGS_TABS[i];
+                let selected = query.is_empty() && a.settings_tab == i;
+                list = list.child(
+                    div()
+                        .id(("nav", i))
+                        .h(z(36.0))
+                        .px(z(10.0))
+                        .rounded(z(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(z(12.0))
+                        .cursor_pointer()
+                        .when(selected, |d| d.bg(SELECTED()))
+                        .hover(|s| s.bg(if selected { SELECTED() } else { HOVER() }))
+                        .child(icon(ic, 20.0, if selected { WHITE() } else { TEXT() }))
+                        .child(text(name, 16.0, if selected { WHITE() } else { TEXT() }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.jump(i);
+                            cx.notify();
+                        })),
+                );
+            }
         }
         if !any {
             list = list.child(text("見つかりませんでした", 14.0, MUTED()).mt(z(8.0)));

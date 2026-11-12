@@ -129,6 +129,8 @@ impl App {
             self.jump = None;
             return;
         }
+        let mut list = list;
+        self.fill_message_members(&channel_id, &mut list);
         let latest = self.channel_last_message(&channel_id);
         let newer = match (&latest, list.last()) {
             (Some(l), Some(last)) => id_order(&last.id, l).is_lt(),
@@ -218,6 +220,8 @@ impl App {
             }
         };
         h.newer = page.len() >= net::HISTORY_PAGE;
+        let mut page = page;
+        self.fill_message_members(&channel_id, &mut page);
         let Some(list) = self.messages.get_mut(&channel_id) else {
             return;
         };

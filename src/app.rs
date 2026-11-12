@@ -1174,6 +1174,8 @@ pub struct App {
     pub member_lists: HashMap<String, ServerMemberList>,
     /// 最後に送った購読（サーバー, チャンネル, 範囲）
     pub member_sub: Option<(String, String, Vec<[u32; 2]>)>,
+    /// メッセージの投稿者として op 8 で問い合わせたユーザー（サーバーごと。同じ人を何度も聞かない）
+    pub requested_members: HashMap<String, HashSet<String>>,
     /// メンバー一覧で見えている行（先頭, 末尾）。この範囲を購読する
     pub member_view: (usize, usize),
     pub show_members: bool,
@@ -2381,6 +2383,7 @@ impl App {
                     self.member_sub = None;
                 }
                 Event::GuildMembers(gid, members) => {
+                    self.apply_requested_members(&gid, &members);
                     last_member_guild = Some(gid.clone());
                     let list = self.members.entry(gid.clone()).or_default();
                     // 同じ描画前に複数の塊が届いた場合、索引を共有する
@@ -2410,6 +2413,7 @@ impl App {
                     if !self.loaded_channels.iter().any(|id| id == &cid) {
                         continue;
                     }
+                    self.fill_message_members(&cid, &mut m);
                     let end = m.len() < net::HISTORY_PAGE;
                     for change in changes {
                         change.apply(&mut m);
@@ -2494,16 +2498,21 @@ impl App {
                         continue;
                     }
                     let have: HashSet<&str> = list.iter().map(|m| m.id.as_str()).collect();
-                    let older: Vec<Message> = older
+                    let mut older: Vec<Message> = older
                         .into_iter()
                         .filter(|m| !have.contains(m.id.as_str()))
                         .collect();
+                    let end = h.end;
+                    self.fill_message_members(&channel_id, &mut older);
+                    let Some(list) = self.messages.get_mut(&channel_id) else {
+                        continue;
+                    };
                     list.splice(0..0, older);
                     if self.plugins.logger_enabled() {
                         for x in list.iter().take(net::HISTORY_PAGE) {
                             self.message_log.remember(x);
                         }
-                        self.message_log.restore(&channel_id, list, h.end);
+                        self.message_log.restore(&channel_id, list, end);
                     }
                 }
                 Event::MessageCreate(m) => {
@@ -5092,6 +5101,7 @@ mod channel_permissions;
 pub use channel_permissions::{ChannelPermissionView, CHANNEL_PERMISSION_BITS};
 mod friends;
 pub use friends::{FriendAction, Friends};
+mod authors;
 mod moderation;
 mod soundboard;
 pub use moderation::{MemberAction, ModTab, ServerModeration};

@@ -111,11 +111,13 @@ mod tests {
     use tokio::sync::mpsc::UnboundedReceiver;
 
     fn app(perms: u64) -> (App, UnboundedReceiver<Cmd>) {
-        let mut app = App::default();
-        app.guilds = vec![serde_json::from_value(serde_json::json!({
-            "id": "1", "name": "g", "permissions": perms.to_string()
-        }))
-        .unwrap()];
+        let mut app = App {
+            guilds: vec![serde_json::from_value(serde_json::json!({
+                "id": "1", "name": "g", "permissions": perms.to_string()
+            }))
+            .unwrap()],
+            ..Default::default()
+        };
         let (_, ev) = std::sync::mpsc::channel();
         let (cmd, rx) = tokio::sync::mpsc::unbounded_channel();
         app.backend = Some(Backend { cmd, ev });

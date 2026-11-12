@@ -196,17 +196,15 @@ impl App {
             }
             Err(err) => e.error = Some(super::pins::api_error_text(&err, "保存できませんでした")),
         }
-        if e.pending.is_empty() {
-            if e.error.is_none() {
-                let gid = e.guild_id.clone();
-                self.guild_profile = None;
-                // 自分のプロフィールの控えを捨て、次に開いたときに読み直す
-                if let Some(me) = self.me.as_ref() {
-                    self.profiles.remove(&net::profile_key(&me.id, Some(&gid)));
-                }
-                self.show_toast("サーバープロフィールを保存しました");
+        // 失敗したときは下書きを残し、直してもう一度保存できるようにする
+        if e.pending.is_empty() && e.error.is_none() {
+            let gid = e.guild_id.clone();
+            self.guild_profile = None;
+            // 自分のプロフィールの控えを捨て、次に開いたときに読み直す
+            if let Some(me) = self.me.as_ref() {
+                self.profiles.remove(&net::profile_key(&me.id, Some(&gid)));
             }
-            // 失敗したときは下書きを残し、直してもう一度保存できるようにする
+            self.show_toast("サーバープロフィールを保存しました");
         }
     }
 }

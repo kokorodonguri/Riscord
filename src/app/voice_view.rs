@@ -69,7 +69,8 @@ impl App {
             inv.error = Some(
                 tr!(
                     "このチャンネルへの招待を作る権限がありません",
-                    "You don't have permission to create invites for this channel"
+                    "You don't have permission to create invites for this channel",
+                    "你没有为此频道创建邀请的权限"
                 )
                 .into(),
             );
@@ -108,7 +109,11 @@ impl App {
             return;
         };
         self.clipboard_out = Some(invite_link(&code));
-        self.show_toast(tr!("招待リンクをコピーしました", "Invite link copied"));
+        self.show_toast(tr!(
+            "招待リンクをコピーしました",
+            "Invite link copied",
+            "已复制邀请链接"
+        ));
     }
 
     /// 招待リンクを DM（グループ DM も）に送る
@@ -172,7 +177,8 @@ impl App {
                             &e,
                             tr!(
                                 "招待リンクを作れませんでした",
-                                "Couldn't create an invite link"
+                                "Couldn't create an invite link",
+                                "无法创建邀请链接"
                             ),
                         ));
                     }
@@ -180,7 +186,8 @@ impl App {
                         inv.error = Some(
                             tr!(
                                 "招待リンクを作れませんでした",
-                                "Couldn't create an invite link"
+                                "Couldn't create an invite link",
+                                "无法创建邀请链接"
                             )
                             .into(),
                         );
@@ -201,9 +208,11 @@ impl App {
                             inv.failed.insert(dm);
                         }
                     }
-                    None if !ok => {
-                        self.show_toast(tr!("招待を送れませんでした", "Couldn't send the invite"))
-                    }
+                    None if !ok => self.show_toast(tr!(
+                        "招待を送れませんでした",
+                        "Couldn't send the invite",
+                        "无法发送邀请"
+                    )),
                     None => {}
                 }
             }

@@ -15,6 +15,14 @@ return {
         {kind="button", label="Clear the whole log", action="clear"},
       }
     end
+    if riscord.language() == "zh" then
+      return {
+        {kind="text", label="以红色保留被删除的消息，并在每条消息下方显示编辑前的正文。记录只保存在这台电脑的设置文件夹（message-log.json）中。"},
+        {kind="switch", label="不记录自己的消息", action="ignore_self", enabled=state.ignore_self},
+        {kind="switch", label="不记录机器人的消息", action="ignore_bots", enabled=state.ignore_bots},
+        {kind="button", label="清除全部记录", action="clear"},
+      }
+    end
     return {
       {kind="text", label="削除されたメッセージを赤く残し、編集前の本文をメッセージの下に表示します。記録はこのパソコンの設定フォルダ（message-log.json）にだけ保存されます。"},
       {kind="switch", label="自分のメッセージは記録しない", action="ignore_self", enabled=state.ignore_self},

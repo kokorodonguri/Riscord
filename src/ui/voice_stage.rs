@@ -15,13 +15,15 @@ pub const SCREEN_SHARE: bool = cfg!(target_os = "linux");
 pub fn screen_share_unsupported() -> &'static str {
     tr!(
         "この OS では画面共有にまだ対応していません",
-        "Screen sharing isn't supported on this OS yet"
+        "Screen sharing isn't supported on this OS yet",
+        "此操作系统暂不支持屏幕共享"
     )
 }
 fn watch_unsupported() -> &'static str {
     tr!(
         "この OS では配信の視聴にまだ対応していません",
-        "Watching streams isn't supported on this OS yet"
+        "Watching streams isn't supported on this OS yet",
+        "此操作系统暂不支持观看直播"
     )
 }
 
@@ -291,6 +293,7 @@ impl Root {
                             tr!(
                                 "{msg}。通信状態と音声設定を確認してください",
                                 "{msg}. Check your connection and audio settings",
+                                "{msg}。请检查网络连接和音频设置",
                             ),
                             13.0,
                             TEXT(),
@@ -299,12 +302,12 @@ impl Root {
                         .min_w_0(),
                     )
                     .child(
-                        small_button("vc_retry", tr!("再試行", "Retry")).on_click(cx.listener(
-                            move |this, _, _, cx| {
+                        small_button("vc_retry", tr!("再試行", "Retry", "重试")).on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 this.app.join_voice(Some(g.clone()), c.clone(), false);
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     )
                     .into_any_element(),
             );
@@ -312,12 +315,14 @@ impl Root {
         let msg = match link {
             Link::Reconnecting => tr!(
                 "サーバーとの接続が切れました。再接続しています…",
-                "Lost connection to the server. Reconnecting…"
+                "Lost connection to the server. Reconnecting…",
+                "与服务器的连接已断开。正在重新连接…"
             ),
             Link::Idle { .. } if !self.app.gateway_ok() => {
                 tr!(
                     "サーバーにつながっていません。つながるとボイスに参加できます",
-                    "Not connected to the server. You can join voice once connected"
+                    "Not connected to the server. You can join voice once connected",
+                    "未连接服务器。连接后即可加入语音"
                 )
             }
             _ => return None,
@@ -382,7 +387,7 @@ impl Root {
                         .truncate(),
                 )
                 .child(text(
-                    tr!("今は誰もいません", "No one is here right now"),
+                    tr!("今は誰もいません", "No one is here right now", "现在没有人"),
                     14.0,
                     MUTED(),
                 ))
@@ -464,7 +469,11 @@ impl Root {
                                     .px(z(6.0))
                                     .rounded(z(4.0))
                                     .bg(Color32::from_black_alpha(150))
-                                    .child(text(tr!("視聴中", "Watching"), 11.0, Color32::WHITE)),
+                                    .child(text(
+                                        tr!("視聴中", "Watching", "观看中"),
+                                        11.0,
+                                        Color32::WHITE,
+                                    )),
                             )
                         }),
                 );
@@ -475,7 +484,7 @@ impl Root {
                         let uid = f.id.clone();
                         tile = tile
                             .cursor_pointer()
-                            .tooltip(tip(tr!("配信を見る", "Watch stream")))
+                            .tooltip(tip(tr!("配信を見る", "Watch stream", "观看直播")))
                             .child(
                                 div()
                                     .absolute()
@@ -493,7 +502,7 @@ impl Root {
                                             .rounded(z(8.0))
                                             .bg(WIDGET())
                                             .child(text(
-                                                tr!("配信を見る", "Watch stream"),
+                                                tr!("配信を見る", "Watch stream", "观看直播"),
                                                 14.0,
                                                 WHITE(),
                                             )),
@@ -506,7 +515,8 @@ impl Root {
                     } else {
                         tile = tile.tooltip(tip(tr!(
                             "配信を見るには、このチャンネルに参加してください",
-                            "Join this channel to watch the stream"
+                            "Join this channel to watch the stream",
+                            "要观看直播，请加入此频道"
                         )));
                     }
                 }
@@ -537,7 +547,8 @@ impl Root {
                     line(
                         tr!(
                             "アクティビティはまだ始まっていません",
-                            "No activity has started yet"
+                            "No activity has started yet",
+                            "活动尚未开始"
                         ),
                         14.0,
                         TEXT(),
@@ -558,7 +569,8 @@ impl Root {
             .child(medium(
                 tr!(
                     "アクティビティはまだ始まっていません",
-                    "No activity has started yet"
+                    "No activity has started yet",
+                    "活动尚未开始"
                 ),
                 if content_w < 420.0 { 14.0 } else { 16.0 },
                 WHITE(),
@@ -567,7 +579,8 @@ impl Root {
                 text(
                     tr!(
                         "Riscord はアクティビティの起動・参加にまだ対応していません",
-                        "Riscord doesn't support launching or joining activities yet"
+                        "Riscord doesn't support launching or joining activities yet",
+                        "Riscord 尚不支持启动或加入活动"
                     ),
                     13.0,
                     MUTED(),
@@ -596,10 +609,10 @@ impl Root {
                 pill(
                     "vc_invite",
                     IconName::UserPlus,
-                    tr!("ボイスに招待", "Invite to Voice"),
+                    tr!("ボイスに招待", "Invite to Voice", "邀请加入语音"),
                     labels,
                 )
-                .tooltip(tip(tr!("ボイスに招待", "Invite to Voice")))
+                .tooltip(tip(tr!("ボイスに招待", "Invite to Voice", "邀请加入语音")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.app.open_voice_invite(&g1, &c1);
                     cx.notify();
@@ -609,10 +622,14 @@ impl Root {
                 pill(
                     "vc_activity",
                     IconName::Rocket,
-                    tr!("アクティビティを選ぶ", "Choose an activity"),
+                    tr!("アクティビティを選ぶ", "Choose an activity", "选择活动"),
                     labels,
                 )
-                .tooltip(tip(tr!("アクティビティを選ぶ", "Choose an activity")))
+                .tooltip(tip(tr!(
+                    "アクティビティを選ぶ",
+                    "Choose an activity",
+                    "选择活动"
+                )))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app.toggle_voice_activity();
                     cx.notify();
@@ -638,9 +655,9 @@ impl Root {
                             true,
                         )
                         .tooltip(tip(if off {
-                            tr!("ミュート解除", "Unmute")
+                            tr!("ミュート解除", "Unmute", "取消静音")
                         } else {
-                            tr!("ミュート", "Mute")
+                            tr!("ミュート", "Mute", "静音")
                         }))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.toggle_mute();
@@ -660,9 +677,9 @@ impl Root {
                             true,
                         )
                         .tooltip(tip(if deaf {
-                            tr!("スピーカーミュート解除", "Undeafen")
+                            tr!("スピーカーミュート解除", "Undeafen", "取消关闭扬声器")
                         } else {
-                            tr!("スピーカーミュート", "Deafen")
+                            tr!("スピーカーミュート", "Deafen", "关闭扬声器")
                         }))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.toggle_deaf();
@@ -686,13 +703,14 @@ impl Root {
                         .tooltip(tip(if !SCREEN_SHARE {
                             screen_share_unsupported()
                         } else if sharing {
-                            tr!("画面共有を停止", "Stop sharing")
+                            tr!("画面共有を停止", "Stop sharing", "停止共享屏幕")
                         } else if enabled {
-                            tr!("画面を共有", "Share screen")
+                            tr!("画面を共有", "Share screen", "共享屏幕")
                         } else {
                             tr!(
                                 "再接続が終わると画面を共有できます",
-                                "You can share your screen once reconnected"
+                                "You can share your screen once reconnected",
+                                "重新连接后即可共享屏幕"
                             )
                         }));
                         if enabled {
@@ -706,7 +724,7 @@ impl Root {
                     })
                     .child(
                         ctl("vc_leave", IconName::PhoneOff, RED(), Color32::WHITE, true)
-                            .tooltip(tip(tr!("切断", "Disconnected")))
+                            .tooltip(tip(tr!("切断", "Disconnected", "已断开")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.leave_voice();
                                 cx.notify();
@@ -718,10 +736,14 @@ impl Root {
                 .items_center()
                 .gap(z(10.0))
                 .child(spinner(20.0))
-                .child(text(tr!("接続中…", "Connecting…"), 14.0, MUTED()))
+                .child(text(
+                    tr!("接続中…", "Connecting…", "正在连接…"),
+                    14.0,
+                    MUTED(),
+                ))
                 .child(
                     ctl("vc_leave", IconName::PhoneOff, RED(), Color32::WHITE, true)
-                        .tooltip(tip(tr!("接続をやめる", "Disconnect")))
+                        .tooltip(tip(tr!("接続をやめる", "Disconnect", "断开连接")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.leave_voice();
                             cx.notify();
@@ -733,9 +755,9 @@ impl Root {
                 let b = fill_button(
                     "vc_join",
                     if elsewhere {
-                        tr!("このチャンネルに移動", "Move to this channel")
+                        tr!("このチャンネルに移動", "Move to this channel", "移到此频道")
                     } else {
-                        tr!("ボイスに参加", "Join Voice")
+                        tr!("ボイスに参加", "Join Voice", "加入语音")
                     },
                     GREEN(),
                     Color32::WHITE,
@@ -749,7 +771,8 @@ impl Root {
                 } else {
                     b.tooltip(tip(tr!(
                         "サーバーにつながるまでお待ちください",
-                        "Wait until connected to the server"
+                        "Wait until connected to the server",
+                        "请等待连接到服务器"
                     )))
                 })
             }
@@ -791,7 +814,11 @@ impl Root {
                     .gap(z(6.0))
                     .child(
                         medium(
-                            tr!("「{cname}」に友達を招待", "Invite friends to \"{cname}\"",),
+                            tr!(
+                                "「{cname}」に友達を招待",
+                                "Invite friends to \"{cname}\"",
+                                "邀请好友加入“{cname}”",
+                            ),
                             18.0,
                             WHITE(),
                         )
@@ -829,12 +856,16 @@ impl Root {
                     .gap(z(8.0))
                     .child(spinner(14.0))
                     .child(text(
-                        tr!("招待リンクを作っています…", "Creating an invite link…"),
+                        tr!(
+                            "招待リンクを作っています…",
+                            "Creating an invite link…",
+                            "正在创建邀请链接…"
+                        ),
                         14.0,
                         MUTED(),
                     )),
                 (None, false) => line(
-                    tr!("招待リンクはありません", "No invite link"),
+                    tr!("招待リンクはありません", "No invite link", "没有邀请链接"),
                     14.0,
                     FAINT(),
                 )
@@ -843,7 +874,7 @@ impl Root {
             .child({
                 let b = fill_button(
                     "vc_invite_copy",
-                    tr!("コピー", "Copy"),
+                    tr!("コピー", "Copy", "复制"),
                     BLURPLE(),
                     Color32::WHITE,
                     link.is_some(),
@@ -857,9 +888,11 @@ impl Root {
                     b
                 }
             });
-        content = content
-            .child(field)
-            .child(text(tr!("DM で送る", "Send via DM"), 13.0, MUTED()));
+        content = content.child(field).child(text(
+            tr!("DM で送る", "Send via DM", "通过私信发送"),
+            13.0,
+            MUTED(),
+        ));
         let mut list = div()
             .id("vc_invite_list")
             .max_h(z(list_h))
@@ -873,7 +906,8 @@ impl Root {
             list = list.child(text(
                 tr!(
                     "送れる DM がありません。リンクをコピーして共有してください",
-                    "No DMs to send to. Copy the link to share it"
+                    "No DMs to send to. Copy the link to share it",
+                    "没有可发送的私信。请复制链接分享"
                 ),
                 13.0,
                 FAINT(),
@@ -900,13 +934,13 @@ impl Root {
             let b = fill_button(
                 eid("vc_send", &dm.id, i),
                 if sent {
-                    tr!("送信済み", "Sent")
+                    tr!("送信済み", "Sent", "已发送")
                 } else if busy {
-                    tr!("送信中…", "Sending…")
+                    tr!("送信中…", "Sending…", "正在发送…")
                 } else if failed {
-                    tr!("再送信", "Resend")
+                    tr!("再送信", "Resend", "重新发送")
                 } else {
-                    tr!("送信", "Send")
+                    tr!("送信", "Send", "发送")
                 },
                 if failed { RED() } else { GREEN() },
                 Color32::WHITE,
@@ -966,7 +1000,7 @@ impl Root {
                 div()
                     .flex()
                     .items_center()
-                    .child(medium(tr!("アクティビティを選ぶ", "Choose an activity"), 18.0, WHITE()).flex_1())
+                    .child(medium(tr!("アクティビティを選ぶ", "Choose an activity", "选择活动"), 18.0, WHITE()).flex_1())
                     .child(icon_button("vc_activity_close", IconName::X, 28.0).on_click(
                         cx.listener(|this, _, _, cx| {
                             this.app.voice_view.activity_open = false;
@@ -976,12 +1010,12 @@ impl Root {
             )
             .child(div().py(z(8.0)).flex().justify_center().child(activity_art(44.0)))
             .child(text(
-                tr!("Riscord で使えるアクティビティはまだありません。", "There are no activities available in Riscord yet."),
+                tr!("Riscord で使えるアクティビティはまだありません。", "There are no activities available in Riscord yet.", "Riscord 中暂无可用的活动。"),
                 14.0,
                 TEXT(),
             ))
             .child(text(
-                tr!("アクティビティは Discord の中で動く Web アプリで、Riscord は WebView を使わないため起動・参加ができません。遊ぶときは公式アプリかブラウザ版から始めてください。", "Activities are web apps running inside Discord. Riscord doesn't use a WebView, so it can't launch or join them. To play, start from the official app or the browser version."),
+                tr!("アクティビティは Discord の中で動く Web アプリで、Riscord は WebView を使わないため起動・参加ができません。遊ぶときは公式アプリかブラウザ版から始めてください。", "Activities are web apps running inside Discord. Riscord doesn't use a WebView, so it can't launch or join them. To play, start from the official app or the browser version.", "活动是在 Discord 内运行的网页应用。Riscord 不使用 WebView，因此无法启动或加入活动。要玩的话，请从官方应用或浏览器版开始。"),
                 13.0,
                 MUTED(),
             ))
@@ -990,7 +1024,7 @@ impl Root {
                     .flex()
                     .justify_end()
                     .gap(z(8.0))
-                    .child(text_button("vc_activity_ok", tr!("閉じる", "Close")).on_click(cx.listener(
+                    .child(text_button("vc_activity_ok", tr!("閉じる", "Close", "关闭")).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.app.voice_view.activity_open = false;
                             cx.notify();
@@ -999,7 +1033,7 @@ impl Root {
                     .child(
                         fill_button(
                             "vc_activity_web",
-                            tr!("ブラウザ版で開く", "Open in browser"),
+                            tr!("ブラウザ版で開く", "Open in browser", "在浏览器中打开"),
                             BLURPLE(),
                             Color32::WHITE,
                             true,

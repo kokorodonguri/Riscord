@@ -94,8 +94,8 @@ impl Root {
         let a = &self.app;
         let mut left = div().flex().items_center().gap(z(4.0));
         for (back, name, label) in [
-            (true, IconName::ArrowLeft, tr!("戻る", "Back")),
-            (false, IconName::ArrowRight, tr!("進む", "Forward")),
+            (true, IconName::ArrowLeft, tr!("戻る", "Back", "返回")),
+            (false, IconName::ArrowRight, tr!("進む", "Forward", "前进")),
         ] {
             let enabled = if back {
                 !a.nav_back.is_empty()
@@ -124,9 +124,13 @@ impl Root {
         }
         if compact {
             let label = if a.compact_sidebar_closed {
-                tr!("チャンネル一覧を開く", "Open channel list")
+                tr!("チャンネル一覧を開く", "Open channel list", "打开频道列表")
             } else {
-                tr!("チャンネル一覧を閉じる", "Close channel list")
+                tr!(
+                    "チャンネル一覧を閉じる",
+                    "Close channel list",
+                    "关闭频道列表"
+                )
             };
             left = left.child(
                 icon_button("hamburger", IconName::Menu, 26.0)
@@ -142,7 +146,7 @@ impl Root {
         // 中央に現在地（アイコン＋名前）
         let (label, url) = match &a.sel_guild {
             None => (
-                tr!("ダイレクトメッセージ", "Direct Messages").to_string(),
+                tr!("ダイレクトメッセージ", "Direct Messages", "私信").to_string(),
                 None,
             ),
             Some(g) => a
@@ -265,7 +269,7 @@ impl Root {
             .bg(WHITE())
             .when(!selected, |d| d.group_hover("rail", |s| s.h(z(20.0))));
         let tip_text = if name.is_empty() {
-            tr!("ダイレクトメッセージ", "Direct Messages").to_string()
+            tr!("ダイレクトメッセージ", "Direct Messages", "私信").to_string()
         } else {
             name.to_string()
         };
@@ -406,7 +410,7 @@ impl Root {
                     let bg =
                         Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
                     let label = if folder.name.is_empty() {
-                        tr!("フォルダ", "Folder")
+                        tr!("フォルダ", "Folder", "文件夹")
                     } else {
                         &folder.name
                     };
@@ -583,7 +587,8 @@ impl Root {
                     .cursor(CursorStyle::IBeam)
                     .child(tr!(
                         "会話に参加または作成する",
-                        "Find or start a conversation"
+                        "Find or start a conversation",
+                        "查找或发起对话"
                     ))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.app.dm_search = true;
@@ -689,7 +694,7 @@ impl Root {
                         .gap(z(12.0))
                         .px(z(10.0))
                         .child(icon(IconName::UserPlus, 20.0, MUTED()))
-                        .child(text(tr!("フレンド", "Friends"), 16.0, TEXT()))
+                        .child(text(tr!("フレンド", "Friends", "好友"), 16.0, TEXT()))
                         .on_click(cx.listener(|this, _, _, cx| {
                             let before = (this.app.sel_guild.clone(), this.app.sel_channel.clone());
                             this.app.select(None, None);
@@ -714,7 +719,7 @@ impl Root {
                         .pl(z(16.0))
                         .child(
                             text(
-                                tr!("ダイレクトメッセージ", "Direct Messages"),
+                                tr!("ダイレクトメッセージ", "Direct Messages", "私信"),
                                 13.0,
                                 FAINT(),
                             )
@@ -772,7 +777,7 @@ impl Root {
                     );
                 } else if !q.is_empty() {
                     list = list.child(div().mt(z(12.0)).flex().justify_center().child(text(
-                        tr!("見つかりませんでした", "Nothing found"),
+                        tr!("見つかりませんでした", "Nothing found", "未找到"),
                         13.0,
                         FAINT(),
                     )));
@@ -783,7 +788,8 @@ impl Root {
                             d.child(text(
                                 tr!(
                                     "ダイレクトメッセージはまだありません",
-                                    "No direct messages yet"
+                                    "No direct messages yet",
+                                    "还没有私信"
                                 ),
                                 13.0,
                                 FAINT(),
@@ -821,7 +827,11 @@ impl Root {
                                 .flex()
                                 .justify_center()
                                 .child(text(
-                                    tr!("表示できるチャンネルがありません", "No channels to show"),
+                                    tr!(
+                                        "表示できるチャンネルがありません",
+                                        "No channels to show",
+                                        "没有可显示的频道"
+                                    ),
                                     13.0,
                                     FAINT(),
                                 ))
@@ -895,7 +905,11 @@ impl Root {
                                             IconName::Settings,
                                             20.0,
                                         )
-                                        .tooltip(tip(tr!("カテゴリの権限", "Category permissions")))
+                                        .tooltip(tip(tr!(
+                                            "カテゴリの権限",
+                                            "Category permissions",
+                                            "类别权限"
+                                        )))
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
                                                 // 見出しのクリック（開閉）まで届かせない
@@ -963,9 +977,9 @@ impl Root {
             rows.push(
                 row_frame(SharedString::from(format!("ch{}", c.id)), 34.0, open, false)
                     .tooltip(tip(if here {
-                        tr!("接続しています", "Connected")
+                        tr!("接続しています", "Connected", "已连接")
                     } else {
-                        tr!("クリックで参加", "Click to join")
+                        tr!("クリックで参加", "Click to join", "点击加入")
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !here {
@@ -1001,7 +1015,7 @@ impl Root {
                     let uid = v.user_id.clone();
                     row = row
                         .cursor_pointer()
-                        .tooltip(tip(tr!("配信を見る", "Watch stream")))
+                        .tooltip(tip(tr!("配信を見る", "Watch stream", "观看直播")))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.app.watch_stream(&uid);
                             cx.notify();
@@ -1114,9 +1128,12 @@ impl Root {
             let in_guild = gid.is_some();
             // 通話はつながっていても、ゲートウェイが再接続中なら「接続済み」と出さない
             let (label, color) = match (connected, a.gateway_ok()) {
-                (true, true) => (tr!("ボイス接続済み", "Voice Connected"), GREEN()),
-                (true, false) => (tr!("再接続中…", "Reconnecting…"), ORANGE()),
-                (false, _) => (tr!("接続中…", "Connecting…"), ORANGE()),
+                (true, true) => (
+                    tr!("ボイス接続済み", "Voice Connected", "语音已连接"),
+                    GREEN(),
+                ),
+                (true, false) => (tr!("再接続中…", "Reconnecting…", "正在重新连接…"), ORANGE()),
+                (false, _) => (tr!("接続中…", "Connecting…", "正在连接…"), ORANGE()),
             };
             card = card.child(
                 div()
@@ -1167,7 +1184,7 @@ impl Root {
                     .when(connected && in_guild, |d| {
                         d.child(
                             icon_button("soundboard", IconName::Volume2, 32.0)
-                                .tooltip(tip(tr!("サウンドボード", "Soundboard")))
+                                .tooltip(tip(tr!("サウンドボード", "Soundboard", "音效板")))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.app.toggle_soundboard();
                                     cx.notify();
@@ -1195,9 +1212,9 @@ impl Root {
                         }
                         d.child(
                             b.tooltip(tip(if sharing {
-                                tr!("画面共有を停止", "Stop sharing")
+                                tr!("画面共有を停止", "Stop sharing", "停止共享屏幕")
                             } else {
-                                tr!("画面を共有", "Share screen")
+                                tr!("画面を共有", "Share screen", "共享屏幕")
                             }))
                             .on_click(cx.listener(
                                 |this, _, _, cx| {
@@ -1209,7 +1226,7 @@ impl Root {
                     })
                     .child(
                         icon_button("hangup", IconName::PhoneOff, 32.0)
-                            .tooltip(tip(tr!("切断", "Disconnected")))
+                            .tooltip(tip(tr!("切断", "Disconnected", "已断开")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.leave_voice();
                                 cx.notify();
@@ -1224,13 +1241,24 @@ impl Root {
                         .filter(|v| a.me.as_ref().is_none_or(|m| &m.id != *v))
                         .count()
                     {
-                        0 => tr!("画面を共有しています", "Sharing your screen").to_string(),
+                        0 => tr!(
+                            "画面を共有しています",
+                            "Sharing your screen",
+                            "正在共享屏幕"
+                        )
+                        .to_string(),
                         n => tr!(
                             "画面を共有しています・{n} 人が視聴中",
                             "Sharing your screen · {n} watching",
+                            "正在共享屏幕 · {n} 人观看中",
                         ),
                     },
-                    _ => tr!("画面共有を準備しています…", "Preparing screen share…").to_string(),
+                    _ => tr!(
+                        "画面共有を準備しています…",
+                        "Preparing screen share…",
+                        "正在准备屏幕共享…"
+                    )
+                    .to_string(),
                 };
                 card = card.child(
                     div()
@@ -1276,7 +1304,7 @@ impl Root {
                         )
                         .child(
                             icon_button("voice_retry", IconName::RefreshCw, 32.0)
-                                .tooltip(tip(tr!("再試行", "Retry")))
+                                .tooltip(tip(tr!("再試行", "Retry", "重试")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.app.join_voice(gid.clone(), cid.clone(), false);
                                     cx.notify();
@@ -1284,7 +1312,7 @@ impl Root {
                         )
                         .child(
                             icon_button("voice_error_close", IconName::X, 32.0)
-                                .tooltip(tip(tr!("閉じる", "Close")))
+                                .tooltip(tip(tr!("閉じる", "Close", "关闭")))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.app.voice_view.error = None;
                                     cx.notify();
@@ -1365,11 +1393,11 @@ impl Root {
                 IconName::MicOff,
                 mic_off,
                 if mic_off {
-                    tr!("ミュート解除", "Unmute")
+                    tr!("ミュート解除", "Unmute", "取消静音")
                 } else {
-                    tr!("ミュート", "Mute")
+                    tr!("ミュート", "Mute", "静音")
                 },
-                tr!("入力オプション", "Input options"),
+                tr!("入力オプション", "Input options", "输入选项"),
                 PopMenu::Mic,
                 cx,
             ))
@@ -1379,11 +1407,11 @@ impl Root {
                 IconName::HeadphoneOff,
                 deaf,
                 if deaf {
-                    tr!("スピーカーミュート解除", "Undeafen")
+                    tr!("スピーカーミュート解除", "Undeafen", "取消关闭扬声器")
                 } else {
-                    tr!("スピーカーミュート", "Deafen")
+                    tr!("スピーカーミュート", "Deafen", "关闭扬声器")
                 },
-                tr!("出力オプション", "Output options"),
+                tr!("出力オプション", "Output options", "输出选项"),
                 PopMenu::Headset,
                 cx,
             ))
@@ -1394,10 +1422,11 @@ impl Root {
                     .tooltip(tip(if badge {
                         tr!(
                             "ユーザー設定（新しいコミットがあります）",
-                            "User Settings (new commits available)"
+                            "User Settings (new commits available)",
+                            "用户设置（有新的提交）"
                         )
                     } else {
-                        tr!("ユーザー設定", "User Settings")
+                        tr!("ユーザー設定", "User Settings", "用户设置")
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.settings_open = true;

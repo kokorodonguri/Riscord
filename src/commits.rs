@@ -136,7 +136,8 @@ async fn fetch() -> Result<Status> {
         return Ok(Status::Unknown(
             tr!(
                 "このビルドのコミットは GitHub にありません",
-                "This build's commit isn't on GitHub"
+                "This build's commit isn't on GitHub",
+                "此版本的提交不在 GitHub 上"
             )
             .into(),
         ));

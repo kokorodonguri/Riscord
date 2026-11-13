@@ -70,15 +70,16 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
             let _ = tx.send(e);
             waker.wake();
         };
-        let me = user("1", tr!("どんぐり", "Donguri"));
+        let me = user("1", tr!("どんぐり", "Donguri", "橡果"));
         let others = [
-            user("2", tr!("さくら", "Sakura")),
-            user("3", tr!("たろう", "Taro")),
+            user("2", tr!("さくら", "Sakura", "樱花")),
+            user("3", tr!("たろう", "Taro", "太郎")),
             user(
                 "4",
                 tr!(
                     "とても長い名前のユーザーさんです",
-                    "A user with a really long name"
+                    "A user with a really long name",
+                    "一位名字非常长的用户"
                 ),
             ),
         ];
@@ -115,7 +116,9 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                 "2".into(),
                 Presence {
                     status: "idle".into(),
-                    activity: Some(tr!("プレイ中: パズル", "Playing: Puzzle").into()),
+                    activity: Some(
+                        tr!("プレイ中: パズル", "Playing: Puzzle", "正在玩：拼图").into(),
+                    ),
                 },
             ),
             (
@@ -148,20 +151,32 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                         channel(
                             &p("10"),
                             4,
-                            tr!("テキストチャンネル", "Text Channels"),
+                            tr!("テキストチャンネル", "Text Channels", "文字频道"),
                             None,
                             0,
                         ),
-                        channel(&p("11"), 0, tr!("一般", "general"), Some(&p("10")), 0),
-                        channel(&p("12"), 0, tr!("雑談", "chat"), Some(&p("10")), 1),
+                        channel(
+                            &p("11"),
+                            0,
+                            tr!("一般", "general", "综合"),
+                            Some(&p("10")),
+                            0,
+                        ),
+                        channel(&p("12"), 0, tr!("雑談", "chat", "闲聊"), Some(&p("10")), 1),
                         channel(
                             &p("20"),
                             4,
-                            tr!("ボイスチャンネル", "Voice Channels"),
+                            tr!("ボイスチャンネル", "Voice Channels", "语音频道"),
                             None,
                             1,
                         ),
-                        channel(&p("21"), 2, tr!("ロビー", "Lobby"), Some(&p("20")), 0),
+                        channel(
+                            &p("21"),
+                            2,
+                            tr!("ロビー", "Lobby", "大厅"),
+                            Some(&p("20")),
+                            0,
+                        ),
                     ];
                     send(Event::GuildRoles(gid.clone(), roles.clone()));
                     send(Event::GuildChannels(gid, chans));
@@ -175,18 +190,24 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                         continue;
                     }
                     let mut list = vec![
-                        message(1200, &cid, &others[0], tr!("おはようございます！ **今日** もよろしくお願いします", "Good morning! Let's have a great day **today** too"), 60 * 26),
-                        message(1201, &cid, &others[1], tr!("<@2> 昨日のリンク https://example.com/page です", "<@2> Here's yesterday's link https://example.com/page"), 60 * 25),
+                        message(1200, &cid, &others[0], tr!("おはようございます！ **今日** もよろしくお願いします", "Good morning! Let's have a great day **today** too", "早上好！**今天**也请多关照"), 60 * 26),
+                        message(1201, &cid, &others[1], tr!("<@2> 昨日のリンク https://example.com/page です", "<@2> Here's yesterday's link https://example.com/page", "<@2> 这是昨天的链接 https://example.com/page"), 60 * 25),
                         call(&cid, &others[0], &["2"], 60 * 24, Some(5)),
                         call(&cid, &others[0], &["1", "2"], 60 * 2, Some(60 * 72)),
-                        message(1202, &cid, &me, tr!("ありがとう！", "Thanks!"), 30),
-                        message(1203, &cid, &me, tr!("あとで見ます", "I'll check it later"), 29),
-                        message(1204, &cid, &others[2], tr!("名前が長い人のメッセージ。折り返しの確認用に少し長めの文章を書いておきます。ここまで書けば十分に長いはずです。", "A message from someone with a long name. This is a slightly longer text to check wrapping. This should be long enough by now."), 5),
-                        message(1205, &cid, &others[0], tr!("# 見出し\n*斜体* __下線__ ~~打ち消し~~ `let x = 1;` ||ひみつ|| snake_case_name\n- 箇条書き\n- **太字** の項目\n> 引用の行\n> 続き\n-# 小さい文字", "# Heading\n*italic* __underline__ ~~strikethrough~~ `let x = 1;` ||secret|| snake_case_name\n- Bullet\n- An item in **bold**\n> A quoted line\n> continued\n-# Small text"), 4),
-                        message(1206, &cid, &others[1], tr!("こう書きます\n```rust\nfn main() {\n    println!(\"こんにちは\");\n}\n```\n以上です", "You write it like this\n```rust\nfn main() {\n    println!(\"Hello\");\n}\n```\nThat's all"), 3),
+                        message(1202, &cid, &me, tr!("ありがとう！", "Thanks!", "谢谢！"), 30),
+                        message(1203, &cid, &me, tr!("あとで見ます", "I'll check it later", "我稍后再看"), 29),
+                        message(1204, &cid, &others[2], tr!("名前が長い人のメッセージ。折り返しの確認用に少し長めの文章を書いておきます。ここまで書けば十分に長いはずです。", "A message from someone with a long name. This is a slightly longer text to check wrapping. This should be long enough by now.", "一位名字很长的用户发的消息。为了确认换行效果，这里写了稍长的一段文字。写到这里应该足够长了。"), 5),
+                        message(1205, &cid, &others[0], tr!("# 見出し\n*斜体* __下線__ ~~打ち消し~~ `let x = 1;` ||ひみつ|| snake_case_name\n- 箇条書き\n- **太字** の項目\n> 引用の行\n> 続き\n-# 小さい文字", "# Heading\n*italic* __underline__ ~~strikethrough~~ `let x = 1;` ||secret|| snake_case_name\n- Bullet\n- An item in **bold**\n> A quoted line\n> continued\n-# Small text", "# 标题\n*斜体* __下划线__ ~~删除线~~ `let x = 1;` ||秘密|| snake_case_name\n- 列表项\n- **粗体**的项目\n> 引用的一行\n> 续行\n-# 小号文字"), 4),
+                        message(1206, &cid, &others[1], tr!("こう書きます\n```rust\nfn main() {\n    println!(\"こんにちは\");\n}\n```\n以上です", "You write it like this\n```rust\nfn main() {\n    println!(\"Hello\");\n}\n```\nThat's all", "这样写\n```rust\nfn main() {\n    println!(\"你好\");\n}\n```\n就这些"), 3),
                     ];
-                    let mut reply = message(1207, &cid, &me, tr!("返信です", "This is a reply"), 2);
-                    reply.referenced_message = Some(Box::new(message(1205, &cid, &others[0], tr!("# 見出し\n**太字** *斜体* ~~打ち消し~~ `let x = 1;` ||ひみつ|| https://example.com/a_b\n```rust\nfn main() {}\n```\n長い返信元は1行に収めて、はみ出した分は切ります。ここからは幅を超えるための文章です。まだ続きます。もう少し続きます。これくらいあれば十分に長いはずです。さらに念のためもう一文だけ足しておきます。", "# Heading\n**bold** *italic* ~~strikethrough~~ `let x = 1;` ||secret|| https://example.com/a_b\n```rust\nfn main() {}\n```\nA long replied-to message fits on one line and the overflow is cut off. This text is here to exceed the width. It keeps going. A bit more. This should be long enough. And one more sentence just in case."), 4)));
+                    let mut reply = message(
+                        1207,
+                        &cid,
+                        &me,
+                        tr!("返信です", "This is a reply", "这是一条回复"),
+                        2,
+                    );
+                    reply.referenced_message = Some(Box::new(message(1205, &cid, &others[0], tr!("# 見出し\n**太字** *斜体* ~~打ち消し~~ `let x = 1;` ||ひみつ|| https://example.com/a_b\n```rust\nfn main() {}\n```\n長い返信元は1行に収めて、はみ出した分は切ります。ここからは幅を超えるための文章です。まだ続きます。もう少し続きます。これくらいあれば十分に長いはずです。さらに念のためもう一文だけ足しておきます。", "# Heading\n**bold** *italic* ~~strikethrough~~ `let x = 1;` ||secret|| https://example.com/a_b\n```rust\nfn main() {}\n```\nA long replied-to message fits on one line and the overflow is cut off. This text is here to exceed the width. It keeps going. A bit more. This should be long enough. And one more sentence just in case.", "# 标题\n**粗体** *斜体* ~~删除线~~ `let x = 1;` ||秘密|| https://example.com/a_b\n```rust\nfn main() {}\n```\n较长的被回复消息会收在一行内，超出部分会被截断。下面这段文字是为了超出宽度而写的。还在继续。再多一点。这样应该足够长了。保险起见再加一句。"), 4)));
                     list.push(reply);
                     list.push(call(&cid, &others[1], &["1", "3"], 1, None));
                     for (i, m) in list.iter_mut().enumerate() {

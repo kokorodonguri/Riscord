@@ -11,11 +11,11 @@ impl Root {
         let state = &self.app.friends;
         let mut tabs = div().flex().flex_wrap().gap(z(5.0));
         for (tab, label) in [
-            (0, tr!("すべて", "All")),
-            (1, tr!("オンライン", "Online")),
-            (2, tr!("保留中", "Pending")),
-            (3, tr!("ブロック", "Blocked")),
-            (4, tr!("フレンドに追加", "Add Friend")),
+            (0, tr!("すべて", "All", "全部")),
+            (1, tr!("オンライン", "Online", "在线")),
+            (2, tr!("保留中", "Pending", "待处理")),
+            (3, tr!("ブロック", "Blocked", "已屏蔽")),
+            (4, tr!("フレンドに追加", "Add Friend", "添加好友")),
         ] {
             tabs = tabs.child(
                 fill_button(
@@ -52,12 +52,11 @@ impl Root {
                     .flex_wrap()
                     .child(text(error.clone(), 13.0, RED()).flex_1().min_w_0())
                     .child(
-                        text_button("friends_retry", tr!("再読み込み", "Reload")).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        text_button("friends_retry", tr!("再読み込み", "Reload", "重新加载"))
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.fetch_friends();
                                 cx.notify();
-                            }),
-                        ),
+                            })),
                     ),
             );
         }
@@ -75,55 +74,60 @@ impl Root {
                 .flex_col()
                 .child(div().p(z(12.0)).child(tabs))
                 .child(
-                    body.child(medium(tr!("フレンドに追加", "Add Friend"), 18.0, WHITE()))
-                        .child(text(
-                            tr!(
-                                "追加したい相手のユーザー名を入力してください。",
-                                "Enter the username of the person you want to add."
-                            ),
-                            14.0,
-                            MUTED(),
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(z(8.0))
-                                .items_center()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(z(160.0))
-                                        .bg(INPUT())
-                                        .rounded(z(6.0))
-                                        .px(z(8.0))
-                                        .child(
-                                            Input::new(&self.inp.friend_name)
-                                                .appearance(false)
-                                                .disabled(pending)
-                                                .h(z(36.0)),
-                                        ),
-                                )
-                                .child(
-                                    fill_button(
-                                        "friend-request",
-                                        if pending {
-                                            tr!("送信中…", "Sending…")
-                                        } else {
-                                            tr!("申請を送信", "Send Request")
-                                        },
-                                        BLURPLE(),
-                                        WHITE(),
-                                        !pending,
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.app.friend_action(FriendAction::Request);
-                                            cx.notify();
-                                        },
-                                    )),
-                                ),
+                    body.child(medium(
+                        tr!("フレンドに追加", "Add Friend", "添加好友"),
+                        18.0,
+                        WHITE(),
+                    ))
+                    .child(text(
+                        tr!(
+                            "追加したい相手のユーザー名を入力してください。",
+                            "Enter the username of the person you want to add.",
+                            "请输入要添加的对方的用户名。"
                         ),
+                        14.0,
+                        MUTED(),
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(z(8.0))
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(z(160.0))
+                                    .bg(INPUT())
+                                    .rounded(z(6.0))
+                                    .px(z(8.0))
+                                    .child(
+                                        Input::new(&self.inp.friend_name)
+                                            .appearance(false)
+                                            .disabled(pending)
+                                            .h(z(36.0)),
+                                    ),
+                            )
+                            .child(
+                                fill_button(
+                                    "friend-request",
+                                    if pending {
+                                        tr!("送信中…", "Sending…", "正在发送…")
+                                    } else {
+                                        tr!("申請を送信", "Send Request", "发送请求")
+                                    },
+                                    BLURPLE(),
+                                    WHITE(),
+                                    !pending,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.app.friend_action(FriendAction::Request);
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    ),
                 );
         }
         let mut rows: Vec<_> = state
@@ -148,14 +152,19 @@ impl Root {
         rows.sort_by_cached_key(|r| r.user.display().to_lowercase());
         if rows.is_empty() {
             let note = if state.loading.is_some() && !state.loaded {
-                tr!("読み込み中…", "Loading…")
+                tr!("読み込み中…", "Loading…", "正在加载…")
             } else if !state.loaded && state.error.is_none() {
                 tr!(
                     "フレンド一覧を読み込めませんでした",
-                    "Couldn't load the friends list"
+                    "Couldn't load the friends list",
+                    "无法获取好友列表"
                 )
             } else {
-                tr!("表示するフレンドはいません", "No friends to show")
+                tr!(
+                    "表示するフレンドはいません",
+                    "No friends to show",
+                    "没有可显示的好友"
+                )
             };
             body = body.child(div().p(z(20.0)).child(text(note, 14.0, MUTED())));
         } else {
@@ -183,12 +192,20 @@ impl Root {
                                         .get(&id)
                                         .map_or("offline", |p| p.status.as_str());
                                     let detail = match r.kind {
-                                        2 => tr!("ブロック中", "Blocked"),
+                                        2 => tr!("ブロック中", "Blocked", "已屏蔽"),
                                         3 => {
-                                            tr!("受信したフレンド申請", "Incoming friend requests")
+                                            tr!(
+                                                "受信したフレンド申請",
+                                                "Incoming friend requests",
+                                                "收到的好友请求"
+                                            )
                                         }
                                         4 => {
-                                            tr!("送信済みフレンド申請", "Outgoing friend requests")
+                                            tr!(
+                                                "送信済みフレンド申請",
+                                                "Outgoing friend requests",
+                                                "已发送的好友请求"
+                                            )
                                         }
                                         _ => crate::app::status_label(status),
                                     };
@@ -241,14 +258,14 @@ impl Root {
                                             );
                                             actions = actions.child(this.friend_row_button(
                                                 &id,
-                                                tr!("削除", "Delete"),
+                                                tr!("削除", "Delete", "删除"),
                                                 1,
                                                 pending,
                                                 cx,
                                             ));
                                             actions = actions.child(this.friend_row_button(
                                                 &id,
-                                                tr!("ブロック", "Block"),
+                                                tr!("ブロック", "Block", "屏蔽"),
                                                 2,
                                                 pending,
                                                 cx,
@@ -257,7 +274,7 @@ impl Root {
                                         2 => {
                                             actions = actions.child(this.friend_row_button(
                                                 &id,
-                                                tr!("解除", "Unblock"),
+                                                tr!("解除", "Unblock", "取消屏蔽"),
                                                 1,
                                                 pending,
                                                 cx,
@@ -266,14 +283,14 @@ impl Root {
                                         3 => {
                                             actions = actions.child(this.friend_row_button(
                                                 &id,
-                                                tr!("承認", "Accept"),
+                                                tr!("承認", "Accept", "接受"),
                                                 3,
                                                 pending,
                                                 cx,
                                             ));
                                             actions = actions.child(this.friend_row_button(
                                                 &id,
-                                                tr!("拒否", "Ignore"),
+                                                tr!("拒否", "Ignore", "忽略"),
                                                 1,
                                                 pending,
                                                 cx,
@@ -282,7 +299,7 @@ impl Root {
                                         4 => {
                                             actions = actions.child(this.friend_row_button(
                                                 &id,
-                                                tr!("取り消す", "Cancel"),
+                                                tr!("取り消す", "Cancel", "取消"),
                                                 1,
                                                 pending,
                                                 cx,
@@ -340,7 +357,7 @@ impl Root {
             .is_some_and(|(user, k)| user == &id && *k == kind);
         let destructive = kind == 1 || kind == 2;
         let caption = if confirmed {
-            tr!("確定", "Confirm")
+            tr!("確定", "Confirm", "确定")
         } else {
             label
         };

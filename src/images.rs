@@ -198,7 +198,7 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
             .map_err(|e| format!("{path}: {e}"));
     }
     if !(uri.starts_with("http://") || uri.starts_with("https://")) {
-        return Err(tr!("対応していない URI", "Unsupported URI").into());
+        return Err(tr!("対応していない URI", "Unsupported URI", "不支持的 URI").into());
     }
     let disk = disk_path(uri);
     if let Some(p) = &disk {
@@ -224,7 +224,8 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
     {
         return Err(tr!(
             "画像のダウンロードサイズが上限を超えました",
-            "The image download exceeded the size limit"
+            "The image download exceeded the size limit",
+            "图片下载大小超出上限"
         )
         .into());
     }
@@ -233,7 +234,8 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
         if chunk.len() > MAX_DOWNLOAD_BYTES - bytes.len() {
             return Err(tr!(
                 "画像のダウンロードサイズが上限を超えました",
-                "The image download exceeded the size limit"
+                "The image download exceeded the size limit",
+                "图片下载大小超出上限"
             )
             .into());
         }

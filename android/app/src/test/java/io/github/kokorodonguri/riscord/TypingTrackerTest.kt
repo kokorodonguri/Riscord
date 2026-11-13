@@ -47,4 +47,10 @@ class TypingTrackerTest {
         tracker.start("b","B");assertEquals("A and B are typing…",tracker.label())
         tracker.start("c","C");assertEquals("3 people are typing…",tracker.label())
     }
+    @Test fun chineseLabels() {
+        Locale.setDefault(Locale.SIMPLIFIED_CHINESE)
+        tracker.start("a","A");assertEquals("A 正在输入…",tracker.label())
+        tracker.start("b","B");assertEquals("A、B 正在输入…",tracker.label())
+        tracker.start("c","C");assertEquals("3 人正在输入…",tracker.label())
+    }
 }

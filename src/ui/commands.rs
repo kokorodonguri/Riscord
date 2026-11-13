@@ -17,15 +17,15 @@ const SUGGEST_MAX: usize = 8;
 /// 引数の種類の名前
 fn kind_label(k: u8) -> &'static str {
     match k {
-        3 => tr!("文字", "String"),
-        4 => tr!("整数", "Integer"),
-        5 => tr!("はい/いいえ", "Yes/No"),
-        6 => tr!("ユーザー", "User"),
-        7 => tr!("チャンネル", "Channel"),
-        8 => tr!("ロール", "Role"),
-        9 => tr!("ユーザー・ロール", "User/Role"),
-        10 => tr!("数", "Number"),
-        11 => tr!("添付ファイル", "Attachment"),
+        3 => tr!("文字", "String", "文字"),
+        4 => tr!("整数", "Integer", "整数"),
+        5 => tr!("はい/いいえ", "Yes/No", "是/否"),
+        6 => tr!("ユーザー", "User", "用户"),
+        7 => tr!("チャンネル", "Channel", "频道"),
+        8 => tr!("ロール", "Role", "身份组"),
+        9 => tr!("ユーザー・ロール", "User/Role", "用户/身份组"),
+        10 => tr!("数", "Number", "数字"),
+        11 => tr!("添付ファイル", "Attachment", "附件"),
         _ => "",
     }
 }
@@ -115,18 +115,22 @@ impl Root {
             .flex_col()
             .gap(z(1.0));
         col = col.child(div().px(z(6.0)).pb(z(4.0)).child(medium(
-            tr!("「/{q}」に一致するコマンド", "Commands matching \"/{q}\"",),
+            tr!(
+                "「/{q}」に一致するコマンド",
+                "Commands matching \"/{q}\"",
+                "匹配“/{q}”的命令",
+            ),
             12.0,
             MUTED(),
         )));
         if hits.is_empty() {
             return Some(col.child(div().px(z(6.0)).py(z(6.0)).flex().items_center().gap(z(8.0)).when(loading, |d| d.child(spinner(14.0))).child(text(
                 if loading {
-                    tr!("コマンドを読み込み中…", "Loading commands…")
+                    tr!("コマンドを読み込み中…", "Loading commands…", "正在加载命令…")
                 } else if failed {
-                    tr!("コマンドを読み込めませんでした。しばらくしてから「/」を入力し直してください", "Couldn't load commands. Type \"/\" again in a moment")
+                    tr!("コマンドを読み込めませんでした。しばらくしてから「/」を入力し直してください", "Couldn't load commands. Type \"/\" again in a moment", "无法加载命令。请稍后重新输入“/”")
                 } else {
-                    tr!("使えるコマンドがありません", "No commands available")
+                    tr!("使えるコマンドがありません", "No commands available", "没有可用的命令")
                 },
                 13.0,
                 MUTED(),
@@ -345,7 +349,7 @@ impl Root {
                 .child(line(c.app_name.clone(), 12.0, FAINT()).flex_1().min_w_0())
                 .child(
                     icon_button("cmd_cancel", IconName::CircleX, 22.0)
-                        .tooltip(tip(tr!("やめる（Esc）", "Cancel (Esc)")))
+                        .tooltip(tip(tr!("やめる（Esc）", "Cancel (Esc)", "取消（Esc）")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.cancel_command();
                             cx.notify();
@@ -384,7 +388,11 @@ impl Root {
             }
             boxed = boxed
                 .child(text(
-                    tr!("サブコマンドを選んでください", "Choose a subcommand"),
+                    tr!(
+                        "サブコマンドを選んでください",
+                        "Choose a subcommand",
+                        "请选择子命令"
+                    ),
                     12.0,
                     MUTED(),
                 ))
@@ -404,8 +412,10 @@ impl Root {
                 let editor: AnyElement = match o.kind {
                     OPT_BOOLEAN => {
                         let mut row = div().flex().gap(z(6.0));
-                        for (v, l) in [(true, tr!("はい", "Yes")), (false, tr!("いいえ", "No"))]
-                        {
+                        for (v, l) in [
+                            (true, tr!("はい", "Yes", "是")),
+                            (false, tr!("いいえ", "No", "否")),
+                        ] {
                             let on = chosen.as_ref().and_then(|x| x.as_bool()) == Some(v);
                             let name = o.name.clone();
                             row = row.child(
@@ -432,7 +442,8 @@ impl Root {
                     OPT_ATTACHMENT => text(
                         tr!(
                             "添付ファイルの引数にはまだ対応していません",
-                            "Attachment arguments aren't supported yet"
+                            "Attachment arguments aren't supported yet",
+                            "暂不支持附件参数"
                         ),
                         12.0,
                         ORANGE(),
@@ -515,18 +526,28 @@ impl Root {
                 .gap(z(8.0))
                 .child(
                     text(
-                        tr!("Enter で実行・Esc でやめる", "Enter to run · Esc to cancel"),
+                        tr!(
+                            "Enter で実行・Esc でやめる",
+                            "Enter to run · Esc to cancel",
+                            "Enter 执行 · Esc 取消"
+                        ),
                         12.0,
                         FAINT(),
                     )
                     .flex_1(),
                 )
                 .child(
-                    fill_button("cmd_run", tr!("実行", "Run"), BLURPLE(), WHITE(), !blocked)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.app.run_command();
-                            cx.notify();
-                        })),
+                    fill_button(
+                        "cmd_run",
+                        tr!("実行", "Run", "运行"),
+                        BLURPLE(),
+                        WHITE(),
+                        !blocked,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.run_command();
+                        cx.notify();
+                    })),
                 ),
         );
         boxed

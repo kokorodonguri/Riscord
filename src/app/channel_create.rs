@@ -18,7 +18,11 @@ pub struct ChannelDraft {
 /// 作る本体を作る。テキスト系の名前は公式クライアントと同じく小文字にし、空白を - にする
 pub fn channel_body(d: &ChannelDraft) -> Result<serde_json::Value, &'static str> {
     if !matches!(d.kind, 0 | 2 | 4 | 15) {
-        return Err(tr!("作れない種類です", "This type can't be created"));
+        return Err(tr!(
+            "作れない種類です",
+            "This type can't be created",
+            "无法创建此类型"
+        ));
     }
     let mut name = d.name.trim().to_owned();
     if matches!(d.kind, 0 | 15) {
@@ -31,7 +35,8 @@ pub fn channel_body(d: &ChannelDraft) -> Result<serde_json::Value, &'static str>
     if name.is_empty() || name.chars().count() > 100 {
         return Err(tr!(
             "名前は 1〜100 文字にしてください",
-            "Names must be 1–100 characters"
+            "Names must be 1–100 characters",
+            "名称须为 1–100 个字符"
         ));
     }
     let mut body = serde_json::json!({ "name": name, "type": d.kind });
@@ -95,7 +100,8 @@ impl App {
             self.channel_draft.as_mut().unwrap().error = Some(
                 tr!(
                     "チャンネルを管理する権限がありません",
-                    "You don't have permission to manage channels"
+                    "You don't have permission to manage channels",
+                    "你没有管理频道的权限"
                 )
                 .into(),
             );
@@ -113,7 +119,8 @@ impl App {
                 draft.error = Some(
                     tr!(
                         "送信できませんでした。再接続してください",
-                        "Couldn't send. Please reconnect"
+                        "Couldn't send. Please reconnect",
+                        "无法发送。请重新连接"
                     )
                     .into(),
                 )
@@ -145,12 +152,12 @@ impl App {
                         self.open_channel(id);
                     }
                 }
-                self.show_toast(tr!("作成しました", "Created"));
+                self.show_toast(tr!("作成しました", "Created", "已创建"));
             }
             Err(e) => {
                 d.error = Some(super::pins::api_error_text(
                     &e,
-                    tr!("作成できませんでした", "Couldn't create"),
+                    tr!("作成できませんでした", "Couldn't create", "无法创建"),
                 ))
             }
         }

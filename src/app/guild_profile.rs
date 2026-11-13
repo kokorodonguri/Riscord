@@ -41,19 +41,22 @@ pub fn profile_bodies(
     if nick.chars().count() > NICK_MAX {
         return Err(tr!(
             "ニックネームは 32 文字までです",
-            "Nicknames can be up to 32 characters"
+            "Nicknames can be up to 32 characters",
+            "昵称最多 32 个字符"
         ));
     }
     if draft.bio.chars().count() > BIO_MAX {
         return Err(tr!(
             "自己紹介は 190 文字までです",
-            "About Me can be up to 190 characters"
+            "About Me can be up to 190 characters",
+            "个人简介最多 190 个字符"
         ));
     }
     if draft.pronouns.trim().chars().count() > PRONOUNS_MAX {
         return Err(tr!(
             "代名詞は 40 文字までです",
-            "Pronouns can be up to 40 characters"
+            "Pronouns can be up to 40 characters",
+            "代词最多 40 个字符"
         ));
     }
     let nick_body = (nick != original.nick.trim()).then(|| {
@@ -63,7 +66,8 @@ pub fn profile_bodies(
     if nick_body.is_some() && !nick_allowed {
         return Err(tr!(
             "このサーバーでニックネームを変える権限がありません",
-            "You don't have permission to change your nickname in this server"
+            "You don't have permission to change your nickname in this server",
+            "你没有在此服务器中更改昵称的权限"
         ));
     }
     let mut profile = serde_json::Map::new();
@@ -75,7 +79,7 @@ pub fn profile_bodies(
     }
     let profile_body = (!profile.is_empty()).then_some(serde_json::Value::Object(profile));
     if nick_body.is_none() && profile_body.is_none() {
-        return Err(tr!("変更がありません", "No changes"));
+        return Err(tr!("変更がありません", "No changes", "没有更改"));
     }
     Ok((nick_body, profile_body))
 }
@@ -103,7 +107,8 @@ impl App {
             error: load.is_none().then(|| {
                 tr!(
                     "読み込めませんでした。再接続してください",
-                    "Couldn't load. Please reconnect"
+                    "Couldn't load. Please reconnect",
+                    "无法加载。请重新连接"
                 )
                 .into()
             }),
@@ -166,7 +171,8 @@ impl App {
         e.error = failed.then(|| {
             tr!(
                 "送信できませんでした。再接続してください",
-                "Couldn't send. Please reconnect"
+                "Couldn't send. Please reconnect",
+                "无法发送。请重新连接"
             )
             .into()
         });
@@ -197,7 +203,7 @@ impl App {
                 Err(err) => {
                     e.error = Some(super::pins::api_error_text(
                         &err,
-                        tr!("読み込めませんでした", "Couldn't load"),
+                        tr!("読み込めませんでした", "Couldn't load", "无法加载"),
                     ))
                 }
             }
@@ -222,7 +228,7 @@ impl App {
             Err(err) => {
                 e.error = Some(super::pins::api_error_text(
                     &err,
-                    tr!("保存できませんでした", "Couldn't save"),
+                    tr!("保存できませんでした", "Couldn't save", "无法保存"),
                 ))
             }
         }
@@ -236,7 +242,8 @@ impl App {
             }
             self.show_toast(tr!(
                 "サーバープロフィールを保存しました",
-                "Server profile saved"
+                "Server profile saved",
+                "已保存服务器个人资料"
             ));
         }
     }

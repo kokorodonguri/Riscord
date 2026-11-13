@@ -27,7 +27,7 @@ pub(super) fn panel_head(title: &str, ic: IconName, cx: &mut Context<Root>) -> D
         )
         .child(
             icon_button("side_close", IconName::X, 28.0)
-                .tooltip(tip(tr!("閉じる", "Close")))
+                .tooltip(tip(tr!("閉じる", "Close", "关闭")))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app.close_side();
                     cx.notify();
@@ -100,7 +100,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(panel_head(
-                tr!("ピン留めされたメッセージ", "Pinned messages"),
+                tr!("ピン留めされたメッセージ", "Pinned messages", "置顶消息"),
                 IconName::Pin,
                 cx,
             ))
@@ -125,8 +125,12 @@ impl Root {
                 let m = &item.message;
                 let at = local_dt(&item.pinned_at)
                     .map(|t| {
-                        t.format(tr!("%Y/%m/%d %H:%M にピン留め", "Pinned %b %-d, %Y %H:%M"))
-                            .to_string()
+                        t.format(tr!(
+                            "%Y/%m/%d %H:%M にピン留め",
+                            "Pinned %b %-d, %Y %H:%M",
+                            "置顶于 %Y/%m/%d %H:%M"
+                        ))
+                        .to_string()
                     })
                     .unwrap_or_default();
                 let (gid, cid, mid) = (
@@ -144,7 +148,7 @@ impl Root {
                     .child(
                         small_button(
                             SharedString::from(format!("pin_jump{mid}")),
-                            tr!("ジャンプ", "Jump"),
+                            tr!("ジャンプ", "Jump", "跳转"),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.jump_to(gid.clone(), cid.clone(), mid.clone());
@@ -172,12 +176,14 @@ impl Root {
                         .gap(z(8.0))
                         .p(z(16.0))
                         .child(text(e.clone(), 14.0, RED()))
-                        .child(small_button("pins_retry", tr!("再試行", "Retry")).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.app.retry_pins();
-                                cx.notify();
-                            }),
-                        ))
+                        .child(
+                            small_button("pins_retry", tr!("再試行", "Retry", "重试")).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.app.retry_pins();
+                                    cx.notify();
+                                }),
+                            ),
+                        )
                 } else if p.loading.is_some() {
                     div()
                         .p(z(16.0))
@@ -187,7 +193,8 @@ impl Root {
                 } else if p.items.is_empty() {
                     panel_note(tr!(
                         "このチャンネルにはピン留めされたメッセージがありません",
-                        "This channel has no pinned messages"
+                        "This channel has no pinned messages",
+                        "此频道没有置顶消息"
                     ))
                 } else if p.has_more {
                     // 末尾まで来たら次のページを読む
@@ -221,11 +228,19 @@ impl Root {
                 .guilds
                 .iter()
                 .find(|x| &x.id == g)
-                .map(|g| tr!("サーバー「{}」を検索", "Search server \"{}\"", g.name))
+                .map(|g| {
+                    tr!(
+                        "サーバー「{}」を検索",
+                        "Search server \"{}\"",
+                        "搜索服务器“{}”",
+                        g.name
+                    )
+                })
                 .unwrap_or_default(),
             (None, Some(c)) => tr!(
                 "「{}」との DM を検索",
                 "Search DMs with \"{}\"",
+                "搜索与“{}”的私信",
                 c.dm_label()
             ),
             _ => String::new(),
@@ -258,136 +273,146 @@ impl Root {
             return div();
         };
         // 状態の一行（件数・ページ送り）
-        let status: Option<Div> =
-            if let Some(e) = &s.error {
-                Some(
-                    div()
-                        .px(z(14.0))
-                        .py(z(8.0))
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(z(8.0))
-                        .child(text(e.clone(), 13.0, RED()))
-                        .when(s.searched && s.scope.is_some(), |d| {
-                            d.child(
-                                small_button("search_retry", tr!("再試行", "Retry")).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.app.retry_search();
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                        }),
-                )
-            } else if s.loading {
-                Some(
-                    div()
-                        .px(z(14.0))
-                        .py(z(8.0))
-                        .flex()
-                        .items_center()
-                        .gap(z(8.0))
-                        .child(spinner(16.0))
-                        .child(text(
-                            if s.retry_at.is_some() {
-                                tr!("検索の準備中…", "Preparing search…")
-                            } else {
-                                tr!("検索中…", "Searching…")
-                            },
-                            13.0,
-                            MUTED(),
-                        )),
-                )
-            } else if s.searched {
-                let label = s.result_label();
-                let can_prev = s.offset > 0;
-                let can_next =
-                    s.offset + SEARCH_PAGE < s.total && s.offset + SEARCH_PAGE <= SEARCH_MAX_OFFSET;
-                let summary = if s.partial {
-                    text(label, 13.0, MUTED())
-                } else {
-                    line(label, 13.0, MUTED())
-                };
-                let row = div()
-                    .w_full()
+        let status: Option<Div> = if let Some(e) = &s.error {
+            Some(
+                div()
+                    .px(z(14.0))
+                    .py(z(8.0))
                     .flex()
-                    .items_center()
-                    .gap(z(6.0))
-                    .child(summary.flex_1().min_w_0())
-                    .when(can_prev, |d| {
+                    .flex_col()
+                    .items_start()
+                    .gap(z(8.0))
+                    .child(text(e.clone(), 13.0, RED()))
+                    .when(s.searched && s.scope.is_some(), |d| {
                         d.child(
-                            small_button("search_prev", tr!("前へ", "Previous")).on_click(
+                            small_button("search_retry", tr!("再試行", "Retry", "重试")).on_click(
                                 cx.listener(|this, _, _, cx| {
-                                    this.app.search_page(false);
+                                    this.app.retry_search();
                                     cx.notify();
                                 }),
                             ),
                         )
-                    })
-                    .when(can_next, |d| {
-                        d.child(small_button("search_next", tr!("次へ", "Next")).on_click(
+                    }),
+            )
+        } else if s.loading {
+            Some(
+                div()
+                    .px(z(14.0))
+                    .py(z(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(z(8.0))
+                    .child(spinner(16.0))
+                    .child(text(
+                        if s.retry_at.is_some() {
+                            tr!("検索の準備中…", "Preparing search…", "正在准备搜索…")
+                        } else {
+                            tr!("検索中…", "Searching…", "正在搜索…")
+                        },
+                        13.0,
+                        MUTED(),
+                    )),
+            )
+        } else if s.searched {
+            let label = s.result_label();
+            let can_prev = s.offset > 0;
+            let can_next =
+                s.offset + SEARCH_PAGE < s.total && s.offset + SEARCH_PAGE <= SEARCH_MAX_OFFSET;
+            let summary = if s.partial {
+                text(label, 13.0, MUTED())
+            } else {
+                line(label, 13.0, MUTED())
+            };
+            let row = div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(z(6.0))
+                .child(summary.flex_1().min_w_0())
+                .when(can_prev, |d| {
+                    d.child(
+                        small_button("search_prev", tr!("前へ", "Previous", "上一步")).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.app.search_page(false);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                })
+                .when(can_next, |d| {
+                    d.child(
+                        small_button("search_next", tr!("次へ", "Next", "下一步")).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.app.search_page(true);
                                 cx.notify();
                             }),
-                        ))
-                    });
-                Some(
-                    div()
-                        .px(z(14.0))
-                        .py(z(8.0))
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(z(8.0))
-                        .child(row)
-                        .when(s.partial, |d| {
-                            d.child(
-                                small_button("search_retry_partial", tr!("再試行", "Retry"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.app.retry_search();
-                                        cx.notify();
-                                    })),
-                            )
-                        }),
-                )
-            } else {
-                Some(
-                    div()
-                        .px(z(14.0))
-                        .py(z(10.0))
-                        .flex()
-                        .flex_col()
-                        .gap(z(4.0))
-                        .children(
-                            [
-                                tr!("from:名前 … 送った人", "from:name … sender"),
-                                tr!(
-                                    "mentions:名前 … @ された人",
-                                    "mentions:name … person mentioned"
-                                ),
-                                tr!(
-                                    "in:チャンネル … チャンネル（サーバーのみ）",
-                                    "in:channel … channel (servers only)"
-                                ),
-                                tr!(
-                                    "has:画像 / link / file / video / embed / sticker / poll",
-                                    "has:image / link / file / video / embed / sticker / poll"
-                                ),
-                                tr!(
-                                    "before: / after: / during:2026-01-31 … 日付",
-                                    "before: / after: / during:2026-01-31 … date"
-                                ),
-                                tr!(
-                                    "pinned:true … ピン留めされたもの",
-                                    "pinned:true … pinned messages"
-                                ),
-                            ]
-                            .map(|t| text(t, 12.0, MUTED())),
                         ),
-                )
-            };
+                    )
+                });
+            Some(
+                div()
+                    .px(z(14.0))
+                    .py(z(8.0))
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(z(8.0))
+                    .child(row)
+                    .when(s.partial, |d| {
+                        d.child(
+                            small_button("search_retry_partial", tr!("再試行", "Retry", "重试"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.app.retry_search();
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+        } else {
+            Some(
+                div()
+                    .px(z(14.0))
+                    .py(z(10.0))
+                    .flex()
+                    .flex_col()
+                    .gap(z(4.0))
+                    .children(
+                        [
+                            tr!(
+                                "from:名前 … 送った人",
+                                "from:name … sender",
+                                "from:名称 … 发送者"
+                            ),
+                            tr!(
+                                "mentions:名前 … @ された人",
+                                "mentions:name … person mentioned",
+                                "mentions:名称 … 被 @ 的人"
+                            ),
+                            tr!(
+                                "in:チャンネル … チャンネル（サーバーのみ）",
+                                "in:channel … channel (servers only)",
+                                "in:频道 … 频道（仅限服务器）"
+                            ),
+                            tr!(
+                                "has:画像 / link / file / video / embed / sticker / poll",
+                                "has:image / link / file / video / embed / sticker / poll",
+                                "has:image / link / file / video / embed / sticker / poll"
+                            ),
+                            tr!(
+                                "before: / after: / during:2026-01-31 … 日付",
+                                "before: / after: / during:2026-01-31 … date",
+                                "before: / after: / during:2026-01-31 … 日期"
+                            ),
+                            tr!(
+                                "pinned:true … ピン留めされたもの",
+                                "pinned:true … pinned messages",
+                                "pinned:true … 已置顶的消息"
+                            ),
+                        ]
+                        .map(|t| text(t, 12.0, MUTED())),
+                    ),
+            )
+        };
         top = top.children(status);
         let (n, key) = (s.hits.len(), (2, format!("{:?}", s.scope), s.rev));
         self.sync_side_list(key, n);
@@ -396,7 +421,11 @@ impl Root {
             .size_full()
             .flex()
             .flex_col()
-            .child(panel_head(tr!("検索", "Search"), IconName::Search, cx))
+            .child(panel_head(
+                tr!("検索", "Search", "搜索"),
+                IconName::Search,
+                cx,
+            ))
             .child(top)
             .child(
                 list(self.side_list.clone(), move |ix, window, cx| {
@@ -438,7 +467,7 @@ impl Root {
                     .child(
                         small_button(
                             SharedString::from(format!("search_jump{mid}")),
-                            tr!("ジャンプ", "Jump"),
+                            tr!("ジャンプ", "Jump", "跳转"),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.jump_to(gid.clone(), cid.clone(), mid.clone());

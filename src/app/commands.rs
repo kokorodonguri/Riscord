@@ -212,6 +212,7 @@ pub fn option_value(
             Err(tr!(
                 "「{}」を入力してください",
                 "Please enter \"{}\"",
+                "请输入“{}”",
                 o.name
             ))
         } else {
@@ -235,6 +236,7 @@ pub fn option_value(
                 tr!(
                     "「{}」は候補から選んでください",
                     "Choose \"{}\" from the suggestions",
+                    "请从候选中选择“{}”",
                     o.name
                 )
             });
@@ -244,6 +246,7 @@ pub fn option_value(
             return Err(tr!(
                 "「{}」の値が範囲外です",
                 "The value of \"{}\" is out of range",
+                "“{}”的值超出范围",
                 o.name
             ));
         }
@@ -256,6 +259,7 @@ pub fn option_value(
                 tr!(
                     "「{}」には整数を入力してください",
                     "Enter an integer for \"{}\"",
+                    "请为“{}”输入整数",
                     o.name
                 )
             })?;
@@ -267,6 +271,7 @@ pub fn option_value(
                 tr!(
                     "「{}」には数を入力してください",
                     "Enter a number for \"{}\"",
+                    "请为“{}”输入数字",
                     o.name
                 )
             })?;
@@ -280,6 +285,7 @@ pub fn option_value(
                 return Err(tr!(
                     "「{}」ははい・いいえで選んでください",
                     "Choose yes or no for \"{}\"",
+                    "请为“{}”选择是或否",
                     o.name
                 ))
             }
@@ -289,6 +295,7 @@ pub fn option_value(
                 tr!(
                     "「{}」の「{t}」が見つかりません",
                     "\"{t}\" not found for \"{}\"",
+                    "找不到“{}”的“{t}”",
                     o.name
                 )
             })?;
@@ -297,7 +304,8 @@ pub fn option_value(
         OPT_ATTACHMENT => {
             return Err(tr!(
                 "添付ファイルの引数にはまだ対応していません",
-                "Attachment arguments aren't supported yet"
+                "Attachment arguments aren't supported yet",
+                "暂不支持附件参数"
             )
             .into())
         }
@@ -628,7 +636,8 @@ impl App {
                 d.error = Some(
                     tr!(
                         "接続の準備ができていません。少し待ってからもう一度お試しください",
-                        "Not ready to connect yet. Wait a moment and try again"
+                        "Not ready to connect yet. Wait a moment and try again",
+                        "连接尚未就绪。请稍候再试"
                     )
                     .into(),
                 );
@@ -637,7 +646,14 @@ impl App {
         }
         if needs_sub(&d.command, &d.path) {
             if let Some(d) = self.cmd_draft.as_mut() {
-                d.error = Some(tr!("サブコマンドを選んでください", "Choose a subcommand").into());
+                d.error = Some(
+                    tr!(
+                        "サブコマンドを選んでください",
+                        "Choose a subcommand",
+                        "请选择子命令"
+                    )
+                    .into(),
+                );
             }
             return;
         }
@@ -706,6 +722,7 @@ impl App {
                 self.show_toast(&tr!(
                     "{} にアプリが応答しませんでした",
                     "The app didn't respond to {}",
+                    "应用没有响应 {}",
                     p.label
                 ));
             }
@@ -727,7 +744,12 @@ impl App {
         if let Some(p) = self.pending_interactions.remove(nonce) {
             self.show_toast(&api_error_text(
                 &e,
-                &tr!("{} を実行できませんでした", "Couldn't run {}", p.label),
+                &tr!(
+                    "{} を実行できませんでした",
+                    "Couldn't run {}",
+                    "无法运行 {}",
+                    p.label
+                ),
             ));
         }
     }
@@ -747,7 +769,12 @@ impl App {
             }
             "INTERACTION_FAILURE" => {
                 if let Some(p) = self.pending_interactions.remove(nonce) {
-                    self.show_toast(&tr!("{} の実行に失敗しました", "{} failed to run", p.label));
+                    self.show_toast(&tr!(
+                        "{} の実行に失敗しました",
+                        "{} failed to run",
+                        "{} 运行失败",
+                        p.label
+                    ));
                 }
             }
             "APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE" => {

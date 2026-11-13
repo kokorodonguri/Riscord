@@ -78,6 +78,7 @@ fn read_limited(path: &Path) -> anyhow::Result<String> {
         tr!(
             "ファイルが大きすぎるか通常のファイルではありません",
             "The file is too large or isn't a regular file",
+            "文件过大或不是普通文件",
         )
     );
     Ok(std::fs::read_to_string(path)?)
@@ -91,6 +92,7 @@ fn entry_path(dir: &Path, entry: &str) -> anyhow::Result<PathBuf> {
         tr!(
             "エントリポイントがプラグインフォルダの外です",
             "The entry point is outside the plugin folder",
+            "入口点位于插件文件夹之外",
         )
     );
     Ok(path)
@@ -114,7 +116,8 @@ impl Runtime {
             |_, _| {
                 Err(mlua::Error::runtime(tr!(
                     "実行時間の制限を超えました",
-                    "Exceeded the execution time limit"
+                    "Exceeded the execution time limit",
+                    "超出执行时间限制"
                 )))
             },
         );
@@ -137,7 +140,8 @@ impl Runtime {
                 {
                     return Err(mlua::Error::runtime(tr!(
                         "無効な送信内容、または送信待ちが上限です",
-                        "Invalid message, or the send queue is full"
+                        "Invalid message, or the send queue is full",
+                        "发送内容无效，或发送队列已满"
                     )));
                 }
                 q.borrow_mut().push(Action::Send(channel, content));
@@ -151,7 +155,8 @@ impl Runtime {
                 if ts.borrow().len() >= 100 {
                     return Err(mlua::Error::runtime(tr!(
                         "タイマーの上限です",
-                        "Timer limit reached"
+                        "Timer limit reached",
+                        "已达到计时器上限"
                     )));
                 }
                 let callback = lua.create_registry_value(f)?;
@@ -188,7 +193,8 @@ impl Runtime {
                 if bytes.len() > MAX_SCRIPT as usize {
                     return Err(mlua::Error::runtime(tr!(
                         "保存データが大きすぎます",
-                        "The saved data is too large"
+                        "The saved data is too large",
+                        "保存的数据过大"
                     )));
                 }
                 std::fs::create_dir_all(&data_dir).map_err(mlua::Error::external)?;
@@ -196,10 +202,10 @@ impl Runtime {
             })?,
         )?;
         api.set("api_version", API_VERSION)?;
-        // 表示言語（"ja" か "en"）。設定で切り替えられるので、表示を作るたびに呼ぶ
+        // 表示言語（"ja" / "en" / "zh"）。設定で切り替えられるので、表示を作るたびに呼ぶ
         api.set(
             "language",
-            lua.create_function(|_, ()| Ok(if crate::i18n::is_en() { "en" } else { "ja" }))?,
+            lua.create_function(|_, ()| Ok(crate::i18n::code()))?,
         )?;
         lua.globals().set("riscord", api)?;
         let callbacks: Table = lua.load(script).set_name(&manifest.entry).eval()?;
@@ -214,7 +220,8 @@ impl Runtime {
             |_, _| {
                 Err(mlua::Error::runtime(tr!(
                     "実行時間の制限を超えました",
-                    "Exceeded the execution time limit"
+                    "Exceeded the execution time limit",
+                    "超出执行时间限制"
                 )))
             },
         );
@@ -228,6 +235,7 @@ impl Runtime {
             _ => Err(mlua::Error::runtime(tr!(
                 "{name} は関数である必要があります",
                 "{name} must be a function",
+                "{name} 必须是函数",
             ))),
         }
     }
@@ -260,7 +268,8 @@ impl Plugins {
             version: "1.0.0".into(),
             description: tr!(
                 "ボイス通話の経過時間を表示します（同梱）",
-                "Shows elapsed time in voice calls (bundled)"
+                "Shows elapsed time in voice calls (bundled)",
+                "显示语音通话的经过时间（内置）"
             )
             .into(),
             api: API_VERSION,
@@ -283,7 +292,8 @@ impl Plugins {
             version: "1.0.0".into(),
             description: tr!(
                 "メッセージを Google 翻訳へ送信して翻訳します（同梱）",
-                "Translates messages by sending them to Google Translate (bundled)"
+                "Translates messages by sending them to Google Translate (bundled)",
+                "将消息发送到 Google 翻译进行翻译（内置）"
             )
             .into(),
             api: API_VERSION,
@@ -306,7 +316,8 @@ impl Plugins {
             version: "1.0.0".into(),
             description: tr!(
                 "削除・編集されたメッセージを記録して表示します（同梱）",
-                "Records and shows deleted and edited messages (bundled)"
+                "Records and shows deleted and edited messages (bundled)",
+                "记录并显示被删除和编辑的消息（内置）"
             )
             .into(),
             api: API_VERSION,
@@ -346,20 +357,30 @@ impl Plugins {
             let result = (|| -> anyhow::Result<Manifest> {
                 let text = read_limited(&entry_path(&path, "plugin.toml")?)?;
                 let m: Manifest = toml::from_str(&text)?;
-                anyhow::ensure!(valid_id(&m.id), "{}", tr!("不正な ID", "Invalid ID",));
+                anyhow::ensure!(
+                    valid_id(&m.id),
+                    "{}",
+                    tr!("不正な ID", "Invalid ID", "无效的 ID",)
+                );
                 anyhow::ensure!(
                     m.api == API_VERSION,
                     "{}",
                     tr!(
                         "未対応の API バージョン: {}",
                         "Unsupported API version: {}",
+                        "不支持的 API 版本：{}",
                         m.api
                     )
                 );
                 anyhow::ensure!(
                     seen.insert(m.id.clone()),
                     "{}",
-                    tr!("ID が重複しています: {}", "Duplicate ID: {}", m.id)
+                    tr!(
+                        "ID が重複しています: {}",
+                        "Duplicate ID: {}",
+                        "ID 重复：{}",
+                        m.id
+                    )
                 );
                 Ok(m)
             })();
@@ -512,14 +533,16 @@ impl Plugins {
             .find(|p| p.manifest.id == "translator")
             .ok_or(tr!(
                 "翻訳プラグインが見つかりません",
-                "Translation plugin not found"
+                "Translation plugin not found",
+                "找不到翻译插件"
             ))?;
         let result = p
             .runtime
             .as_ref()
             .ok_or(tr!(
                 "翻訳プラグインが停止しています",
-                "The translation plugin is stopped"
+                "The translation plugin is stopped",
+                "翻译插件已停止"
             ))?
             .call("translation_outgoing", ());
         match result {
@@ -530,7 +553,8 @@ impl Plugins {
             Ok(_) => {
                 let error = tr!(
                     "翻訳設定の読み取りに失敗しました",
-                    "Couldn't read the translation settings"
+                    "Couldn't read the translation settings",
+                    "读取翻译设置失败"
                 )
                 .to_string();
                 p.fail(error.clone());
@@ -586,7 +610,8 @@ impl Plugins {
                     Ok(_) => p.fail(
                         tr!(
                             "voice_panel の文字列が長すぎます",
-                            "The voice_panel string is too long"
+                            "The voice_panel string is too long",
+                            "voice_panel 字符串过长"
                         )
                         .into(),
                     ),
@@ -596,7 +621,8 @@ impl Plugins {
                 Some(Ok(_)) => p.fail(
                     tr!(
                         "voice_panel は文字列か nil を返してください",
-                        "voice_panel must return a string or nil"
+                        "voice_panel must return a string or nil",
+                        "voice_panel 必须返回字符串或 nil"
                     )
                     .into(),
                 ),
@@ -661,6 +687,7 @@ impl Plugins {
                 Some(Ok(_)) => p.fail(tr!(
                     "{name} は文字列か nil を返してください",
                     "{name} must return a string or nil",
+                    "{name} 必须返回字符串或 nil",
                 )),
                 Some(Err(e)) => p.fail(e.to_string()),
             }

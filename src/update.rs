@@ -262,6 +262,7 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
                 tr!(
                     "{version} に {} がありません",
                     "{version} has no {}",
+                    "{version} 中没有 {}",
                     names.join(" / ")
                 )
             )
@@ -277,6 +278,7 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
                 tr!(
                     "{name} に SHA-256 が付いていません",
                     "{name} has no SHA-256",
+                    "{name} 没有 SHA-256",
                 )
             )
         })?
@@ -297,6 +299,7 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
             tr!(
                 "ダウンロードしたサイズが合いません（{} / {} バイト）",
                 "The downloaded size doesn't match ({} / {} bytes)",
+                "下载的大小不匹配（{} / {} 字节）",
                 bytes.len(),
                 asset.size
             )
@@ -312,13 +315,20 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
             tr!(
                 "ダウンロードしたファイルの SHA-256 が合いません",
                 "The SHA-256 of the downloaded file doesn't match",
+                "下载文件的 SHA-256 不匹配",
             )
         );
     }
 
     let new = sibling(exe, ".new");
-    std::fs::write(&new, &bytes)
-        .with_context(|| tr!("{} に書き込めません", "Can't write to {}", new.display()))?;
+    std::fs::write(&new, &bytes).with_context(|| {
+        tr!(
+            "{} に書き込めません",
+            "Can't write to {}",
+            "无法写入 {}",
+            new.display()
+        )
+    })?;
     if let Err(e) = replace(exe, &new) {
         let _ = std::fs::remove_file(&new);
         return Err(e);
@@ -335,7 +345,8 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
         // 実行中でも rename で置き換えられる（動いているプロセスは古い中身のまま）
         std::fs::rename(new, exe).context(tr!(
             "実行ファイルを置き換えられません",
-            "Can't replace the executable"
+            "Can't replace the executable",
+            "无法替换可执行文件"
         ))?;
     }
     #[cfg(windows)]
@@ -345,13 +356,15 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&old);
         std::fs::rename(exe, &old).context(tr!(
             "実行ファイルの名前を変えられません",
-            "Can't rename the executable"
+            "Can't rename the executable",
+            "无法重命名可执行文件"
         ))?;
         if let Err(e) = std::fs::rename(new, exe) {
             let _ = std::fs::rename(&old, exe);
             return Err(e).context(tr!(
                 "新しい実行ファイルを置けません",
-                "Can't place the new executable"
+                "Can't place the new executable",
+                "无法放置新的可执行文件"
             ));
         }
     }
@@ -362,10 +375,15 @@ fn notify_ready(version: &str) {
     let body = tr!(
         "{version} に更新しました。再起動すると新しい版になります。",
         "Updated to {version}. Restart to use the new version.",
+        "已更新到 {version}。重启后即可使用新版本。",
     );
     if let Err(e) = notify_rust::Notification::new()
         .appname("Riscord")
-        .summary(tr!("Riscord を更新しました", "Riscord updated"))
+        .summary(tr!(
+            "Riscord を更新しました",
+            "Riscord updated",
+            "Riscord 已更新"
+        ))
         .body(&body)
         .show()
     {

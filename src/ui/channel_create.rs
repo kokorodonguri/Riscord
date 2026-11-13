@@ -25,9 +25,9 @@ impl Root {
                     .child(
                         medium(
                             if category {
-                                tr!("カテゴリを作成", "Create Category")
+                                tr!("カテゴリを作成", "Create Category", "创建类别")
                             } else {
-                                tr!("チャンネルを作成", "Create Channel")
+                                tr!("チャンネルを作成", "Create Channel", "创建频道")
                             },
                             20.0,
                             WHITE(),
@@ -53,9 +53,9 @@ impl Root {
         if !category {
             let mut kinds = div().flex().flex_wrap().gap(z(6.0));
             for (kind, label) in [
-                (0u8, tr!("# テキスト", "# Text")),
-                (2, tr!("🔊 ボイス", "🔊 Voice")),
-                (15, tr!("💬 フォーラム", "💬 Forum")),
+                (0u8, tr!("# テキスト", "# Text", "# 文字")),
+                (2, tr!("🔊 ボイス", "🔊 Voice", "🔊 语音")),
+                (15, tr!("💬 フォーラム", "💬 Forum", "💬 论坛")),
             ] {
                 kinds = kinds.child(
                     fill_button(
@@ -79,15 +79,19 @@ impl Root {
                 );
             }
             content = content
-                .child(text(tr!("チャンネルの種類", "Channel type"), 13.0, MUTED()))
+                .child(text(
+                    tr!("チャンネルの種類", "Channel type", "频道类型"),
+                    13.0,
+                    MUTED(),
+                ))
                 .child(kinds);
         }
         content = content
             .child(text(
                 if category {
-                    tr!("カテゴリ名", "Category name")
+                    tr!("カテゴリ名", "Category name", "类别名称")
                 } else {
-                    tr!("チャンネル名", "Channel name")
+                    tr!("チャンネル名", "Channel name", "频道名称")
                 },
                 13.0,
                 MUTED(),
@@ -103,9 +107,11 @@ impl Root {
         let cats = self.app.guild_categories(&d.guild_id);
         if !category && !cats.is_empty() {
             let mut picks = div().flex().flex_wrap().gap(z(6.0));
-            for (id, name) in
-                std::iter::once((None, tr!("カテゴリなし", "No category").to_string()))
-                    .chain(cats.into_iter().map(|(id, n)| (Some(id), n.to_uppercase())))
+            for (id, name) in std::iter::once((
+                None,
+                tr!("カテゴリなし", "No category", "无类别").to_string(),
+            ))
+            .chain(cats.into_iter().map(|(id, n)| (Some(id), n.to_uppercase())))
             {
                 let selected = d.parent_id == id;
                 picks = picks.child(
@@ -133,7 +139,7 @@ impl Root {
                 );
             }
             content = content
-                .child(text(tr!("カテゴリ", "Category"), 13.0, MUTED()))
+                .child(text(tr!("カテゴリ", "Category", "类别"), 13.0, MUTED()))
                 .child(
                     div()
                         .id("channel-parents")
@@ -150,9 +156,9 @@ impl Root {
                 fill_button(
                     "channel_create_submit",
                     if busy {
-                        tr!("作成中…", "Creating…")
+                        tr!("作成中…", "Creating…", "正在创建…")
                     } else {
-                        tr!("作成", "Create")
+                        tr!("作成", "Create", "创建")
                     },
                     BLURPLE(),
                     WHITE(),

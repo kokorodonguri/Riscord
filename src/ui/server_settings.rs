@@ -69,7 +69,11 @@ impl Root {
                 .items_center()
                 .gap(z(8.0))
                 .child(spinner(16.0))
-                .child(text(tr!("読み込み中…", "Loading…"), 14.0, MUTED()))
+                .child(text(
+                    tr!("読み込み中…", "Loading…", "正在加载…"),
+                    14.0,
+                    MUTED(),
+                ))
                 .into_any_element()
         });
 
@@ -88,7 +92,7 @@ impl Root {
             )
             .child(
                 icon_button("server_settings_close", IconName::X, 28.0)
-                    .tooltip(tip(tr!("閉じる", "Close")))
+                    .tooltip(tip(tr!("閉じる", "Close", "关闭")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.close_server_settings();
                         cx.notify();

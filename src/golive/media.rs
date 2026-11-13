@@ -109,12 +109,14 @@ mod platform {
         let err = |e: ashpd::Error| match e {
             ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => tr!(
                 "画面の選択が取り消されました",
-                "Screen selection was canceled"
+                "Screen selection was canceled",
+                "已取消屏幕选择"
             )
             .to_string(),
             e => tr!(
                 "画面共有のポータルを使えません: {e}",
                 "Can't use the screen sharing portal: {e}",
+                "无法使用屏幕共享门户：{e}",
             ),
         };
         let proxy = Screencast::new().await.map_err(err)?;
@@ -146,7 +148,8 @@ mod platform {
             .map_err(err)?;
         let stream = streams.streams().first().ok_or(tr!(
             "共有する画面が選ばれませんでした",
-            "No screen was chosen to share"
+            "No screen was chosen to share",
+            "未选择要共享的屏幕"
         ))?;
         let node = stream.pipe_wire_node_id();
         let size = stream.size();
@@ -176,7 +179,7 @@ mod platform {
                 q.bitrate
             ))
         } else {
-            Err(tr!("H264 のエンコーダーが見つかりません（gst-plugins-ugly の x264enc か、gst-plugins-bad の openh264enc を入れてください）", "No H264 encoder found (install x264enc from gst-plugins-ugly or openh264enc from gst-plugins-bad)").into())
+            Err(tr!("H264 のエンコーダーが見つかりません（gst-plugins-ugly の x264enc か、gst-plugins-bad の openh264enc を入れてください）", "No H264 encoder found (install x264enc from gst-plugins-ugly or openh264enc from gst-plugins-bad)", "找不到 H264 编码器（请安装 gst-plugins-ugly 中的 x264enc，或 gst-plugins-bad 中的 openh264enc）").into())
         }
     }
 
@@ -212,6 +215,7 @@ mod platform {
                 tr!(
                     "GStreamer を初期化できません: {e}",
                     "Can't initialize GStreamer: {e}",
+                    "无法初始化 GStreamer：{e}",
                 )
             })?;
             let desc = format!(
@@ -225,16 +229,21 @@ mod platform {
                 tr!(
                     "映像の処理を組み立てられません: {e}",
                     "Can't build the video pipeline: {e}",
+                    "无法构建视频处理管线：{e}",
                 )
             })?;
             let bin = pipeline
                 .clone()
                 .downcast::<gst::Bin>()
-                .map_err(|_| tr!("パイプラインが不正です", "Invalid pipeline"))?;
+                .map_err(|_| tr!("パイプラインが不正です", "Invalid pipeline", "管线无效"))?;
             let sink = bin
                 .by_name("sink")
                 .and_then(|s| s.downcast::<gst_app::AppSink>().ok())
-                .ok_or(tr!("appsink がありません", "Missing appsink"))?;
+                .ok_or(tr!(
+                    "appsink がありません",
+                    "Missing appsink",
+                    "缺少 appsink"
+                ))?;
             let offset: u32 = rand::random();
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
@@ -264,6 +273,7 @@ mod platform {
                 tr!(
                     "画面の取り込みを始められません: {e}",
                     "Can't start screen capture: {e}",
+                    "无法开始屏幕捕获：{e}",
                 )
             })?;
             Ok(Capture {
@@ -290,6 +300,7 @@ mod platform {
                         return Some(tr!(
                             "画面の取り込みが止まりました: {}",
                             "Screen capture stopped: {}",
+                            "屏幕捕获已停止：{}",
                             e.error()
                         ))
                     }
@@ -297,7 +308,8 @@ mod platform {
                         return Some(
                             tr!(
                                 "共有していた画面が閉じられました",
-                                "The shared screen was closed"
+                                "The shared screen was closed",
+                                "共享的屏幕已被关闭"
                             )
                             .into(),
                         )
@@ -327,6 +339,7 @@ mod platform {
                 tr!(
                     "GStreamer を初期化できません: {e}",
                     "Can't initialize GStreamer: {e}",
+                    "无法初始化 GStreamer：{e}",
                 )
             })?;
             let dec = ["avdec_h264", "openh264dec", "v4l2h264dec"]
@@ -334,7 +347,8 @@ mod platform {
                 .find(|d| have(d))
                 .ok_or(tr!(
                     "H264 のデコーダーが見つかりません（gst-libav か openh264 を入れてください）",
-                    "No H264 decoder found (install gst-libav or openh264)"
+                    "No H264 decoder found (install gst-libav or openh264)",
+                    "找不到 H264 解码器（请安装 gst-libav 或 openh264）"
                 ))?;
             let desc = format!(
                 "appsrc name=src is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! videoscale ! video/x-raw,format=BGRA,width=[16,1920],height=[16,1080],pixel-aspect-ratio=1/1 ! appsink name=sink max-buffers=1 drop=true sync=false"
@@ -343,20 +357,25 @@ mod platform {
                 tr!(
                     "映像の処理を組み立てられません: {e}",
                     "Can't build the video pipeline: {e}",
+                    "无法构建视频处理管线：{e}",
                 )
             })?;
             let bin = pipeline
                 .clone()
                 .downcast::<gst::Bin>()
-                .map_err(|_| tr!("パイプラインが不正です", "Invalid pipeline"))?;
+                .map_err(|_| tr!("パイプラインが不正です", "Invalid pipeline", "管线无效"))?;
             let src = bin
                 .by_name("src")
                 .and_then(|s| s.downcast::<gst_app::AppSrc>().ok())
-                .ok_or(tr!("appsrc がありません", "Missing appsrc"))?;
+                .ok_or(tr!("appsrc がありません", "Missing appsrc", "缺少 appsrc"))?;
             let sink = bin
                 .by_name("sink")
                 .and_then(|s| s.downcast::<gst_app::AppSink>().ok())
-                .ok_or(tr!("appsink がありません", "Missing appsink"))?;
+                .ok_or(tr!(
+                    "appsink がありません",
+                    "Missing appsink",
+                    "缺少 appsink"
+                ))?;
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |sink| {
@@ -369,9 +388,13 @@ mod platform {
                     })
                     .build(),
             );
-            pipeline
-                .set_state(gst::State::Playing)
-                .map_err(|e| tr!("映像を再生できません: {e}", "Can't play the video: {e}",))?;
+            pipeline.set_state(gst::State::Playing).map_err(|e| {
+                tr!(
+                    "映像を再生できません: {e}",
+                    "Can't play the video: {e}",
+                    "无法播放视频：{e}",
+                )
+            })?;
             Ok(Decoder { pipeline, src })
         }
 
@@ -386,6 +409,7 @@ mod platform {
                     return Some(tr!(
                         "映像を再生できません: {}",
                         "Can't play the video: {}",
+                        "无法播放视频：{}",
                         e.error()
                     ));
                 }
@@ -499,7 +523,8 @@ mod platform {
 
     const UNSUPPORTED: &str = tr!(
         "この OS では画面共有にまだ対応していません",
-        "Screen sharing isn't supported on this OS yet"
+        "Screen sharing isn't supported on this OS yet",
+        "此操作系统暂不支持屏幕共享"
     );
 
     pub struct Source {
@@ -527,7 +552,8 @@ mod platform {
         pub fn new(_: Arc<Mutex<Option<Frame>>>, _: Waker) -> Result<Decoder, String> {
             Err(tr!(
                 "この OS では配信の視聴にまだ対応していません",
-                "Watching streams isn't supported on this OS yet"
+                "Watching streams isn't supported on this OS yet",
+                "此操作系统暂不支持观看直播"
             )
             .into())
         }

@@ -26,4 +26,10 @@ class UserFacingErrorTest {
         assertEquals("Attachments can be up to 10 MB",userFacingError(IllegalArgumentException("添付は10MBまでです")))
         assertEquals("Too busy. Try again in 5 seconds.",userFacingError(IllegalStateException("混雑しています。5秒後に再試行してください。")))
     }
+    @Test fun chineseMessages() {
+        Locale.setDefault(Locale.SIMPLIFIED_CHINESE)
+        assertEquals("你没有执行此操作的权限。",userFacingError(IllegalStateException("Discord HTTP 403: Missing Access")))
+        assertEquals("附件最大为 10 MB",userFacingError(IllegalArgumentException("添付は10MBまでです")))
+        assertEquals("服务器繁忙。请在 5 秒后重试。",userFacingError(IllegalStateException("混雑しています。5秒後に再試行してください。")))
+    }
 }

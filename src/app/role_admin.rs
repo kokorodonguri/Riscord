@@ -238,7 +238,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "接続できません。再接続してからお試しください",
-                            "Not connected. Reconnect and try again"
+                            "Not connected. Reconnect and try again",
+                            "未连接。请重新连接后重试"
                         )
                         .into(),
                     );
@@ -259,7 +260,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "自分の権限を確認できませんでした",
-                            "Couldn't check your permissions"
+                            "Couldn't check your permissions",
+                            "无法确认你的权限"
                         )
                         .into(),
                     );
@@ -281,7 +283,8 @@ impl App {
                         admin.error = Some(
                             tr!(
                                 "対象メンバーを取得できませんでした",
-                                "Couldn't load the target member"
+                                "Couldn't load the target member",
+                                "无法获取目标成员"
                             )
                             .into(),
                         );
@@ -301,7 +304,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "サーバーの所有者を確認できませんでした",
-                            "Couldn't verify the server owner"
+                            "Couldn't verify the server owner",
+                            "无法确认服务器所有者"
                         )
                         .into(),
                     );
@@ -391,7 +395,8 @@ impl App {
             self.role_admin.as_mut().unwrap().error = Some(
                 tr!(
                     "サーバー名は2〜100文字、説明は300文字以内で入力してください",
-                    "Server names must be 2–100 characters and descriptions up to 300 characters"
+                    "Server names must be 2–100 characters and descriptions up to 300 characters",
+                    "服务器名称须为 2–100 个字符，说明不超过 300 个字符"
                 )
                 .into(),
             );
@@ -444,7 +449,8 @@ impl App {
                     self.role_admin.as_mut().unwrap().error = Some(
                         tr!(
                             "設定値が不正です。再読み込みしてください",
-                            "A setting value is invalid. Please reload"
+                            "A setting value is invalid. Please reload",
+                            "设置值无效。请重新加载"
                         )
                         .into(),
                     );
@@ -454,7 +460,7 @@ impl App {
             }
         }
         if body.is_empty() {
-            self.show_toast(tr!("変更はありません", "No changes"));
+            self.show_toast(tr!("変更はありません", "No changes", "没有更改"));
             return;
         }
         let guild_id = admin.guild_id.clone();
@@ -597,7 +603,8 @@ impl App {
             self.role_admin.as_mut().unwrap().error = Some(
                 tr!(
                     "権限の値が大きすぎるか不正なため編集できません",
-                    "Can't edit because the permission value is too large or invalid"
+                    "Can't edit because the permission value is too large or invalid",
+                    "权限值过大或无效，无法编辑"
                 )
                 .into(),
             );
@@ -682,7 +689,8 @@ impl App {
             self.role_admin.as_mut().unwrap().error = Some(
                 tr!(
                     "ロール名は1〜100文字で入力してください",
-                    "Role names must be 1–100 characters"
+                    "Role names must be 1–100 characters",
+                    "身份组名称须为 1–100 个字符"
                 )
                 .into(),
             );
@@ -697,7 +705,8 @@ impl App {
             self.role_admin.as_mut().unwrap().error = Some(
                 tr!(
                     "自分が持たない権限は変更できません",
-                    "You can't change permissions you don't have"
+                    "You can't change permissions you don't have",
+                    "无法更改自己没有的权限"
                 )
                 .into(),
             );
@@ -709,7 +718,8 @@ impl App {
                 self.role_admin.as_mut().unwrap().error = Some(
                     tr!(
                         "ロールが更新されました。一覧を再読み込みしてください",
-                        "The role was updated. Please reload the list"
+                        "The role was updated. Please reload the list",
+                        "身份组已更新。请重新加载列表"
                     )
                     .into(),
                 );
@@ -804,7 +814,8 @@ impl App {
                 Some(
                     tr!(
                         "接続できません。再接続してからお試しください",
-                        "Not connected. Reconnect and try again"
+                        "Not connected. Reconnect and try again",
+                        "未连接。请重新连接后重试"
                     )
                     .into(),
                 )
@@ -882,7 +893,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "ロール一覧を取得できませんでした。再読み込みしてください",
-                            "Couldn't load the role list. Please reload"
+                            "Couldn't load the role list. Please reload",
+                            "无法获取身份组列表。请重新加载"
                         )
                         .into(),
                     )
@@ -908,7 +920,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "自分のロールを取得できませんでした。再読み込みしてください",
-                            "Couldn't load your roles. Please reload"
+                            "Couldn't load your roles. Please reload",
+                            "无法获取你的身份组。请重新加载"
                         )
                         .into(),
                     )
@@ -946,7 +959,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "対象メンバーのロールを取得できませんでした",
-                            "Couldn't load the target member's roles"
+                            "Couldn't load the target member's roles",
+                            "无法获取目标成员的身份组"
                         )
                         .into(),
                     )
@@ -972,7 +986,8 @@ impl App {
                 admin.error = Some(
                     tr!(
                         "サーバーの所有者を確認できませんでした",
-                        "Couldn't verify the server owner"
+                        "Couldn't verify the server owner",
+                        "无法确认服务器所有者"
                     )
                     .into(),
                 );
@@ -996,7 +1011,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "サーバー設定を読み取れませんでした",
-                            "Couldn't read server settings"
+                            "Couldn't read server settings",
+                            "无法读取服务器设置"
                         )
                         .into(),
                     );
@@ -1021,12 +1037,17 @@ impl App {
                     let toast = if channel_guild.is_some() {
                         tr!(
                             "チャンネル権限を更新しました",
-                            "Channel permissions updated"
+                            "Channel permissions updated",
+                            "已更新频道权限"
                         )
                     } else if admin.editing_guild {
-                        tr!("サーバー設定を更新しました", "Server settings updated")
+                        tr!(
+                            "サーバー設定を更新しました",
+                            "Server settings updated",
+                            "已更新服务器设置"
+                        )
                     } else {
-                        tr!("ロールを更新しました", "Role updated")
+                        tr!("ロールを更新しました", "Role updated", "已更新身份组")
                     };
                     self.show_toast(toast);
                     if let Some(guild) = channel_guild {
@@ -1038,15 +1059,21 @@ impl App {
                     let what = if admin.channel_permissions.is_some() {
                         tr!(
                             "チャンネル権限を更新できませんでした",
-                            "Couldn't update channel permissions"
+                            "Couldn't update channel permissions",
+                            "无法更新频道权限"
                         )
                     } else if admin.editing_guild {
                         tr!(
                             "サーバー設定を更新できませんでした",
-                            "Couldn't update server settings"
+                            "Couldn't update server settings",
+                            "无法更新服务器设置"
                         )
                     } else {
-                        tr!("ロールを更新できませんでした", "Couldn't update the role")
+                        tr!(
+                            "ロールを更新できませんでした",
+                            "Couldn't update the role",
+                            "无法更新身份组"
+                        )
                     };
                     admin.error = Some(super::pins::api_error_text(&e, what))
                 }

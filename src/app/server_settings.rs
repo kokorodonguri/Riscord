@@ -22,8 +22,8 @@ impl SettingsTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            SettingsTab::Overview => tr!("概要", "Overview"),
-            SettingsTab::Roles => tr!("ロール", "Roles"),
+            SettingsTab::Overview => tr!("概要", "Overview", "概览"),
+            SettingsTab::Roles => tr!("ロール", "Roles", "身份组"),
             SettingsTab::Mod(t) => t.label(),
         }
     }

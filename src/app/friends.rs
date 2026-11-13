@@ -68,7 +68,8 @@ impl App {
             self.friends.error = Some(
                 tr!(
                     "接続できません。再接続してからお試しください",
-                    "Not connected. Reconnect and try again"
+                    "Not connected. Reconnect and try again",
+                    "未连接。请重新连接后重试"
                 )
                 .into(),
             );
@@ -99,8 +100,14 @@ impl App {
                     || username.chars().count() > 100
                     || username.contains(char::is_whitespace)
                 {
-                    self.friends.error =
-                        Some(tr!("ユーザー名を入力してください", "Enter a username").into());
+                    self.friends.error = Some(
+                        tr!(
+                            "ユーザー名を入力してください",
+                            "Enter a username",
+                            "请输入用户名"
+                        )
+                        .into(),
+                    );
                     return;
                 }
                 net::ApiCall::SendFriendRequest {
@@ -181,13 +188,15 @@ impl App {
             self.friends.error = Some(
                 tr!(
                     "接続できません。再接続してからお試しください",
-                    "Not connected. Reconnect and try again"
+                    "Not connected. Reconnect and try again",
+                    "未连接。请重新连接后重试"
                 )
                 .into(),
             );
             self.show_toast(tr!(
                 "接続できません。再接続してからお試しください",
-                "Not connected. Reconnect and try again"
+                "Not connected. Reconnect and try again",
+                "未连接。请重新连接后重试"
             ));
         }
     }
@@ -255,7 +264,8 @@ impl App {
                             self.friends.error = Some(
                                 tr!(
                                     "フレンド一覧の応答を読み取れませんでした",
-                                    "Couldn't read the friends list response"
+                                    "Couldn't read the friends list response",
+                                    "无法读取好友列表的响应"
                                 )
                                 .into(),
                             );
@@ -266,7 +276,8 @@ impl App {
                             &e,
                             tr!(
                                 "フレンド一覧を取得できませんでした",
-                                "Couldn't load the friends list"
+                                "Couldn't load the friends list",
+                                "无法获取好友列表"
                             ),
                         ))
                     }
@@ -281,7 +292,11 @@ impl App {
             Err(e) => {
                 let message = super::pins::api_error_text(
                     &e,
-                    tr!("フレンド操作に失敗しました", "The friend action failed"),
+                    tr!(
+                        "フレンド操作に失敗しました",
+                        "The friend action failed",
+                        "好友操作失败"
+                    ),
                 );
                 self.show_toast(&message);
                 self.friends.error = Some(message);
@@ -310,7 +325,8 @@ impl App {
                         self.friends.error = Some(
                             tr!(
                                 "DM の応答を読み取れませんでした",
-                                "Couldn't read the DM response"
+                                "Couldn't read the DM response",
+                                "无法读取私信的响应"
                             )
                             .into(),
                         )
@@ -319,12 +335,20 @@ impl App {
                 FriendAction::Request => {
                     self.friends.revision = self.friends.revision.wrapping_add(1);
                     self.friends.username.clear();
-                    self.show_toast(tr!("フレンド申請を送信しました", "Friend request sent"));
+                    self.show_toast(tr!(
+                        "フレンド申請を送信しました",
+                        "Friend request sent",
+                        "已发送好友请求"
+                    ));
                     self.fetch_friends();
                 }
                 _ => {
                     self.friends.revision = self.friends.revision.wrapping_add(1);
-                    self.show_toast(tr!("フレンド情報を更新しました", "Friend info updated"));
+                    self.show_toast(tr!(
+                        "フレンド情報を更新しました",
+                        "Friend info updated",
+                        "已更新好友信息"
+                    ));
                     self.fetch_friends();
                 }
             },

@@ -186,9 +186,9 @@ impl Manager {
             }
             Msg::Ended(id, err) => {
                 if self.broadcast.as_ref().is_some_and(|s| s.id == id) {
-                    self.stop_broadcast(Some(
-                        err.unwrap_or_else(|| tr!("配信が終了しました", "The stream ended").into()),
-                    ));
+                    self.stop_broadcast(Some(err.unwrap_or_else(|| {
+                        tr!("配信が終了しました", "The stream ended", "直播已结束").into()
+                    })));
                 } else if self.watch.as_ref().is_some_and(|s| s.id == id) {
                     self.stop_watch(err);
                 }
@@ -196,7 +196,8 @@ impl Manager {
             Msg::Timeout(id) => {
                 let why = tr!(
                     "配信サーバーの情報が届きません。少し待ってからもう一度試してください",
-                    "Stream server info didn't arrive. Wait a moment and try again"
+                    "Stream server info didn't arrive. Wait a moment and try again",
+                    "未收到直播服务器的信息。请稍候再试"
                 );
                 if self
                     .broadcast
@@ -208,6 +209,7 @@ impl Manager {
                         tr!(
                             "配信: 接続情報が来ない rtc={:?} server={}",
                             "Stream: no connection info rtc={:?} server={}",
+                            "直播：未收到连接信息 rtc={:?} server={}",
                             self.broadcast
                                 .as_ref()
                                 .and_then(|s| s.rtc_server_id.clone()),
@@ -221,6 +223,7 @@ impl Manager {
                         tr!(
                             "視聴: 接続情報が来ない rtc={:?} server={}",
                             "Watch: no connection info rtc={:?} server={}",
+                            "观看：未收到连接信息 rtc={:?} server={}",
                             s.rtc_server_id,
                             s.server.is_some()
                         )
@@ -255,7 +258,8 @@ impl Manager {
             (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some(
                 tr!(
                     "ボイスチャンネルに接続してから画面共有してください",
-                    "Join a voice channel before sharing your screen"
+                    "Join a voice channel before sharing your screen",
+                    "请先连接语音频道再共享屏幕"
                 )
                 .into(),
             ))));
@@ -292,7 +296,8 @@ impl Manager {
             (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some(
                 tr!(
                     "ボイスチャンネルから切断されました",
-                    "Disconnected from the voice channel"
+                    "Disconnected from the voice channel",
+                    "已从语音频道断开"
                 )
                 .into(),
             ))));
@@ -323,7 +328,8 @@ impl Manager {
                 Phase::Ended(Some(
                     tr!(
                         "ボイスチャンネルに接続してから視聴してください",
-                        "Join a voice channel before watching"
+                        "Join a voice channel before watching",
+                        "请先连接语音频道再观看"
                     )
                     .into(),
                 )),
@@ -415,20 +421,30 @@ impl Manager {
             "STREAM_DELETE" => {
                 let reason = match d["reason"].as_str() {
                     Some("user_requested") | None => None,
-                    Some("stream_full") => {
-                        Some(tr!("配信の視聴者が満員です", "The stream is full").to_string())
-                    }
-                    Some("unauthorized") => Some(
+                    Some("stream_full") => Some(
                         tr!(
-                            "この配信を見る権限がありません",
-                            "You don't have permission to watch this stream"
+                            "配信の視聴者が満員です",
+                            "The stream is full",
+                            "直播观众已满"
                         )
                         .to_string(),
                     ),
-                    Some("stream_ended") => {
-                        Some(tr!("配信が終了しました", "The stream ended").to_string())
-                    }
-                    Some(r) => Some(tr!("配信が終了しました（{r}）", "The stream ended ({r})",)),
+                    Some("unauthorized") => Some(
+                        tr!(
+                            "この配信を見る権限がありません",
+                            "You don't have permission to watch this stream",
+                            "你没有观看此直播的权限"
+                        )
+                        .to_string(),
+                    ),
+                    Some("stream_ended") => Some(
+                        tr!("配信が終了しました", "The stream ended", "直播已结束").to_string(),
+                    ),
+                    Some(r) => Some(tr!(
+                        "配信が終了しました（{r}）",
+                        "The stream ended ({r})",
+                        "直播已结束（{r}）",
+                    )),
                 };
                 // 鍵を空にしてから止める（STREAM_DELETE を送り返さない）
                 if mine {
@@ -458,6 +474,7 @@ impl Manager {
                 tr!(
                     "ボイスの session_id が無いので配信に接続できない",
                     "Can't connect to the stream without a voice session_id",
+                    "没有语音的 session_id，无法连接直播",
                 )
             ));
             return;

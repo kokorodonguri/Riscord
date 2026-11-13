@@ -26,7 +26,7 @@ pub fn show(
             n.icon("riscord")
                 .hint(notify_rust::Hint::Category("im.received".into()))
                 .hint(notify_rust::Hint::DesktopEntry("riscord".into()))
-                .action("default", tr!("開く", "Open"));
+                .action("default", tr!("開く", "Open", "打开"));
         }
         let handle = match n.show() {
             Ok(h) => h,

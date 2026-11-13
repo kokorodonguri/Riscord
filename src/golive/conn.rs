@@ -148,7 +148,8 @@ pub async fn run(
     .await
     .context(tr!(
         "配信サーバーへの接続がタイムアウトしました",
-        "Connection to the stream server timed out"
+        "Connection to the stream server timed out",
+        "连接直播服务器超时"
     ))??;
     send_json(
         &mut ws,
@@ -168,7 +169,16 @@ pub async fn run(
     let dave_channel = p
         .rtc_server_id
         .parse::<u64>()
-        .map_err(|_| anyhow!("{}", tr!("不正な rtc_server_id", "Invalid rtc_server_id",)))?
+        .map_err(|_| {
+            anyhow!(
+                "{}",
+                tr!(
+                    "不正な rtc_server_id",
+                    "Invalid rtc_server_id",
+                    "无效的 rtc_server_id",
+                )
+            )
+        })?
         .saturating_sub(1);
     let mut dave = Dave {
         session: None,
@@ -189,7 +199,8 @@ pub async fn run(
             .await
             .context(tr!(
                 "配信サーバーの応答がありません",
-                "No response from the stream server"
+                "No response from the stream server",
+                "直播服务器没有响应"
             ))?
             .ok_or_else(|| {
                 anyhow!(
@@ -197,6 +208,7 @@ pub async fn run(
                     tr!(
                         "配信サーバーが切断しました",
                         "The stream server disconnected",
+                        "直播服务器已断开",
                     )
                 )
             })??;
@@ -217,6 +229,7 @@ pub async fn run(
                 tr!(
                     "配信サーバーに断られました: {f:?}",
                     "Rejected by the stream server: {f:?}",
+                    "被直播服务器拒绝：{f:?}",
                 )
             ),
             _ => {}
@@ -227,7 +240,7 @@ pub async fn run(
     let hb_every = Duration::from_secs_f64(hello.unwrap().max(1000.0) / 1000.0);
     let ssrc = ready["ssrc"]
         .as_u64()
-        .ok_or_else(|| anyhow!("{}", tr!("ssrc がありません", "Missing ssrc",)))?
+        .ok_or_else(|| anyhow!("{}", tr!("ssrc がありません", "Missing ssrc", "缺少 ssrc",)))?
         as u32;
     let stream = &ready["streams"][0];
     let video_ssrc = stream["ssrc"]
@@ -240,11 +253,11 @@ pub async fn run(
         .unwrap_or(ssrc + 2);
     let ip: IpAddr = ready["ip"]
         .as_str()
-        .ok_or_else(|| anyhow!("{}", tr!("ip がありません", "Missing ip",)))?
+        .ok_or_else(|| anyhow!("{}", tr!("ip がありません", "Missing ip", "缺少 ip",)))?
         .parse()?;
     let port = ready["port"]
         .as_u64()
-        .ok_or_else(|| anyhow!("{}", tr!("port がありません", "Missing port",)))?
+        .ok_or_else(|| anyhow!("{}", tr!("port がありません", "Missing port", "缺少 port",)))?
         as u16;
     let modes: Vec<String> = ready["modes"]
         .as_array()
@@ -258,6 +271,7 @@ pub async fn run(
             tr!(
                 "対応している暗号方式がありません: {modes:?}",
                 "No supported encryption mode: {modes:?}",
+                "没有支持的加密方式：{modes:?}",
             )
         )
     })?;
@@ -289,6 +303,7 @@ pub async fn run(
             tr!(
                 "配信サーバーと UDP でつながりません",
                 "Can't reach the stream server over UDP",
+                "无法通过 UDP 连接直播服务器",
             )
         );
     };
@@ -300,7 +315,8 @@ pub async fn run(
             .await
             .context(tr!(
                 "暗号鍵が届きません",
-                "The encryption key didn't arrive"
+                "The encryption key didn't arrive",
+                "未收到加密密钥"
             ))?
             .ok_or_else(|| {
                 anyhow!(
@@ -308,6 +324,7 @@ pub async fn run(
                     tr!(
                         "配信サーバーが切断しました",
                         "The stream server disconnected",
+                        "直播服务器已断开",
                     )
                 )
             })??;
@@ -340,7 +357,10 @@ pub async fn run(
                         ws.send(WsMsg::Binary(kp.into())).await?;
                     }
                     break Cipher::new(m, &key).ok_or_else(|| {
-                        anyhow!("{}", tr!("暗号鍵が不正です", "Invalid encryption key",))
+                        anyhow!(
+                            "{}",
+                            tr!("暗号鍵が不正です", "Invalid encryption key", "加密密钥无效",)
+                        )
                     })?;
                 }
                 early.push(v);
@@ -351,6 +371,7 @@ pub async fn run(
                 tr!(
                     "配信サーバーに断られました: {f:?}",
                     "Rejected by the stream server: {f:?}",
+                    "被直播服务器拒绝：{f:?}",
                 )
             ),
             _ => {}
@@ -452,7 +473,7 @@ pub async fn run(
                         }
                         // 何が足りないのかを伝えて終える（「接続中」のまま待ち続けない）
                         if !live && started.elapsed() > Duration::from_secs(20) {
-                            debug(format_args!("{}", tr!("視聴が始まらない: {stats:?} streamer_video={streamer_video:?} dave={}", "Viewing didn't start: {stats:?} streamer_video={streamer_video:?} dave={}", dave.version)));
+                            debug(format_args!("{}", tr!("視聴が始まらない: {stats:?} streamer_video={streamer_video:?} dave={}", "Viewing didn't start: {stats:?} streamer_video={streamer_video:?} dave={}", "观看未开始：{stats:?} streamer_video={streamer_video:?} dave={}", dave.version)));
                             bail!(stats.stall_reason(dave.version));
                         }
                     }
@@ -462,7 +483,7 @@ pub async fn run(
                 let msg = match msg {
                     Some(Ok(m)) => m,
                     Some(Err(e)) => return Err(e.into()),
-                    None => bail!("{}", tr!("配信サーバーが切断しました", "The stream server disconnected",)),
+                    None => bail!("{}", tr!("配信サーバーが切断しました", "The stream server disconnected", "直播服务器已断开",)),
                 };
                 match msg {
                     WsMsg::Text(t) => {
@@ -475,7 +496,7 @@ pub async fn run(
                     WsMsg::Binary(b) => handle_binary(&mut ws, &mut dave, &b, &mut seq_ack).await?,
                     WsMsg::Close(f) => {
                         // 4014 = 配信が終わった・追い出された
-                        bail!("{}", tr!("配信が終了しました{}", "The stream ended{}", f.map(|f| tr!("（{}）", " ({})", f.code)).unwrap_or_default()));
+                        bail!("{}", tr!("配信が終了しました{}", "The stream ended{}", "直播已结束{}", f.map(|f| tr!("（{}）", " ({})", "（{}）", f.code)).unwrap_or_default()));
                     }
                     _ => {}
                 }
@@ -547,7 +568,7 @@ pub async fn run(
                 }
             }
             e = recv_frame(&mut role) => {
-                let Some(e) = e else { bail!("{}", tr!("画面の取り込みが止まりました", "Screen capture stopped",)) };
+                let Some(e) = e else { bail!("{}", tr!("画面の取り込みが止まりました", "Screen capture stopped", "屏幕捕获已停止",)) };
                 let data = if dave.version != 0 {
                     if !dave.encrypt_ready() {
                         // まだ鍵がそろっていない（視聴者がいない間など）
@@ -609,13 +630,15 @@ impl WatchStats {
             return if self.other_pt.is_empty() {
                 tr!(
                     "配信の映像が届きません（配信サーバーから映像が来ていません）",
-                    "No stream video is arriving (the stream server isn't sending video)"
+                    "No stream video is arriving (the stream server isn't sending video)",
+                    "收不到直播画面（直播服务器没有发送画面）"
                 )
                 .into()
             } else {
                 tr!(
                     "配信の映像が H264 ではないため表示できません（payload type {:?}）",
                     "The stream video isn't H264, so it can't be shown (payload type {:?})",
+                    "直播画面不是 H264，无法显示（payload type {:?}）",
                     self.other_pt
                 )
             };
@@ -623,23 +646,26 @@ impl WatchStats {
         if self.transport_fail >= self.rtp {
             return tr!(
                 "配信の映像の暗号を解けません",
-                "Can't decrypt the stream video"
+                "Can't decrypt the stream video",
+                "无法解密直播画面"
             )
             .into();
         }
         if self.frames == 0 {
             return tr!(
                 "配信の映像を組み立てられません（パケットが欠けています）",
-                "Can't assemble the stream video (packets are missing)"
+                "Can't assemble the stream video (packets are missing)",
+                "无法组装直播画面（数据包缺失）"
             )
             .into();
         }
         if dave_version != 0 && self.dave_fail >= self.frames {
-            return tr!("エンドツーエンド暗号（DAVE）の鍵がそろわず、配信の映像を解けません", "End-to-end encryption (DAVE) keys are incomplete, so the stream video can't be decrypted").into();
+            return tr!("エンドツーエンド暗号（DAVE）の鍵がそろわず、配信の映像を解けません", "End-to-end encryption (DAVE) keys are incomplete, so the stream video can't be decrypted", "端到端加密（DAVE）的密钥不完整，无法解密直播画面").into();
         }
         tr!(
             "配信のキーフレームが届きません",
-            "No stream keyframe is arriving"
+            "No stream keyframe is arriving",
+            "收不到直播的关键帧"
         )
         .into()
     }

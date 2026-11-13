@@ -49,12 +49,12 @@ fn filter_chip(id: impl Into<ElementId>, label: &str, on: bool) -> Stateful<Div>
 fn thread_meta(t: &Channel) -> String {
     let mut parts = Vec::new();
     if let Some(n) = t.message_count {
-        parts.push(tr!("{n} 件のメッセージ", "{n} messages",));
+        parts.push(tr!("{n} 件のメッセージ", "{n} messages", "{n} 条消息",));
     }
     let last = t.last_message_id.as_deref().unwrap_or(&t.id);
     let d = snowflake_date(last);
     if !d.is_empty() {
-        parts.push(tr!("最終 {d}", "Last {d}",));
+        parts.push(tr!("最終 {d}", "Last {d}", "最后 {d}",));
     }
     parts.join(" · ")
 }
@@ -84,7 +84,7 @@ impl Root {
             bar = bar.child(
                 fill_button(
                     "post_new",
-                    tr!("新しい投稿", "New Post"),
+                    tr!("新しい投稿", "New Post", "新帖子"),
                     BLURPLE(),
                     WHITE(),
                     true,
@@ -97,12 +97,12 @@ impl Root {
             );
         }
         bar = bar.child(
-            filter_chip("forum_all", tr!("すべて", "All"), f.tag.is_none()).on_click(cx.listener(
-                |this, _, _, cx| {
+            filter_chip("forum_all", tr!("すべて", "All", "全部"), f.tag.is_none()).on_click(
+                cx.listener(|this, _, _, cx| {
                     this.app.set_thread_filter(true, Some(None), None);
                     cx.notify();
-                },
-            )),
+                }),
+            ),
         );
         for t in &forum.available_tags {
             let id = t.id.clone();
@@ -124,7 +124,7 @@ impl Root {
         bar = bar.child(
             filter_chip(
                 "forum_archived",
-                tr!("アーカイブ済み", "Archived"),
+                tr!("アーカイブ済み", "Archived", "已归档"),
                 archived,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -218,9 +218,13 @@ impl Root {
             .when(!forum.available_tags.is_empty(), |c| {
                 c.child(text(
                     if forum.requires_tag() {
-                        tr!("タグ（1つ以上・5つまで）", "Tags (1 to 5)")
+                        tr!(
+                            "タグ（1つ以上・5つまで）",
+                            "Tags (1 to 5)",
+                            "标签（1–5 个）"
+                        )
                     } else {
-                        tr!("タグ（5つまで）", "Tags (up to 5)")
+                        tr!("タグ（5つまで）", "Tags (up to 5)", "标签（最多 5 个）")
                     },
                     12.0,
                     MUTED(),
@@ -234,7 +238,7 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("post_cancel", tr!("キャンセル", "Cancel")).on_click(
+                        text_button("post_cancel", tr!("キャンセル", "Cancel", "取消")).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.app.post_draft = None;
                                 cx.notify();
@@ -245,9 +249,9 @@ impl Root {
                         fill_button(
                             "post_send",
                             if sending {
-                                tr!("投稿中…", "Posting…")
+                                tr!("投稿中…", "Posting…", "正在发帖…")
                             } else {
-                                tr!("投稿", "Post")
+                                tr!("投稿", "Post", "发帖")
                             },
                             BLURPLE(),
                             WHITE(),
@@ -276,14 +280,14 @@ impl Root {
                     .gap(z(8.0))
                     .child(text(e.clone(), 14.0, RED()))
                     .child(
-                        small_button("forum_retry", tr!("再試行", "Retry")).on_click(cx.listener(
-                            |this, _, _, cx| {
+                        small_button("forum_retry", tr!("再試行", "Retry", "重试")).on_click(
+                            cx.listener(|this, _, _, cx| {
                                 let more =
                                     this.app.forum.as_ref().is_some_and(|f| !f.items.is_empty());
                                 this.app.load_threads(true, more);
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     )
             } else if f.loading {
                 div()
@@ -294,9 +298,13 @@ impl Root {
             } else if f.items.is_empty() {
                 div().p(z(24.0)).flex().justify_center().child(text(
                     if f.archived {
-                        tr!("アーカイブ済みの投稿はありません", "No archived posts")
+                        tr!(
+                            "アーカイブ済みの投稿はありません",
+                            "No archived posts",
+                            "没有已归档的帖子"
+                        )
                     } else {
-                        tr!("まだ投稿がありません", "No posts yet")
+                        tr!("まだ投稿がありません", "No posts yet", "还没有帖子")
                     },
                     15.0,
                     MUTED(),
@@ -400,17 +408,20 @@ impl Root {
             .flex()
             .gap(z(6.0))
             .child(
-                filter_chip("threads_active", tr!("アクティブ", "Active"), !archived).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.app.set_thread_filter(false, None, Some(false));
-                        cx.notify();
-                    }),
-                ),
+                filter_chip(
+                    "threads_active",
+                    tr!("アクティブ", "Active", "活跃"),
+                    !archived,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.app.set_thread_filter(false, None, Some(false));
+                    cx.notify();
+                })),
             )
             .child(
                 filter_chip(
                     "threads_archived",
-                    tr!("アーカイブ済み", "Archived"),
+                    tr!("アーカイブ済み", "Archived", "已归档"),
                     archived,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -429,7 +440,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(super::panel::panel_head(
-                tr!("スレッド", "Threads"),
+                tr!("スレッド", "Threads", "子区"),
                 IconName::MessagesSquare,
                 cx,
             ))
@@ -459,7 +470,7 @@ impl Root {
                     .gap(z(8.0))
                     .child(text(e.clone(), 14.0, RED()))
                     .child(
-                        small_button("threads_retry", tr!("再試行", "Retry")).on_click(
+                        small_button("threads_retry", tr!("再試行", "Retry", "重试")).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.app.load_threads(false, false);
                                 cx.notify();
@@ -477,10 +488,11 @@ impl Root {
                     if v.archived {
                         tr!(
                             "アーカイブ済みのスレッドはありません",
-                            "No archived threads"
+                            "No archived threads",
+                            "没有已归档的子区"
                         )
                     } else {
-                        tr!("スレッドはありません", "No threads")
+                        tr!("スレッドはありません", "No threads", "没有子区")
                     },
                     14.0,
                     MUTED(),
@@ -524,7 +536,7 @@ impl Root {
                             .min_w_0(),
                     )
                     .when(joined, |d| {
-                        d.child(text(tr!("参加中", "Joined"), 11.0, MUTED()))
+                        d.child(text(tr!("参加中", "Joined", "已加入"), 11.0, MUTED()))
                     }),
             )
             .child(line(thread_meta(t), 12.0, FAINT()))
@@ -570,7 +582,11 @@ impl Root {
             .flex()
             .flex_col()
             .gap(z(10.0))
-            .child(medium(tr!("フォルダを編集", "Edit Folder"), 20.0, WHITE()))
+            .child(medium(
+                tr!("フォルダを編集", "Edit Folder", "编辑文件夹"),
+                20.0,
+                WHITE(),
+            ))
             .child(
                 div().bg(INPUT()).rounded(z(8.0)).px(z(8.0)).child(
                     Input::new(&self.inp.folder_name)
@@ -585,17 +601,16 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("folder_edit_cancel", tr!("キャンセル", "Cancel")).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        text_button("folder_edit_cancel", tr!("キャンセル", "Cancel", "取消"))
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.folder_edit = None;
                                 cx.notify();
-                            }),
-                        ),
+                            })),
                     )
                     .child(
                         fill_button(
                             "folder_edit_save",
-                            tr!("保存", "Save"),
+                            tr!("保存", "Save", "保存"),
                             BLURPLE(),
                             WHITE(),
                             true,
@@ -605,7 +620,8 @@ impl Root {
                             if name.is_empty() {
                                 this.app.show_toast(tr!(
                                     "フォルダ名を入力してください",
-                                    "Enter a folder name"
+                                    "Enter a folder name",
+                                    "请输入文件夹名称"
                                 ));
                             } else if let Some(folder) = this
                                 .app
@@ -643,7 +659,7 @@ impl Root {
             .flex_col()
             .gap(z(10.0))
             .child(medium(
-                tr!("スレッドを作成", "Create Thread"),
+                tr!("スレッドを作成", "Create Thread", "创建子区"),
                 20.0,
                 WHITE(),
             ))
@@ -680,7 +696,7 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("thread_cancel", tr!("キャンセル", "Cancel"))
+                        text_button("thread_cancel", tr!("キャンセル", "Cancel", "取消"))
                             .min_w(z(96.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.thread_draft = None;
@@ -691,9 +707,9 @@ impl Root {
                         fill_button(
                             "thread_ok",
                             if sending {
-                                tr!("作成中…", "Creating…")
+                                tr!("作成中…", "Creating…", "正在创建…")
                             } else {
-                                tr!("作成", "Create")
+                                tr!("作成", "Create", "创建")
                             },
                             BLURPLE(),
                             WHITE(),

@@ -66,10 +66,10 @@ pub fn row_layout_at(
 fn call_length(d: chrono::Duration) -> String {
     let s = d.num_seconds().max(0);
     match (s / 3600, s % 3600 / 60) {
-        (0, 0) => tr!("数秒", "a few seconds").into(),
-        (0, m) => tr!("{m}分", "{m}m",),
-        (h, 0) => tr!("{h}時間", "{h}h",),
-        (h, m) => tr!("{h}時間{m}分", "{h}h {m}m",),
+        (0, 0) => tr!("数秒", "a few seconds", "几秒").into(),
+        (0, m) => tr!("{m}分", "{m}m", "{m} 分钟",),
+        (h, 0) => tr!("{h}時間", "{h}h", "{h} 小时",),
+        (h, m) => tr!("{h}時間{m}分", "{h}h {m}m", "{h} 小时 {m} 分钟",),
     }
 }
 
@@ -399,7 +399,7 @@ fn file_card(id: SharedString, a: &model::Attachment, cx: &mut Context<Root>) ->
                 .rounded(z(4.0))
                 .cursor_pointer()
                 .hover(|s| s.bg(HOVER()))
-                .tooltip(tip(tr!("ダウンロード", "Download")))
+                .tooltip(tip(tr!("ダウンロード", "Download", "下载")))
                 .child(icon(IconName::Download, 20.0, MUTED()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.start_download(url.clone(), name.clone(), crate::download::Kind::File);
@@ -466,14 +466,16 @@ fn image_box(
     };
     match download.filter(|_| size.0 >= DOWNLOAD_MIN && size.1 >= DOWNLOAD_MIN) {
         Some(name) => d.child(
-            download_button("download", tr!("画像をダウンロード", "Download image")).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    // 下の画像（プレビューを開く）には伝えない
-                    cx.stop_propagation();
-                    this.start_download(open.clone(), name.clone(), crate::download::Kind::Image);
-                    cx.notify();
-                }),
-            ),
+            download_button(
+                "download",
+                tr!("画像をダウンロード", "Download image", "下载图片"),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // 下の画像（プレビューを開く）には伝えない
+                cx.stop_propagation();
+                this.start_download(open.clone(), name.clone(), crate::download::Kind::Image);
+                cx.notify();
+            })),
         ),
         None => d,
     }
@@ -545,7 +547,8 @@ impl Root {
                         .child(div().flex_1().h(px(1.0)).bg(DIVIDER()))
                         .child(
                             text(
-                                t.format(tr!("%Y年%-m月%-d日", "%b %-d, %Y")).to_string(),
+                                t.format(tr!("%Y年%-m月%-d日", "%b %-d, %Y", "%Y年%-m月%-d日"))
+                                    .to_string(),
                                 12.0,
                                 FAINT(),
                             )
@@ -812,7 +815,11 @@ impl Root {
                     .pl(z(if compact { text_x } else { 72.0 }))
                     .pr(z(16.0))
                     .child(text(
-                        tr!("あなただけに表示されています", "Only you can see this"),
+                        tr!(
+                            "あなただけに表示されています",
+                            "Only you can see this",
+                            "仅你可见"
+                        ),
                         12.0,
                         FAINT(),
                     )),
@@ -831,7 +838,11 @@ impl Root {
                         .pl(z(if compact { text_x } else { 72.0 }))
                         .pr(z(16.0))
                         .child(text(
-                            tr!("翻訳: {translated}", "Translation: {translated}",),
+                            tr!(
+                                "翻訳: {translated}",
+                                "Translation: {translated}",
+                                "翻译：{translated}",
+                            ),
                             self.app.settings.font_size,
                             MUTED(),
                         )),
@@ -851,6 +862,7 @@ impl Root {
                         tr!(
                             "編集前（{t} に変更）: {}",
                             "Before edit (changed {t}): {}",
+                            "编辑前（{t} 修改）：{}",
                             e.content
                         ),
                         fs - 1.0,
@@ -864,7 +876,7 @@ impl Root {
                     .map(|t| t.format("%-m/%-d %H:%M").to_string())
                     .unwrap_or_default();
                 row = row.child(div().pl(z(pad)).pr(z(16.0)).child(text(
-                    tr!("削除済み（{t}）", "Deleted ({t})",),
+                    tr!("削除済み（{t}）", "Deleted ({t})", "已删除（{t}）",),
                     12.0,
                     RED(),
                 )));
@@ -892,10 +904,20 @@ impl Root {
             && call.is_some_and(|c| me.is_some_and(|me| !c.participants.iter().any(|p| p == me)));
         let length = ended.and_then(|e| Some(call_length(local_dt(e)? - local_dt(&m.timestamp)?)));
         let after = match (missed, &length) {
-            (true, Some(l)) => tr!(" からの不在着信（{l}）", " · missed call ({l})",),
-            (true, None) => tr!(" からの不在着信", " · missed call").to_string(),
-            (false, Some(l)) => tr!(" が通話を開始しました（{l}）", " started a call ({l})",),
-            (false, None) => tr!(" が通話を開始しました", " started a call").to_string(),
+            (true, Some(l)) => tr!(
+                " からの不在着信（{l}）",
+                " · missed call ({l})",
+                " · 未接来电（{l}）",
+            ),
+            (true, None) => tr!(" からの不在着信", " · missed call", " · 未接来电").to_string(),
+            (false, Some(l)) => tr!(
+                " が通話を開始しました（{l}）",
+                " started a call ({l})",
+                " 发起了通话（{l}）",
+            ),
+            (false, None) => {
+                tr!(" が通話を開始しました", " started a call", " 发起了通话").to_string()
+            }
         };
         let author = m.author.clone();
         let fs = self.app.settings.font_size;
@@ -996,7 +1018,7 @@ impl Root {
         bar = bar.when(!deleted, |bar| {
             bar.child(
                 btn("tb_reply", IconName::Reply, false)
-                    .tooltip(tip(tr!("返信", "Reply")))
+                    .tooltip(tip(tr!("返信", "Reply", "回复")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.app.editing.take().is_some() {
                             this.app.input.clear();
@@ -1011,7 +1033,7 @@ impl Root {
             let m2 = m.clone();
             bar = bar.child(
                 btn("tb_edit", IconName::Pencil, false)
-                    .tooltip(tip(tr!("編集", "Edit")))
+                    .tooltip(tip(tr!("編集", "Edit", "编辑")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.app.input = crate::emoji::shorten(&m2.content).0;
                         this.app.editing = Some(m2.clone());
@@ -1025,11 +1047,14 @@ impl Root {
             let t = m.content.clone();
             bar = bar.child(
                 btn("tb_copy", IconName::Copy, false)
-                    .tooltip(tip(tr!("テキストをコピー", "Copy Text")))
+                    .tooltip(tip(tr!("テキストをコピー", "Copy Text", "复制文字")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(t.clone()));
-                        this.app
-                            .show_toast(tr!("テキストをコピーしました", "Text copied"));
+                        this.app.show_toast(tr!(
+                            "テキストをコピーしました",
+                            "Text copied",
+                            "已复制文字"
+                        ));
                         cx.notify();
                     })),
             );
@@ -1040,7 +1065,8 @@ impl Root {
                 btn("tb_delete", IconName::Trash, true)
                     .tooltip(tip(tr!(
                         "メッセージを削除（Shift+クリックで確認なし）",
-                        "Delete message (Shift+click to skip confirmation)"
+                        "Delete message (Shift+click to skip confirmation)",
+                        "删除消息（Shift+点击跳过确认）"
                     )))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                         if ev.modifiers().shift {
@@ -1067,9 +1093,9 @@ impl Root {
             bar = bar.child(
                 btn("tb_translate", IconName::Settings, false)
                     .tooltip(tip(if translated {
-                        tr!("翻訳を閉じる", "Close translation")
+                        tr!("翻訳を閉じる", "Close translation", "关闭翻译")
                     } else {
-                        tr!("Google で翻訳", "Translate with Google")
+                        tr!("Google で翻訳", "Translate with Google", "用 Google 翻译")
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let key = (message.channel_id.clone(), message.id.clone());
@@ -1099,7 +1125,8 @@ impl Root {
                             } else {
                                 this.app.show_toast(tr!(
                                     "Google で翻訳しています…",
-                                    "Translating with Google…"
+                                    "Translating with Google…",
+                                    "正在用 Google 翻译…"
                                 ));
                             }
                         }
@@ -1156,7 +1183,8 @@ impl Root {
             return row.child(text(
                 tr!(
                     "元のメッセージは削除されました",
-                    "The original message was deleted"
+                    "The original message was deleted",
+                    "原消息已被删除"
                 ),
                 13.0,
                 FAINT(),
@@ -1173,9 +1201,9 @@ impl Root {
             rich = preview_rich(&content, self.revealed.contains(&r.id));
             String::new()
         } else if !r.attachments.is_empty() {
-            tr!("添付ファイル", "Attachment").to_string()
+            tr!("添付ファイル", "Attachment", "附件").to_string()
         } else if !r.sticker_items.is_empty() {
-            tr!("スタンプ", "Sticker").to_string()
+            tr!("スタンプ", "Sticker", "贴纸").to_string()
         } else {
             String::new()
         };
@@ -1349,7 +1377,7 @@ impl Root {
             items.push(item);
         }
         if edited && matches!(blocks.last(), Some(md::Block::Code(_))) {
-            items.push(text(tr!("(編集済)", "(edited)"), 11.0, MUTED()));
+            items.push(text(tr!("(編集済)", "(edited)", "(已编辑)"), 11.0, MUTED()));
         }
         let style = |d: Div| {
             d.min_w_0()
@@ -1445,7 +1473,7 @@ impl Root {
         if pieces.is_empty() {
             if edited {
                 cur.push(
-                    tr!(" (編集済)", " (edited)"),
+                    tr!(" (編集済)", " (edited)", " (已编辑)"),
                     Some(HighlightStyle {
                         color: Some(MUTED().into()),
                         ..Default::default()
@@ -1506,7 +1534,11 @@ impl Root {
             self.note_image(&u);
         }
         if edited {
-            row = row.child(text(tr!(" (編集済)", " (edited)"), 11.0, MUTED()));
+            row = row.child(text(
+                tr!(" (編集済)", " (edited)", " (已编辑)"),
+                11.0,
+                MUTED(),
+            ));
         }
         row
     }
@@ -1610,9 +1642,10 @@ impl Root {
                         tr!(
                             "{} 票{}",
                             "{} votes{}",
+                            "{} 票{}",
                             r.count,
                             if r.me_voted {
-                                tr!(" · 回答済み", " · Voted")
+                                tr!(" · 回答済み", " · Voted", " · 已投票")
                             } else {
                                 ""
                             }
@@ -1653,7 +1686,8 @@ impl Root {
                 card = card.child(text(
                     tr!(
                         "投票結果を取得できませんでした",
-                        "Couldn't load poll results"
+                        "Couldn't load poll results",
+                        "无法获取投票结果"
                     ),
                     12.0,
                     MUTED(),
@@ -1749,12 +1783,12 @@ impl Root {
         let has_preview = preview.is_some();
         let frame = frame.or(preview);
         let label = match active {
-            Some(v) if v.error.is_some() => tr!("再生できません", "Can't play"),
-            Some(v) if v.ended => tr!("もう一度再生", "Play again"),
-            Some(v) if v.paused => tr!("再生", "Play"),
-            Some(v) if v.image.is_some() => tr!("一時停止", "Pause"),
-            Some(_) => tr!("読み込み中…", "Loading…"),
-            None => tr!("動画を再生", "Play video"),
+            Some(v) if v.error.is_some() => tr!("再生できません", "Can't play", "无法播放"),
+            Some(v) if v.ended => tr!("もう一度再生", "Play again", "再次播放"),
+            Some(v) if v.paused => tr!("再生", "Play", "播放"),
+            Some(v) if v.image.is_some() => tr!("一時停止", "Pause", "暂停"),
+            Some(_) => tr!("読み込み中…", "Loading…", "正在加载…"),
+            None => tr!("動画を再生", "Play video", "播放视频"),
         };
         let error = active.and_then(|v| v.error.clone());
         let mut screen = div()
@@ -1812,7 +1846,7 @@ impl Root {
         screen = screen.child(
             download_button(
                 SharedString::from(format!("video-download-{key}")),
-                tr!("動画をダウンロード", "Download video"),
+                tr!("動画をダウンロード", "Download video", "下载视频"),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
@@ -1864,7 +1898,7 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("video-close-{key}")))
                     .cursor_pointer()
-                    .child(text(tr!("停止", "Stop"), 12.0, LINK()))
+                    .child(text(tr!("停止", "Stop", "停止"), 12.0, LINK()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.video = None;
                         cx.notify();
@@ -1875,7 +1909,7 @@ impl Root {
             div()
                 .id(SharedString::from(format!("video-open-{key}")))
                 .cursor_pointer()
-                .child(text(tr!("開く", "Open"), 12.0, LINK()))
+                .child(text(tr!("開く", "Open", "打开"), 12.0, LINK()))
                 .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&link))),
         );
         content.child(controls)
@@ -1896,7 +1930,7 @@ impl Root {
                 )
                 .into_any_element(),
             Some(StickerState::Failed) => text(
-                tr!("[スタンプ: {}]", "[Sticker: {}]", st.name),
+                tr!("[スタンプ: {}]", "[Sticker: {}]", "[贴纸：{}]", st.name),
                 16.0,
                 MUTED(),
             )

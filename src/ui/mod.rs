@@ -386,6 +386,11 @@ pub struct Root {
     pub font_family: SharedString,
     /// テーマで指定したフォントを読み込んだもの（パス, ファミリー名）
     pub theme_font: Option<(std::path::PathBuf, SharedString)>,
+    /// 設定で選んだフォント（入っているものだけ）
+    pub user_font: Option<SharedString>,
+    /// 設定画面のフォント一覧（開いたときに読む）と絞り込み欄
+    pub font_names: Option<Vec<SharedString>>,
+    pub font_filter: Option<Entity<InputState>>,
     pub last_title: String,
     /// 入力欄の薄い案内文（チャンネルが変わったら変える）
     pub compose_hint: String,
@@ -515,12 +520,19 @@ fn sync<M: gpui::component::input::InputModeKind + 'static>(
     });
 }
 
-/// fc-match で日本語の既定フォントのファミリー名を調べる
+/// 表示言語に合う既定フォントのファミリー名。中国語なら簡体字の字形のフォント、
+/// それ以外は日本語のフォント（英語も日本語の名前などを出すため）。起動時の言語で決める
 fn default_family() -> SharedString {
+    let zh = crate::i18n::lang() == crate::i18n::Lang::Zh;
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let pattern = if zh {
+            "sans:lang=zh-cn"
+        } else {
+            "sans:lang=ja"
+        };
         if let Ok(o) = std::process::Command::new("fc-match")
-            .args(["-f", "%{family[0]}", "sans:lang=ja"])
+            .args(["-f", "%{family[0]}", pattern])
             .output()
         {
             if let Ok(s) = String::from_utf8(o.stdout) {
@@ -529,15 +541,26 @@ fn default_family() -> SharedString {
                 }
             }
         }
-        "Noto Sans CJK JP".into()
+        if zh {
+            "Noto Sans CJK SC"
+        } else {
+            "Noto Sans CJK JP"
+        }
+        .into()
     }
     #[cfg(windows)]
     {
-        "Yu Gothic UI".into()
+        // Yu Gothic UI には簡体字だけの字（们・设 など）が無い
+        if zh {
+            "Microsoft YaHei UI"
+        } else {
+            "Yu Gothic UI"
+        }
+        .into()
     }
     #[cfg(target_os = "macos")]
     {
-        "Hiragino Sans".into()
+        if zh { "PingFang SC" } else { "Hiragino Sans" }.into()
     }
 }
 
@@ -614,105 +637,171 @@ impl Root {
                 .auto_grow(4, 8)
                 .placeholder(tr!(
                     "自分について書いてみましょう",
-                    "Write something about yourself"
+                    "Write something about yourself",
+                    "写点关于你自己的内容吧"
                 ))
         });
         let inp = Inputs {
             compose,
-            dm_filter: new_input(window, cx, tr!("会話を検索", "Search conversations"), false),
+            dm_filter: new_input(
+                window,
+                cx,
+                tr!("会話を検索", "Search conversations", "搜索对话"),
+                false,
+            ),
             switcher: new_input(
                 window,
                 cx,
                 tr!(
                     "会話・チャンネル・サーバーを検索",
-                    "Search conversations, channels and servers"
+                    "Search conversations, channels and servers",
+                    "搜索对话、频道和服务器"
                 ),
                 false,
             ),
             email: new_input(window, cx, "", false),
             password: new_input(window, cx, "", true),
             mfa: new_input(window, cx, "123456", false),
-            settings_query: new_input(window, cx, tr!("検索", "Search"), false),
+            settings_query: new_input(window, cx, tr!("検索", "Search", "搜索"), false),
             name: new_input(window, cx, "", false),
-            pronouns: new_input(window, cx, tr!("代名詞を追加", "Add pronouns"), false),
+            pronouns: new_input(
+                window,
+                cx,
+                tr!("代名詞を追加", "Add pronouns", "添加代词"),
+                false,
+            ),
             bio,
             bg_image: new_input(
                 window,
                 cx,
                 tr!(
                     "画像のパスか https:// の URL（空ならテーマの指定）",
-                    "Image path or https:// URL (empty uses the theme's)"
+                    "Image path or https:// URL (empty uses the theme's)",
+                    "图片路径或 https:// URL（留空则使用主题设置）"
                 ),
                 false,
             ),
-            emoji_query: new_input(window, cx, tr!("絵文字を検索", "Search emoji"), false),
+            emoji_query: new_input(
+                window,
+                cx,
+                tr!("絵文字を検索", "Search emoji", "搜索表情"),
+                false,
+            ),
             search: new_input(
                 window,
                 cx,
                 tr!(
                     "検索（from: in: has: before: after:）",
-                    "Search (from: in: has: before: after:)"
+                    "Search (from: in: has: before: after:)",
+                    "搜索（from: in: has: before: after:）"
                 ),
                 false,
             ),
-            thread_name: new_input(window, cx, tr!("スレッド名", "Thread name"), false),
-            role_name: new_input(window, cx, tr!("ロール名", "Role name"), false),
-            guild_name: new_input(window, cx, tr!("サーバー名", "Server name"), false),
+            thread_name: new_input(
+                window,
+                cx,
+                tr!("スレッド名", "Thread name", "子区名称"),
+                false,
+            ),
+            role_name: new_input(
+                window,
+                cx,
+                tr!("ロール名", "Role name", "身份组名称"),
+                false,
+            ),
+            guild_name: new_input(
+                window,
+                cx,
+                tr!("サーバー名", "Server name", "服务器名称"),
+                false,
+            ),
             guild_description: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 4)
-                    .placeholder(tr!("サーバーの説明", "Server description"))
+                    .placeholder(tr!("サーバーの説明", "Server description", "服务器说明"))
             }),
-            channel_member_id: new_input(window, cx, tr!("メンバー ID", "Member ID"), false),
-            friend_name: new_input(window, cx, tr!("ユーザー名", "Username"), false),
-            folder_name: new_input(window, cx, tr!("フォルダ名", "Folder name"), false),
-            poll_question: new_input(window, cx, tr!("質問", "Question"), false),
+            channel_member_id: new_input(
+                window,
+                cx,
+                tr!("メンバー ID", "Member ID", "成员 ID"),
+                false,
+            ),
+            friend_name: new_input(window, cx, tr!("ユーザー名", "Username", "用户名"), false),
+            folder_name: new_input(
+                window,
+                cx,
+                tr!("フォルダ名", "Folder name", "文件夹名称"),
+                false,
+            ),
+            poll_question: new_input(window, cx, tr!("質問", "Question", "问题"), false),
             poll_answers: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 6)
-                    .placeholder(tr!("選択肢を1行ずつ入力", "Enter one answer per line"))
+                    .placeholder(tr!(
+                        "選択肢を1行ずつ入力",
+                        "Enter one answer per line",
+                        "每行输入一个选项"
+                    ))
             }),
-            channel_name: new_input(window, cx, tr!("名前", "Name"), false),
-            guild_nick: new_input(window, cx, tr!("ニックネーム", "Nickname"), false),
-            guild_pronouns: new_input(window, cx, tr!("代名詞", "Pronouns"), false),
+            channel_name: new_input(window, cx, tr!("名前", "Name", "名称"), false),
+            guild_nick: new_input(window, cx, tr!("ニックネーム", "Nickname", "昵称"), false),
+            guild_pronouns: new_input(window, cx, tr!("代名詞", "Pronouns", "代词"), false),
             guild_bio: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(3, 6)
-                    .placeholder(tr!("自己紹介", "About Me"))
+                    .placeholder(tr!("自己紹介", "About Me", "个人简介"))
             }),
-            event_name: new_input(window, cx, tr!("イベント名", "Event name"), false),
+            event_name: new_input(
+                window,
+                cx,
+                tr!("イベント名", "Event name", "活动名称"),
+                false,
+            ),
             event_start: new_input(
                 window,
                 cx,
-                tr!("開始 YYYY-MM-DD HH:MM", "Start YYYY-MM-DD HH:MM"),
+                tr!(
+                    "開始 YYYY-MM-DD HH:MM",
+                    "Start YYYY-MM-DD HH:MM",
+                    "开始 YYYY-MM-DD HH:MM"
+                ),
                 false,
             ),
             event_end: new_input(
                 window,
                 cx,
-                tr!("終了 YYYY-MM-DD HH:MM", "End YYYY-MM-DD HH:MM"),
+                tr!(
+                    "終了 YYYY-MM-DD HH:MM",
+                    "End YYYY-MM-DD HH:MM",
+                    "结束 YYYY-MM-DD HH:MM"
+                ),
                 false,
             ),
-            event_location: new_input(window, cx, tr!("場所", "Location"), false),
+            event_location: new_input(window, cx, tr!("場所", "Location", "地点"), false),
             event_description: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 5)
-                    .placeholder(tr!("説明（任意）", "Description (optional)"))
+                    .placeholder(tr!(
+                        "説明（任意）",
+                        "Description (optional)",
+                        "说明（可选）"
+                    ))
             }),
-            rule_name: new_input(window, cx, tr!("ルール名", "Rule name"), false),
+            rule_name: new_input(window, cx, tr!("ルール名", "Rule name", "规则名称"), false),
             rule_keywords: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 6)
                     .placeholder(tr!(
                         "ブロックする語をカンマか改行で区切って入力",
-                        "Enter words to block, separated by commas or newlines"
+                        "Enter words to block, separated by commas or newlines",
+                        "输入要屏蔽的词语，用逗号或换行分隔"
                     ))
             }),
-            post_title: new_input(window, cx, tr!("タイトル", "Title"), false),
+            post_title: new_input(window, cx, tr!("タイトル", "Title", "标题"), false),
             post_body: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(3, 10)
-                    .placeholder(tr!("本文を入力", "Enter a message"))
+                    .placeholder(tr!("本文を入力", "Enter a message", "输入正文"))
             }),
         };
         let mut subs = vec![
@@ -1017,6 +1106,9 @@ impl Root {
             settings_scroll: ScrollHandle::new(),
             font_family: default_family(),
             theme_font: None,
+            user_font: None,
+            font_names: None,
+            font_filter: None,
             last_title: String::new(),
             compose_hint: String::new(),
             image_preview: None,
@@ -1059,20 +1151,35 @@ impl Root {
                         }
                     }
                     Err(e) => {
-                        self.app.theme_error =
-                            Some(tr!("フォント {}: {e}", "Font {}: {e}", path.display()))
+                        self.app.theme_error = Some(tr!(
+                            "フォント {}: {e}",
+                            "Font {}: {e}",
+                            "字体 {}：{e}",
+                            path.display()
+                        ))
                     }
                 }
             }
             Some(_) => {}
             None => self.theme_font = None,
         }
+        // 設定で選んだフォントはテーマより優先。アンインストールされていたら使わない
+        let name = self.app.settings.font.trim();
+        self.user_font = (!name.is_empty())
+            .then(|| {
+                cx.text_system()
+                    .all_font_names()
+                    .into_iter()
+                    .find(|n| n == name)
+            })
+            .flatten()
+            .map(SharedString::from);
     }
 
     pub fn family(&self) -> SharedString {
-        self.theme_font
-            .as_ref()
-            .map(|f| f.1.clone())
+        self.user_font
+            .clone()
+            .or_else(|| self.theme_font.as_ref().map(|f| f.1.clone()))
             .unwrap_or_else(|| self.font_family.clone())
     }
 
@@ -1182,10 +1289,15 @@ impl Root {
             self.downloads.retain(|(_, rx)| loop {
                 match rx.try_recv() {
                     Ok(crate::download::Event::Started) => {
-                        app.show_toast(tr!("ダウンロードしています…", "Downloading…"))
+                        app.show_toast(tr!("ダウンロードしています…", "Downloading…", "正在下载…"))
                     }
                     Ok(crate::download::Event::Finished(path)) => {
-                        app.show_toast(&tr!("保存しました: {}", "Saved: {}", path.display()));
+                        app.show_toast(&tr!(
+                            "保存しました: {}",
+                            "Saved: {}",
+                            "已保存：{}",
+                            path.display()
+                        ));
                         break false;
                     }
                     Ok(crate::download::Event::Failed(error)) => {
@@ -1223,6 +1335,10 @@ impl Root {
             self.app.font_dirty = false;
             self.apply_fonts(cx);
             self.app.theme_dirty = true;
+            // 文字の幅が変わるので行の高さを測り直す
+            for l in self.lists.values() {
+                l.state.remeasure();
+            }
         }
         if self.app.theme_dirty {
             self.app.theme_dirty = false;
@@ -1396,7 +1512,7 @@ impl Root {
         let len = st::message_text_len(&a.input);
         if len > limit {
             // 送っても Discord に断られるので、送らずに入力を残して知らせる
-            a.compose_notice = Some((tr!("本文は{limit}文字までです（いま{len}文字）。{}文字減らすか、分けて送ってください。", "Messages can be up to {limit} characters (currently {len}). Remove {} characters or split it into several messages.", len - limit), Instant::now()));
+            a.compose_notice = Some((tr!("本文は{limit}文字までです（いま{len}文字）。{}文字減らすか、分けて送ってください。", "Messages can be up to {limit} characters (currently {len}). Remove {} characters or split it into several messages.", "正文最多 {limit} 个字符（当前 {len} 个）。请删减 {} 个字符，或分成多条发送。", len - limit), Instant::now()));
             a.repaint_after(st::COMPOSE_NOTICE_TTL);
         } else if a
             .sel_channel

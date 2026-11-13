@@ -251,7 +251,8 @@ impl App {
                 admin.error = Some(
                     tr!(
                         "チャンネル権限を取得できませんでした",
-                        "Couldn't load channel permissions"
+                        "Couldn't load channel permissions",
+                        "无法获取频道权限"
                     )
                     .into(),
                 );
@@ -392,7 +393,8 @@ impl App {
             self.role_admin.as_mut().unwrap().error = Some(
                 tr!(
                     "メンバー ID は数字で入力してください",
-                    "Enter the member ID as a number"
+                    "Enter the member ID as a number",
+                    "请以数字输入成员 ID"
                 )
                 .into(),
             );
@@ -409,7 +411,8 @@ impl App {
                 self.role_admin.as_mut().unwrap().error = Some(
                     tr!(
                         "その ID はロールに使用されています",
-                        "That ID is used by a role"
+                        "That ID is used by a role",
+                        "该 ID 已被身份组使用"
                     )
                     .into(),
                 );
@@ -429,7 +432,8 @@ impl App {
                 admin.error = Some(
                     tr!(
                         "メンバーを確認できませんでした",
-                        "Couldn't verify the member"
+                        "Couldn't verify the member",
+                        "无法确认成员"
                     )
                     .into(),
                 );
@@ -539,7 +543,7 @@ impl App {
             return;
         }
         if draft.allow == old_allow && draft.deny == old_deny {
-            self.show_toast(tr!("変更はありません", "No changes"));
+            self.show_toast(tr!("変更はありません", "No changes", "没有更改"));
             return;
         }
         let body = serde_json::json!({"type": draft.kind, "allow":draft.allow.to_string(), "deny":draft.deny.to_string()});
@@ -572,7 +576,7 @@ impl App {
         };
         if (original.allow | original.deny) & !editable != 0 {
             self.role_admin.as_mut().unwrap().error =
-                Some(tr!("自分が変更できない権限を含むため、上書きを削除できません", "You can't delete this overwrite because it includes permissions you can't change").into());
+                Some(tr!("自分が変更できない権限を含むため、上書きを削除できません", "You can't delete this overwrite because it includes permissions you can't change", "此覆盖设置包含你无法更改的权限，因此无法删除").into());
             return;
         }
         self.submit_role_action(net::ApiCall::DeletePermission {
@@ -626,7 +630,8 @@ impl App {
                         &e,
                         tr!(
                             "チャンネル権限を取得できませんでした",
-                            "Couldn't load channel permissions"
+                            "Couldn't load channel permissions",
+                            "无法获取频道权限"
                         ),
                     ));
                     return;
@@ -637,7 +642,8 @@ impl App {
                 self.role_admin.as_mut().unwrap().error = Some(
                     tr!(
                         "チャンネル権限を読み取れませんでした",
-                        "Couldn't read channel permissions"
+                        "Couldn't read channel permissions",
+                        "无法读取频道权限"
                     )
                     .into(),
                 );
@@ -660,7 +666,8 @@ impl App {
                     admin.error = Some(
                         tr!(
                             "親カテゴリの権限を確認できませんでした",
-                            "Couldn't check the parent category's permissions"
+                            "Couldn't check the parent category's permissions",
+                            "无法确认上级类别的权限"
                         )
                         .into(),
                     );
@@ -692,7 +699,8 @@ impl App {
                         &e,
                         tr!(
                             "親カテゴリの権限を取得できませんでした",
-                            "Couldn't load the parent category's permissions"
+                            "Couldn't load the parent category's permissions",
+                            "无法获取上级类别的权限"
                         ),
                     ));
                     return;
@@ -704,7 +712,8 @@ impl App {
                 admin.error = Some(
                     tr!(
                         "親カテゴリの権限を確認できませんでした",
-                        "Couldn't check the parent category's permissions"
+                        "Couldn't check the parent category's permissions",
+                        "无法确认上级类别的权限"
                     )
                     .into(),
                 );
@@ -736,7 +745,8 @@ impl App {
                         &e,
                         tr!(
                             "メンバーを確認できませんでした",
-                            "Couldn't verify the member"
+                            "Couldn't verify the member",
+                            "无法确认成员"
                         ),
                     ));
                     return;
@@ -750,7 +760,8 @@ impl App {
                 self.role_admin.as_mut().unwrap().error = Some(
                     tr!(
                         "サーバーのメンバーを確認できませんでした",
-                        "Couldn't verify server members"
+                        "Couldn't verify server members",
+                        "无法确认服务器成员"
                     )
                     .into(),
                 );

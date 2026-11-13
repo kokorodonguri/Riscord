@@ -106,7 +106,9 @@ impl Root {
                     .guilds
                     .iter()
                     .find(|g| g.id == gid)
-                    .map_or(tr!("サーバー", "Server"), |g| g.name.as_str());
+                    .map_or(tr!("サーバー", "Server", "服务器"), |g| {
+                        g.name.as_str()
+                    });
                 rows.push(EmojiRow::Head(name.to_string().into()));
                 push_cells(
                     &mut rows,
@@ -134,7 +136,7 @@ impl Root {
             let hits = a.emoji_search(&query, COLS * 12);
             if hits.is_empty() {
                 rows.push(EmojiRow::Head(
-                    tr!("見つかりませんでした", "Nothing found").into(),
+                    tr!("見つかりませんでした", "Nothing found", "未找到").into(),
                 ));
             }
             push_cells(&mut rows, hits);
@@ -331,7 +333,11 @@ impl Root {
             .flex_col()
             .gap(z(1.0));
         col = col.child(div().px(z(6.0)).pb(z(4.0)).child(medium(
-            tr!("「:{name}」に一致する絵文字", "Emoji matching \":{name}\"",),
+            tr!(
+                "「:{name}」に一致する絵文字",
+                "Emoji matching \":{name}\"",
+                "匹配“:{name}”的表情",
+            ),
             12.0,
             MUTED(),
         )));

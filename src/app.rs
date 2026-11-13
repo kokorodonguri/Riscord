@@ -20,24 +20,25 @@ use crate::{cache, clip, images, theme, voice};
 
 pub const MESSAGE_RELOAD_ERROR: crate::i18n::Tr = trc!(
     "エラー: メッセージを更新できませんでした。再読み込みしてください。",
-    "Error: Couldn't update the message. Please reload."
+    "Error: Couldn't update the message. Please reload.",
+    "错误：无法更新消息。请重新加载。"
 );
 
 /// 選べるステータス（キー, 表示名）
 pub const STATUSES: [(&str, crate::i18n::Tr); 4] = [
-    ("online", trc!("オンライン", "Online")),
-    ("idle", trc!("退席中", "Idle")),
-    ("dnd", trc!("取り込み中", "Do Not Disturb")),
-    ("invisible", trc!("オフライン表示", "Invisible")),
+    ("online", trc!("オンライン", "Online", "在线")),
+    ("idle", trc!("退席中", "Idle", "离开")),
+    ("dnd", trc!("取り込み中", "Do Not Disturb", "请勿打扰")),
+    ("invisible", trc!("オフライン表示", "Invisible", "隐身")),
 ];
 
 pub fn status_label(s: &str) -> &'static str {
     match s {
-        "online" => tr!("オンライン", "Online"),
-        "idle" => tr!("退席中", "Idle"),
-        "dnd" => tr!("取り込み中", "Do Not Disturb"),
-        "invisible" => tr!("オフライン表示", "Invisible"),
-        _ => tr!("オフライン", "Offline"),
+        "online" => tr!("オンライン", "Online", "在线"),
+        "idle" => tr!("退席中", "Idle", "离开"),
+        "dnd" => tr!("取り込み中", "Do Not Disturb", "请勿打扰"),
+        "invisible" => tr!("オフライン表示", "Invisible", "隐身"),
+        _ => tr!("オフライン", "Offline", "离线"),
     }
 }
 
@@ -120,6 +121,8 @@ pub struct Settings {
     pub enabled_plugins: Vec<String>,
     pub zoom: f32,
     pub font_size: f32,
+    /// 設定画面で選んだフォント（ファミリー名）。空ならテーマか既定のフォント
+    pub font: String,
     pub compact: bool,
     /// スクロールの速さ（既定に掛ける倍率）。マウスホイールとタッチパッドで別
     pub wheel_speed: f32,
@@ -170,6 +173,7 @@ impl Default for Settings {
             enabled_plugins: Vec::new(),
             zoom: 1.0,
             font_size: 16.0,
+            font: String::new(),
             compact: false,
             // 1ノッチ 100px（ブラウザ版 Discord と同じくらい）
             wheel_speed: 2.5,
@@ -419,9 +423,9 @@ pub fn fmt_time(ts: &str) -> String {
     let today = Local::now().date_naive();
     let d = t.date_naive();
     if d == today {
-        tr!("今日 {}", "Today at {}", t.format("%H:%M"))
+        tr!("今日 {}", "Today at {}", "今天 {}", t.format("%H:%M"))
     } else if today.pred_opt() == Some(d) {
-        tr!("昨日 {}", "Yesterday at {}", t.format("%H:%M"))
+        tr!("昨日 {}", "Yesterday at {}", "昨天 {}", t.format("%H:%M"))
     } else {
         t.format("%Y/%m/%d %H:%M").to_string()
     }
@@ -694,24 +698,23 @@ pub fn resolve_mentions<'a>(
                         .and_then(|l| l.iter().find(|c| c.id == id))
                         .or_else(|| channels.values().flatten().find(|c| c.id == id))
                         .and_then(|c| c.name.clone())
-                        .unwrap_or_else(|| tr!("不明なチャンネル", "Unknown channel").into())
+                        .unwrap_or_else(
+                            || tr!("不明なチャンネル", "Unknown channel", "未知频道").into()
+                        )
                 ),
                 '&' => format!(
                     "@{}",
-                    roles
-                        .iter()
-                        .find(|r| r.id == id)
-                        .map_or(tr!("不明なロール", "Unknown role"), |r| r
-                            .name
-                            .as_str())
+                    roles.iter().find(|r| r.id == id).map_or(
+                        tr!("不明なロール", "Unknown role", "未知身份组"),
+                        |r| r.name.as_str()
+                    )
                 ),
                 _ => format!(
                     "@{}",
-                    m.mentions
-                        .iter()
-                        .find(|u| u.id == id)
-                        .map_or(tr!("不明なユーザー", "Unknown user"), |u| u
-                            .display())
+                    m.mentions.iter().find(|u| u.id == id).map_or(
+                        tr!("不明なユーザー", "Unknown user", "未知用户"),
+                        |u| u.display()
+                    )
                 ),
             })
         });
@@ -895,12 +898,14 @@ impl MemberListCache {
                         .find(|g| &g.0 == id)
                         .map_or(*count, |g| g.1);
                     let name = match id.as_str() {
-                        "online" => tr!("オンライン", "Online"),
-                        "offline" => tr!("オフライン", "Offline"),
+                        "online" => tr!("オンライン", "Online", "在线"),
+                        "offline" => tr!("オフライン", "Offline", "离线"),
                         id => roles
                             .iter()
                             .find(|r| r.id == id)
-                            .map_or(tr!("メンバー", "Members"), |r| r.name.as_str()),
+                            .map_or(tr!("メンバー", "Members", "成员"), |r| {
+                                r.name.as_str()
+                            }),
                     };
                     out.height += MEMBER_HEAD_H;
                     out.rows
@@ -950,10 +955,10 @@ impl MemberListCache {
             };
             groups[index].push(i);
         }
-        let names = hoisted
-            .iter()
-            .map(|r| r.name.as_str())
-            .chain([tr!("オンライン", "Online"), tr!("オフライン", "Offline")]);
+        let names = hoisted.iter().map(|r| r.name.as_str()).chain([
+            tr!("オンライン", "Online", "在线"),
+            tr!("オフライン", "Offline", "离线"),
+        ]);
         let mut out = MemberListCache {
             gid: gid.to_string(),
             ver,
@@ -1011,7 +1016,7 @@ pub fn snowflake_date(id: &str) -> String {
     chrono::DateTime::from_timestamp_millis(ms as i64)
         .map(|t| {
             t.with_timezone(&Local)
-                .format(tr!("%Y年%-m月%-d日", "%b %-d, %Y"))
+                .format(tr!("%Y年%-m月%-d日", "%b %-d, %Y", "%Y年%-m月%-d日"))
                 .to_string()
         })
         .unwrap_or_default()
@@ -1741,6 +1746,7 @@ impl App {
             self.show_toast(&tr!(
                 "設定を保存できませんでした: {e}",
                 "Couldn't save settings: {e}",
+                "无法保存设置：{e}",
             ));
         }
     }
@@ -1975,7 +1981,8 @@ impl App {
             self.compose_notice = Some((
                 tr!(
                     "プラグインによる変換後の本文が文字数制限を超えました",
-                    "The message transformed by a plugin exceeds the character limit"
+                    "The message transformed by a plugin exceeds the character limit",
+                    "经插件转换后的正文超出字数限制"
                 )
                 .into(),
                 std::time::Instant::now(),
@@ -2109,7 +2116,8 @@ impl App {
                         } else {
                             Err(tr!(
                                 "翻訳中にプラグインが無効になりました",
-                                "The plugin was disabled while translating"
+                                "The plugin was disabled while translating",
+                                "翻译过程中插件被禁用"
                             )
                             .into())
                         };
@@ -2138,8 +2146,10 @@ impl App {
                                     .is_none_or(|b| b.cmd.send(cmd).is_err())
                                 {
                                     sub.failed = true;
-                                    sub.rejected =
-                                        Some(tr!("送信できませんでした", "Couldn't send").into());
+                                    sub.rejected = Some(
+                                        tr!("送信できませんでした", "Couldn't send", "无法发送")
+                                            .into(),
+                                    );
                                 }
                             }
                             Ok(_) => {
@@ -2147,7 +2157,8 @@ impl App {
                                 sub.rejected = Some(
                                     tr!(
                                         "翻訳結果が空か文字数制限を超えています",
-                                        "The translation is empty or exceeds the character limit"
+                                        "The translation is empty or exceeds the character limit",
+                                        "翻译结果为空或超出字数限制"
                                     )
                                     .into(),
                                 );
@@ -2317,7 +2328,7 @@ impl App {
                         if let Err(e) = save_token(self.profile.as_deref(), self.token_input.trim())
                         {
                             eprintln!("トークン保存失敗: {e}");
-                            self.status = tr!("エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。", "Error: Couldn't save your login on this PC. You'll need to log in again next time.").into();
+                            self.status = tr!("エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。", "Error: Couldn't save your login on this PC. You'll need to log in again next time.", "错误：无法在这台电脑上保存登录信息。下次需要重新登录。").into();
                         }
                     }
                     self.token_input.clear();
@@ -2332,7 +2343,8 @@ impl App {
                     self.login_error = Some(
                         tr!(
                             "ログイン情報が無効です。もう一度ログインしてください。",
-                            "Your login is no longer valid. Please log in again."
+                            "Your login is no longer valid. Please log in again.",
+                            "登录信息已失效。请重新登录。"
                         )
                         .into(),
                     );
@@ -2346,7 +2358,8 @@ impl App {
                     }
                     self.status = tr!(
                         "接続できませんでした。もう一度つないでいます…",
-                        "Couldn't connect. Reconnecting…"
+                        "Couldn't connect. Reconnecting…",
+                        "无法连接。正在重新连接…"
                     )
                     .into();
                     self.gateway_status = self.status.clone();
@@ -2359,7 +2372,8 @@ impl App {
                     self.login_error = Some(
                         tr!(
                             "接続できませんでした。通信状態を確認して、もう一度お試しください。",
-                            "Couldn't connect. Check your connection and try again."
+                            "Couldn't connect. Check your connection and try again.",
+                            "无法连接。请检查网络连接后重试。"
                         )
                         .into(),
                     );
@@ -2462,7 +2476,7 @@ impl App {
                                 }
                             }
                         } else {
-                            self.status = tr!("処理は完了しました。表示が更新されない場合は再読み込みしてください。", "Done. If the display doesn't update, please reload.").into();
+                            self.status = tr!("処理は完了しました。表示が更新されない場合は再読み込みしてください。", "Done. If the display doesn't update, please reload.", "处理已完成。如果显示没有更新，请重新加载。").into();
                         }
                     }
                 }
@@ -2734,27 +2748,41 @@ impl App {
                 }
                 Event::Error(s) => {
                     eprintln!("操作失敗: {s}");
-                    let action = if s.starts_with(tr!("サーバー一覧:", "Server list:")) {
-                        tr!(
-                            "サーバー一覧を取得できませんでした。",
-                            "Couldn't load the server list."
-                        )
-                    } else if s.starts_with(tr!("DM一覧:", "DM list:")) {
-                        tr!(
-                            "DM一覧を取得できませんでした。",
-                            "Couldn't load the DM list."
-                        )
-                    } else if s.starts_with(tr!("呼び出し失敗:", "Request failed:")) {
-                        tr!("呼び出しに失敗しました。", "The request failed.")
-                    } else {
-                        tr!(
-                            "操作を完了できませんでした。",
-                            "Couldn't complete the action."
-                        )
-                    };
+                    let action =
+                        if s.starts_with(tr!("サーバー一覧:", "Server list:", "服务器列表："))
+                        {
+                            tr!(
+                                "サーバー一覧を取得できませんでした。",
+                                "Couldn't load the server list.",
+                                "无法获取服务器列表。"
+                            )
+                        } else if s.starts_with(tr!("DM一覧:", "DM list:", "私信列表：")) {
+                            tr!(
+                                "DM一覧を取得できませんでした。",
+                                "Couldn't load the DM list.",
+                                "无法获取私信列表。"
+                            )
+                        } else if s.starts_with(tr!(
+                            "呼び出し失敗:",
+                            "Request failed:",
+                            "请求失败："
+                        )) {
+                            tr!(
+                                "呼び出しに失敗しました。",
+                                "The request failed.",
+                                "请求失败。"
+                            )
+                        } else {
+                            tr!(
+                                "操作を完了できませんでした。",
+                                "Couldn't complete the action.",
+                                "无法完成操作。"
+                            )
+                        };
                     self.status = tr!(
                         "エラー: {action}通信状態を確認して、もう一度お試しください。",
                         "Error: {action} Check your connection and try again.",
+                        "错误：{action}请检查网络连接后重试。",
                     );
                 }
                 Event::Profile { key, result } => {
@@ -2792,14 +2820,15 @@ impl App {
                                     c.clone(),
                                     tr!(
                                         "ボイスに接続できませんでした",
-                                        "Couldn't connect to voice"
+                                        "Couldn't connect to voice",
+                                        "无法连接语音"
                                     )
                                     .into(),
                                 ));
                             }
                             self.voice_status = None;
                             eprintln!("ボイス接続失敗: {e}");
-                            self.status = tr!("エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。", "Error: Couldn't connect to voice. Check your connection and audio settings.").into();
+                            self.status = tr!("エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。", "Error: Couldn't connect to voice. Check your connection and audio settings.", "错误：无法连接语音。请检查网络连接和音频设置。").into();
                         }
                         st => {
                             if matches!(st, VoiceStatus::Connected { .. }) {
@@ -3027,31 +3056,32 @@ impl App {
         let dropped = over.len() + skipped;
         if dropped > 0 {
             lines.push(match over.first() {
-                Some(name) if dropped > 1 => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」ほか{}件は追加していません。", "You can attach up to {MAX_UPLOADS} files per message. \"{name}\" and {} more were not added.", dropped - 1),
-                Some(name) => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」は追加していません。", "You can attach up to {MAX_UPLOADS} files per message. \"{name}\" was not added.",),
-                None => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。{dropped}件のファイルは追加していません。", "You can attach up to {MAX_UPLOADS} files per message. {dropped} files were not added.",),
+                Some(name) if dropped > 1 => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」ほか{}件は追加していません。", "You can attach up to {MAX_UPLOADS} files per message. \"{name}\" and {} more were not added.", "每条消息最多可附加 {MAX_UPLOADS} 个文件。“{name}”等 {} 个文件未添加。", dropped - 1),
+                Some(name) => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」は追加していません。", "You can attach up to {MAX_UPLOADS} files per message. \"{name}\" was not added.", "每条消息最多可附加 {MAX_UPLOADS} 个文件。“{name}”未添加。",),
+                None => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。{dropped}件のファイルは追加していません。", "You can attach up to {MAX_UPLOADS} files per message. {dropped} files were not added.", "每条消息最多可附加 {MAX_UPLOADS} 个文件。有 {dropped} 个文件未添加。",),
             });
         }
         if let Some((name, len)) = too_big.first() {
             let more = if too_big.len() > 1 {
-                tr!("ほか{}件", " and {} more", too_big.len() - 1)
+                tr!("ほか{}件", " and {} more", "等 {} 项", too_big.len() - 1)
             } else {
                 String::new()
             };
             lines.push(tr!(
                 "「{name}」（{}）{more}は大きすぎるため追加していません。1ファイル{}までです。",
                 "\"{name}\" ({}){more} is too large and was not added. The limit is {} per file.",
+                "“{name}”（{}）{more}过大，未添加。每个文件上限为 {}。",
                 fmt_size(*len),
                 fmt_size(hard)
             ));
         }
         if let (Some((name, len)), Some(s)) = (risky.first(), soft) {
             let more = if risky.len() > 1 {
-                tr!("ほか{}件", " and {} more", risky.len() - 1)
+                tr!("ほか{}件", " and {} more", "等 {} 项", risky.len() - 1)
             } else {
                 String::new()
             };
-            lines.push(tr!("「{name}」（{}）{more}はアカウントの上限 {} を超えています。サーバーのブーストが足りないと送信できません。", "\"{name}\" ({}){more} exceeds your account's limit of {}. It can't be sent without enough server boosts.", fmt_size(*len), fmt_size(s)));
+            lines.push(tr!("「{name}」（{}）{more}はアカウントの上限 {} を超えています。サーバーのブーストが足りないと送信できません。", "\"{name}\" ({}){more} exceeds your account's limit of {}. It can't be sent without enough server boosts.", "“{name}”（{}）{more}超出了你账号的上限 {}。服务器助力不足时无法发送。", fmt_size(*len), fmt_size(s)));
         }
         if lines.is_empty() {
             return;
@@ -3092,7 +3122,8 @@ impl App {
             self.pending_poll_votes.remove(&key);
             self.show_toast(tr!(
                 "投票結果を更新できませんでした。再接続してください",
-                "Couldn't update poll results. Please reconnect"
+                "Couldn't update poll results. Please reconnect",
+                "无法更新投票结果。请重新连接"
             ));
             self.bump_msgs();
         }
@@ -3151,7 +3182,7 @@ impl App {
             match result {
                 Ok(_) => {
                     self.poll_draft = None;
-                    self.show_toast(tr!("投票を作成しました", "Poll created"));
+                    self.show_toast(tr!("投票を作成しました", "Poll created", "已创建投票"));
                 }
                 Err(e) => {
                     if let Some(d) = self.poll_draft.as_mut() {
@@ -3159,6 +3190,7 @@ impl App {
                         d.error = Some(tr!(
                             "投票を作成できませんでした: {e}",
                             "Couldn't create the poll: {e}",
+                            "无法创建投票：{e}",
                         ));
                     }
                 }
@@ -3206,7 +3238,11 @@ impl App {
                 if let Err(e) = result {
                     self.pending_poll_votes.remove(&(channel_id, message_id));
                     eprintln!("投票を終了できませんでした: {e}");
-                    self.show_toast(tr!("投票を終了できませんでした", "Couldn't end the poll"));
+                    self.show_toast(tr!(
+                        "投票を終了できませんでした",
+                        "Couldn't end the poll",
+                        "无法结束投票"
+                    ));
                     self.bump_msgs();
                 } else {
                     self.refresh_poll(channel_id, message_id);
@@ -3221,7 +3257,7 @@ impl App {
                 if let Err(e) = result {
                     self.pending_poll_votes.remove(&(channel_id, message_id));
                     eprintln!("投票できませんでした: {e}");
-                    self.show_toast(tr!("投票できませんでした", "Couldn't vote"));
+                    self.show_toast(tr!("投票できませんでした", "Couldn't vote", "无法投票"));
                 } else {
                     self.refresh_poll(channel_id, message_id);
                 }
@@ -3251,7 +3287,8 @@ impl App {
                         } else {
                             self.show_toast(tr!(
                                 "投票結果を更新できませんでした",
-                                "Couldn't update poll results"
+                                "Couldn't update poll results",
+                                "无法更新投票结果"
                             ));
                         }
                     }
@@ -3259,7 +3296,8 @@ impl App {
                         eprintln!("投票結果を更新できませんでした: {e}");
                         self.show_toast(tr!(
                             "投票結果を更新できませんでした",
-                            "Couldn't update poll results"
+                            "Couldn't update poll results",
+                            "无法更新投票结果"
                         ));
                     }
                 }
@@ -3275,7 +3313,8 @@ impl App {
                     }
                     self.show_toast(tr!(
                         "リアクションできませんでした",
-                        "Couldn't add the reaction"
+                        "Couldn't add the reaction",
+                        "无法添加反应"
                     ));
                 }
                 return;
@@ -3288,24 +3327,32 @@ impl App {
                 let what = match &call {
                     A::CreateInvite { .. } => tr!(
                         "招待リンクを作れませんでした",
-                        "Couldn't create an invite link"
+                        "Couldn't create an invite link",
+                        "无法创建邀请链接"
                     ),
                     A::LeaveGuild(_) => tr!(
                         "サーバーから脱退できませんでした",
-                        "Couldn't leave the server"
+                        "Couldn't leave the server",
+                        "无法退出服务器"
                     ),
                     A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => {
                         tr!(
                             "通知設定を変えられませんでした",
-                            "Couldn't change notification settings"
+                            "Couldn't change notification settings",
+                            "无法更改通知设置"
                         )
                     }
                     A::AckGuild(_) | A::AckBulk(_) => {
-                        tr!("既読にできませんでした", "Couldn't mark as read")
+                        tr!(
+                            "既読にできませんでした",
+                            "Couldn't mark as read",
+                            "无法标为已读"
+                        )
                     }
                     _ => tr!(
                         "Discord への操作に失敗しました",
-                        "The Discord request failed"
+                        "The Discord request failed",
+                        "对 Discord 的操作失败"
                     ),
                 };
                 eprintln!("{what}: {call:?}: {e}");
@@ -3317,7 +3364,11 @@ impl App {
             A::CreateInvite { .. } => {
                 if let Some(code) = v["code"].as_str() {
                     self.clipboard_out = Some(format!("https://discord.gg/{code}"));
-                    self.show_toast(tr!("招待リンクをコピーしました", "Invite link copied"));
+                    self.show_toast(tr!(
+                        "招待リンクをコピーしました",
+                        "Invite link copied",
+                        "已复制邀请链接"
+                    ));
                 }
             }
             A::LeaveGuild(gid) => self.remove_guild(&gid),
@@ -3348,21 +3399,28 @@ impl App {
         let error = if question.is_empty() || question.chars().count() > 300 {
             Some(tr!(
                 "質問は1〜300文字で入力してください",
-                "Enter a question of 1–300 characters"
+                "Enter a question of 1–300 characters",
+                "请输入 1–300 个字符的问题"
             ))
         } else if !(2..=10).contains(&answers.len())
             || answers.iter().any(|s| s.chars().count() > 55)
         {
             Some(tr!(
                 "選択肢は1行につき55文字以内で2〜10個入力してください",
-                "Enter 2–10 answers, one per line, up to 55 characters each"
+                "Enter 2–10 answers, one per line, up to 55 characters each",
+                "请输入 2–10 个选项，每行一个，每个不超过 55 个字符"
             ))
         } else if ![1, 4, 8, 24, 72, 168].contains(&draft.duration) {
-            Some(tr!("投票期間を選択してください", "Choose a poll duration"))
+            Some(tr!(
+                "投票期間を選択してください",
+                "Choose a poll duration",
+                "请选择投票期限"
+            ))
         } else if self.sel_channel.as_deref() != Some(draft.channel_id.as_str()) {
             Some(tr!(
                 "投票を作成したチャンネルに戻ってください",
-                "Go back to the channel where you created the poll"
+                "Go back to the channel where you created the poll",
+                "请返回创建投票的频道"
             ))
         } else if self
             .channel_perms(self.sel_guild.as_deref(), &draft.channel_id)
@@ -3370,7 +3428,8 @@ impl App {
         {
             Some(tr!(
                 "このチャンネルで投票を作成する権限がありません",
-                "You don't have permission to create polls in this channel"
+                "You don't have permission to create polls in this channel",
+                "你没有在此频道创建投票的权限"
             ))
         } else {
             None
@@ -3403,7 +3462,8 @@ impl App {
             draft.error = Some(
                 tr!(
                     "接続できません。再接続してからお試しください",
-                    "Not connected. Reconnect and try again"
+                    "Not connected. Reconnect and try again",
+                    "未连接。请重新连接后重试"
                 )
                 .into(),
             );
@@ -3443,7 +3503,7 @@ impl App {
                 .is_ok()
         });
         if !sent {
-            self.show_toast(tr!("接続していません", "Not connected"));
+            self.show_toast(tr!("接続していません", "Not connected", "未连接"));
             return;
         }
         self.pending_poll_votes.insert(key);
@@ -3487,7 +3547,7 @@ impl App {
                 .is_ok()
         });
         if !sent {
-            self.show_toast(tr!("接続していません", "Not connected"));
+            self.show_toast(tr!("接続していません", "Not connected", "未连接"));
             return;
         }
         self.pending_poll_votes.insert(key);
@@ -3957,7 +4017,7 @@ impl App {
         self.remove_guild_from_folder(guild_id);
         self.settings.guild_folders.push(GuildFolder {
             id: id.clone(),
-            name: tr!("フォルダ", "Folder").into(),
+            name: tr!("フォルダ", "Folder", "文件夹").into(),
             guild_ids: vec![guild_id.into()],
             ..Default::default()
         });
@@ -4201,8 +4261,13 @@ impl App {
             (false, false) => tr!(
                 "{author}（#{channel}・{guild}）",
                 "{author} (#{channel} · {guild})",
+                "{author}（#{channel} · {guild}）",
             ),
-            (true, false) => tr!("{author}（{guild}）", "{author} ({guild})",),
+            (true, false) => tr!(
+                "{author}（{guild}）",
+                "{author} ({guild})",
+                "{author}（{guild}）",
+            ),
             _ => author,
         };
         let roles = self.roles.get(gid).map(Vec::as_slice).unwrap_or_default();
@@ -4210,13 +4275,18 @@ impl App {
             crate::notify::excerpt(&resolve_mentions(&m.content, m, &self.channels, roles), 200);
         if body.is_empty() {
             body = if m.is_call() {
-                tr!("通話を開始しました", "Started a call").into()
+                tr!("通話を開始しました", "Started a call", "发起了通话").into()
             } else if !m.attachments.is_empty() {
-                tr!("添付ファイルを送信しました", "Sent an attachment").into()
+                tr!(
+                    "添付ファイルを送信しました",
+                    "Sent an attachment",
+                    "发送了附件"
+                )
+                .into()
             } else if !m.sticker_items.is_empty() {
-                tr!("スタンプを送信しました", "Sent a sticker").into()
+                tr!("スタンプを送信しました", "Sent a sticker", "发送了贴纸").into()
             } else {
-                tr!("新しいメッセージ", "New message").into()
+                tr!("新しいメッセージ", "New message", "新消息").into()
             };
         }
         crate::notify::show(
@@ -4267,7 +4337,8 @@ impl App {
             self.ensure_guild_channels(gid);
             self.show_toast(tr!(
                 "チャンネルを読み込み中です。少し待ってからもう一度お試しください",
-                "The channel is still loading. Wait a moment and try again"
+                "The channel is still loading. Wait a moment and try again",
+                "频道仍在加载。请稍候再试"
             ));
             return;
         };
@@ -4295,7 +4366,7 @@ impl App {
                 if !paths.is_empty() {
                     if self.sel_channel.as_ref() != Some(&channel_id) {
                         self.status =
-                            tr!("選択したファイルは元のチャンネルに戻ると添付されます。", "The selected files will be attached when you return to the original channel.").into();
+                            tr!("選択したファイルは元のチャンネルに戻ると添付されます。", "The selected files will be attached when you return to the original channel.", "所选文件将在返回原频道后附加。").into();
                     }
                     self.picked_files = Some((channel_id, paths));
                 }
@@ -4310,7 +4381,8 @@ impl App {
         if self.file_pick.is_some() || self.picked_files.is_some() {
             self.status = tr!(
                 "先に開いたファイル選択を完了し、元のチャンネルで確認してください。",
-                "Finish the file picker you opened first, then check it in the original channel."
+                "Finish the file picker you opened first, then check it in the original channel.",
+                "请先完成之前打开的文件选择，然后在原频道确认。"
             )
             .into();
             return;
@@ -4320,7 +4392,7 @@ impl App {
                 channel_id,
                 spawn_file_dialog(
                     &self.waker,
-                    tr!("ファイルをアップロード", "Upload a file"),
+                    tr!("ファイルをアップロード", "Upload a file", "上传文件"),
                     true,
                     None,
                 ),
@@ -4355,8 +4427,11 @@ impl App {
                 // ファイルの背景は毎回読み直す（同じ名前のまま描き変えても反映させる）
                 images::forget(uri);
                 if let Err(e) = std::fs::metadata(path) {
-                    self.theme_error =
-                        Some(tr!("背景画像 {path}: {e}", "Background image {path}: {e}",));
+                    self.theme_error = Some(tr!(
+                        "背景画像 {path}: {e}",
+                        "Background image {path}: {e}",
+                        "背景图片 {path}：{e}",
+                    ));
                 }
             }
         }
@@ -4638,7 +4713,8 @@ impl App {
                     self.login_error = Some(
                         tr!(
                             "ログインできませんでした。もう一度お試しください。",
-                            "Couldn't log in. Please try again."
+                            "Couldn't log in. Please try again.",
+                            "无法登录。请重试。"
                         )
                         .into(),
                     );
@@ -4920,7 +4996,7 @@ impl App {
                     .find(|x| x.id == g)
                     .map(|x| x.name.clone());
                 (
-                    ch.unwrap_or_else(|| tr!("ボイス", "Voice").into()),
+                    ch.unwrap_or_else(|| tr!("ボイス", "Voice", "语音").into()),
                     gn.unwrap_or_default(),
                 )
             }
@@ -4931,7 +5007,10 @@ impl App {
                     .find(|c| c.id == channel_id)
                     .map(|c| c.dm_label())
                     .unwrap_or_default();
-                (n, tr!("ダイレクトメッセージ", "Direct Messages").into())
+                (
+                    n,
+                    tr!("ダイレクトメッセージ", "Direct Messages", "私信").into(),
+                )
             }
         }
     }
@@ -5076,7 +5155,8 @@ impl App {
         else {
             self.show_toast(tr!(
                 "配信を見るには、そのボイスチャンネルに接続してください",
-                "To watch a stream, join that voice channel"
+                "To watch a stream, join that voice channel",
+                "要观看直播，请连接该语音频道"
             ));
             return;
         };
@@ -5352,18 +5432,24 @@ impl ProfileDraft {
 }
 
 pub fn make_avatar(path: &std::path::Path) -> Result<AvatarEdit, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| tr!("画像を読めません: {e}", "Couldn't read the image: {e}",))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        tr!(
+            "画像を読めません: {e}",
+            "Couldn't read the image: {e}",
+            "无法读取图片：{e}",
+        )
+    })?;
     let img = image::load_from_memory(&bytes).map_err(|_| {
         tr!(
             "画像として読み込めませんでした（PNG・JPEG・GIF・WebP が使えます）",
-            "Couldn't load it as an image (PNG, JPEG, GIF and WebP are supported)"
+            "Couldn't load it as an image (PNG, JPEG, GIF and WebP are supported)",
+            "无法作为图片加载（支持 PNG、JPEG、GIF 和 WebP）"
         )
         .to_string()
     })?;
     let s = img.width().min(img.height());
     if s == 0 {
-        return Err(tr!("画像が空です", "The image is empty").into());
+        return Err(tr!("画像が空です", "The image is empty", "图片为空").into());
     }
     let mut sq = img.crop_imm((img.width() - s) / 2, (img.height() - s) / 2, s, s);
     if s > AVATAR_SIZE {
@@ -5381,6 +5467,7 @@ pub fn make_avatar(path: &std::path::Path) -> Result<AvatarEdit, String> {
             tr!(
                 "画像を変換できませんでした: {e}",
                 "Couldn't convert the image: {e}",
+                "无法转换图片：{e}",
             )
         })?;
     let tex = images::render_image(rgba);

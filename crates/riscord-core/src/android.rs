@@ -139,18 +139,15 @@ mod tests {
     }
 }
 
-/// 端末の言語に合わせる（コアから画面に出す文言の言語）
+/// 端末の言語に合わせる（コアから画面に出す文言の言語）。"ja" / "en" / "zh" 以外は英語
 #[no_mangle]
-pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_setEnglish(
-    _env: JNIEnv,
+pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_setLanguage(
+    mut env: JNIEnv,
     _obj: JObject,
-    english: jni::sys::jboolean,
+    code: JString,
 ) {
-    crate::i18n::set_setting(if english != 0 {
-        crate::i18n::EN
-    } else {
-        crate::i18n::JA
-    });
+    let code: String = env.get_string(&code).map(Into::into).unwrap_or_default();
+    crate::i18n::set_setting(crate::i18n::parse_setting(&code).unwrap_or(crate::i18n::EN));
 }
 
 #[cfg(target_os = "android")]

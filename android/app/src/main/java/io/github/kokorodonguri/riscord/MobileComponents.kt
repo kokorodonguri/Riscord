@@ -70,7 +70,7 @@ private val vectors=mutableMapOf<Glyph,ImageVector>()
 /** URL を外部アプリで開く。開けるアプリがなければ知らせるだけにする */
 internal fun openUrl(context:android.content.Context,url:String) {
     try { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,android.net.Uri.parse(url))) }
-    catch(_:android.content.ActivityNotFoundException) { android.widget.Toast.makeText(context,tr("開けるアプリがありません","No app can open this"),android.widget.Toast.LENGTH_SHORT).show() }
+    catch(_:android.content.ActivityNotFoundException) { android.widget.Toast.makeText(context,tr("開けるアプリがありません","No app can open this","没有可以打开的应用"),android.widget.Toast.LENGTH_SHORT).show() }
 }
 internal fun JSONObject.nonNull(key:String):String? = optString(key).takeIf {it.isNotBlank()&&it!="null"}
 internal fun channelUser(channel:JSONObject):JSONObject = channel.optJSONArray("recipients")?.optJSONObject(0) ?: channel
@@ -103,7 +103,7 @@ internal fun messageDay(message:JSONObject):LocalDate?=messageInstant(message)?.
 internal fun messageTime(message:JSONObject):String=messageInstant(message)?.atZone(ZoneId.systemDefault())?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: ""
 internal fun messageDate(message:JSONObject):String {
     val date=messageDay(message) ?: return ""
-    return when(date) {LocalDate.now()->tr("今日","Today");LocalDate.now().minusDays(1)->tr("昨日","Yesterday");else->date.format(if(isEnglish) DateTimeFormatter.ofPattern("MMM d, yyyy",java.util.Locale.ENGLISH) else DateTimeFormatter.ofPattern("yyyy年M月d日"))}
+    return when(date) {LocalDate.now()->tr("今日","Today","今天");LocalDate.now().minusDays(1)->tr("昨日","Yesterday","昨天");else->date.format(if(isEnglish) DateTimeFormatter.ofPattern("MMM d, yyyy",java.util.Locale.ENGLISH) else DateTimeFormatter.ofPattern("yyyy年M月d日"))/* 日本語と中国語は同じ書き方 */}
 }
 internal fun dmTime(channel:JSONObject):String {
     val snowflake=channel.optString("last_message_id").toLongOrNull() ?: return ""

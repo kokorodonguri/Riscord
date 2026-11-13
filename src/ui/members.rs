@@ -295,9 +295,13 @@ impl Root {
         }
         info = info
             .child(
-                medium(tr!("メンバー登録日", "Member Since"), 12.0, MUTED())
-                    .mt(z(14.0))
-                    .part(Part::ProfileMuted),
+                medium(
+                    tr!("メンバー登録日", "Member Since", "成员加入时间"),
+                    12.0,
+                    MUTED(),
+                )
+                .mt(z(14.0))
+                .part(Part::ProfileMuted),
             )
             .child(text(snowflake_date(&u.id), 14.0, TEXT()).part(Part::ProfileText));
         let u2 = u.clone();
@@ -319,7 +323,11 @@ impl Root {
                 div().p(z(16.0)).child(
                     fill_button_part(
                         "dm_full_profile",
-                        tr!("プロフィール全体を表示", "View Full Profile"),
+                        tr!(
+                            "プロフィール全体を表示",
+                            "View Full Profile",
+                            "查看完整资料"
+                        ),
                         RAIL(),
                         WHITE(),
                         true,

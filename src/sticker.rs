@@ -83,7 +83,7 @@ fn from_anim(frames: image::Frames<'_>) -> Result<Frames> {
         out.push((img.into_raw(), ms));
     }
     if out.is_empty() {
-        bail!("{}", tr!("コマがありません", "No frames",));
+        bail!("{}", tr!("コマがありません", "No frames", "没有帧",));
     }
     Ok(Frames { size, frames: out })
 }
@@ -179,7 +179,7 @@ fn decode_lottie(bytes: &[u8]) -> Result<Frames> {
         f += step;
     }
     if frames.is_empty() {
-        bail!("{}", tr!("コマがありません", "No frames",));
+        bail!("{}", tr!("コマがありません", "No frames", "没有帧",));
     }
     Ok(Frames {
         size: [w as usize, h as usize],

@@ -77,19 +77,22 @@ impl App {
         let Some((guild_id, channel_id)) = self.soundboard_voice() else {
             return Some(tr!(
                 "ボイスチャンネルに接続していません",
-                "Not connected to a voice channel"
+                "Not connected to a voice channel",
+                "未连接语音频道"
             ));
         };
         let Some(guild_id) = guild_id else {
             return Some(tr!(
                 "サウンドボードはサーバーのボイスチャンネルで使えます",
-                "The soundboard works in server voice channels"
+                "The soundboard works in server voice channels",
+                "音效板可在服务器的语音频道中使用"
             ));
         };
         if self.settings.self_mute || self.settings.self_deaf {
             return Some(tr!(
                 "ミュート中はサウンドボードを使えません",
-                "You can't use the soundboard while muted"
+                "You can't use the soundboard while muted",
+                "静音时无法使用音效板"
             ));
         }
         if self
@@ -98,7 +101,8 @@ impl App {
         {
             return Some(tr!(
                 "このチャンネルでサウンドボードを使う権限がありません",
-                "You don't have permission to use the soundboard in this channel"
+                "You don't have permission to use the soundboard in this channel",
+                "你没有在此频道使用音效板的权限"
             ));
         }
         None
@@ -125,7 +129,8 @@ impl App {
             sb.error = Some(
                 tr!(
                     "読み込めませんでした。再接続してください",
-                    "Couldn't load. Please reconnect"
+                    "Couldn't load. Please reconnect",
+                    "无法加载。请重新连接"
                 )
                 .into(),
             );
@@ -170,7 +175,8 @@ impl App {
                 sb.error = Some(
                     tr!(
                         "送信できませんでした。再接続してください",
-                        "Couldn't send. Please reconnect"
+                        "Couldn't send. Please reconnect",
+                        "无法发送。请重新连接"
                     )
                     .into(),
                 )
@@ -204,7 +210,7 @@ impl App {
                 Err(e) => {
                     sb.error = Some(super::pins::api_error_text(
                         &e,
-                        tr!("鳴らせませんでした", "Couldn't play it"),
+                        tr!("鳴らせませんでした", "Couldn't play it", "无法播放"),
                     ))
                 }
             }
@@ -222,7 +228,8 @@ impl App {
             sb.error = Some(
                 tr!(
                     "サウンドの一覧を読み込めませんでした",
-                    "Couldn't load the sounds"
+                    "Couldn't load the sounds",
+                    "无法加载音效列表"
                 )
                 .into(),
             );

@@ -7,14 +7,15 @@ import org.json.JSONObject
 object NativeBridge {
     init { System.loadLibrary("riscord_core") }
     external fun initialize(context: android.content.Context)
-    external fun setEnglish(english: Boolean)
+    /** コアが画面に出す文言の言語（"ja" / "en" / "zh"） */
+    external fun setLanguage(code: String)
     external fun create(): Long
     external fun destroy(id: Long)
     external fun call(id: Long, input: String): String
     suspend fun request(id: Long, input: JSONObject): Any? = withContext(Dispatchers.IO) {
         val result = JSONObject(call(id, input.toString()))
         if (!result.getBoolean("ok")) {
-            val message = result.optString("error", tr("通信に失敗しました","Network request failed"))
+            val message = result.optString("error", tr("通信に失敗しました","Network request failed","网络请求失败"))
             throw if (result.optBoolean("auth")) AuthExpiredException(message) else IllegalStateException(message)
         }
         result.opt("data")

@@ -192,7 +192,12 @@ mod platform {
             waker: Waker,
         ) -> Result<Self, String> {
             if !(url.starts_with("https://") || url.starts_with("http://")) {
-                return Err(tr!("対応していない動画 URL です", "Unsupported video URL").into());
+                return Err(tr!(
+                    "対応していない動画 URL です",
+                    "Unsupported video URL",
+                    "不支持的视频 URL"
+                )
+                .into());
             }
             Self::new_inner(channel, url, width, height, waker)
         }
@@ -207,6 +212,7 @@ mod platform {
                 tr!(
                     "動画再生を初期化できません: {e}",
                     "Can't initialize video playback: {e}",
+                    "无法初始化视频播放：{e}",
                 )
             })?;
             let (width, height) = dimensions(width, height);
@@ -241,6 +247,7 @@ mod platform {
                     tr!(
                         "動画プレイヤーを作れません: {e}",
                         "Can't create the video player: {e}",
+                        "无法创建视频播放器：{e}",
                     )
                 })?;
             #[cfg(test)]
@@ -250,9 +257,13 @@ mod platform {
                     .build()
                     .expect("fakesink"),
             );
-            pipeline
-                .set_state(gst::State::Playing)
-                .map_err(|e| tr!("動画を再生できません: {e}", "Can't play the video: {e}",))?;
+            pipeline.set_state(gst::State::Playing).map_err(|e| {
+                tr!(
+                    "動画を再生できません: {e}",
+                    "Can't play the video: {e}",
+                    "无法播放视频：{e}",
+                )
+            })?;
             Ok(Self {
                 channel,
                 url,
@@ -279,6 +290,7 @@ mod platform {
                             self.error = Some(tr!(
                                 "動画を再生できません: {}",
                                 "Can't play the video: {}",
+                                "无法播放视频：{}",
                                 e.error()
                             ));
                             self.paused = true;
@@ -307,7 +319,12 @@ mod platform {
                     .is_err()
                 {
                     self.error = Some(
-                        tr!("動画を先頭に戻せませんでした", "Couldn't rewind the video").into(),
+                        tr!(
+                            "動画を先頭に戻せませんでした",
+                            "Couldn't rewind the video",
+                            "无法将视频倒回开头"
+                        )
+                        .into(),
                     );
                     return;
                 }
@@ -326,7 +343,8 @@ mod platform {
                 self.error = Some(
                     tr!(
                         "動画の再生状態を変更できませんでした",
-                        "Couldn't change the video's playback state"
+                        "Couldn't change the video's playback state",
+                        "无法更改视频的播放状态"
                     )
                     .into(),
                 );
@@ -515,7 +533,8 @@ mod platform {
         pub fn new(_: String, _: String, _: u32, _: u32, _: Waker) -> Result<Self, String> {
             Err(tr!(
                 "この OS では動画の埋め込み再生に対応していません",
-                "Embedded video playback isn't supported on this OS"
+                "Embedded video playback isn't supported on this OS",
+                "此操作系统不支持内嵌播放视频"
             )
             .into())
         }

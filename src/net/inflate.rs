@@ -36,6 +36,7 @@ impl Inflater {
                 tr!(
                     "圧縮ゲートウェイメッセージが上限を超えました",
                     "Compressed gateway message exceeded the limit",
+                    "压缩的网关消息超出上限",
                 )
             );
         }
@@ -77,6 +78,7 @@ impl Inflater {
                     tr!(
                         "展開済みゲートウェイメッセージが上限を超えました",
                         "Decompressed gateway message exceeded the limit",
+                        "解压后的网关消息超出上限",
                     )
                 );
             }
@@ -90,6 +92,7 @@ impl Inflater {
                     tr!(
                         "zlib-stream の展開が進みません",
                         "zlib-stream decompression is stuck",
+                        "zlib-stream 解压停滞",
                     )
                 );
             }

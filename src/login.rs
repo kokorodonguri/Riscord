@@ -98,7 +98,8 @@ pub fn start_qr(ctx: &Waker) -> (Receiver<LoginEvent>, Arc<AtomicBool>) {
                 tx.send(LoginEvent::QrEnded(
                     tr!(
                         "QR コードを用意できませんでした。通信状態を確認して、作り直してください。",
-                        "Couldn't prepare the QR code. Check your connection and regenerate it."
+                        "Couldn't prepare the QR code. Check your connection and regenerate it.",
+                        "无法准备二维码。请检查网络连接后重新生成。"
                     )
                     .into(),
                 ));
@@ -145,7 +146,8 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
                 tx.send(LoginEvent::QrEnded(
                     tr!(
                         "QR コードの期限が切れました。作り直してください。",
-                        "The QR code has expired. Please regenerate it."
+                        "The QR code has expired. Please regenerate it.",
+                        "二维码已过期。请重新生成。"
                     )
                     .into(),
                 ));
@@ -161,7 +163,11 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
                     if ms == 0 {
                         return Err(anyhow!(
                             "{}",
-                            tr!("無効な heartbeat interval", "Invalid heartbeat interval",)
+                            tr!(
+                                "無効な heartbeat interval",
+                                "Invalid heartbeat interval",
+                                "无效的 heartbeat interval",
+                            )
                         ));
                     }
                     heartbeat = tokio::time::interval(Duration::from_millis(ms));
@@ -176,11 +182,9 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
                     .await?;
             }
             "nonce_proof" => {
-                let nonce = decrypt(
-                    v["encrypted_nonce"]
-                        .as_str()
-                        .ok_or_else(|| anyhow!("{}", tr!("nonce がない", "Missing nonce",)))?,
-                )?;
+                let nonce = decrypt(v["encrypted_nonce"].as_str().ok_or_else(|| {
+                    anyhow!("{}", tr!("nonce がない", "Missing nonce", "缺少 nonce",))
+                })?)?;
                 let proof = URL_SAFE_NO_PAD.encode(Sha256::digest(&nonce));
                 write
                     .send(WsMsg::Text(
@@ -192,7 +196,14 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
             }
             "pending_remote_init" => {
                 let fp = v["fingerprint"].as_str().ok_or_else(|| {
-                    anyhow!("{}", tr!("fingerprint がない", "Missing fingerprint",))
+                    anyhow!(
+                        "{}",
+                        tr!(
+                            "fingerprint がない",
+                            "Missing fingerprint",
+                            "缺少 fingerprint",
+                        )
+                    )
                 })?;
                 if !tx.send(LoginEvent::QrUrl(format!("https://discord.com/ra/{fp}"))) {
                     return Ok(());
@@ -218,9 +229,9 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
                 });
             }
             "pending_login" => {
-                let ticket = v["ticket"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("{}", tr!("ticket がない", "Missing ticket",)))?;
+                let ticket = v["ticket"].as_str().ok_or_else(|| {
+                    anyhow!("{}", tr!("ticket がない", "Missing ticket", "缺少 ticket",))
+                })?;
                 let r: Value = http()
                     .post(format!("{API}/users/@me/remote-auth/login"))
                     .json(&json!({ "ticket": ticket }))
@@ -229,11 +240,10 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
                     .error_for_status()?
                     .json()
                     .await?;
-                let token = String::from_utf8(decrypt(
-                    r["encrypted_token"]
-                        .as_str()
-                        .ok_or_else(|| anyhow!("{}", tr!("token がない", "Missing token",)))?,
-                )?)?;
+                let token =
+                    String::from_utf8(decrypt(r["encrypted_token"].as_str().ok_or_else(
+                        || anyhow!("{}", tr!("token がない", "Missing token", "缺少 token",)),
+                    )?)?)?;
                 tx.send(LoginEvent::Token(token));
                 return Ok(());
             }
@@ -245,7 +255,7 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
             }
             "cancel" => {
                 tx.send(LoginEvent::QrEnded(
-                    tr!("スマホでログインが取り消されました。もう一度読み取るには作り直してください。", "Login was canceled on your phone. Regenerate the code to scan again.")
+                    tr!("スマホでログインが取り消されました。もう一度読み取るには作り直してください。", "Login was canceled on your phone. Regenerate the code to scan again.", "已在手机上取消登录。要再次扫描，请重新生成二维码。")
                         .into(),
                 ));
                 return Ok(());
@@ -276,12 +286,12 @@ pub fn password(ctx: &Waker, login: String, password: String) -> Receiver<LoginE
                 (Some(t), _) => LoginEvent::Token(t.to_string()),
                 (None, Some(ticket)) if v["mfa"].as_bool() == Some(true) => {
                     if v["totp"].as_bool() == Some(false) {
-                        LoginEvent::Error(tr!("このアカウントの二段階認証（SMS・セキュリティキー）には対応していません。QR コードでログインしてください。", "Two-factor authentication by SMS or security key isn't supported for this account. Please log in with the QR code.").into())
+                        LoginEvent::Error(tr!("このアカウントの二段階認証（SMS・セキュリティキー）には対応していません。QR コードでログインしてください。", "Two-factor authentication by SMS or security key isn't supported for this account. Please log in with the QR code.", "不支持此账号的两步验证（短信、安全密钥）。请使用二维码登录。").into())
                     } else {
                         LoginEvent::Mfa { ticket: ticket.to_string() }
                     }
                 }
-                _ => LoginEvent::Error(tr!("ログインできませんでした。QR コードでのログインを試してください。", "Couldn't log in. Try logging in with the QR code.").into()),
+                _ => LoginEvent::Error(tr!("ログインできませんでした。QR コードでのログインを試してください。", "Couldn't log in. Try logging in with the QR code.", "无法登录。请尝试用二维码登录。").into()),
             },
             Err(e) => LoginEvent::Error(e),
         });
@@ -302,7 +312,8 @@ pub fn mfa(ctx: &Waker, ticket: String, code: String) -> Receiver<LoginEvent> {
                 None => LoginEvent::Error(
                     tr!(
                         "ログインできませんでした。最初からやり直してください。",
-                        "Couldn't log in. Please start over."
+                        "Couldn't log in. Please start over.",
+                        "无法登录。请从头开始。"
                     )
                     .into(),
                 ),
@@ -318,7 +329,8 @@ async fn post(url: &str, body: &Value) -> std::result::Result<Value, String> {
         eprintln!("ログイン通信失敗: {e:#}");
         tr!(
             "Discord に接続できませんでした。通信状態を確認してください。",
-            "Couldn't connect to Discord. Check your connection."
+            "Couldn't connect to Discord. Check your connection.",
+            "无法连接到 Discord。请检查网络连接。"
         )
         .to_string()
     })?;
@@ -336,11 +348,12 @@ pub fn login_error_text(status: u16, v: &Value) -> String {
     let raw = v.to_string();
     let code = v["code"].as_u64().unwrap_or(0);
     if v.get("captcha_key").is_some() || raw.contains("captcha") {
-        tr!("Discord が確認（CAPTCHA）を求めています。Riscord では表示できないため、QR コードでログインしてください。", "Discord is asking for verification (CAPTCHA). Riscord can't show it, so please log in with the QR code.").into()
+        tr!("Discord が確認（CAPTCHA）を求めています。Riscord では表示できないため、QR コードでログインしてください。", "Discord is asking for verification (CAPTCHA). Riscord can't show it, so please log in with the QR code.", "Discord 要求验证（CAPTCHA）。Riscord 无法显示，请使用二维码登录。").into()
     } else if status == 429 {
         tr!(
             "試行回数が多すぎます。しばらく待ってからもう一度お試しください。",
-            "Too many attempts. Wait a while and try again."
+            "Too many attempts. Wait a while and try again.",
+            "尝试次数过多。请稍后再试。"
         )
         .into()
     } else if raw.contains("INVALID_LOGIN")
@@ -349,29 +362,38 @@ pub fn login_error_text(status: u16, v: &Value) -> String {
     {
         tr!(
             "メールアドレスまたはパスワードが違います。",
-            "Incorrect email address or password."
+            "Incorrect email address or password.",
+            "邮箱或密码错误。"
         )
         .into()
     } else if code == 60008 || raw.contains("INVALID_MFA") {
-        tr!("認証コードが違います。", "Incorrect authentication code.").into()
+        tr!(
+            "認証コードが違います。",
+            "Incorrect authentication code.",
+            "验证码错误。"
+        )
+        .into()
     } else if code == 60006 || raw.contains("ticket") {
         tr!(
             "時間が経ちすぎました。最初からログインし直してください。",
-            "Too much time has passed. Please log in again from the start."
+            "Too much time has passed. Please log in again from the start.",
+            "时间过长。请从头重新登录。"
         )
         .into()
     } else if raw.contains("VERIFICATION") || raw.contains("NEW_LOGIN_LOCATION") || code == 70007 {
-        tr!("新しい場所からのログインです。Discord から届いたメールで承認してから、もう一度ログインしてください。", "This is a login from a new location. Approve it from the email Discord sent you, then log in again.").into()
+        tr!("新しい場所からのログインです。Discord から届いたメールで承認してから、もう一度ログインしてください。", "This is a login from a new location. Approve it from the email Discord sent you, then log in again.", "这是来自新位置的登录。请通过 Discord 发送的邮件批准后，再重新登录。").into()
     } else if code == 20013 || raw.contains("ACCOUNT_DISABLED") {
         tr!(
             "このアカウントは無効になっています。",
-            "This account has been disabled."
+            "This account has been disabled.",
+            "此账号已被停用。"
         )
         .into()
     } else {
         tr!(
             "ログインできませんでした（{status}）。QR コードでのログインも試してください。",
             "Couldn't log in ({status}). Try logging in with the QR code too.",
+            "无法登录（{status}）。也请尝试用二维码登录。",
         )
     }
 }

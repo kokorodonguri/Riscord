@@ -49,9 +49,9 @@ pub fn name() -> Option<&'static str> {
 /// 画面に出す呼び名。既定はメインアカウント、追加したものはサブアカウント
 pub fn label(name: Option<&str>) -> String {
     match name {
-        None => tr!("メインアカウント", "Main account").into(),
-        Some("2") => tr!("サブアカウント", "Sub account").into(),
-        Some(n) => tr!("サブアカウント {n}", "Sub account {n}",),
+        None => tr!("メインアカウント", "Main account", "主账号").into(),
+        Some("2") => tr!("サブアカウント", "Sub account", "副账号").into(),
+        Some(n) => tr!("サブアカウント {n}", "Sub account {n}", "副账号 {n}",),
     }
 }
 
@@ -233,7 +233,8 @@ pub fn remove(name: &str) -> std::io::Result<()> {
     if !valid(name) || is_running(Some(name)) {
         return Err(std::io::Error::other(tr!(
             "開いているプロファイルは削除できません",
-            "You can't delete the profile that's currently open"
+            "You can't delete the profile that's currently open",
+            "无法删除当前打开的配置文件"
         )));
     }
     std::fs::remove_dir_all(dir_for(&shared_dir(), Some(name)))?;

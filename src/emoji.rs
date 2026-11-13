@@ -37,15 +37,15 @@ impl Pick {
 pub fn group_label(g: emojis::Group) -> &'static str {
     use emojis::Group as G;
     match g {
-        G::SmileysAndEmotion => tr!("スマイリー", "Smileys"),
-        G::PeopleAndBody => tr!("人", "People"),
-        G::AnimalsAndNature => tr!("動物・自然", "Animals & Nature"),
-        G::FoodAndDrink => tr!("食べ物・飲み物", "Food & Drink"),
-        G::TravelAndPlaces => tr!("旅行・場所", "Travel & Places"),
-        G::Activities => tr!("活動", "Activities"),
-        G::Objects => tr!("物", "Objects"),
-        G::Symbols => tr!("記号", "Symbols"),
-        G::Flags => tr!("旗", "Flags"),
+        G::SmileysAndEmotion => tr!("スマイリー", "Smileys", "笑脸"),
+        G::PeopleAndBody => tr!("人", "People", "人物"),
+        G::AnimalsAndNature => tr!("動物・自然", "Animals & Nature", "动物与自然"),
+        G::FoodAndDrink => tr!("食べ物・飲み物", "Food & Drink", "食物与饮料"),
+        G::TravelAndPlaces => tr!("旅行・場所", "Travel & Places", "旅行与地点"),
+        G::Activities => tr!("活動", "Activities", "活动"),
+        G::Objects => tr!("物", "Objects", "物品"),
+        G::Symbols => tr!("記号", "Symbols", "符号"),
+        G::Flags => tr!("旗", "Flags", "旗帜"),
     }
 }
 

@@ -57,7 +57,11 @@ impl Root {
                             .flex()
                             .flex_col()
                             .child(medium(
-                                tr!("サーバープロフィールを編集", "Edit Server Profile"),
+                                tr!(
+                                    "サーバープロフィールを編集",
+                                    "Edit Server Profile",
+                                    "编辑服务器个人资料"
+                                ),
                                 20.0,
                                 WHITE(),
                             ))
@@ -79,12 +83,16 @@ impl Root {
                     .items_center()
                     .gap(z(8.0))
                     .child(spinner(16.0))
-                    .child(text(tr!("読み込み中…", "Loading…"), 14.0, MUTED())),
+                    .child(text(
+                        tr!("読み込み中…", "Loading…", "正在加载…"),
+                        14.0,
+                        MUTED(),
+                    )),
             );
         }
         if nick_allowed {
             content = content.child(field(
-                tr!("ニックネーム", "Nickname"),
+                tr!("ニックネーム", "Nickname", "昵称"),
                 Some((e.draft.nick.chars().count(), st::NICK_MAX)),
                 Input::new(&self.inp.guild_nick)
                     .appearance(false)
@@ -95,7 +103,7 @@ impl Root {
         }
         content = content
             .child(field(
-                tr!("代名詞", "Pronouns"),
+                tr!("代名詞", "Pronouns", "代词"),
                 Some((e.draft.pronouns.chars().count(), st::PRONOUNS_MAX)),
                 Input::new(&self.inp.guild_pronouns)
                     .appearance(false)
@@ -104,7 +112,7 @@ impl Root {
                     .into_any_element(),
             ))
             .child(field(
-                tr!("自己紹介", "About Me"),
+                tr!("自己紹介", "About Me", "个人简介"),
                 Some((e.draft.bio.chars().count(), st::BIO_MAX)),
                 Textarea::new(&self.inp.guild_bio)
                     .appearance(false)
@@ -112,7 +120,7 @@ impl Root {
                     .into_any_element(),
             ))
             .child(text(
-                tr!("このサーバーのメンバーにだけ表示されます。空にするとアカウントのプロフィールが使われます。", "Shown only to members of this server. Leave empty to use your account profile."),
+                tr!("このサーバーのメンバーにだけ表示されます。空にするとアカウントのプロフィールが使われます。", "Shown only to members of this server. Leave empty to use your account profile.", "仅对此服务器的成员显示。留空则使用账号的个人资料。"),
                 12.0,
                 FAINT(),
             ));
@@ -125,20 +133,19 @@ impl Root {
                 .justify_end()
                 .gap(z(8.0))
                 .child(
-                    text_button("guild_profile_cancel", tr!("キャンセル", "Cancel")).on_click(
-                        cx.listener(|this, _, _, cx| {
+                    text_button("guild_profile_cancel", tr!("キャンセル", "Cancel", "取消"))
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.app.close_guild_profile();
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 )
                 .child(
                     fill_button(
                         "guild_profile_save",
                         if busy {
-                            tr!("保存中…", "Saving…")
+                            tr!("保存中…", "Saving…", "正在保存…")
                         } else {
-                            tr!("保存", "Save")
+                            tr!("保存", "Save", "保存")
                         },
                         BLURPLE(),
                         WHITE(),

@@ -63,20 +63,27 @@ fn parse_response(bytes: &[u8]) -> Result<String, String> {
     let data: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| {
         tr!(
             "翻訳サービスの応答を読み取れませんでした",
-            "Couldn't read the translation service's response"
+            "Couldn't read the translation service's response",
+            "无法读取翻译服务的响应"
         )
         .to_string()
     })?;
     let sentences = data.get("sentences").and_then(|s| s.as_array()).ok_or(tr!(
         "翻訳サービスの応答を読み取れませんでした",
-        "Couldn't read the translation service's response"
+        "Couldn't read the translation service's response",
+        "无法读取翻译服务的响应"
     ))?;
     let text: String = sentences
         .iter()
         .filter_map(|s| s.get("trans").and_then(|v| v.as_str()))
         .collect();
     if text.is_empty() {
-        Err(tr!("翻訳結果が空でした", "The translation was empty").into())
+        Err(tr!(
+            "翻訳結果が空でした",
+            "The translation was empty",
+            "翻译结果为空"
+        )
+        .into())
     } else {
         Ok(text)
     }
@@ -92,20 +99,23 @@ impl Translator {
         if self.pending >= 4 {
             return Err(tr!(
                 "翻訳中のリクエストが多すぎます",
-                "Too many translation requests in progress"
+                "Too many translation requests in progress",
+                "正在进行的翻译请求过多"
             )
             .into());
         }
         if text.is_empty() || text.len() > 8000 {
             return Err(tr!(
                 "翻訳する文章または言語が無効です",
-                "Invalid text or language to translate"
+                "Invalid text or language to translate",
+                "要翻译的文字或语言无效"
             )
             .into());
         }
         let language = crate::translator::language(&language).ok_or(tr!(
             "翻訳する文章または言語が無効です",
-            "Invalid text or language to translate"
+            "Invalid text or language to translate",
+            "要翻译的文字或语言无效"
         ))?;
         self.pending += 1;
         let tx = self.tx.clone();
@@ -116,7 +126,8 @@ impl Translator {
                 .map_err(|_| {
                     tr!(
                         "翻訳処理を開始できませんでした",
-                        "Couldn't start translating"
+                        "Couldn't start translating",
+                        "无法开始翻译"
                     )
                     .to_string()
                 })
@@ -129,7 +140,8 @@ impl Translator {
                             .map_err(|_| {
                                 tr!(
                                     "翻訳処理を開始できませんでした",
-                                    "Couldn't start translating"
+                                    "Couldn't start translating",
+                                    "无法开始翻译"
                                 )
                                 .to_string()
                             })?;
@@ -148,7 +160,8 @@ impl Translator {
                             .map_err(|_| {
                                 tr!(
                                     "翻訳サービスに接続できませんでした",
-                                    "Couldn't connect to the translation service"
+                                    "Couldn't connect to the translation service",
+                                    "无法连接翻译服务"
                                 )
                                 .to_string()
                             })?;
@@ -156,6 +169,7 @@ impl Translator {
                             return Err(tr!(
                                 "翻訳サービスがエラーを返しました ({})",
                                 "The translation service returned an error ({})",
+                                "翻译服务返回了错误（{}）",
                                 response.status().as_u16()
                             ));
                         }
@@ -164,14 +178,16 @@ impl Translator {
                         while let Some(chunk) = response.chunk().await.map_err(|_| {
                             tr!(
                                 "翻訳サービスの応答を受信できませんでした",
-                                "Couldn't receive the translation service's response"
+                                "Couldn't receive the translation service's response",
+                                "无法接收翻译服务的响应"
                             )
                             .to_string()
                         })? {
                             if bytes.len() + chunk.len() > 256 * 1024 {
                                 return Err(tr!(
                                     "翻訳結果が大きすぎます",
-                                    "The translation is too large"
+                                    "The translation is too large",
+                                    "翻译结果过大"
                                 )
                                 .into());
                             }

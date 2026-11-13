@@ -111,6 +111,7 @@ impl Shell {
                     r.app.show_toast(&tr!(
                         "{} はもう別のウィンドウで開いています",
                         "{} is already open in another window",
+                        "{} 已在其他窗口中打开",
                         profile::label(right.as_deref())
                     ));
                     cx.notify();
@@ -195,7 +196,7 @@ impl Shell {
             .as_ref()
             .map(|u| u.display().to_string())
             .or_else(|| profile::account_name(pane.app.profile.as_deref()))
-            .unwrap_or_else(|| tr!("未ログイン", "Not logged in").into());
+            .unwrap_or_else(|| tr!("未ログイン", "Not logged in", "未登录").into());
         let label = format!("{name} · {}", profile::label(pane.app.profile.as_deref()));
         let active = pane.focus.contains_focused(window, cx);
         let focus = pane.focus.clone();
@@ -234,7 +235,8 @@ impl Shell {
                         .hover(|s| s.bg(HOVER()))
                         .tooltip(tip(tr!(
                             "分割を閉じる（ログインしたまま）",
-                            "Close split (stay logged in)"
+                            "Close split (stay logged in)",
+                            "关闭分屏（保持登录）"
                         )))
                         .on_click(cx.listener(|this, _, window, cx| {
                             cx.stop_propagation();

@@ -368,8 +368,16 @@ fn open_streams(
 
     // マイク
     let in_name = ctl.input_device.lock().unwrap().clone();
-    let dev = find_device(true, in_name.as_deref())
-        .ok_or_else(|| anyhow!("{}", tr!("入力デバイスがありません", "No input device",)))?;
+    let dev = find_device(true, in_name.as_deref()).ok_or_else(|| {
+        anyhow!(
+            "{}",
+            tr!(
+                "入力デバイスがありません",
+                "No input device",
+                "没有输入设备",
+            )
+        )
+    })?;
     let cfg = dev.default_input_config()?;
     let ch = cfg.channels() as usize;
     let fmt = cfg.sample_format();
@@ -435,7 +443,11 @@ fn open_streams(
         f => {
             return Err(anyhow!(
                 "{}",
-                tr!("未対応の入力形式 {f:?}", "Unsupported input format {f:?}",)
+                tr!(
+                    "未対応の入力形式 {f:?}",
+                    "Unsupported input format {f:?}",
+                    "不支持的输入格式 {f:?}",
+                )
             ))
         }
     };
@@ -445,8 +457,16 @@ fn open_streams(
     // スピーカー
     if let Some(out) = out {
         let out_name = ctl.output_device.lock().unwrap().clone();
-        let dev = find_device(false, out_name.as_deref())
-            .ok_or_else(|| anyhow!("{}", tr!("出力デバイスがありません", "No output device",)))?;
+        let dev = find_device(false, out_name.as_deref()).ok_or_else(|| {
+            anyhow!(
+                "{}",
+                tr!(
+                    "出力デバイスがありません",
+                    "No output device",
+                    "没有输出设备",
+                )
+            )
+        })?;
         let cfg = dev.default_output_config()?;
         let ch = cfg.channels() as usize;
         let fmt = cfg.sample_format();
@@ -512,7 +532,11 @@ fn open_streams(
             f => {
                 return Err(anyhow!(
                     "{}",
-                    tr!("未対応の出力形式 {f:?}", "Unsupported output format {f:?}",)
+                    tr!(
+                        "未対応の出力形式 {f:?}",
+                        "Unsupported output format {f:?}",
+                        "不支持的输出格式 {f:?}",
+                    )
                 ))
             }
         };
@@ -607,17 +631,26 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
         .map_err(|e| {
             anyhow!(
                 "{}",
-                tr!("形式を読めません: {e}", "Can't read the format: {e}",)
+                tr!(
+                    "形式を読めません: {e}",
+                    "Can't read the format: {e}",
+                    "无法读取格式：{e}",
+                )
             )
         })?
         .format;
     let track = format
         .default_track()
-        .ok_or_else(|| anyhow!("{}", tr!("音声がありません", "No audio",)))?;
+        .ok_or_else(|| anyhow!("{}", tr!("音声がありません", "No audio", "没有音频",)))?;
     let track_id = track.id;
     let mut dec = songbird::input::codecs::get_codec_registry()
         .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| anyhow!("{}", tr!("復号できません: {e}", "Can't decode: {e}",)))?;
+        .map_err(|e| {
+            anyhow!(
+                "{}",
+                tr!("復号できません: {e}", "Can't decode: {e}", "无法解码：{e}",)
+            )
+        })?;
     // コンテナの値は当てにならないこともあるので、復号した音のレートで変換する
     let mut rs: Option<(u32, Resampler)> = None;
     let limit = RATE as usize * 2 * SOUND_MAX_SECS;
@@ -630,7 +663,11 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
             Err(e) => {
                 return Err(anyhow!(
                     "{}",
-                    tr!("読み込みに失敗: {e}", "Failed to load: {e}",)
+                    tr!(
+                        "読み込みに失敗: {e}",
+                        "Failed to load: {e}",
+                        "加载失败：{e}",
+                    )
                 ))
             }
         };
@@ -644,7 +681,7 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
             Err(e) => {
                 return Err(anyhow!(
                     "{}",
-                    tr!("復号に失敗: {e}", "Failed to decode: {e}",)
+                    tr!("復号に失敗: {e}", "Failed to decode: {e}", "解码失败：{e}",)
                 ))
             }
         };
@@ -665,7 +702,10 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
         }
     }
     if out.is_empty() {
-        return Err(anyhow!("{}", tr!("音声がありません", "No audio",)));
+        return Err(anyhow!(
+            "{}",
+            tr!("音声がありません", "No audio", "没有音频",)
+        ));
     }
     Ok(out)
 }
@@ -793,8 +833,12 @@ impl VoiceSession {
         user_id: &str,
     ) -> Result<()> {
         let id = |s: &str| -> Result<NonZeroU64> {
-            s.parse::<NonZeroU64>()
-                .map_err(|_| anyhow!("{}", tr!("不正なID {s}", "Invalid ID {s}",)))
+            s.parse::<NonZeroU64>().map_err(|_| {
+                anyhow!(
+                    "{}",
+                    tr!("不正なID {s}", "Invalid ID {s}", "无效的 ID {s}",)
+                )
+            })
         };
         let endpoint = endpoint
             .trim_start_matches("wss://")

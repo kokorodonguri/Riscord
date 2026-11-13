@@ -197,7 +197,11 @@ impl App {
                     if let Some(p) = parent {
                         self.pending_open = Some(p);
                     }
-                    self.show_toast(tr!("スレッドが削除されました", "The thread was deleted"));
+                    self.show_toast(tr!(
+                        "スレッドが削除されました",
+                        "The thread was deleted",
+                        "子区已被删除"
+                    ));
                 }
             }
             "THREAD_LIST_SYNC" => {
@@ -421,7 +425,8 @@ impl App {
                 v.error = Some(
                     tr!(
                         "スレッドの一覧を読めませんでした",
-                        "Couldn't read the thread list"
+                        "Couldn't read the thread list",
+                        "无法读取子区列表"
                     )
                     .into(),
                 );
@@ -433,7 +438,8 @@ impl App {
                     e,
                     tr!(
                         "スレッドの一覧を読めませんでした",
-                        "Couldn't read the thread list"
+                        "Couldn't read the thread list",
+                        "无法读取子区列表"
                     ),
                 ));
             }
@@ -467,10 +473,18 @@ impl App {
             Ok(_) => {
                 if join {
                     self.joined_threads.insert(id);
-                    self.show_toast(tr!("スレッドに参加しました", "Joined the thread"));
+                    self.show_toast(tr!(
+                        "スレッドに参加しました",
+                        "Joined the thread",
+                        "已加入子区"
+                    ));
                 } else {
                     self.joined_threads.remove(&id);
-                    self.show_toast(tr!("スレッドから退出しました", "Left the thread"));
+                    self.show_toast(tr!(
+                        "スレッドから退出しました",
+                        "Left the thread",
+                        "已退出子区"
+                    ));
                 }
             }
             Err(e) => {
@@ -478,11 +492,16 @@ impl App {
                 self.show_toast(&api_error_text(
                     &e,
                     if join {
-                        tr!("スレッドに参加できませんでした", "Couldn't join the thread")
+                        tr!(
+                            "スレッドに参加できませんでした",
+                            "Couldn't join the thread",
+                            "无法加入子区"
+                        )
                     } else {
                         tr!(
                             "スレッドから退出できませんでした",
-                            "Couldn't leave the thread"
+                            "Couldn't leave the thread",
+                            "无法退出子区"
                         )
                     },
                 ));
@@ -500,13 +519,15 @@ impl App {
         if c.locked() && !manage {
             return Some(tr!(
                 "このスレッドはロックされているため、メッセージを送信できません。",
-                "This thread is locked, so you can't send messages."
+                "This thread is locked, so you can't send messages.",
+                "此子区已锁定，无法发送消息。"
             ));
         }
         if perms.is_some_and(|p| p & model::SEND_MESSAGES_IN_THREADS == 0) {
             return Some(tr!(
                 "このスレッドでメッセージを送信する権限がありません。",
-                "You don't have permission to send messages in this thread."
+                "You don't have permission to send messages in this thread.",
+                "你没有在此子区发送消息的权限。"
             ));
         }
         None
@@ -535,7 +556,7 @@ impl App {
             .take(40)
             .collect();
         self.thread_name = if name.trim().is_empty() {
-            tr!("新しいスレッド", "New Thread").into()
+            tr!("新しいスレッド", "New Thread", "新子区").into()
         } else {
             name
         };
@@ -558,7 +579,14 @@ impl App {
             return;
         };
         if name.is_empty() {
-            d.error = Some(tr!("スレッド名を入力してください", "Enter a thread name").into());
+            d.error = Some(
+                tr!(
+                    "スレッド名を入力してください",
+                    "Enter a thread name",
+                    "请输入子区名称"
+                )
+                .into(),
+            );
             return;
         }
         d.sending = true;
@@ -595,16 +623,22 @@ impl App {
             }
             (None, r) => {
                 let e = r.err().unwrap_or_else(|| {
-                    tr!("応答を読めませんでした", "Couldn't read the response").into()
+                    tr!(
+                        "応答を読めませんでした",
+                        "Couldn't read the response",
+                        "无法读取响应"
+                    )
+                    .into()
                 });
                 eprintln!("スレッドを作れませんでした: {e}");
                 let text = if from_message {
                     tr!(
                         "スレッドを作成できませんでした",
-                        "Couldn't create the thread"
+                        "Couldn't create the thread",
+                        "无法创建子区"
                     )
                 } else {
-                    tr!("投稿できませんでした", "Couldn't post")
+                    tr!("投稿できませんでした", "Couldn't post", "无法发帖")
                 };
                 let msg = api_error_text(&e, text);
                 if from_message {
@@ -633,14 +667,15 @@ impl App {
             return;
         };
         d.error = if title.is_empty() {
-            Some(tr!("タイトルを入力してください", "Enter a title").into())
+            Some(tr!("タイトルを入力してください", "Enter a title", "请输入标题").into())
         } else if body.is_empty() {
-            Some(tr!("本文を入力してください", "Enter a message").into())
+            Some(tr!("本文を入力してください", "Enter a message", "输入正文").into())
         } else if forum.requires_tag() && d.tags.is_empty() {
             Some(
                 tr!(
                     "このフォーラムではタグを1つ以上選んでください",
-                    "Choose at least one tag in this forum"
+                    "Choose at least one tag in this forum",
+                    "此论坛需要至少选择一个标签"
                 )
                 .into(),
             )

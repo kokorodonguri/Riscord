@@ -36,7 +36,8 @@ pub fn clipboard_image() -> Option<Result<Upload, String>> {
         eprintln!("貼り付け画像の変換失敗: {e}");
         return Some(Err(tr!(
             "クリップボードの画像を読み込めませんでした。",
-            "Couldn't read the image from the clipboard."
+            "Couldn't read the image from the clipboard.",
+            "无法读取剪贴板中的图片。"
         )
         .into()));
     }
@@ -59,6 +60,7 @@ pub fn load_file(path: &Path) -> Result<Upload, String> {
         tr!(
             "「{name}」を読み込めませんでした。ファイルを確認して、もう一度お試しください。",
             "Couldn't read \"{name}\". Check the file and try again.",
+            "无法读取“{name}”。请检查文件后重试。",
         )
     })?;
     let thumb = image::load_from_memory(&data)

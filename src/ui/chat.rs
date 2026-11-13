@@ -141,6 +141,7 @@ impl Root {
                             tr!(
                                 "Riscord を {v} に更新しました。再起動すると新しい版になります",
                                 "Riscord updated to {v}. Restart to use the new version",
+                                "Riscord 已更新到 {v}。重启后即可使用新版本",
                             ),
                             13.0,
                             Color32::WHITE,
@@ -159,7 +160,7 @@ impl Root {
                             .justify_center()
                             .cursor_pointer()
                             .hover(|s| s.bg(Color32::from_black_alpha(50)))
-                            .tooltip(tip(tr!("閉じる", "Close")))
+                            .tooltip(tip(tr!("閉じる", "Close", "关闭")))
                             .child(icon(IconName::Close, 12.0, Color32::WHITE))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 crate::update::close_banner();
@@ -204,7 +205,7 @@ impl Root {
                                 .justify_center()
                                 .cursor_pointer()
                                 .hover(|s| s.bg(Color32::from_black_alpha(50)))
-                                .tooltip(tip(tr!("閉じる", "Close")))
+                                .tooltip(tip(tr!("閉じる", "Close", "关闭")))
                                 .child(icon(IconName::Close, 12.0, Color32::WHITE))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.app.status = this.app.gateway_status.clone();
@@ -388,7 +389,11 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .child(text(
-                        tr!("画像を読み込めませんでした", "Couldn't load the image"),
+                        tr!(
+                            "画像を読み込めませんでした",
+                            "Couldn't load the image",
+                            "无法加载图片"
+                        ),
                         16.0,
                         WHITE(),
                     )),
@@ -404,7 +409,7 @@ impl Root {
                         .flex()
                         .gap(z(24.0))
                         .child(
-                            text(tr!("ダウンロード", "Download"), 14.0, WHITE())
+                            text(tr!("ダウンロード", "Download", "下载"), 14.0, WHITE())
                                 .id("preview_download")
                                 .cursor_pointer()
                                 .on_click(cx.listener({
@@ -420,13 +425,17 @@ impl Root {
                                 })),
                         )
                         .child(
-                            text(tr!("ブラウザで開く", "Open in browser"), 14.0, WHITE())
-                                .id("preview_browser")
-                                .cursor_pointer()
-                                .on_click(move |_, _, cx| cx.open_url(&uri)),
+                            text(
+                                tr!("ブラウザで開く", "Open in browser", "在浏览器中打开"),
+                                14.0,
+                                WHITE(),
+                            )
+                            .id("preview_browser")
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| cx.open_url(&uri)),
                         )
                         .child(
-                            text(tr!("閉じる", "Close"), 14.0, WHITE())
+                            text(tr!("閉じる", "Close", "关闭"), 14.0, WHITE())
                                 .id("preview_close")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -544,7 +553,7 @@ impl Root {
                 cx.notify();
             }))
             .child(text(
-                tr!("最新のメッセージへ", "Jump to latest"),
+                tr!("最新のメッセージへ", "Jump to latest", "跳到最新消息"),
                 13.0,
                 TEXT(),
             ))
@@ -665,7 +674,11 @@ impl Root {
             let channel_id = c.id.clone();
             right = right.child(
                 icon_button("channel_permissions", IconName::Settings, 32.0)
-                    .tooltip(tip(tr!("チャンネルの権限", "Channel permissions")))
+                    .tooltip(tip(tr!(
+                        "チャンネルの権限",
+                        "Channel permissions",
+                        "频道权限"
+                    )))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.app.open_channel_permissions(&guild_id, &channel_id);
                         cx.notify();
@@ -677,7 +690,11 @@ impl Root {
             right = right
                 .child(
                     icon_button("call_start", IconName::Phone, 32.0)
-                        .tooltip(tip(tr!("音声通話を開始", "Start voice call")))
+                        .tooltip(tip(tr!(
+                            "音声通話を開始",
+                            "Start voice call",
+                            "发起语音通话"
+                        )))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let a = &mut this.app;
                             let active = a.calls.contains_key(&cid)
@@ -697,7 +714,8 @@ impl Root {
                         .justify_center()
                         .tooltip(tip(tr!(
                             "ビデオ通話（未対応）",
-                            "Video call (not supported)"
+                            "Video call (not supported)",
+                            "视频通话（不支持）"
                         )))
                         .child(icon(IconName::Video, 20.0, FAINT().gamma_multiply(0.5))),
                 );
@@ -706,9 +724,9 @@ impl Root {
         right = right.child(
             toggle_icon("search_toggle", IconName::Search, search_open)
                 .tooltip(tip(if search_open {
-                    tr!("検索を閉じる", "Close search")
+                    tr!("検索を閉じる", "Close search", "关闭搜索")
                 } else {
-                    tr!("検索（Ctrl+F）", "Search (Ctrl+F)")
+                    tr!("検索（Ctrl+F）", "Search (Ctrl+F)", "搜索（Ctrl+F）")
                 }))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.app.toggle_search();
@@ -732,9 +750,9 @@ impl Root {
                     false,
                 )
                 .tooltip(tip(if joined {
-                    tr!("スレッドから退出", "Leave thread")
+                    tr!("スレッドから退出", "Leave thread", "退出子区")
                 } else {
-                    tr!("スレッドに参加", "Join thread")
+                    tr!("スレッドに参加", "Join thread", "加入子区")
                 }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.app.join_thread(&tid, !joined);
@@ -746,9 +764,9 @@ impl Root {
             right = right.child(
                 toggle_icon("threads_toggle", IconName::MessagesSquare, open)
                     .tooltip(tip(if open {
-                        tr!("スレッド一覧を閉じる", "Close threads")
+                        tr!("スレッド一覧を閉じる", "Close threads", "关闭子区列表")
                     } else {
-                        tr!("スレッド", "Threads")
+                        tr!("スレッド", "Threads", "子区")
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.toggle_thread_panel();
@@ -760,9 +778,9 @@ impl Root {
         right = right.child(
             toggle_icon("pins_toggle", IconName::Pin, pins_open)
                 .tooltip(tip(if pins_open {
-                    tr!("ピン留めを閉じる", "Close pins")
+                    tr!("ピン留めを閉じる", "Close pins", "关闭置顶")
                 } else {
-                    tr!("ピン留めされたメッセージ", "Pinned messages")
+                    tr!("ピン留めされたメッセージ", "Pinned messages", "置顶消息")
                 }))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app.toggle_pins();
@@ -780,11 +798,15 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .tooltip(tip(tr!("メッセージを読み込み中", "Loading messages")))
+                .tooltip(tip(tr!(
+                    "メッセージを読み込み中",
+                    "Loading messages",
+                    "正在加载消息"
+                )))
                 .child(spinner(18.0))
         } else {
             icon_button("reload", IconName::RotateCw, 32.0)
-                .tooltip(tip(tr!("再読み込み", "Reload")))
+                .tooltip(tip(tr!("再読み込み", "Reload", "重新加载")))
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(c) = this.app.sel_channel.clone() {
                         this.app.load_messages(c);
@@ -796,9 +818,9 @@ impl Root {
             right = right.child(
                 toggle_icon("members_toggle", IconName::Users, members_shown)
                     .tooltip(tip(if members_shown {
-                        tr!("メンバーリストを非表示", "Hide member list")
+                        tr!("メンバーリストを非表示", "Hide member list", "隐藏成员列表")
                     } else {
-                        tr!("メンバーリストを表示", "Show member list")
+                        tr!("メンバーリストを表示", "Show member list", "显示成员列表")
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if narrow_members {
@@ -818,9 +840,17 @@ impl Root {
             right = right.child(
                 toggle_icon("profile_toggle", IconName::PanelRight, shown)
                     .tooltip(tip(if shown {
-                        tr!("ユーザープロフィールを非表示", "Hide user profile")
+                        tr!(
+                            "ユーザープロフィールを非表示",
+                            "Hide user profile",
+                            "隐藏用户资料"
+                        )
                     } else {
-                        tr!("ユーザープロフィールを表示", "Show user profile")
+                        tr!(
+                            "ユーザープロフィールを表示",
+                            "Show user profile",
+                            "显示用户资料"
+                        )
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.app.hide_dm_profile = shown;
@@ -860,9 +890,13 @@ impl Root {
                 .child(spinner(28.0))
                 .child(text(
                     if phase == crate::golive::Phase::Live {
-                        tr!("映像を待っています…", "Waiting for video…")
+                        tr!("映像を待っています…", "Waiting for video…", "正在等待画面…")
                     } else {
-                        tr!("配信に接続しています…", "Connecting to the stream…")
+                        tr!(
+                            "配信に接続しています…",
+                            "Connecting to the stream…",
+                            "正在连接直播…"
+                        )
                     },
                     14.0,
                     MUTED(),
@@ -879,10 +913,17 @@ impl Root {
             .when(phase == crate::golive::Phase::Live, |d| {
                 d.child(super::sidebar::live_badge())
             })
-            .child(line(tr!("{name} の画面", "{name}'s screen",), 14.0, WHITE()).flex_1())
+            .child(
+                line(
+                    tr!("{name} の画面", "{name}'s screen", "{name} 的屏幕",),
+                    14.0,
+                    WHITE(),
+                )
+                .flex_1(),
+            )
             .child(
                 icon_button("stream_close", IconName::Close, 28.0)
-                    .tooltip(tip(tr!("視聴をやめる", "Stop watching")))
+                    .tooltip(tip(tr!("視聴をやめる", "Stop watching", "停止观看")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.stop_watching();
                         cx.notify();
@@ -994,7 +1035,7 @@ impl Root {
                     let face = face
                         .id(SharedString::from(format!("face{id}")))
                         .cursor_pointer()
-                        .tooltip(tip(tr!("配信を見る", "Watch stream")))
+                        .tooltip(tip(tr!("配信を見る", "Watch stream", "观看直播")))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.app.watch_stream(&uid);
                             cx.notify();
@@ -1021,9 +1062,9 @@ impl Root {
                         if off { RED() } else { WHITE() },
                     )
                     .tooltip(tip(if off {
-                        tr!("ミュート解除", "Unmute")
+                        tr!("ミュート解除", "Unmute", "取消静音")
                     } else {
-                        tr!("ミュート", "Mute")
+                        tr!("ミュート", "Mute", "静音")
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.toggle_mute();
@@ -1041,7 +1082,7 @@ impl Root {
                         if deaf { WHITE() } else { dark },
                         if deaf { RED() } else { WHITE() },
                     )
-                    .tooltip(tip(tr!("スピーカーミュート", "Deafen")))
+                    .tooltip(tip(tr!("スピーカーミュート", "Deafen", "关闭扬声器")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.toggle_deaf();
                         cx.notify();
@@ -1060,9 +1101,9 @@ impl Root {
                         WHITE(),
                     )
                     .tooltip(tip(if sharing {
-                        tr!("画面共有を停止", "Stop sharing")
+                        tr!("画面共有を停止", "Stop sharing", "停止共享屏幕")
                     } else {
-                        tr!("画面を共有", "Share screen")
+                        tr!("画面を共有", "Share screen", "共享屏幕")
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.toggle_stream();
@@ -1071,7 +1112,7 @@ impl Root {
                 })
                 .child(
                     round_button("call_leave", IconName::PhoneOff, RED(), WHITE())
-                        .tooltip(tip(tr!("切断", "Disconnected")))
+                        .tooltip(tip(tr!("切断", "Disconnected", "已断开")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.leave_voice();
                             cx.notify();
@@ -1080,7 +1121,7 @@ impl Root {
         } else {
             div().child(
                 round_button("call_join", IconName::Phone, GREEN(), WHITE())
-                    .tooltip(tip(tr!("通話に参加", "Join call")))
+                    .tooltip(tip(tr!("通話に参加", "Join call", "加入通话")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.app.join_voice(None, cid_s.clone(), false);
                         cx.notify();
@@ -1124,18 +1165,21 @@ impl Root {
                 {
                     tr!(
                         "このサーバーには表示できるテキストチャンネルがありません",
-                        "This server has no text channels you can see"
+                        "This server has no text channels you can see",
+                        "此服务器中没有你可见的文字频道"
                     )
                 }
                 None if self.app.dms_loaded && self.app.dms.is_empty() => {
                     tr!(
                         "ダイレクトメッセージはまだありません",
-                        "No direct messages yet"
+                        "No direct messages yet",
+                        "还没有私信"
                     )
                 }
                 _ => tr!(
                     "左からチャンネルを選んでください",
-                    "Choose a channel on the left"
+                    "Choose a channel on the left",
+                    "请从左侧选择频道"
                 ),
             };
             return div()
@@ -1159,20 +1203,20 @@ impl Root {
                     d.child(text(
                         tr!(
                             "メッセージを読み込めませんでした。通信状態を確認してください。",
-                            "Couldn't load messages. Check your connection."
+                            "Couldn't load messages. Check your connection.",
+                            "无法加载消息。请检查网络连接。"
                         ),
                         16.0,
                         MUTED(),
                     ))
                     .child(
-                        small_button("reload_msgs", tr!("再読み込み", "Reload")).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        small_button("reload_msgs", tr!("再読み込み", "Reload", "重新加载"))
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(c) = this.app.sel_channel.clone() {
                                     this.app.load_messages(c);
                                 }
                                 cx.notify();
-                            }),
-                        ),
+                            })),
                     )
                 })
                 .when(!err, |d| d.child(spinner(28.0)))
@@ -1365,7 +1409,8 @@ impl Root {
                 d.child(text(
                     tr!(
                         "このチャンネルを見る権限がありません",
-                        "You don't have permission to view this channel"
+                        "You don't have permission to view this channel",
+                        "你没有查看此频道的权限"
                     ),
                     20.0,
                     MUTED(),
@@ -1375,6 +1420,7 @@ impl Root {
                     tr!(
                         "{prefix}{cname} の始まりです",
                         "This is the start of {prefix}{cname}",
+                        "这是 {prefix}{cname} 的开始",
                     ),
                     20.0,
                     WHITE(),
@@ -1436,7 +1482,7 @@ impl Root {
             .is_some_and(|id| a.no_access.contains(id));
         if no_access {
             return col.child(card(INPUT(), DIVIDER(), 8.0).p(z(12.0)).child(text(
-                tr!("このチャンネルを見る権限がないため、メッセージを送信できません。", "You can't send messages because you don't have permission to view this channel."),
+                tr!("このチャンネルを見る権限がないため、メッセージを送信できません。", "You can't send messages because you don't have permission to view this channel.", "你没有查看此频道的权限，因此无法发送消息。"),
                 16.0,
                 MUTED(),
             )));
@@ -1455,7 +1501,7 @@ impl Root {
                 );
             }
             if c.archived() {
-                col = col.child(div().px(z(4.0)).pb(z(4.0)).flex().items_center().gap(z(6.0)).child(icon(IconName::Archive, 14.0, MUTED())).child(text(tr!("このスレッドはアーカイブされています。メッセージを送信すると再開します。", "This thread is archived. Sending a message will reopen it."), 13.0, MUTED())));
+                col = col.child(div().px(z(4.0)).pb(z(4.0)).flex().items_center().gap(z(6.0)).child(icon(IconName::Archive, 14.0, MUTED())).child(text(tr!("このスレッドはアーカイブされています。メッセージを送信すると再開します。", "This thread is archived. Sending a message will reopen it.", "此子区已归档。发送消息将重新开启。"), 13.0, MUTED())));
             }
         }
         if let Some(d) = a
@@ -1469,7 +1515,11 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap(z(6.0))
-                .child(medium(tr!("投票を作成", "Create Poll"), 16.0, WHITE()))
+                .child(medium(
+                    tr!("投票を作成", "Create Poll", "创建投票"),
+                    16.0,
+                    WHITE(),
+                ))
                 .child(
                     Input::new(&self.inp.poll_question)
                         .appearance(false)
@@ -1482,12 +1532,12 @@ impl Root {
                 );
             let mut durations = div().flex().flex_wrap().gap(z(4.0));
             for (hours, label) in [
-                (1, tr!("1時間", "1 hour")),
-                (4, tr!("4時間", "4 hours")),
-                (8, tr!("8時間", "8 hours")),
-                (24, tr!("1日", "1 day")),
-                (72, tr!("3日", "3 days")),
-                (168, tr!("1週間", "1 week")),
+                (1, tr!("1時間", "1 hour", "1 小时")),
+                (4, tr!("4時間", "4 hours", "4 小时")),
+                (8, tr!("8時間", "8 hours", "8 小时")),
+                (24, tr!("1日", "1 day", "1 天")),
+                (72, tr!("3日", "3 days", "3 天")),
+                (168, tr!("1週間", "1 week", "1 周")),
             ] {
                 durations = durations.child(
                     fill_button(
@@ -1515,9 +1565,9 @@ impl Root {
                 text_button(
                     "poll_multi",
                     if d.multiselect {
-                        tr!("☑ 複数回答", "☑ Multiple answers")
+                        tr!("☑ 複数回答", "☑ Multiple answers", "☑ 多选")
                     } else {
-                        tr!("☐ 複数回答", "☐ Multiple answers")
+                        tr!("☐ 複数回答", "☐ Multiple answers", "☐ 多选")
                     },
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1535,7 +1585,7 @@ impl Root {
                     .flex()
                     .gap(z(8.0))
                     .child(
-                        text_button("poll_cancel", tr!("キャンセル", "Cancel")).on_click(
+                        text_button("poll_cancel", tr!("キャンセル", "Cancel", "取消")).on_click(
                             cx.listener(|this, _, _, cx| {
                                 if this
                                     .app
@@ -1553,9 +1603,9 @@ impl Root {
                         fill_button(
                             "poll_submit",
                             if sending {
-                                tr!("送信中…", "Sending…")
+                                tr!("送信中…", "Sending…", "正在发送…")
                             } else {
-                                tr!("投票を作成", "Create Poll")
+                                tr!("投票を作成", "Create Poll", "创建投票")
                             },
                             BLURPLE(),
                             WHITE(),
@@ -1580,7 +1630,7 @@ impl Root {
                     .gap(z(8.0))
                     .child(spinner(14.0))
                     .child(text(
-                        tr!("{label} を実行中…", "Running {label}…",),
+                        tr!("{label} を実行中…", "Running {label}…", "正在运行 {label}…",),
                         13.0,
                         MUTED(),
                     )),
@@ -1606,14 +1656,14 @@ impl Root {
                 .gap(z(6.0));
             if sub.failed {
                 let action = if sub.editing.is_some() {
-                    tr!("編集", "edit")
+                    tr!("編集", "edit", "编辑")
                 } else {
-                    tr!("送信", "send")
+                    tr!("送信", "send", "发送")
                 };
                 let msg = match &sub.rejected {
                     // 断られたなら届いていないので、履歴の確認はいらない
-                    Some(reason) => tr!("{action}できませんでした：{reason}。内容は保持しています。入力内容を戻して直してください。", "Couldn't {action}: {reason}. Your text was kept. Restore it to fix it.",),
-                    None => tr!("{action}結果を確認できませんでした。履歴を確認してから、入力内容を戻して再試行してください。", "Couldn't confirm the {action} result. Check the history, then restore your text and try again.",),
+                    Some(reason) => tr!("{action}できませんでした：{reason}。内容は保持しています。入力内容を戻して直してください。", "Couldn't {action}: {reason}. Your text was kept. Restore it to fix it.", "无法{action}：{reason}。内容已保留。请恢复输入内容后修改。",),
+                    None => tr!("{action}結果を確認できませんでした。履歴を確認してから、入力内容を戻して再試行してください。", "Couldn't confirm the {action} result. Check the history, then restore your text and try again.", "无法确认{action}结果。请查看历史记录，然后恢复输入内容并重试。",),
                 };
                 let can_restore = a.input.is_empty()
                     && a.uploads.is_empty()
@@ -1621,21 +1671,28 @@ impl Root {
                     && a.reply_to.is_none();
                 b = b.child(text(msg, 16.0, RED()));
                 if can_restore {
-                    b = b.child(div().flex().child(
-                        small_button("restore", tr!("入力内容を戻す", "Restore text")).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                if this.app.restore_compose(&cid) {
-                                    this.app.focus_input = true;
-                                }
-                                cx.notify();
-                            }),
+                    b = b.child(
+                        div().flex().child(
+                            small_button(
+                                "restore",
+                                tr!("入力内容を戻す", "Restore text", "恢复输入内容"),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if this.app.restore_compose(&cid) {
+                                        this.app.focus_input = true;
+                                    }
+                                    cx.notify();
+                                },
+                            )),
                         ),
-                    ));
+                    );
                 } else {
                     b = b.child(text(
                         tr!(
                             "現在の入力や添付を片付けると、保持した内容を戻せます。",
-                            "Clear the current text and attachments to restore the saved content."
+                            "Clear the current text and attachments to restore the saved content.",
+                            "清空当前输入和附件后，即可恢复保存的内容。"
                         ),
                         12.0,
                         MUTED(),
@@ -1650,9 +1707,9 @@ impl Root {
                         .child(spinner(16.0))
                         .child(text(
                             if sub.editing.is_some() {
-                                tr!("保存中…", "Saving…")
+                                tr!("保存中…", "Saving…", "正在保存…")
                             } else {
-                                tr!("送信中…", "Sending…")
+                                tr!("送信中…", "Sending…", "正在发送…")
                             },
                             16.0,
                             MUTED(),
@@ -1664,16 +1721,17 @@ impl Root {
         // 返信中・編集中の帯（入力欄の上にくっつく）
         let bar = match (&a.editing, &a.reply_to) {
             (Some(_), _) => Some((
-                tr!("メッセージを編集中", "Editing message").to_string(),
+                tr!("メッセージを編集中", "Editing message", "正在编辑消息").to_string(),
                 tr!(
                     "Esc でキャンセル・Enter で保存",
-                    "Esc to cancel · Enter to save"
+                    "Esc to cancel · Enter to save",
+                    "Esc 取消 · Enter 保存"
                 )
                 .to_string(),
             )),
             (None, Some(m)) => Some((
-                tr!("返信: {}", "Replying to {}", author_name(m)),
-                tr!("Esc でキャンセル", "Esc to cancel").to_string(),
+                tr!("返信: {}", "Replying to {}", "回复 {}", author_name(m)),
+                tr!("Esc でキャンセル", "Esc to cancel", "Esc 取消").to_string(),
             )),
             _ => None,
         };
@@ -1697,7 +1755,7 @@ impl Root {
                     .when(a.screen_w < 600.0, |d| d.child(div().flex_1()))
                     .child(
                         icon_button("cancel_compose", IconName::CircleX, 22.0)
-                            .tooltip(tip(tr!("キャンセル", "Cancel")))
+                            .tooltip(tip(tr!("キャンセル", "Cancel", "取消")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.cancel_compose();
                                 cx.notify();
@@ -1758,7 +1816,7 @@ impl Root {
                     .child(text(t.clone(), 14.0, TEXT()).flex_1())
                     .child(
                         icon_button("dismiss_notice", IconName::CircleX, 22.0)
-                            .tooltip(tip(tr!("閉じる", "Close")))
+                            .tooltip(tip(tr!("閉じる", "Close", "关闭")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.compose_notice = None;
                                 cx.notify();
@@ -1820,7 +1878,11 @@ impl Root {
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
-                                    .tooltip(tip(tr!("添付を外す", "Remove attachment")))
+                                    .tooltip(tip(tr!(
+                                        "添付を外す",
+                                        "Remove attachment",
+                                        "移除附件"
+                                    )))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if i < this.app.uploads.len() {
                                             this.app.uploads.remove(i);
@@ -1840,6 +1902,7 @@ impl Root {
         let hint = tr!(
             "{prefix}{cname} へメッセージを送信",
             "Message {prefix}{cname}",
+            "发送消息到 {prefix}{cname}",
         );
         if self.compose_hint != hint {
             self.compose_hint = hint.clone();
@@ -1917,7 +1980,7 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .tooltip(tip(tr!("絵文字", "Emoji")))
+                    .tooltip(tip(tr!("絵文字", "Emoji", "表情")))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_emoji_picker(window, cx);

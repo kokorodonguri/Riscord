@@ -102,7 +102,7 @@ impl Root {
                     menu_row(
                         "plus_upload",
                         icon(IconName::Upload, 20.0, TEXT()).into_any_element(),
-                        tr!("ファイルをアップロード", "Upload a file"),
+                        tr!("ファイルをアップロード", "Upload a file", "上传文件"),
                         false,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -115,7 +115,7 @@ impl Root {
                     menu_row(
                         "plus_paste",
                         icon(IconName::ClipboardPaste, 20.0, TEXT()).into_any_element(),
-                        tr!("画像を貼り付け", "Paste image"),
+                        tr!("画像を貼り付け", "Paste image", "粘贴图片"),
                         false,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -123,7 +123,8 @@ impl Root {
                         if !this.app.paste_image() {
                             this.app.status = tr!(
                                 "クリップボードに画像がありません",
-                                "No image on the clipboard"
+                                "No image on the clipboard",
+                                "剪贴板中没有图片"
                             )
                             .into();
                         }
@@ -134,14 +135,14 @@ impl Root {
                     menu_row(
                         "plus_poll",
                         icon(IconName::MessagesSquare, 20.0, TEXT()).into_any_element(),
-                        tr!("投票を作成", "Create Poll"),
+                        tr!("投票を作成", "Create Poll", "创建投票"),
                         false,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.menu = None;
                         if let Some(draft) = this.app.poll_draft.as_ref() {
                             if Some(&draft.channel_id) != this.app.sel_channel.as_ref() {
-                                this.app.show_toast(tr!("作成中の投票があります。元のチャンネルで送信またはキャンセルしてください", "A poll is in progress. Send or cancel it in the original channel"));
+                                this.app.show_toast(tr!("作成中の投票があります。元のチャンネルで送信またはキャンセルしてください", "A poll is in progress. Send or cancel it in the original channel", "有正在编辑的投票。请在原频道发送或取消"));
                             }
                         } else if let Some(channel_id) = this.app.sel_channel.clone() {
                             this.app.poll_draft = Some(crate::app::PollDraft {
@@ -210,7 +211,7 @@ impl Root {
                 menu_row(
                     "mm_reply",
                     icon(IconName::Reply, 18.0, TEXT()).into_any_element(),
-                    tr!("返信", "Reply"),
+                    tr!("返信", "Reply", "回复"),
                     false,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -230,7 +231,7 @@ impl Root {
                 menu_row(
                     "mm_edit",
                     icon(IconName::Pencil, 18.0, TEXT()).into_any_element(),
-                    tr!("編集", "Edit"),
+                    tr!("編集", "Edit", "编辑"),
                     false,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -249,14 +250,17 @@ impl Root {
                 menu_row(
                     "mm_copy",
                     icon(IconName::Copy, 18.0, TEXT()).into_any_element(),
-                    tr!("テキストをコピー", "Copy Text"),
+                    tr!("テキストをコピー", "Copy Text", "复制文字"),
                     false,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     close(this);
                     cx.write_to_clipboard(ClipboardItem::new_string(t.clone()));
-                    this.app
-                        .show_toast(tr!("テキストをコピーしました", "Text copied"));
+                    this.app.show_toast(tr!(
+                        "テキストをコピーしました",
+                        "Text copied",
+                        "已复制文字"
+                    ));
                     cx.notify();
                 })),
             );
@@ -266,14 +270,17 @@ impl Root {
             menu_row(
                 "mm_copy_id",
                 icon(IconName::Copy, 18.0, TEXT()).into_any_element(),
-                tr!("メッセージIDをコピー", "Copy Message ID"),
+                tr!("メッセージIDをコピー", "Copy Message ID", "复制消息 ID"),
                 false,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 close(this);
                 cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
-                this.app
-                    .show_toast(tr!("メッセージIDをコピーしました", "Message ID copied"));
+                this.app.show_toast(tr!(
+                    "メッセージIDをコピーしました",
+                    "Message ID copied",
+                    "已复制消息 ID"
+                ));
                 cx.notify();
             })),
         );
@@ -292,7 +299,7 @@ impl Root {
                 menu_row(
                     "mm_end_poll",
                     icon(IconName::Pin, 18.0, TEXT()).into_any_element(),
-                    tr!("投票を終了", "End Poll"),
+                    tr!("投票を終了", "End Poll", "结束投票"),
                     false,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -311,9 +318,15 @@ impl Root {
         {
             let (m1, pinned) = (m.clone(), m.pinned);
             let (ic, label) = if pinned {
-                (IconName::PinOff, tr!("ピン留めを外す", "Unpin Message"))
+                (
+                    IconName::PinOff,
+                    tr!("ピン留めを外す", "Unpin Message", "取消置顶"),
+                )
             } else {
-                (IconName::Pin, tr!("メッセージをピン留め", "Pin Message"))
+                (
+                    IconName::Pin,
+                    tr!("メッセージをピン留め", "Pin Message", "置顶消息"),
+                )
             };
             col = col.child(
                 menu_row(
@@ -335,7 +348,7 @@ impl Root {
                 menu_row(
                     "mm_thread",
                     icon(IconName::MessagesSquare, 18.0, TEXT()).into_any_element(),
-                    tr!("スレッドを作成", "Create Thread"),
+                    tr!("スレッドを作成", "Create Thread", "创建子区"),
                     false,
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -353,7 +366,7 @@ impl Root {
                 menu_row(
                     "mm_delete",
                     icon(IconName::Trash, 18.0, RED()).into_any_element(),
-                    tr!("メッセージを削除", "Delete Message"),
+                    tr!("メッセージを削除", "Delete Message", "删除消息"),
                     false,
                 )
                 .text_color(RED())
@@ -391,7 +404,7 @@ impl Root {
                     menu_row(
                         "folder_edit",
                         icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
-                        tr!("フォルダを編集", "Edit Folder"),
+                        tr!("フォルダを編集", "Edit Folder", "编辑文件夹"),
                         false,
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -411,7 +424,7 @@ impl Root {
                     menu_row(
                         "folder_delete",
                         icon(IconName::X, 18.0, TEXT()).into_any_element(),
-                        tr!("フォルダを削除", "Delete Folder"),
+                        tr!("フォルダを削除", "Delete Folder", "删除文件夹"),
                         false,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -484,7 +497,7 @@ impl Root {
             item(
                 "gm_read",
                 IconName::CheckCheck,
-                tr!("既読にする", "Mark as Read"),
+                tr!("既読にする", "Mark as Read", "标为已读"),
             )
             .when(!unread, |d| d.opacity(0.5))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -499,7 +512,7 @@ impl Root {
             item(
                 "gm_invite",
                 IconName::UserPlus,
-                tr!("サーバーに招待", "Invite to Server"),
+                tr!("サーバーに招待", "Invite to Server", "邀请加入服务器"),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 close(this);
@@ -514,9 +527,13 @@ impl Root {
                 "gm_mute",
                 IconName::BellOff,
                 if set.muted {
-                    tr!("サーバーのミュートを解除", "Unmute Server")
+                    tr!(
+                        "サーバーのミュートを解除",
+                        "Unmute Server",
+                        "取消静音服务器"
+                    )
                 } else {
-                    tr!("サーバーをミュート", "Mute Server")
+                    tr!("サーバーをミュート", "Mute Server", "静音服务器")
                 },
             )
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -526,10 +543,10 @@ impl Root {
             })),
         );
         let notification_label = match set.notifications {
-            0 => tr!("すべてのメッセージ", "All Messages"),
-            1 => tr!("@メンションのみ", "Only @mentions"),
-            2 => tr!("なし", "None"),
-            _ => tr!("サーバーの既定", "Server default"),
+            0 => tr!("すべてのメッセージ", "All Messages", "所有消息"),
+            1 => tr!("@メンションのみ", "Only @mentions", "仅 @提及"),
+            2 => tr!("なし", "None", "无"),
+            _ => tr!("サーバーの既定", "Server default", "服务器默认"),
         };
         col = col.child(
             div()
@@ -546,7 +563,11 @@ impl Root {
                         .flex_1()
                         .flex()
                         .flex_col()
-                        .child(text(tr!("通知設定", "Notification Settings"), 15.0, TEXT()))
+                        .child(text(
+                            tr!("通知設定", "Notification Settings", "通知设置"),
+                            15.0,
+                            TEXT(),
+                        ))
                         .child(text(notification_label, 12.0, MUTED())),
                 )
                 .child(icon(IconName::ChevronRight, 16.0, MUTED()))
@@ -557,10 +578,10 @@ impl Root {
         );
         if self.guild_notify_expanded {
             for (n, label) in [
-                (3u8, tr!("サーバーの既定", "Server default")),
-                (0, tr!("すべてのメッセージ", "All Messages")),
-                (1, tr!("@メンションのみ", "Only @mentions")),
-                (2, tr!("なし", "None")),
+                (3u8, tr!("サーバーの既定", "Server default", "服务器默认")),
+                (0, tr!("すべてのメッセージ", "All Messages", "所有消息")),
+                (1, tr!("@メンションのみ", "Only @mentions", "仅 @提及")),
+                (2, tr!("なし", "None", "无")),
             ] {
                 let g1 = gid.clone();
                 col = col.child(
@@ -602,7 +623,11 @@ impl Root {
                         .flex_1()
                         .text_size(z(14.0))
                         .text_color(TEXT())
-                        .child(tr!("ミュートしたチャンネルを隠す", "Hide Muted Channels")),
+                        .child(tr!(
+                            "ミュートしたチャンネルを隠す",
+                            "Hide Muted Channels",
+                            "隐藏已静音的频道"
+                        )),
                 )
                 .child(
                     div()
@@ -625,7 +650,7 @@ impl Root {
             item(
                 "gm_settings",
                 IconName::Settings,
-                tr!("サーバー設定", "Server Settings"),
+                tr!("サーバー設定", "Server Settings", "服务器设置"),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 close(this);
@@ -638,13 +663,13 @@ impl Root {
                 (
                     "gm_new_channel",
                     IconName::CirclePlus,
-                    tr!("チャンネルを作成", "Create Channel"),
+                    tr!("チャンネルを作成", "Create Channel", "创建频道"),
                     false,
                 ),
                 (
                     "gm_new_category",
                     IconName::Folder,
-                    tr!("カテゴリを作成", "Create Category"),
+                    tr!("カテゴリを作成", "Create Category", "创建类别"),
                     true,
                 ),
             ] {
@@ -664,7 +689,7 @@ impl Root {
                 item(
                     "gm_event",
                     IconName::CirclePlus,
-                    tr!("イベントを作成", "Create Event"),
+                    tr!("イベントを作成", "Create Event", "创建活动"),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     close(this);
@@ -678,7 +703,11 @@ impl Root {
             item(
                 "gm_profile",
                 IconName::Pencil,
-                tr!("サーバープロフィールを編集", "Edit Server Profile"),
+                tr!(
+                    "サーバープロフィールを編集",
+                    "Edit Server Profile",
+                    "编辑服务器个人资料"
+                ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 close(this);
@@ -700,9 +729,9 @@ impl Root {
                     "gm_folder",
                     IconName::Folder,
                     if in_folder {
-                        tr!("フォルダから移動", "Remove from Folder")
+                        tr!("フォルダから移動", "Remove from Folder", "移出文件夹")
                     } else {
-                        tr!("フォルダを作成", "Create Folder")
+                        tr!("フォルダを作成", "Create Folder", "创建文件夹")
                     },
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -726,7 +755,7 @@ impl Root {
                 item(
                     "gm_leave",
                     IconName::LogOut,
-                    tr!("サーバーから脱退", "Leave Server"),
+                    tr!("サーバーから脱退", "Leave Server", "退出服务器"),
                 )
                 .text_color(RED())
                 .hover(|s| s.bg(RED()).text_color(WHITE()))
@@ -743,13 +772,16 @@ impl Root {
             item(
                 "gm_id",
                 IconName::IdCard,
-                tr!("サーバーIDをコピー", "Copy Server ID"),
+                tr!("サーバーIDをコピー", "Copy Server ID", "复制服务器 ID"),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 close(this);
                 cx.write_to_clipboard(ClipboardItem::new_string(g1.clone()));
-                this.app
-                    .show_toast(tr!("サーバーIDをコピーしました", "Server ID copied"));
+                this.app.show_toast(tr!(
+                    "サーバーIDをコピーしました",
+                    "Server ID copied",
+                    "已复制服务器 ID"
+                ));
                 cx.notify();
             })),
         );
@@ -781,7 +813,7 @@ impl Root {
             let on = cur == d;
             let label = d
                 .clone()
-                .unwrap_or_else(|| tr!("デフォルト", "Default").into());
+                .unwrap_or_else(|| tr!("デフォルト", "Default", "默认").into());
             devs = devs.child(
                 div()
                     .id(("dev", i))
@@ -816,9 +848,9 @@ impl Root {
             .gap(z(6.0))
             .child(text(
                 if input {
-                    tr!("入力デバイス", "Input Device")
+                    tr!("入力デバイス", "Input Device", "输入设备")
                 } else {
-                    tr!("出力デバイス", "Output Device")
+                    tr!("出力デバイス", "Output Device", "输出设备")
                 },
                 12.0,
                 MUTED(),
@@ -826,10 +858,14 @@ impl Root {
             .child(devs)
             .child(menu_divider());
         if input {
-            col = col.child(text(tr!("入力モード", "Input Mode"), 12.0, MUTED()));
+            col = col.child(text(
+                tr!("入力モード", "Input Mode", "输入模式"),
+                12.0,
+                MUTED(),
+            ));
             for (ptt, label) in [
-                (false, tr!("音声検出", "Voice Activity")),
-                (true, tr!("プッシュトゥトーク", "Push to Talk")),
+                (false, tr!("音声検出", "Voice Activity", "语音检测")),
+                (true, tr!("プッシュトゥトーク", "Push to Talk", "按键说话")),
             ] {
                 let on = self.app.settings.ptt == ptt;
                 col = col.child(
@@ -853,25 +889,31 @@ impl Root {
                         .child(text(label, 14.0, TEXT())),
                 );
             }
-            col =
-                col.child(self.slider_row("in_gain", tr!("入力音量", "Input Volume"), window, cx));
+            col = col.child(self.slider_row(
+                "in_gain",
+                tr!("入力音量", "Input Volume", "输入音量"),
+                window,
+                cx,
+            ));
         } else {
             col = col.child(self.slider_row(
                 "out_gain",
-                tr!("出力音量", "Output Volume"),
+                tr!("出力音量", "Output Volume", "输出音量"),
                 window,
                 cx,
             ));
         }
         col.child(menu_divider()).child(
-            small_button("voice_settings", tr!("音声設定…", "Voice Settings…")).on_click(
-                cx.listener(|this, _, _, cx| {
-                    this.app.settings_open = true;
-                    this.app.settings_tab = 2;
-                    this.menu = None;
-                    cx.notify();
-                }),
-            ),
+            small_button(
+                "voice_settings",
+                tr!("音声設定…", "Voice Settings…", "语音设置…"),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.app.settings_open = true;
+                this.app.settings_tab = 2;
+                this.menu = None;
+                cx.notify();
+            })),
         )
     }
 
@@ -1017,7 +1059,8 @@ impl Root {
                 } else {
                     this.app.status = tr!(
                         "エラー: 接続できません。再接続してからお試しください。",
-                        "Error: Not connected. Reconnect and try again."
+                        "Error: Not connected. Reconnect and try again.",
+                        "错误：未连接。请重新连接后重试。"
                     )
                     .into();
                 }
@@ -1030,9 +1073,12 @@ impl Root {
                 info = info.child(self.bio_text(&bio, 14.0).mt(z(8.0)).part(Part::ProfileText));
             }
             if failed {
-                info = info.child(div().flex().child(
-                    small_button("retry_profile", tr!("再読み込み", "Reload")).on_click(retry),
-                ));
+                info = info.child(
+                    div().flex().child(
+                        small_button("retry_profile", tr!("再読み込み", "Reload", "重新加载"))
+                            .on_click(retry),
+                    ),
+                );
             }
             let uid = user.id.clone();
             let mut menu = div()
@@ -1047,7 +1093,7 @@ impl Root {
                 menu_row(
                     "edit_profile",
                     icon(IconName::Pencil, 18.0, TEXT()).into_any_element(),
-                    tr!("プロフィールを編集", "Edit Profile"),
+                    tr!("プロフィールを編集", "Edit Profile", "编辑个人资料"),
                     false,
                 )
                 .on_hover(cx.listener(|this, h: &bool, _, cx| {
@@ -1139,7 +1185,7 @@ impl Root {
                         .text_color(RAIL())
                         .child("ID")
                         .into_any_element(),
-                    tr!("ユーザーIDをコピー", "Copy User ID"),
+                    tr!("ユーザーIDをコピー", "Copy User ID", "复制用户 ID"),
                     false,
                 )
                 .on_hover(cx.listener(|this, h: &bool, _, cx| {
@@ -1151,8 +1197,11 @@ impl Root {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(uid.clone()));
                     this.app.popup = None;
-                    this.app
-                        .show_toast(tr!("ユーザーIDをコピーしました", "User ID copied"));
+                    this.app.show_toast(tr!(
+                        "ユーザーIDをコピーしました",
+                        "User ID copied",
+                        "已复制用户 ID"
+                    ));
                     cx.notify();
                 })),
             );
@@ -1175,16 +1224,20 @@ impl Root {
                         text(
                             tr!(
                                 "詳しいプロフィールを取得できませんでした",
-                                "Couldn't load the full profile"
+                                "Couldn't load the full profile",
+                                "无法获取完整资料"
                             ),
                             13.0,
                             MUTED(),
                         )
                         .part(Part::ProfileMuted),
                     )
-                    .child(div().flex().child(
-                        small_button("retry_profile", tr!("再読み込み", "Reload")).on_click(retry),
-                    ));
+                    .child(
+                        div().flex().child(
+                            small_button("retry_profile", tr!("再読み込み", "Reload", "重新加载"))
+                                .on_click(retry),
+                        ),
+                    );
             }
             let heading = |t: &'static str| {
                 text(t, 12.0, WHITE())
@@ -1193,11 +1246,15 @@ impl Root {
             };
             if let Some(bio) = data.as_ref().and_then(|d| d.bio.clone()) {
                 about = about
-                    .child(heading(tr!("自己紹介", "About Me")))
+                    .child(heading(tr!("自己紹介", "About Me", "个人简介")))
                     .child(self.bio_text(&bio, 14.0).mb(z(8.0)).part(Part::ProfileText));
             }
             about = about
-                .child(heading(tr!("Discordメンバー歴", "Discord Member Since")))
+                .child(heading(tr!(
+                    "Discordメンバー歴",
+                    "Discord Member Since",
+                    "Discord 注册时间"
+                )))
                 .child(text(snowflake_date(&user.id), 14.0, TEXT()).part(Part::ProfileText));
             if let Some(j) = data
                 .as_ref()
@@ -1205,10 +1262,18 @@ impl Root {
                 .and_then(local_dt)
             {
                 about = about
-                    .child(heading(tr!("サーバーメンバー歴", "Server Member Since")).mt(z(8.0)))
+                    .child(
+                        heading(tr!(
+                            "サーバーメンバー歴",
+                            "Server Member Since",
+                            "服务器成员时长"
+                        ))
+                        .mt(z(8.0)),
+                    )
                     .child(
                         text(
-                            j.format(tr!("%Y年%-m月%-d日", "%b %-d, %Y")).to_string(),
+                            j.format(tr!("%Y年%-m月%-d日", "%b %-d, %Y", "%Y年%-m月%-d日"))
+                                .to_string(),
                             14.0,
                             TEXT(),
                         )
@@ -1238,7 +1303,7 @@ impl Root {
                     );
                 }
                 about = about
-                    .child(heading(tr!("ロール", "Roles")).mt(z(8.0)))
+                    .child(heading(tr!("ロール", "Roles", "身份组")).mt(z(8.0)))
                     .child(wrap);
             }
             info = info.child(about);
@@ -1247,7 +1312,7 @@ impl Root {
                     div().mt(z(10.0)).child(
                         fill_button_part(
                             "send_dm",
-                            tr!("メッセージを送る", "Send Message"),
+                            tr!("メッセージを送る", "Send Message", "发送消息"),
                             BLURPLE(),
                             Color32::WHITE,
                             true,
@@ -1287,7 +1352,7 @@ impl Root {
                 info = info.child(
                     fill_button(
                         "profile_create_dm",
-                        tr!("メッセージを送る", "Send Message"),
+                        tr!("メッセージを送る", "Send Message", "发送消息"),
                         BLURPLE(),
                         WHITE(),
                         !pending,
@@ -1313,17 +1378,21 @@ impl Root {
                         .child(text(
                             tr!(
                                 "フレンド情報を取得できませんでした",
-                                "Couldn't load friend info"
+                                "Couldn't load friend info",
+                                "无法获取好友信息"
                             ),
                             12.0,
                             MUTED(),
                         ))
                         .child(
-                            text_button("profile_friends_retry", tr!("再読み込み", "Reload"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.app.fetch_friends();
-                                    cx.notify();
-                                })),
+                            text_button(
+                                "profile_friends_retry",
+                                tr!("再読み込み", "Reload", "重新加载"),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.app.fetch_friends();
+                                cx.notify();
+                            })),
                         ),
                 );
             }
@@ -1335,7 +1404,7 @@ impl Root {
                         controls = controls.child(
                             fill_button(
                                 "profile_friend_add",
-                                tr!("フレンドに追加", "Add Friend"),
+                                tr!("フレンドに追加", "Add Friend", "添加好友"),
                                 BLURPLE(),
                                 WHITE(),
                                 !pending,
@@ -1351,7 +1420,7 @@ impl Root {
                         );
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("ブロック", "Block"),
+                            tr!("ブロック", "Block", "屏蔽"),
                             2,
                             pending,
                             cx,
@@ -1360,14 +1429,14 @@ impl Root {
                     Some(1) => {
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("フレンド削除", "Remove Friend"),
+                            tr!("フレンド削除", "Remove Friend", "删除好友"),
                             1,
                             pending,
                             cx,
                         ));
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("ブロック", "Block"),
+                            tr!("ブロック", "Block", "屏蔽"),
                             2,
                             pending,
                             cx,
@@ -1376,7 +1445,7 @@ impl Root {
                     Some(2) => {
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("ブロック解除", "Unblock"),
+                            tr!("ブロック解除", "Unblock", "取消屏蔽"),
                             1,
                             pending,
                             cx,
@@ -1385,14 +1454,14 @@ impl Root {
                     Some(3) => {
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("承認", "Accept"),
+                            tr!("承認", "Accept", "接受"),
                             3,
                             pending,
                             cx,
                         ));
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("拒否", "Ignore"),
+                            tr!("拒否", "Ignore", "忽略"),
                             1,
                             pending,
                             cx,
@@ -1401,7 +1470,7 @@ impl Root {
                     Some(4) => {
                         controls = controls.child(self.friend_row_button(
                             &id,
-                            tr!("申請を取り消す", "Cancel Request"),
+                            tr!("申請を取り消す", "Cancel Request", "取消申请"),
                             1,
                             pending,
                             cx,
@@ -1418,7 +1487,11 @@ impl Root {
             info = info.child(
                 text_button(
                     "profile_member_roles",
-                    tr!("サーバーのロールを確認・管理", "View/Manage Server Roles"),
+                    tr!(
+                        "サーバーのロールを確認・管理",
+                        "View/Manage Server Roles",
+                        "查看/管理服务器身份组"
+                    ),
                 )
                 .mt(z(8.0))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1431,13 +1504,13 @@ impl Root {
             let actions = [
                 (
                     MemberAction::Timeout(3600),
-                    tr!("1時間タイムアウト", "Time Out for 1 Hour"),
+                    tr!("1時間タイムアウト", "Time Out for 1 Hour", "禁言 1 小时"),
                 ),
                 (
                     MemberAction::Timeout(0),
-                    tr!("タイムアウト解除", "Remove Timeout"),
+                    tr!("タイムアウト解除", "Remove Timeout", "解除禁言"),
                 ),
-                (MemberAction::Kick, tr!("キック", "Kick")),
+                (MemberAction::Kick, tr!("キック", "Kick", "踢出")),
                 (MemberAction::Ban, "BAN"),
             ];
             let mut row = div().mt(z(6.0)).flex().flex_wrap().gap(z(4.0));
@@ -1454,7 +1527,11 @@ impl Root {
                     fill_button(
                         SharedString::from(format!("profile_mod_{key}")),
                         if confirming {
-                            tr!("もう一度押して確定", "Press again to confirm")
+                            tr!(
+                                "もう一度押して確定",
+                                "Press again to confirm",
+                                "再按一次确认"
+                            )
                         } else {
                             label
                         },

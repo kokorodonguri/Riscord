@@ -29,9 +29,9 @@ pub enum Kind {
 impl Kind {
     pub fn label(self) -> &'static str {
         match self {
-            Kind::Video => tr!("動画", "video"),
-            Kind::Image => tr!("画像", "image"),
-            Kind::File => tr!("ファイル", "file"),
+            Kind::Video => tr!("動画", "video", "视频"),
+            Kind::Image => tr!("画像", "image", "图片"),
+            Kind::File => tr!("ファイル", "file", "文件"),
         }
     }
 
@@ -66,7 +66,8 @@ pub fn start(url: String, filename: String, kind: Kind, waker: Waker) -> Receive
             let _ = tx.send(Event::Failed(
                 tr!(
                     "ダウンロードを開始できませんでした",
-                    "Couldn't start the download"
+                    "Couldn't start the download",
+                    "无法开始下载"
                 )
                 .into(),
             ));
@@ -80,7 +81,7 @@ pub fn start(url: String, filename: String, kind: Kind, waker: Waker) -> Receive
                 .filter(|s| !s.is_empty() && *s != "." && *s != "..")
                 .unwrap_or(kind.default_name());
             let mut dialog = rfd::AsyncFileDialog::new()
-                .set_title(tr!("{}を保存", "Save {}", kind.label()))
+                .set_title(tr!("{}を保存", "Save {}", "保存{}", kind.label()))
                 .set_file_name(name);
             if let Some(dir) = dirs::download_dir() {
                 dialog = dialog.set_directory(dir);
@@ -106,12 +107,18 @@ pub fn start(url: String, filename: String, kind: Kind, waker: Waker) -> Receive
 
 /// what = 保存するものの呼び名（「動画」「画像」。失敗したときのお知らせに使う）
 async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|_| tr!("{what}の URL が無効です", "Invalid {what} URL",))?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| {
+        tr!(
+            "{what}の URL が無効です",
+            "Invalid {what} URL",
+            "{what}的 URL 无效",
+        )
+    })?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(tr!(
             "対応していない{what}の URL です",
             "Unsupported {what} URL",
+            "不支持的{what} URL",
         ));
     }
     let client = reqwest::Client::builder()
@@ -121,7 +128,8 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
         .map_err(|_| {
             tr!(
                 "通信を開始できませんでした",
-                "Couldn't start the connection"
+                "Couldn't start the connection",
+                "无法开始通信"
             )
             .to_string()
         })?;
@@ -129,18 +137,27 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
         .get(parsed)
         .send()
         .await
-        .map_err(|_| tr!("{what}を取得できませんでした", "Couldn't fetch the {what}",))?
+        .map_err(|_| {
+            tr!(
+                "{what}を取得できませんでした",
+                "Couldn't fetch the {what}",
+                "无法获取{what}",
+            )
+        })?
         .error_for_status()
         .map_err(|e| {
             tr!(
                 "{what}を取得できませんでした ({})",
                 "Couldn't fetch the {what} ({})",
+                "无法获取{what}（{}）",
                 e.status().map(|s| s.as_u16()).unwrap_or(0)
             )
         })?;
-    let parent = destination
-        .parent()
-        .ok_or(tr!("保存先が無効です", "Invalid save location"))?;
+    let parent = destination.parent().ok_or(tr!(
+        "保存先が無効です",
+        "Invalid save location",
+        "保存位置无效"
+    ))?;
     let mut temp = None;
     for _ in 0..10 {
         let name = format!(
@@ -162,7 +179,8 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
             Err(_) => {
                 return Err(tr!(
                     "保存先にファイルを作成できませんでした",
-                    "Couldn't create the file at the save location"
+                    "Couldn't create the file at the save location",
+                    "无法在保存位置创建文件"
                 )
                 .into())
             }
@@ -170,25 +188,38 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
     }
     let (path, mut file) = temp.ok_or(tr!(
         "一時ファイルを作成できませんでした",
-        "Couldn't create a temporary file"
+        "Couldn't create a temporary file",
+        "无法创建临时文件"
     ))?;
     let result = async {
         while let Some(chunk) = response.chunk().await.map_err(|_| {
             tr!(
                 "{what}のダウンロードが途中で失敗しました",
                 "The {what} download failed partway",
+                "{what}下载中途失败",
             )
         })? {
-            file.write_all(&chunk)
-                .map_err(|_| tr!("{what}を保存できませんでした", "Couldn't save the {what}",))?;
+            file.write_all(&chunk).map_err(|_| {
+                tr!(
+                    "{what}を保存できませんでした",
+                    "Couldn't save the {what}",
+                    "无法保存{what}",
+                )
+            })?;
         }
-        file.flush()
-            .map_err(|_| tr!("{what}を保存できませんでした", "Couldn't save the {what}",))?;
+        file.flush().map_err(|_| {
+            tr!(
+                "{what}を保存できませんでした",
+                "Couldn't save the {what}",
+                "无法保存{what}",
+            )
+        })?;
         drop(file);
         std::fs::rename(&path, destination).map_err(|_| {
             tr!(
                 "保存先へ移動できませんでした",
-                "Couldn't move it to the save location"
+                "Couldn't move it to the save location",
+                "无法移动到保存位置"
             )
             .to_string()
         })?;

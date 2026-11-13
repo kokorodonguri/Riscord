@@ -99,7 +99,7 @@ impl Root {
                         div()
                             .mt(z(20.0))
                             .text_center()
-                            .child(text(tr!("Riscord は非公式のクライアントです。利用は Discord の利用規約に抵触する可能性があります。", "Riscord is an unofficial client. Using it may violate Discord's Terms of Service."), 12.0, FAINT())),
+                            .child(text(tr!("Riscord は非公式のクライアントです。利用は Discord の利用規約に抵触する可能性があります。", "Riscord is an unofficial client. Using it may violate Discord's Terms of Service.", "Riscord 是非官方客户端。使用它可能违反 Discord 的服务条款。"), 12.0, FAINT())),
                     ),
             ),
         )
@@ -110,13 +110,14 @@ impl Root {
         let a = &self.app;
         let busy = a.login.busy.is_some();
         let (title, sub) = if a.login.mfa_ticket.is_some() {
-            (tr!("二段階認証", "Two-Factor Authentication"), tr!("認証アプリに表示されている6桁のコード、またはバックアップコードを入力してください。", "Enter the 6-digit code from your authenticator app, or a backup code."))
+            (tr!("二段階認証", "Two-Factor Authentication", "两步验证"), tr!("認証アプリに表示されている6桁のコード、またはバックアップコードを入力してください。", "Enter the 6-digit code from your authenticator app, or a backup code.", "请输入身份验证器应用中显示的 6 位代码，或备用代码。"))
         } else {
             (
-                tr!("おかえりなさい！", "Welcome back!"),
+                tr!("おかえりなさい！", "Welcome back!", "欢迎回来！"),
                 tr!(
                     "Discord のアカウントでログインします。",
-                    "Log in with your Discord account."
+                    "Log in with your Discord account.",
+                    "使用你的 Discord 账号登录。"
                 ),
             )
         };
@@ -169,52 +170,54 @@ impl Root {
         if a.login.mfa_ticket.is_some() {
             let ready = !busy && !a.login.mfa_code.trim().is_empty();
             col = col
-                .child(label(tr!("認証コード", "Authentication code")))
+                .child(label(tr!("認証コード", "Authentication code", "验证码")))
                 .child(login_input(&self.inp.mfa, busy))
                 .child(div().mt(z(20.0)).child(button(
                     if busy {
-                        tr!("確認中…", "Checking…")
+                        tr!("確認中…", "Checking…", "正在检查…")
                     } else {
-                        tr!("ログイン", "Log In")
+                        tr!("ログイン", "Log In", "登录")
                     },
                     ready,
                     cx,
                 )))
                 .child(div().mt(z(8.0)).child(
-                    link_text("back", tr!("最初に戻る", "Start over")).on_click(cx.listener(
-                        |this, _, _, cx| {
+                    link_text("back", tr!("最初に戻る", "Start over", "从头开始")).on_click(
+                        cx.listener(|this, _, _, cx| {
                             let a = &mut this.app;
                             a.login.mfa_ticket = None;
                             a.login.mfa_code.clear();
                             a.login_error = None;
                             cx.notify();
-                        },
-                    )),
+                        }),
+                    ),
                 ));
         } else {
             let ready = !busy && !a.login.email.trim().is_empty() && !a.login.password.is_empty();
             col = col
                 .child(label(tr!(
                     "メールアドレスまたは電話番号",
-                    "Email or phone number"
+                    "Email or phone number",
+                    "邮箱或手机号"
                 )))
                 .child(login_input(&self.inp.email, busy))
                 .child(div().h(z(16.0)))
-                .child(label(tr!("パスワード", "Password")))
+                .child(label(tr!("パスワード", "Password", "密码")))
                 .child(login_input(&self.inp.password, busy))
                 .child(remember(
                     tr!(
                         "このPCにログイン情報を保存する",
-                        "Save login info on this PC"
+                        "Save login info on this PC",
+                        "在这台电脑上保存登录信息"
                     ),
                     a.remember,
                     cx,
                 ))
                 .child(div().mt(z(16.0)).child(button(
                     if busy {
-                        tr!("ログイン中…", "Logging in…")
+                        tr!("ログイン中…", "Logging in…", "正在登录…")
                     } else {
-                        tr!("ログイン", "Log In")
+                        tr!("ログイン", "Log In", "登录")
                     },
                     ready,
                     cx,
@@ -351,7 +354,11 @@ impl Root {
             (_, Some(msg)) => {
                 col = col
                     .child(medium(
-                        tr!("QRコードでログイン", "Log in with QR Code"),
+                        tr!(
+                            "QRコードでログイン",
+                            "Log in with QR Code",
+                            "使用二维码登录"
+                        ),
                         20.0,
                         WHITE(),
                     ))
@@ -359,7 +366,11 @@ impl Root {
                     .child(
                         small_button(
                             "qr_restart",
-                            tr!("QR コードを作り直す", "Regenerate QR code"),
+                            tr!(
+                                "QR コードを作り直す",
+                                "Regenerate QR code",
+                                "重新生成二维码"
+                            ),
                         )
                         .mt(z(10.0))
                         .on_click(restart),
@@ -367,14 +378,14 @@ impl Root {
             }
             (Some(name), None) => {
                 col = col
-                    .child(medium(tr!("スマホで確認してください", "Check your phone"), 20.0, WHITE()))
-                    .child(text(tr!("{name} としてログインします。スマホの Discord アプリで「はい、ログインします」を押してください。", "Logging in as {name}. Tap \"Yes, log me in\" in the Discord app on your phone.",), 14.0, MUTED()).mt(z(6.0)))
-                    .child(div().mt(z(8.0)).child(link_text("qr_other", tr!("別のアカウントでログイン", "Log in with a different account")).on_click(restart)));
+                    .child(medium(tr!("スマホで確認してください", "Check your phone", "请在手机上确认"), 20.0, WHITE()))
+                    .child(text(tr!("{name} としてログインします。スマホの Discord アプリで「はい、ログインします」を押してください。", "Logging in as {name}. Tap \"Yes, log me in\" in the Discord app on your phone.", "正在以 {name} 的身份登录。请在手机上的 Discord 应用中点击“是的，登录”。",), 14.0, MUTED()).mt(z(6.0)))
+                    .child(div().mt(z(8.0)).child(link_text("qr_other", tr!("別のアカウントでログイン", "Log in with a different account", "使用其他账号登录")).on_click(restart)));
             }
             (None, None) => {
                 col = col
-                    .child(medium(tr!("QRコードでログイン", "Log in with QR Code"), 20.0, WHITE()))
-                    .child(text(tr!("Discord モバイルアプリでスキャンして、すぐにログインできます。パスワードの入力はいりません。", "Scan this with the Discord mobile app to log in instantly. No password needed."), 14.0, MUTED()).mt(z(6.0)));
+                    .child(medium(tr!("QRコードでログイン", "Log in with QR Code", "使用二维码登录"), 20.0, WHITE()))
+                    .child(text(tr!("Discord モバイルアプリでスキャンして、すぐにログインできます。パスワードの入力はいりません。", "Scan this with the Discord mobile app to log in instantly. No password needed.", "用 Discord 手机应用扫描即可立即登录，无需输入密码。"), 14.0, MUTED()).mt(z(6.0)));
             }
         }
         col

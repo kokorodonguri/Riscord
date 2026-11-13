@@ -55,22 +55,22 @@ import java.time.Duration
         detectHorizontalDragGestures(onDragStart={swiping=it.x<with(density) {40.dp.toPx()};drag=0f},onHorizontalDrag={change,amount->if(swiping) {drag+=amount;change.consume()}},onDragEnd={if(swiping&&drag>with(density) {80.dp.toPx()}) model.back();swiping=false})
     }) {
         Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(end=4.dp),verticalAlignment=Alignment.CenterVertically) {
-            MobileIconButton(Glyph.Back,tr("チャンネル一覧に戻る","Back to channels"),model::back)
+            MobileIconButton(Glyph.Back,tr("チャンネル一覧に戻る","Back to channels","返回频道列表"),model::back)
             if(dm) MobileAvatar(if(channel.optInt("type")==3) channel else channelUser(channel),32.dp,channel.optInt("type")==3)
             else MobileIcon(Glyph.Hash,tint=MobileMuted,modifier=Modifier.size(24.dp))
             Column(Modifier.weight(1f).clickable {info=true}.padding(start=10.dp,end=4.dp,top=10.dp,bottom=10.dp)) {
                 Text(channel.channelLabel(),fontWeight=FontWeight.Bold,fontSize=17.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-                Text(if(dm) if(channel.optInt("type")==3) tr("グループDM","Group DM") else tr("ダイレクトメッセージ","Direct Message") else s.guild?.label().orEmpty(),color=MobileMuted,fontSize=11.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(if(dm) if(channel.optInt("type")==3) tr("グループDM","Group DM","群组私信") else tr("ダイレクトメッセージ","Direct Message","私信") else s.guild?.label().orEmpty(),color=MobileMuted,fontSize=11.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
-            if(dm) MobileIconButton(Glyph.Phone,tr("音声通話を開始","Start voice call"),{onVoice(channel,null)},enabled=s.voiceChannel==null,tint=MobileMuted)
-            MobileIconButton(Glyph.More,tr("チャンネル情報","Channel info"),{info=true},tint=MobileMuted)
+            if(dm) MobileIconButton(Glyph.Phone,tr("音声通話を開始","Start voice call","发起语音通话"),{onVoice(channel,null)},enabled=s.voiceChannel==null,tint=MobileMuted)
+            MobileIconButton(Glyph.More,tr("チャンネル情報","Channel info","频道信息"),{info=true},tint=MobileMuted)
         }
         HorizontalDivider(color=Color.White.copy(alpha=.05f))
         if(s.messageLoadFailed && s.messages.isNotEmpty() && !s.loading) {
-            TextButton(onClick=model::retryMessages,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text(tr("メッセージを再読み込み","Reload messages"))}
+            TextButton(onClick=model::retryMessages,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text(tr("メッセージを再読み込み","Reload messages","重新加载消息"))}
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(state=list,reverseLayout=true,contentPadding=PaddingValues(top=12.dp,bottom=12.dp),modifier=Modifier.fillMaxSize().semantics {contentDescription=tr("メッセージ履歴","Message history")}) {
+            LazyColumn(state=list,reverseLayout=true,contentPadding=PaddingValues(top=12.dp,bottom=12.dp),modifier=Modifier.fillMaxSize().semantics {contentDescription=tr("メッセージ履歴","Message history","消息历史")}) {
                 itemsIndexed(s.messages.asReversed(),key={_,message->message.getString("id")}) {reverseIndex,message->
                     val index=s.messages.lastIndex-reverseIndex
                     val older=s.messages.getOrNull(index-1)
@@ -85,32 +85,32 @@ import java.time.Duration
                     Box(Modifier.fillMaxWidth().padding(vertical=12.dp),contentAlignment=Alignment.Center) {
                         if(s.loading) CircularProgressIndicator(Modifier.size(24.dp),strokeWidth=2.dp)
                         else if(s.messageLoadFailed && s.messages.isEmpty()) Column(Modifier.padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                            Text(tr("メッセージを読み込めませんでした","Couldn't load messages"),fontWeight=FontWeight.SemiBold,fontSize=16.sp)
-                            Text(tr("通信状態を確認して再試行してください。","Check your connection and try again."),color=MobileMuted,fontSize=13.sp)
-                            TextButton(onClick=model::retryMessages) {Text(tr("再読み込み","Reload"))}
+                            Text(tr("メッセージを読み込めませんでした","Couldn't load messages","无法加载消息"),fontWeight=FontWeight.SemiBold,fontSize=16.sp)
+                            Text(tr("通信状態を確認して再試行してください。","Check your connection and try again.","请检查网络连接后重试。"),color=MobileMuted,fontSize=13.sp)
+                            TextButton(onClick=model::retryMessages) {Text(tr("再読み込み","Reload","重新加载"))}
                         }
-                        else if(!s.messageLoadFailed&&s.hasMore&&s.messages.isNotEmpty()) TextButton(onClick=model::older) {Text(tr("以前のメッセージを読み込む","Load older messages"),fontSize=12.sp)}
+                        else if(!s.messageLoadFailed&&s.hasMore&&s.messages.isNotEmpty()) TextButton(onClick=model::older) {Text(tr("以前のメッセージを読み込む","Load older messages","加载更早的消息"),fontSize=12.sp)}
                         else if(s.messages.isEmpty()) Column(Modifier.padding(24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                             MobileIcon(if(dm) Glyph.Chat else Glyph.Hash,tint=MobileMuted,modifier=Modifier.size(44.dp))
-                            Text(if(dm) channel.channelLabel() else tr("#${channel.channelLabel()} へようこそ","Welcome to #${channel.channelLabel()}"),fontSize=24.sp,fontWeight=FontWeight.Bold)
-                            Text(if(dm) tr("ここから会話をはじめましょう。","Start the conversation here.") else tr("このチャンネルの最初のメッセージを送信しましょう。","Send the first message in this channel."),color=MobileMuted,fontSize=14.sp)
+                            Text(if(dm) channel.channelLabel() else tr("#${channel.channelLabel()} へようこそ","Welcome to #${channel.channelLabel()}","欢迎来到 #${channel.channelLabel()}"),fontSize=24.sp,fontWeight=FontWeight.Bold)
+                            Text(if(dm) tr("ここから会話をはじめましょう。","Start the conversation here.","从这里开始对话吧。") else tr("このチャンネルの最初のメッセージを送信しましょう。","Send the first message in this channel.","来发送此频道的第一条消息吧。"),color=MobileMuted,fontSize=14.sp)
                         }
                     }
                 }
             }
-            if(!nearBottom&&s.messages.isNotEmpty()) SmallFloatingActionButton(onClick={scope.launch {list.animateScrollToItem(0);followLatest=true}},containerColor=MobileRaised,contentColor=Color.White,modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp)) {MobileIcon(Glyph.Down,tr("最新のメッセージへ","Jump to latest"))}
+            if(!nearBottom&&s.messages.isNotEmpty()) SmallFloatingActionButton(onClick={scope.launch {list.animateScrollToItem(0);followLatest=true}},containerColor=MobileRaised,contentColor=Color.White,modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp)) {MobileIcon(Glyph.Down,tr("最新のメッセージへ","Jump to latest","跳到最新消息"))}
         }
         MessageComposer(s,model,focus,onPickAttachment)
     }
     selected?.let {message->MessageActions(message,s.me?.optString("id").orEmpty(),onDismiss={selected=null},onReply={model.reply(message);selected=null},onEdit={model.beginEdit(message);selected=null},onDelete={deleting=message;selected=null},onReact={model.react(message,it);selected=null})}
-    deleting?.let {message->AlertDialog(onDismissRequest={deleting=null},title={Text(tr("メッセージを削除","Delete message"))},text={Text(tr("このメッセージを削除します。元に戻せません。","This message will be deleted. This can't be undone."))},confirmButton={TextButton(onClick={model.delete(message);deleting=null}) {Text(tr("削除","Delete"),color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={deleting=null}) {Text(tr("キャンセル","Cancel"))}})}
+    deleting?.let {message->AlertDialog(onDismissRequest={deleting=null},title={Text(tr("メッセージを削除","Delete message","删除消息"))},text={Text(tr("このメッセージを削除します。元に戻せません。","This message will be deleted. This can't be undone.","将删除这条消息。此操作无法撤销。"))},confirmButton={TextButton(onClick={model.delete(message);deleting=null}) {Text(tr("削除","Delete","删除"),color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={deleting=null}) {Text(tr("キャンセル","Cancel","取消"))}})}
     if(info) ModalBottomSheet(onDismissRequest={info=false},containerColor=MobileRaised) {
         Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=32.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
             if(dm) MobileAvatar(channelUser(channel),56.dp) else MobileIcon(Glyph.Hash,modifier=Modifier.size(36.dp),tint=MobileMuted)
             Text(channel.channelLabel(),fontSize=24.sp,fontWeight=FontWeight.Bold)
             channel.nonNull("topic")?.let {Text(it,color=MobileMuted)}
             if(!dm) Text(s.guild?.label().orEmpty(),color=MobileMuted)
-            if(dm) OutlinedButton(onClick={onVoice(channel,null);info=false},enabled=s.voiceChannel==null,modifier=Modifier.fillMaxWidth()) {MobileIcon(Glyph.Phone);Spacer(Modifier.width(10.dp));Text(tr("音声通話を開始","Start voice call"))}
+            if(dm) OutlinedButton(onClick={onVoice(channel,null);info=false},enabled=s.voiceChannel==null,modifier=Modifier.fillMaxWidth()) {MobileIcon(Glyph.Phone);Spacer(Modifier.width(10.dp));Text(tr("音声通話を開始","Start voice call","发起语音通话"))}
         }
     }
 }
@@ -123,7 +123,7 @@ import java.time.Duration
 @Composable private fun MobileMessage(message:JSONObject,grouped:Boolean,onLongPress:()->Unit,onReaction:(JSONObject)->Unit,pollPending:Boolean,onPollVote:(Int)->Unit) {
     val author=message.optJSONObject("author") ?: JSONObject()
     val context=LocalContext.current
-    Row(Modifier.fillMaxWidth().combinedClickable(onClick={},onLongClick=onLongPress,onLongClickLabel=tr("メッセージ操作","Message actions")).padding(start=12.dp,end=16.dp,top=if(grouped) 2.dp else 12.dp,bottom=2.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick={},onLongClick=onLongPress,onLongClickLabel=tr("メッセージ操作","Message actions","消息操作")).padding(start=12.dp,end=16.dp,top=if(grouped) 2.dp else 12.dp,bottom=2.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
         if(grouped) Spacer(Modifier.width(38.dp)) else MobileAvatar(author,38.dp)
         Column(Modifier.weight(1f)) {
             message.optJSONObject("referenced_message")?.let {referenced->
@@ -141,7 +141,7 @@ import java.time.Duration
             val content=displayContent(message)
             if(content.isNotBlank()) {
                 Text(richMessage(content),fontSize=15.sp,lineHeight=22.sp)
-                if(message.nonNull("edited_timestamp")!=null) Text(tr("編集済み","edited"),fontSize=10.sp,color=MobileMuted)
+                if(message.nonNull("edited_timestamp")!=null) Text(tr("編集済み","edited","已编辑"),fontSize=10.sp,color=MobileMuted)
             }
             message.optJSONObject("poll")?.let { poll ->
                 Surface(shape=RoundedCornerShape(12.dp),color=MobileRaised,modifier=Modifier.fillMaxWidth().padding(top=6.dp)) {
@@ -157,10 +157,10 @@ import java.time.Duration
                             val enabled=poll.optJSONObject("results")?.optBoolean("is_finalized") == false && !expired && !pollPending
                             Row(Modifier.fillMaxWidth().clickable(enabled=enabled) {onPollVote(answer.optInt("answer_id"))}.padding(vertical=4.dp),horizontalArrangement=Arrangement.SpaceBetween) {
                                 Text("$emoji $label",modifier=Modifier.weight(1f),fontSize=13.sp)
-                                if(count!=null) Text(tr("${count.optInt("count")} 票","${count.optInt("count")} votes")+if(count.optBoolean("me_voted")) tr(" · 回答済み"," · Voted") else "",fontSize=12.sp,color=MobileMuted)
+                                if(count!=null) Text(tr("${count.optInt("count")} 票","${count.optInt("count")} votes","${count.optInt("count")} 票")+if(count.optBoolean("me_voted")) tr(" · 回答済み"," · Voted"," · 已投票") else "",fontSize=12.sp,color=MobileMuted)
                             }
                         }
-                        if(poll.optJSONObject("results")==null) Text(tr("投票結果を取得できませんでした","Couldn't load poll results"),fontSize=11.sp,color=MobileMuted)
+                        if(poll.optJSONObject("results")==null) Text(tr("投票結果を取得できませんでした","Couldn't load poll results","无法获取投票结果"),fontSize=11.sp,color=MobileMuted)
                     }
                 }
             }
@@ -185,7 +185,7 @@ import java.time.Duration
                 AsyncImage(preview(image),image.optString("filename"),Modifier.padding(top=6.dp).fillMaxWidth().heightIn(max=300.dp).aspectRatio(ratio).clip(RoundedCornerShape(14.dp)).background(MobileRaised).clickable {openUrl(context,image.optString("url"))},contentScale=androidx.compose.ui.layout.ContentScale.Fit)
             }
             attachments.filterNot {it in images}.forEach {attachment->Surface(onClick={openUrl(context,attachment.optString("url"))},shape=RoundedCornerShape(12.dp),color=MobileRaised,modifier=Modifier.fillMaxWidth().padding(top=6.dp)) {
-                Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {MobileIcon(Glyph.File,tint=MobileMuted);Text(attachment.optString("filename",tr("添付ファイル","Attachment")),Modifier.weight(1f),fontSize=13.sp,maxLines=2,overflow=TextOverflow.Ellipsis);MobileIcon(Glyph.Download,tint=MobileMuted)}
+                Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {MobileIcon(Glyph.File,tint=MobileMuted);Text(attachment.optString("filename",tr("添付ファイル","Attachment","附件")),Modifier.weight(1f),fontSize=13.sp,maxLines=2,overflow=TextOverflow.Ellipsis);MobileIcon(Glyph.Download,tint=MobileMuted)}
             }}
             message.optJSONArray("embeds")?.objects()?.forEach {embed->
                 Surface(shape=RoundedCornerShape(12.dp),color=MobileRaised,modifier=Modifier.fillMaxWidth().padding(top=6.dp)) {
@@ -227,31 +227,31 @@ private fun richMessage(text:String):AnnotatedString=buildAnnotatedString {
             Row(Modifier.fillMaxWidth().padding(start=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 MobileIcon(if(editing) Glyph.Edit else Glyph.Reply,modifier=Modifier.size(18.dp),tint=MobileAccent)
                 Column(Modifier.weight(1f).padding(vertical=8.dp)) {
-                    Text(if(editing) tr("メッセージを編集","Editing message") else s.reply?.optJSONObject("author")?.label().orEmpty().let {tr("$it に返信","Replying to $it")},fontSize=12.sp,fontWeight=FontWeight.SemiBold)
+                    Text(if(editing) tr("メッセージを編集","Editing message","正在编辑消息") else s.reply?.optJSONObject("author")?.label().orEmpty().let {tr("$it に返信","Replying to $it","回复 $it")},fontSize=12.sp,fontWeight=FontWeight.SemiBold)
                     if(!editing) Text(s.reply?.optString("content").orEmpty(),fontSize=11.sp,color=MobileMuted,maxLines=1,overflow=TextOverflow.Ellipsis)
                 }
-                MobileIconButton(Glyph.Close,if(editing) tr("編集をキャンセル","Cancel edit") else tr("返信を解除","Cancel reply"),{if(editing) model.cancelEdit() else model.reply(null)})
+                MobileIconButton(Glyph.Close,if(editing) tr("編集をキャンセル","Cancel edit","取消编辑") else tr("返信を解除","Cancel reply","取消回复"),{if(editing) model.cancelEdit() else model.reply(null)})
             }
         }
         attachment?.let {item->Surface(shape=RoundedCornerShape(14.dp),color=MobileRaised,modifier=Modifier.padding(bottom=6.dp)) {
             Row(Modifier.fillMaxWidth().padding(start=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 MobileIcon(Glyph.File,tint=MobileAccent)
-                Column(Modifier.weight(1f)) {Text(item.name,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis);Text(tr("送信待ち","Pending")+(if(item.size>=0) " • ${item.size/1024} KB" else ""),fontSize=11.sp,color=MobileMuted)}
-                MobileIconButton(Glyph.Close,tr("添付を取り消す","Remove attachment"),model::removeAttachment,enabled=!s.sending)
+                Column(Modifier.weight(1f)) {Text(item.name,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis);Text(tr("送信待ち","Pending","等待发送")+(if(item.size>=0) " • ${item.size/1024} KB" else ""),fontSize=11.sp,color=MobileMuted)}
+                MobileIconButton(Glyph.Close,tr("添付を取り消す","Remove attachment","移除附件"),model::removeAttachment,enabled=!s.sending)
             }
         }}
         Surface(color=MobileRaised,shape=RoundedCornerShape(if(s.reply!=null||editing) 12.dp else 26.dp),modifier=Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().heightIn(min=54.dp).padding(3.dp),verticalAlignment=Alignment.Bottom) {
-                if(!editing) MobileIconButton(Glyph.Plus,tr("ファイルを添付","Attach file"),{onPickAttachment(id)},enabled=!s.sending,tint=MobileMuted)
+                if(!editing) MobileIconButton(Glyph.Plus,tr("ファイルを添付","Attach file","附加文件"),{onPickAttachment(id)},enabled=!s.sending,tint=MobileMuted)
                 key(editing) {
-                    BasicTextField(text,change,textStyle=MaterialTheme.typography.bodyMedium.copy(color=Color(0xfff1f1f4),fontSize=15.sp,lineHeight=21.sp),cursorBrush=SolidColor(MobileAccent),maxLines=5,keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences,imeAction=ImeAction.Default),modifier=Modifier.weight(1f).padding(horizontal=6.dp,vertical=14.dp).focusRequester(focus).semantics {contentDescription=tr("メッセージ入力","Message input")},decorationBox={inner->Box {if(text.isEmpty()) Text(if(editing) tr("メッセージを編集","Editing message") else "${if(s.channel.optInt("type") in listOf(1,3)) "@" else "#"}${s.channel.channelLabel()} へメッセージ",color=MobileMuted,fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis);inner()}})
+                    BasicTextField(text,change,textStyle=MaterialTheme.typography.bodyMedium.copy(color=Color(0xfff1f1f4),fontSize=15.sp,lineHeight=21.sp),cursorBrush=SolidColor(MobileAccent),maxLines=5,keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences,imeAction=ImeAction.Default),modifier=Modifier.weight(1f).padding(horizontal=6.dp,vertical=14.dp).focusRequester(focus).semantics {contentDescription=tr("メッセージ入力","Message input","消息输入")},decorationBox={inner->Box {if(text.isEmpty()) Text(if(editing) tr("メッセージを編集","Editing message","正在编辑消息") else "${if(s.channel.optInt("type") in listOf(1,3)) "@" else "#"}${s.channel.channelLabel()} へメッセージ",color=MobileMuted,fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis);inner()}})
                 }
                 if(text.isNotBlank()||attachment!=null||editing) {
                     FilledIconButton(onClick=model::send,enabled=!s.sending&&(text.isNotBlank()||!editing&&attachment!=null),shape=CircleShape,modifier=Modifier.size(48.dp),colors=IconButtonDefaults.filledIconButtonColors(containerColor=MobileAccent)) {
                         if(s.sending) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Color.White)
-                        else MobileIcon(if(editing) Glyph.Check else Glyph.Send,if(editing) tr("編集を保存","Save edit") else tr("メッセージを送信","Send message"),modifier=Modifier.size(21.dp),tint=Color.White)
+                        else MobileIcon(if(editing) Glyph.Check else Glyph.Send,if(editing) tr("編集を保存","Save edit","保存编辑") else tr("メッセージを送信","Send message","发送消息"),modifier=Modifier.size(21.dp),tint=Color.White)
                     }
-                } else MobileIconButton(Glyph.Smile,tr("絵文字を選ぶ","Choose emoji"),{emoji=!emoji},tint=MobileMuted)
+                } else MobileIconButton(Glyph.Smile,tr("絵文字を選ぶ","Choose emoji","选择表情"),{emoji=!emoji},tint=MobileMuted)
             }
         }
         s.typing?.let {Text(it,Modifier.padding(start=14.dp,top=4.dp),fontSize=10.sp,color=MobileMuted)}
@@ -268,12 +268,12 @@ private fun richMessage(text:String):AnnotatedString=buildAnnotatedString {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceEvenly) {
                 listOf("👍","❤️","😂","🎉","👀").forEach {emoji->Surface(onClick={onReact(emoji)},shape=CircleShape,color=MobilePanel,modifier=Modifier.size(48.dp)) {Box(contentAlignment=Alignment.Center) {Text(emoji,fontSize=25.sp)}}}
             }
-            Text(displayContent(message).ifBlank {tr("添付メッセージ","Attachment message")},Modifier.padding(vertical=16.dp,horizontal=8.dp),fontSize=13.sp,color=MobileMuted,maxLines=2,overflow=TextOverflow.Ellipsis)
-            SheetAction(Glyph.Reply,tr("返信","Reply"),onReply)
-            SheetAction(Glyph.Copy,tr("テキストをコピー","Copy text"),{clipboard.setPrimaryClip(android.content.ClipData.newPlainText(tr("メッセージ","Messages"),message.optString("content")));onDismiss()})
+            Text(displayContent(message).ifBlank {tr("添付メッセージ","Attachment message","附件消息")},Modifier.padding(vertical=16.dp,horizontal=8.dp),fontSize=13.sp,color=MobileMuted,maxLines=2,overflow=TextOverflow.Ellipsis)
+            SheetAction(Glyph.Reply,tr("返信","Reply","回复"),onReply)
+            SheetAction(Glyph.Copy,tr("テキストをコピー","Copy text","复制文字"),{clipboard.setPrimaryClip(android.content.ClipData.newPlainText(tr("メッセージ","Messages","消息"),message.optString("content")));onDismiss()})
             if(message.optJSONObject("author")?.optString("id")==myId) {
-                SheetAction(Glyph.Edit,tr("編集","Edit"),onEdit)
-                SheetAction(Glyph.Trash,tr("削除","Delete"),onDelete,danger=true)
+                SheetAction(Glyph.Edit,tr("編集","Edit","编辑"),onEdit)
+                SheetAction(Glyph.Trash,tr("削除","Delete","删除"),onDelete,danger=true)
             }
         }
     }

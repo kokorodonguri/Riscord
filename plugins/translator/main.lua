@@ -1,5 +1,6 @@
 local state = riscord.load() or {}
-state.target = state.target or (riscord.language() == "en" and "en" or "ja")
+local default_targets = { en = "en", zh = "zh-CN" }
+state.target = state.target or default_targets[riscord.language()] or "ja"
 state.outgoing = state.outgoing or "en"
 local function valid(value)
   return value and value:match("^[a-zA-Z][a-zA-Z%-]+$") and #value <= 10
@@ -17,6 +18,17 @@ return {
         {kind="input", label="Language code for outgoing messages", action="outgoing"},
         {kind="button", label="Save languages", action="save"},
         {kind="text", label="Even with auto-translate off, you can type $ja hello. To skip auto-translate once, type !tr hello."},
+      }
+    end
+    if riscord.language() == "zh" then
+      return {
+        {kind="text", label="要翻译的正文会发送到 Google 翻译。"},
+        {kind="text", label="收到的消息译为：" .. state.target .. " / 发送的消息译为：" .. state.outgoing},
+        {kind="switch", label="发送时自动翻译", action="toggle_auto", enabled=not not state.auto_send},
+        {kind="input", label="收到消息的语言代码（zh-CN、en、ja 等）", action="target"},
+        {kind="input", label="发送消息的语言代码", action="outgoing"},
+        {kind="button", label="保存语言", action="save"},
+        {kind="text", label="即使关闭自动翻译，也可以像 $en 你好 这样输入。若想临时不使用自动翻译，请输入 !tr 你好。"},
       }
     end
     return {

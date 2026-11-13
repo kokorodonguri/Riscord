@@ -295,7 +295,7 @@ impl Root {
         }
         info = info
             .child(
-                medium("メンバー登録日", 12.0, MUTED())
+                medium(tr!("メンバー登録日", "Member Since"), 12.0, MUTED())
                     .mt(z(14.0))
                     .part(Part::ProfileMuted),
             )
@@ -319,7 +319,7 @@ impl Root {
                 div().p(z(16.0)).child(
                     fill_button_part(
                         "dm_full_profile",
-                        "プロフィール全体を表示",
+                        tr!("プロフィール全体を表示", "View Full Profile"),
                         RAIL(),
                         WHITE(),
                         true,

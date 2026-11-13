@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <application android:name=".RiscordApplication" android:label="Riscord" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false">
+    <application android:name=".RiscordApplication" android:label="Riscord" android:localeConfig="@xml/locales_config" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false">
         <service android:name=".CallService" android:exported="false" android:foregroundServiceType="microphone|mediaPlayback" />
         <service android:name=".ConnectionService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled persistent Discord gateway connection for real-time messages without a push relay" />

@@ -66,7 +66,13 @@ impl App {
         if let Some(code) = self.voice_view.codes.get(channel_id) {
             inv.code = Some(code.clone());
         } else if !self.can_invite(guild_id, channel_id) {
-            inv.error = Some("このチャンネルへの招待を作る権限がありません".into());
+            inv.error = Some(
+                tr!(
+                    "このチャンネルへの招待を作る権限がありません",
+                    "You don't have permission to create invites for this channel"
+                )
+                .into(),
+            );
         } else if self
             .voice_view
             .pending
@@ -102,7 +108,7 @@ impl App {
             return;
         };
         self.clipboard_out = Some(invite_link(&code));
-        self.show_toast("招待リンクをコピーしました");
+        self.show_toast(tr!("招待リンクをコピーしました", "Invite link copied"));
     }
 
     /// 招待リンクを DM（グループ DM も）に送る
@@ -162,10 +168,22 @@ impl App {
                     (Some(c), _) => inv.code = Some(c),
                     (None, Err(e)) => {
                         eprintln!("ボイスの招待を作れませんでした: {e}");
-                        inv.error = Some(api_error_text(&e, "招待リンクを作れませんでした"));
+                        inv.error = Some(api_error_text(
+                            &e,
+                            tr!(
+                                "招待リンクを作れませんでした",
+                                "Couldn't create an invite link"
+                            ),
+                        ));
                     }
                     (None, Ok(_)) => {
-                        inv.error = Some("招待リンクを作れませんでした".into());
+                        inv.error = Some(
+                            tr!(
+                                "招待リンクを作れませんでした",
+                                "Couldn't create an invite link"
+                            )
+                            .into(),
+                        );
                     }
                 }
             }
@@ -183,7 +201,9 @@ impl App {
                             inv.failed.insert(dm);
                         }
                     }
-                    None if !ok => self.show_toast("招待を送れませんでした"),
+                    None if !ok => {
+                        self.show_toast(tr!("招待を送れませんでした", "Couldn't send the invite"))
+                    }
                     None => {}
                 }
             }

@@ -14,17 +14,17 @@ import org.json.JSONObject
 fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJSONObject(it) }
 fun JSONObject.label(): String = optString("global_name").takeIf { it.isNotBlank() && it != "null" }
     ?: optString("name").takeIf { it.isNotBlank() && it != "null" }
-    ?: optString("username", "不明")
+    ?: optString("username", tr("不明","Unknown"))
 fun JSONObject.channelLabel(): String = optString("name").takeIf { it.isNotBlank() && it != "null" }
     ?: optJSONArray("recipients")?.objects()?.joinToString(", ") { it.label() }?.takeIf { it.isNotBlank() } ?: "DM"
 
 /** 無料アカウントで送れる添付の上限（Rust 側の UPLOAD_LIMIT と同じ） */
 const val UPLOAD_LIMIT=10L*1024*1024
 private const val INCOMING_CALL_NOTIFICATION=30
-private const val CHANNEL_LOAD_ERROR="チャンネルを読み込めませんでした。通信状態を確認して再試行してください。"
-private const val HOME_LOAD_ERROR="メッセージとサーバーを読み込めませんでした。通信状態を確認して再試行してください。"
-private const val MESSAGE_LOAD_ERROR="メッセージを読み込めませんでした。通信状態を確認して再試行してください。"
-private const val OLDER_LOAD_ERROR="以前のメッセージを読み込めませんでした。再試行してください。"
+private val CHANNEL_LOAD_ERROR get()=tr("チャンネルを読み込めませんでした。通信状態を確認して再試行してください。","Couldn't load channels. Check your connection and try again.")
+private val HOME_LOAD_ERROR get()=tr("メッセージとサーバーを読み込めませんでした。通信状態を確認して再試行してください。","Couldn't load messages and servers. Check your connection and try again.")
+private val MESSAGE_LOAD_ERROR get()=tr("メッセージを読み込めませんでした。通信状態を確認して再試行してください。","Couldn't load messages. Check your connection and try again.")
+private val OLDER_LOAD_ERROR get()=tr("以前のメッセージを読み込めませんでした。再試行してください。","Couldn't load older messages. Please try again.")
 
 data class PendingAttachment(val uri:android.net.Uri,val name:String,val size:Long)
 data class ChatState(
@@ -129,7 +129,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private suspend fun restore() {
         val token = try { store.load() } catch (e: Exception) {
             store.clear()
-            state.update { it.copy(error = "保存済みログインを読み込めませんでした。ログインし直してください。") }
+            state.update { it.copy(error = tr("保存済みログインを読み込めませんでした。ログインし直してください。","Couldn't load your saved login. Please log in again.")) }
             return
         } ?: return
         state.update { it.copy(restoring = true, connection = "接続中") }
@@ -144,7 +144,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 return
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                state.update { it.copy(connection = "接続できません。${wait / 1000}秒後に再試行します", error = "接続できませんでした。通信状態を確認してください。") }
+                state.update { it.copy(connection = tr("接続できません。${wait / 1000}秒後に再試行します","Can't connect. Retrying in ${wait / 1000} seconds"), error = tr("接続できませんでした。通信状態を確認してください。","Couldn't connect. Check your connection.")) }
             }
             delay(wait)
             wait = (wait * 2).coerceAtMost(60_000)
@@ -187,7 +187,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     /** トークンが無効になったとき。保存を消してログイン画面へ戻す */
     private fun expire(message: String?) {
         logout()
-        state.update { it.copy(error = message ?: "ログインの有効期限が切れました。もう一度ログインしてください。") }
+        state.update { it.copy(error = message ?: tr("ログインの有効期限が切れました。もう一度ログインしてください。","Your login has expired. Please log in again.")) }
     }
     private suspend fun refreshHome() {
         val session=handle
@@ -252,7 +252,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 val me=state.value.me?.optString("id")
                 if(ringing!=null && (0 until ringing.length()).any {ringing.optString(it)==me}) {
                     val channel=state.value.dms.firstOrNull {it.optString("id")==d.optString("channel_id")}
-                        ?: JSONObject().put("id",d.optString("channel_id")).put("type",1).put("name","DM通話")
+                        ?: JSONObject().put("id",d.optString("channel_id")).put("type",1).put("name",tr("DM通話","DM call"))
                     state.update {it.copy(incomingCall=channel)}
                     if(!foreground) notifyIncomingCall(channel)
                 } else { state.update {it.copy(incomingCall=null)}; cancelIncomingCallNotification() }
@@ -262,14 +262,14 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 val status=d.optString("status")
                 state.update { it.copy(voiceStatus=status,voiceChannel=d.optString("channel_id").takeIf {id->id.isNotEmpty()},
                     speaker=if(status=="未接続") false else it.speaker,
-                    error=if(d.optString("error").isNotEmpty()) "通話に接続できませんでした。通信状態を確認して再試行してください。" else it.error) }
+                    error=if(d.optString("error").isNotEmpty()) tr("通話に接続できませんでした。通信状態を確認して再試行してください。","Couldn't join the call. Check your connection and try again.") else it.error) }
                 if(status=="未接続") getApplication<Application>().stopService(android.content.Intent(getApplication(),CallService::class.java))
                 updateGateway()
             }
             "LOGIN_TOKEN" -> task { connect(d.getString("token"), true) }
             "LOGIN_MFA" -> state.update { it.copy(ticket = d.getString("ticket"), loginBusy = false) }
             "LOGIN_QR" -> state.update { it.copy(qr = d.optJSONObject("modules"), loginBusy = false) }
-            "LOGIN_SCANNED" -> state.update { it.copy(connection = "${d.optString("name")} の承認待ち") }
+            "LOGIN_SCANNED" -> state.update { it.copy(connection = d.optString("name").let {tr("$it の承認待ち","Waiting for $it to approve")}) }
             "ERROR" -> state.update { it.copy(error = d.optString("message"), loginBusy = false) }
             "AUTH_EXPIRED" -> if (state.value.me != null) expire(null)
             "CONNECTION" -> state.update { it.copy(connection = d.optString("status")) }
@@ -330,7 +330,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                     val info=member?.optJSONObject("user") ?: d.optJSONObject("user")
                         ?: current.channel?.optJSONArray("recipients")?.objects()?.firstOrNull {it.optString("id")==user}
                         ?: current.messages.firstOrNull {it.optJSONObject("author")?.optString("id")==user}?.optJSONObject("author")
-                    val name=member?.nonNull("nick") ?: info?.label() ?: "誰か"
+                    val name=member?.nonNull("nick") ?: info?.label() ?: tr("誰か","Someone")
                     typingTracker.start(user,name)
                     refreshTyping()
                 }
@@ -500,7 +500,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val owner=ownerId ?: return@task
         if(state.value.me?.optString("id")!=owner) return@task
         val attachment=withContext(Dispatchers.IO) {
-            var name="添付ファイル"; var size=-1L
+            var name=tr("添付ファイル","Attachment"); var size=-1L
             getApplication<Application>().contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME,android.provider.OpenableColumns.SIZE),null,null,null)?.use {cursor->
                 if(cursor.moveToFirst()) {name=cursor.getString(0) ?: name; if(!cursor.isNull(1)) size=cursor.getLong(1)}
             }
@@ -611,7 +611,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             } catch(e: CancellationException) { throw e }
             catch(e: AuthExpiredException) { expire(e.message) }
             catch(e: Exception) {
-                if(state.value.me?.optString("id")==id) state.update { it.copy(profileLoading=false,profileError="プロフィールを読み込めませんでした。通信状態を確認して再試行してください。") }
+                if(state.value.me?.optString("id")==id) state.update { it.copy(profileLoading=false,profileError=tr("プロフィールを読み込めませんでした。通信状態を確認して再試行してください。","Couldn't load your profile. Check your connection and try again.")) }
             }
         }
     }
@@ -651,7 +651,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             } catch(e: CancellationException) { throw e }
             catch(e: AuthExpiredException) { expire(e.message) }
             catch(e: Exception) {
-                if(state.value.me?.optString("id")==userId) state.update {it.copy(profileSaving=false,profileError=if(savedAny) "一部の変更を保存できませんでした。内容を確認して再試行してください。" else "プロフィールを保存できませんでした。内容を確認して再試行してください。")}
+                if(state.value.me?.optString("id")==userId) state.update {it.copy(profileSaving=false,profileError=if(savedAny) tr("一部の変更を保存できませんでした。内容を確認して再試行してください。","Some changes couldn't be saved. Check them and try again.") else tr("プロフィールを保存できませんでした。内容を確認して再試行してください。","Couldn't save your profile. Check it and try again."))}
             }
         }
     }
@@ -672,7 +672,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             if(enabled) app.startForegroundService(intent) else app.stopService(intent)
             state.update { it.copy(persistent=enabled) }
             updateGateway()
-        } catch(e:Exception) { state.update { it.copy(error="通知の接続を開始できませんでした。アプリを開いた状態で再試行してください。") } }
+        } catch(e:Exception) { state.update { it.copy(error=tr("通知の接続を開始できませんでした。アプリを開いた状態で再試行してください。","Couldn't start the notification connection. Try again with the app open.")) } }
     }
     private fun canNotify(app:Application)=android.os.Build.VERSION.SDK_INT<33 || app.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)==android.content.pm.PackageManager.PERMISSION_GRANTED
     private fun notifyMessage(message: JSONObject) {
@@ -686,8 +686,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val intent=android.content.Intent(app,MainActivity::class.java).putExtra("channel_id",channelId).addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val open=android.app.PendingIntent.getActivity(app,channelId.hashCode(),intent,android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
         val notification=android.app.Notification.Builder(app,"messages").setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(message.optJSONObject("author")?.label() ?: "メッセージ")
-            .setContentText(message.optString("content").ifBlank { "添付ファイル" }).setContentIntent(open).setAutoCancel(true).build()
+            .setContentTitle(message.optJSONObject("author")?.label() ?: tr("メッセージ","Message"))
+            .setContentText(message.optString("content").ifBlank { tr("添付ファイル","Attachment") }).setContentIntent(open).setAutoCancel(true).build()
         app.getSystemService(android.app.NotificationManager::class.java).notify(channelId.hashCode(),notification)
     }
     private fun notifyIncomingCall(channel:JSONObject) {
@@ -695,7 +695,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(!canNotify(app)) return
         val open=android.app.PendingIntent.getActivity(app,INCOMING_CALL_NOTIFICATION,android.content.Intent(app,MainActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP),android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
         val notification=android.app.Notification.Builder(app,"incoming_calls").setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("着信").setContentText(channel.channelLabel()).setCategory(android.app.Notification.CATEGORY_CALL)
+            .setContentTitle(tr("着信","Incoming call")).setContentText(channel.channelLabel()).setCategory(android.app.Notification.CATEGORY_CALL)
             .setContentIntent(open).setAutoCancel(true).setTimeoutAfter(60_000).build()
         app.getSystemService(android.app.NotificationManager::class.java).notify(INCOMING_CALL_NOTIFICATION,notification)
     }

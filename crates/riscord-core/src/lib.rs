@@ -1,4 +1,7 @@
 //! UI-independent modules shared with the desktop client.
+#[macro_use]
+#[path = "../../../src/i18n.rs"]
+pub mod i18n;
 #[path = "../../../src/login.rs"]
 pub mod login;
 #[path = "../../../src/model.rs"]

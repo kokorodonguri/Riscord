@@ -39,20 +39,32 @@ pub fn profile_bodies(
 ) -> Result<(Option<serde_json::Value>, Option<serde_json::Value>), &'static str> {
     let nick = draft.nick.trim();
     if nick.chars().count() > NICK_MAX {
-        return Err("ニックネームは 32 文字までです");
+        return Err(tr!(
+            "ニックネームは 32 文字までです",
+            "Nicknames can be up to 32 characters"
+        ));
     }
     if draft.bio.chars().count() > BIO_MAX {
-        return Err("自己紹介は 190 文字までです");
+        return Err(tr!(
+            "自己紹介は 190 文字までです",
+            "About Me can be up to 190 characters"
+        ));
     }
     if draft.pronouns.trim().chars().count() > PRONOUNS_MAX {
-        return Err("代名詞は 40 文字までです");
+        return Err(tr!(
+            "代名詞は 40 文字までです",
+            "Pronouns can be up to 40 characters"
+        ));
     }
     let nick_body = (nick != original.nick.trim()).then(|| {
         // 空にするとニックネームを外す
         serde_json::json!({ "nick": if nick.is_empty() { serde_json::Value::Null } else { nick.into() } })
     });
     if nick_body.is_some() && !nick_allowed {
-        return Err("このサーバーでニックネームを変える権限がありません");
+        return Err(tr!(
+            "このサーバーでニックネームを変える権限がありません",
+            "You don't have permission to change your nickname in this server"
+        ));
     }
     let mut profile = serde_json::Map::new();
     if draft.bio != original.bio {
@@ -63,7 +75,7 @@ pub fn profile_bodies(
     }
     let profile_body = (!profile.is_empty()).then_some(serde_json::Value::Object(profile));
     if nick_body.is_none() && profile_body.is_none() {
-        return Err("変更がありません");
+        return Err(tr!("変更がありません", "No changes"));
     }
     Ok((nick_body, profile_body))
 }
@@ -88,9 +100,13 @@ impl App {
         });
         self.guild_profile = Some(GuildProfileEdit {
             guild_id: guild_id.to_owned(),
-            error: load
-                .is_none()
-                .then(|| "読み込めませんでした。再接続してください".into()),
+            error: load.is_none().then(|| {
+                tr!(
+                    "読み込めませんでした。再接続してください",
+                    "Couldn't load. Please reconnect"
+                )
+                .into()
+            }),
             load,
             ..Default::default()
         });
@@ -147,7 +163,13 @@ impl App {
         }
         let e = self.guild_profile.as_mut().unwrap();
         e.pending = pending;
-        e.error = failed.then(|| "送信できませんでした。再接続してください".into());
+        e.error = failed.then(|| {
+            tr!(
+                "送信できませんでした。再接続してください",
+                "Couldn't send. Please reconnect"
+            )
+            .into()
+        });
     }
 
     pub fn is_guild_profile_request(&self, id: u64) -> bool {
@@ -173,7 +195,10 @@ impl App {
                     e.original = Some(values);
                 }
                 Err(err) => {
-                    e.error = Some(super::pins::api_error_text(&err, "読み込めませんでした"))
+                    e.error = Some(super::pins::api_error_text(
+                        &err,
+                        tr!("読み込めませんでした", "Couldn't load"),
+                    ))
                 }
             }
             return;
@@ -194,7 +219,12 @@ impl App {
                     }
                 }
             }
-            Err(err) => e.error = Some(super::pins::api_error_text(&err, "保存できませんでした")),
+            Err(err) => {
+                e.error = Some(super::pins::api_error_text(
+                    &err,
+                    tr!("保存できませんでした", "Couldn't save"),
+                ))
+            }
         }
         // 失敗したときは下書きを残し、直してもう一度保存できるようにする
         if e.pending.is_empty() && e.error.is_none() {
@@ -204,7 +234,10 @@ impl App {
             if let Some(me) = self.me.as_ref() {
                 self.profiles.remove(&net::profile_key(&me.id, Some(&gid)));
             }
-            self.show_toast("サーバープロフィールを保存しました");
+            self.show_toast(tr!(
+                "サーバープロフィールを保存しました",
+                "Server profile saved"
+            ));
         }
     }
 }

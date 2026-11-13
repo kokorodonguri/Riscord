@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[macro_use]
+mod i18n;
 mod app;
 mod cache;
 mod clip;
@@ -35,5 +37,6 @@ fn main() {
         );
         return;
     }
+    app::init_language();
     ui::run();
 }

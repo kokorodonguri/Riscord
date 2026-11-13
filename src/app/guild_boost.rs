@@ -52,10 +52,15 @@ impl App {
     /// メニューの 1 行目の文
     pub fn boost_label(&self, guild_id: &str) -> String {
         match self.guild_boost.get(guild_id) {
-            Some((0, 0)) => "サーバーブースト: まだありません".into(),
-            Some((0, n)) => format!("サーバーブースト: {n} ブースト"),
-            Some((tier, n)) => format!("サーバーブースト: レベル {tier}（{n} ブースト）"),
-            None => "サーバーブースト".into(),
+            Some((0, 0)) => {
+                tr!("サーバーブースト: まだありません", "Server Boost: none yet").into()
+            }
+            Some((0, n)) => tr!("サーバーブースト: {n} ブースト", "Server Boost: {n} boosts",),
+            Some((tier, n)) => tr!(
+                "サーバーブースト: レベル {tier}（{n} ブースト）",
+                "Server Boost: Level {tier} ({n} boosts)",
+            ),
+            None => tr!("サーバーブースト", "Server Boost").into(),
         }
     }
 }

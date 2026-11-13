@@ -37,18 +37,26 @@ pub fn http_status(e: &str) -> Option<u16> {
 /// 失敗を利用者向けの短い言葉にする
 pub fn api_error_text(e: &str, what: &str) -> String {
     match http_status(e) {
-        Some(403) => format!("{what}: 権限がありません"),
-        Some(404) => format!("{what}: 見つかりません"),
-        Some(429) => format!("{what}: 操作が多すぎます。しばらく待ってください"),
-        Some(s) if s >= 500 => format!("{what}: Discord 側の障害です"),
-        _ => format!("{what}: 通信できませんでした"),
+        Some(403) => tr!("{what}: 権限がありません", "{what}: Missing permissions",),
+        Some(404) => tr!("{what}: 見つかりません", "{what}: Not found",),
+        Some(429) => tr!(
+            "{what}: 操作が多すぎます。しばらく待ってください",
+            "{what}: Too many requests. Please wait a moment",
+        ),
+        Some(s) if s >= 500 => tr!(
+            "{what}: Discord 側の障害です",
+            "{what}: Discord is having problems",
+        ),
+        _ => tr!("{what}: 通信できませんでした", "{what}: Couldn't connect",),
     }
 }
 
 /// ピン一覧の1ページを読む
 fn parse_pins(v: serde_json::Value) -> Result<(Vec<PinItem>, bool), String> {
     let has_more = v["has_more"].as_bool().unwrap_or(false);
-    let items = v["items"].as_array().ok_or("items がありません")?;
+    let items = v["items"]
+        .as_array()
+        .ok_or(tr!("items がありません", "Missing items"))?;
     let mut out = Vec::with_capacity(items.len());
     for it in items {
         let Some(at) = it["pinned_at"].as_str() else {
@@ -63,7 +71,11 @@ fn parse_pins(v: serde_json::Value) -> Result<(Vec<PinItem>, bool), String> {
         }
     }
     if out.is_empty() && (!items.is_empty() || has_more) {
-        return Err("ピン一覧のページを読み取れません".into());
+        return Err(tr!(
+            "ピン一覧のページを読み取れません",
+            "Can't read the page of pins"
+        )
+        .into());
     }
     Ok((out, has_more))
 }
@@ -164,7 +176,7 @@ impl App {
             if let Some(p) = self.pins.as_mut() {
                 p.failed_before = p.loading.take();
                 p.request = None;
-                p.error = Some("ピン留めされたメッセージを読み込めませんでした。接続を確認して再試行してください".into());
+                p.error = Some(tr!("ピン留めされたメッセージを読み込めませんでした。接続を確認して再試行してください", "Couldn't load pinned messages. Check your connection and try again").into());
                 p.rev += 1;
             }
         }
@@ -217,13 +229,20 @@ impl App {
         let result = match result {
             Ok(v) => parse_pins(v).map_err(|e| {
                 eprintln!("ピン一覧を読めませんでした: {e}");
-                "ピン留めされたメッセージを読み取れませんでした。再試行してください".to_string()
+                tr!(
+                    "ピン留めされたメッセージを読み取れませんでした。再試行してください",
+                    "Couldn't read pinned messages. Please try again"
+                )
+                .to_string()
             }),
             Err(e) => {
                 eprintln!("ピン一覧を読めませんでした: {e}");
                 Err(api_error_text(
                     &e,
-                    "ピン留めされたメッセージを読み込めませんでした",
+                    tr!(
+                        "ピン留めされたメッセージを読み込めませんでした",
+                        "Couldn't load pinned messages"
+                    ),
                 ))
             }
         };
@@ -268,9 +287,15 @@ impl App {
             .is_some_and(|b| b.cmd.send(Cmd::Api { id: 0, call }).is_ok());
         if !queued {
             self.show_toast(if pin {
-                "ピン留めできませんでした。接続を確認して再試行してください"
+                tr!(
+                    "ピン留めできませんでした。接続を確認して再試行してください",
+                    "Couldn't pin. Check your connection and try again"
+                )
             } else {
-                "ピン留めを外せませんでした。接続を確認して再試行してください"
+                tr!(
+                    "ピン留めを外せませんでした。接続を確認して再試行してください",
+                    "Couldn't unpin. Check your connection and try again"
+                )
             });
         }
     }
@@ -286,21 +311,24 @@ impl App {
             Ok(_) => {
                 self.on_pin_changed(&channel_id, &message_id, pin);
                 self.show_toast(if pin {
-                    "メッセージをピン留めしました"
+                    tr!("メッセージをピン留めしました", "Message pinned")
                 } else {
-                    "ピン留めを外しました"
+                    tr!("ピン留めを外しました", "Unpinned")
                 });
             }
             Err(e) => {
                 eprintln!("ピン留めの変更に失敗しました: {e}");
                 let what = if pin {
-                    "ピン留めできませんでした"
+                    tr!("ピン留めできませんでした", "Couldn't pin")
                 } else {
-                    "ピン留めを外せませんでした"
+                    tr!("ピン留めを外せませんでした", "Couldn't unpin")
                 };
                 let text = match (http_status(&e), e.contains("30003")) {
                     // 1チャンネル 250 件まで
-                    (_, true) => format!("{what}: ピン留めの上限に達しています"),
+                    (_, true) => tr!(
+                        "{what}: ピン留めの上限に達しています",
+                        "{what}: The pin limit has been reached",
+                    ),
                     _ => api_error_text(&e, what),
                 };
                 self.show_toast(&text);

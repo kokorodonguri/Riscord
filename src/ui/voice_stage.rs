@@ -12,8 +12,18 @@ use crate::model::{Channel, User};
 
 /// この OS で画面共有・配信の視聴ができるか（golive/media.rs の platform と同じ条件）
 pub const SCREEN_SHARE: bool = cfg!(target_os = "linux");
-pub const SCREEN_SHARE_UNSUPPORTED: &str = "この OS では画面共有にまだ対応していません";
-const WATCH_UNSUPPORTED: &str = "この OS では配信の視聴にまだ対応していません";
+pub fn screen_share_unsupported() -> &'static str {
+    tr!(
+        "この OS では画面共有にまだ対応していません",
+        "Screen sharing isn't supported on this OS yet"
+    )
+}
+fn watch_unsupported() -> &'static str {
+    tr!(
+        "この OS では配信の視聴にまだ対応していません",
+        "Watching streams isn't supported on this OS yet"
+    )
+}
 
 /// 中身の最大幅（広い画面でタイルが間延びしないように）
 const MAX_W: f32 = 1040.0;
@@ -278,26 +288,37 @@ impl Root {
                     .child(icon(IconName::CircleAlert, 16.0, RED()))
                     .child(
                         line(
-                            format!("{msg}。通信状態と音声設定を確認してください"),
+                            tr!(
+                                "{msg}。通信状態と音声設定を確認してください",
+                                "{msg}. Check your connection and audio settings",
+                            ),
                             13.0,
                             TEXT(),
                         )
                         .flex_1()
                         .min_w_0(),
                     )
-                    .child(small_button("vc_retry", "再試行").on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.app.join_voice(Some(g.clone()), c.clone(), false);
-                            cx.notify();
-                        },
-                    )))
+                    .child(
+                        small_button("vc_retry", tr!("再試行", "Retry")).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.app.join_voice(Some(g.clone()), c.clone(), false);
+                                cx.notify();
+                            },
+                        )),
+                    )
                     .into_any_element(),
             );
         }
         let msg = match link {
-            Link::Reconnecting => "サーバーとの接続が切れました。再接続しています…",
+            Link::Reconnecting => tr!(
+                "サーバーとの接続が切れました。再接続しています…",
+                "Lost connection to the server. Reconnecting…"
+            ),
             Link::Idle { .. } if !self.app.gateway_ok() => {
-                "サーバーにつながっていません。つながるとボイスに参加できます"
+                tr!(
+                    "サーバーにつながっていません。つながるとボイスに参加できます",
+                    "Not connected to the server. You can join voice once connected"
+                )
             }
             _ => return None,
         };
@@ -360,7 +381,11 @@ impl Root {
                         .max_w_full()
                         .truncate(),
                 )
-                .child(text("今は誰もいません", 14.0, MUTED()))
+                .child(text(
+                    tr!("今は誰もいません", "No one is here right now"),
+                    14.0,
+                    MUTED(),
+                ))
                 .into_any_element();
         }
         let (_, tw, th) = tile_layout(faces.len(), content_w, tiles_h);
@@ -439,18 +464,18 @@ impl Root {
                                     .px(z(6.0))
                                     .rounded(z(4.0))
                                     .bg(Color32::from_black_alpha(150))
-                                    .child(text("視聴中", 11.0, Color32::WHITE)),
+                                    .child(text(tr!("視聴中", "Watching"), 11.0, Color32::WHITE)),
                             )
                         }),
                 );
                 if !f.me && !watched {
                     if !SCREEN_SHARE {
-                        tile = tile.tooltip(tip(WATCH_UNSUPPORTED));
+                        tile = tile.tooltip(tip(watch_unsupported()));
                     } else if here {
                         let uid = f.id.clone();
                         tile = tile
                             .cursor_pointer()
-                            .tooltip(tip("配信を見る"))
+                            .tooltip(tip(tr!("配信を見る", "Watch stream")))
                             .child(
                                 div()
                                     .absolute()
@@ -467,7 +492,11 @@ impl Root {
                                             .py(z(6.0))
                                             .rounded(z(8.0))
                                             .bg(WIDGET())
-                                            .child(text("配信を見る", 14.0, WHITE())),
+                                            .child(text(
+                                                tr!("配信を見る", "Watch stream"),
+                                                14.0,
+                                                WHITE(),
+                                            )),
                                     ),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -475,8 +504,10 @@ impl Root {
                                 cx.notify();
                             }));
                     } else {
-                        tile =
-                            tile.tooltip(tip("配信を見るには、このチャンネルに参加してください"));
+                        tile = tile.tooltip(tip(tr!(
+                            "配信を見るには、このチャンネルに参加してください",
+                            "Join this channel to watch the stream"
+                        )));
                     }
                 }
             }
@@ -503,9 +534,16 @@ impl Root {
                 .gap(z(10.0))
                 .child(icon(IconName::Gamepad2, 20.0, MUTED()))
                 .child(
-                    line("アクティビティはまだ始まっていません", 14.0, TEXT())
-                        .flex_1()
-                        .min_w_0(),
+                    line(
+                        tr!(
+                            "アクティビティはまだ始まっていません",
+                            "No activity has started yet"
+                        ),
+                        14.0,
+                        TEXT(),
+                    )
+                    .flex_1()
+                    .min_w_0(),
                 )
                 .into_any_element();
         }
@@ -518,13 +556,19 @@ impl Root {
             .gap(z(10.0))
             .child(activity_art(art))
             .child(medium(
-                "アクティビティはまだ始まっていません",
+                tr!(
+                    "アクティビティはまだ始まっていません",
+                    "No activity has started yet"
+                ),
                 if content_w < 420.0 { 14.0 } else { 16.0 },
                 WHITE(),
             ))
             .child(
                 text(
-                    "Riscord はアクティビティの起動・参加にまだ対応していません",
+                    tr!(
+                        "Riscord はアクティビティの起動・参加にまだ対応していません",
+                        "Riscord doesn't support launching or joining activities yet"
+                    ),
                     13.0,
                     MUTED(),
                 )
@@ -549,21 +593,26 @@ impl Root {
             .items_center()
             .gap(z(8.0))
             .child(
-                pill("vc_invite", IconName::UserPlus, "ボイスに招待", labels)
-                    .tooltip(tip("ボイスに招待"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.app.open_voice_invite(&g1, &c1);
-                        cx.notify();
-                    })),
+                pill(
+                    "vc_invite",
+                    IconName::UserPlus,
+                    tr!("ボイスに招待", "Invite to Voice"),
+                    labels,
+                )
+                .tooltip(tip(tr!("ボイスに招待", "Invite to Voice")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.app.open_voice_invite(&g1, &c1);
+                    cx.notify();
+                })),
             )
             .child(
                 pill(
                     "vc_activity",
                     IconName::Rocket,
-                    "アクティビティを選ぶ",
+                    tr!("アクティビティを選ぶ", "Choose an activity"),
                     labels,
                 )
-                .tooltip(tip("アクティビティを選ぶ"))
+                .tooltip(tip(tr!("アクティビティを選ぶ", "Choose an activity")))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app.toggle_voice_activity();
                     cx.notify();
@@ -589,9 +638,9 @@ impl Root {
                             true,
                         )
                         .tooltip(tip(if off {
-                            "ミュート解除"
+                            tr!("ミュート解除", "Unmute")
                         } else {
-                            "ミュート"
+                            tr!("ミュート", "Mute")
                         }))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.toggle_mute();
@@ -611,9 +660,9 @@ impl Root {
                             true,
                         )
                         .tooltip(tip(if deaf {
-                            "スピーカーミュート解除"
+                            tr!("スピーカーミュート解除", "Undeafen")
                         } else {
-                            "スピーカーミュート"
+                            tr!("スピーカーミュート", "Deafen")
                         }))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.toggle_deaf();
@@ -635,13 +684,16 @@ impl Root {
                             enabled,
                         )
                         .tooltip(tip(if !SCREEN_SHARE {
-                            SCREEN_SHARE_UNSUPPORTED
+                            screen_share_unsupported()
                         } else if sharing {
-                            "画面共有を停止"
+                            tr!("画面共有を停止", "Stop sharing")
                         } else if enabled {
-                            "画面を共有"
+                            tr!("画面を共有", "Share screen")
                         } else {
-                            "再接続が終わると画面を共有できます"
+                            tr!(
+                                "再接続が終わると画面を共有できます",
+                                "You can share your screen once reconnected"
+                            )
                         }));
                         if enabled {
                             b.on_click(cx.listener(|this, _, _, cx| {
@@ -654,7 +706,7 @@ impl Root {
                     })
                     .child(
                         ctl("vc_leave", IconName::PhoneOff, RED(), Color32::WHITE, true)
-                            .tooltip(tip("切断"))
+                            .tooltip(tip(tr!("切断", "Disconnected")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.leave_voice();
                                 cx.notify();
@@ -666,10 +718,10 @@ impl Root {
                 .items_center()
                 .gap(z(10.0))
                 .child(spinner(20.0))
-                .child(text("接続中…", 14.0, MUTED()))
+                .child(text(tr!("接続中…", "Connecting…"), 14.0, MUTED()))
                 .child(
                     ctl("vc_leave", IconName::PhoneOff, RED(), Color32::WHITE, true)
-                        .tooltip(tip("接続をやめる"))
+                        .tooltip(tip(tr!("接続をやめる", "Disconnect")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.leave_voice();
                             cx.notify();
@@ -681,9 +733,9 @@ impl Root {
                 let b = fill_button(
                     "vc_join",
                     if elsewhere {
-                        "このチャンネルに移動"
+                        tr!("このチャンネルに移動", "Move to this channel")
                     } else {
-                        "ボイスに参加"
+                        tr!("ボイスに参加", "Join Voice")
                     },
                     GREEN(),
                     Color32::WHITE,
@@ -695,7 +747,10 @@ impl Root {
                         cx.notify();
                     }))
                 } else {
-                    b.tooltip(tip("サーバーにつながるまでお待ちください"))
+                    b.tooltip(tip(tr!(
+                        "サーバーにつながるまでお待ちください",
+                        "Wait until connected to the server"
+                    )))
                 })
             }
         };
@@ -735,10 +790,14 @@ impl Root {
                     .items_center()
                     .gap(z(6.0))
                     .child(
-                        medium(format!("「{cname}」に友達を招待"), 18.0, WHITE())
-                            .flex_1()
-                            .min_w_0()
-                            .truncate(),
+                        medium(
+                            tr!("「{cname}」に友達を招待", "Invite friends to \"{cname}\"",),
+                            18.0,
+                            WHITE(),
+                        )
+                        .flex_1()
+                        .min_w_0()
+                        .truncate(),
                     )
                     .child(icon_button("vc_invite_close", IconName::X, 28.0).on_click(
                         cx.listener(|this, _, _, cx| {
@@ -769,13 +828,22 @@ impl Root {
                     .items_center()
                     .gap(z(8.0))
                     .child(spinner(14.0))
-                    .child(text("招待リンクを作っています…", 14.0, MUTED())),
-                (None, false) => line("招待リンクはありません", 14.0, FAINT()).flex_1(),
+                    .child(text(
+                        tr!("招待リンクを作っています…", "Creating an invite link…"),
+                        14.0,
+                        MUTED(),
+                    )),
+                (None, false) => line(
+                    tr!("招待リンクはありません", "No invite link"),
+                    14.0,
+                    FAINT(),
+                )
+                .flex_1(),
             })
             .child({
                 let b = fill_button(
                     "vc_invite_copy",
-                    "コピー",
+                    tr!("コピー", "Copy"),
                     BLURPLE(),
                     Color32::WHITE,
                     link.is_some(),
@@ -789,7 +857,9 @@ impl Root {
                     b
                 }
             });
-        content = content.child(field).child(text("DM で送る", 13.0, MUTED()));
+        content = content
+            .child(field)
+            .child(text(tr!("DM で送る", "Send via DM"), 13.0, MUTED()));
         let mut list = div()
             .id("vc_invite_list")
             .max_h(z(list_h))
@@ -801,7 +871,10 @@ impl Root {
             list = list.child(spinner(16.0));
         } else if a.dms.is_empty() {
             list = list.child(text(
-                "送れる DM がありません。リンクをコピーして共有してください",
+                tr!(
+                    "送れる DM がありません。リンクをコピーして共有してください",
+                    "No DMs to send to. Copy the link to share it"
+                ),
                 13.0,
                 FAINT(),
             ));
@@ -827,13 +900,13 @@ impl Root {
             let b = fill_button(
                 eid("vc_send", &dm.id, i),
                 if sent {
-                    "送信済み"
+                    tr!("送信済み", "Sent")
                 } else if busy {
-                    "送信中…"
+                    tr!("送信中…", "Sending…")
                 } else if failed {
-                    "再送信"
+                    tr!("再送信", "Resend")
                 } else {
-                    "送信"
+                    tr!("送信", "Send")
                 },
                 if failed { RED() } else { GREEN() },
                 Color32::WHITE,
@@ -893,7 +966,7 @@ impl Root {
                 div()
                     .flex()
                     .items_center()
-                    .child(medium("アクティビティを選ぶ", 18.0, WHITE()).flex_1())
+                    .child(medium(tr!("アクティビティを選ぶ", "Choose an activity"), 18.0, WHITE()).flex_1())
                     .child(icon_button("vc_activity_close", IconName::X, 28.0).on_click(
                         cx.listener(|this, _, _, cx| {
                             this.app.voice_view.activity_open = false;
@@ -903,12 +976,12 @@ impl Root {
             )
             .child(div().py(z(8.0)).flex().justify_center().child(activity_art(44.0)))
             .child(text(
-                "Riscord で使えるアクティビティはまだありません。",
+                tr!("Riscord で使えるアクティビティはまだありません。", "There are no activities available in Riscord yet."),
                 14.0,
                 TEXT(),
             ))
             .child(text(
-                "アクティビティは Discord の中で動く Web アプリで、Riscord は WebView を使わないため起動・参加ができません。遊ぶときは公式アプリかブラウザ版から始めてください。",
+                tr!("アクティビティは Discord の中で動く Web アプリで、Riscord は WebView を使わないため起動・参加ができません。遊ぶときは公式アプリかブラウザ版から始めてください。", "Activities are web apps running inside Discord. Riscord doesn't use a WebView, so it can't launch or join them. To play, start from the official app or the browser version."),
                 13.0,
                 MUTED(),
             ))
@@ -917,7 +990,7 @@ impl Root {
                     .flex()
                     .justify_end()
                     .gap(z(8.0))
-                    .child(text_button("vc_activity_ok", "閉じる").on_click(cx.listener(
+                    .child(text_button("vc_activity_ok", tr!("閉じる", "Close")).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.app.voice_view.activity_open = false;
                             cx.notify();
@@ -926,7 +999,7 @@ impl Root {
                     .child(
                         fill_button(
                             "vc_activity_web",
-                            "ブラウザ版で開く",
+                            tr!("ブラウザ版で開く", "Open in browser"),
                             BLURPLE(),
                             Color32::WHITE,
                             true,

@@ -21,9 +21,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     // 通信の待ちが中心なので、コア数ぶん（8 コア機なら 8 本）は要らない。スレッドとメモリを抑える
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(
-                std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4)),
-            )
+            .worker_threads(std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4)))
             .thread_name("riscord-net")
             .enable_all()
             .build()
@@ -139,6 +137,20 @@ mod tests {
         assert!(original.metadata().is_ok());
         assert!(super::duplicate_file(-1).is_err());
     }
+}
+
+/// 端末の言語に合わせる（コアから画面に出す文言の言語）
+#[no_mangle]
+pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_setEnglish(
+    _env: JNIEnv,
+    _obj: JObject,
+    english: jni::sys::jboolean,
+) {
+    crate::i18n::set_setting(if english != 0 {
+        crate::i18n::EN
+    } else {
+        crate::i18n::JA
+    });
 }
 
 #[cfg(target_os = "android")]

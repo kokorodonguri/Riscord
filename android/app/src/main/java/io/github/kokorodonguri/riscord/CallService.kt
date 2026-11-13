@@ -14,12 +14,12 @@ class CallService : Service() {
     override fun onCreate() {
         super.onCreate()
         val notifications=getSystemService(NotificationManager::class.java)
-        notifications.createNotificationChannel(NotificationChannel("calls","通話",NotificationManager.IMPORTANCE_LOW))
+        notifications.createNotificationChannel(NotificationChannel("calls",tr("通話","Calls"),NotificationManager.IMPORTANCE_LOW))
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val end=PendingIntent.getService(this,2,Intent(this,CallService::class.java).setAction("end"),PendingIntent.FLAG_IMMUTABLE)
         startForeground(20,Notification.Builder(this,"calls").setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Riscord 通話中").setContentText("タップして通話に戻る").setContentIntent(open).setOngoing(true)
-            .addAction(Notification.Action.Builder(null,"切断",end).build()).build())
+            .setContentTitle(tr("Riscord 通話中","Riscord call in progress")).setContentText(tr("タップして通話に戻る","Tap to return to the call")).setContentIntent(open).setOngoing(true)
+            .addAction(Notification.Action.Builder(null,tr("切断","Disconnect"),end).build()).build())
         audio=getSystemService(AudioManager::class.java)
         oldMode=audio.mode
         audio.mode=AudioManager.MODE_IN_COMMUNICATION

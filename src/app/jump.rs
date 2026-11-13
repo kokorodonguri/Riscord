@@ -73,7 +73,7 @@ impl App {
         if j.around {
             // 前後を読んでも無かった（削除済みなど）
             self.jump = None;
-            self.show_toast("メッセージが見つかりませんでした");
+            self.show_toast(tr!("メッセージが見つかりませんでした", "Message not found"));
             return;
         }
         j.around = true;
@@ -120,7 +120,10 @@ impl App {
             Ok(Err(e)) | Err(e) => {
                 eprintln!("メッセージの前後を読めませんでした: {e}");
                 self.jump = None;
-                self.show_toast("メッセージを読み込めませんでした");
+                self.show_toast(tr!(
+                    "メッセージを読み込めませんでした",
+                    "Couldn't load the message"
+                ));
                 return;
             }
         };

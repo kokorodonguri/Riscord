@@ -7,6 +7,14 @@ return {
     return { ignore_self = state.ignore_self, ignore_bots = state.ignore_bots }
   end,
   page = function()
+    if riscord.language() == "en" then
+      return {
+        {kind="text", label="Keeps deleted messages in red and shows the text before edits below each message. The log is saved only in this PC's settings folder (message-log.json)."},
+        {kind="switch", label="Don't log my own messages", action="ignore_self", enabled=state.ignore_self},
+        {kind="switch", label="Don't log bot messages", action="ignore_bots", enabled=state.ignore_bots},
+        {kind="button", label="Clear the whole log", action="clear"},
+      }
+    end
     return {
       {kind="text", label="削除されたメッセージを赤く残し、編集前の本文をメッセージの下に表示します。記録はこのパソコンの設定フォルダ（message-log.json）にだけ保存されます。"},
       {kind="switch", label="自分のメッセージは記録しない", action="ignore_self", enabled=state.ignore_self},

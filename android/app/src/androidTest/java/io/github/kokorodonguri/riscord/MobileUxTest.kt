@@ -40,7 +40,10 @@ class MobileUxTest {
         .put("id",(1000+index).toString()).put("channel_id","100").put("content",text)
         .put("timestamp","2026-11-11T09:${(index/60).toString().padStart(2,'0')}:${(index%60).toString().padStart(2,'0')}Z")
         .put("author",JSONObject().put("id",author).put("username",if(author=="1") "自分" else "Mika"))
+    // 画面の文言は日本語で確かめる（端末の言語に左右されないように）
+    private val originalLocale=java.util.Locale.getDefault()
     @Before fun setup() {
+        java.util.Locale.setDefault(java.util.Locale.JAPAN)
         fixtureMessages=listOf(message(1,"テストのメッセージ"),message(2,"自分のメッセージ","1"))
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             compose.activity.enableEdgeToEdge(statusBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),navigationBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
@@ -59,7 +62,7 @@ class MobileUxTest {
             model.state.value=ChatState(me=me,dms=listOf(dm),connection="接続済み",hasMore=false)
         }
     }
-    @After fun teardown() {InstrumentationRegistry.getInstrumentation().runOnMainSync {store.clear()}}
+    @After fun teardown() {InstrumentationRegistry.getInstrumentation().runOnMainSync {store.clear()};java.util.Locale.setDefault(originalLocale)}
     private fun render(compact:Boolean=false) {
         compose.setContent {RiscordTheme {
             if(compact) {

@@ -24,10 +24,17 @@ impl Root {
             .flex()
             .flex_col()
             .gap(z(8.0))
-            .child(text(format!("チャンネル: {}", snapshot.name), 14.0, TEXT()));
+            .child(text(
+                tr!("チャンネル: {}", "Channel: {}", snapshot.name),
+                14.0,
+                TEXT(),
+            ));
         if snapshot.parent_id.is_some() {
             form = form.child(text(
-                "カテゴリと別の上書きを保存すると、権限の同期が解除されます。",
+                tr!(
+                    "カテゴリと別の上書きを保存すると、権限の同期が解除されます。",
+                    "Saving overwrites that differ from the category will unsync the permissions."
+                ),
                 12.0,
                 MUTED(),
             ));
@@ -45,13 +52,16 @@ impl Root {
                 self.app
                     .find_user(&draft.id)
                     .map(|u| u.display().to_owned())
-                    .unwrap_or_else(|| format!("メンバー {}", draft.id))
+                    .unwrap_or_else(|| tr!("メンバー {}", "Member {}", draft.id))
             };
             form = form.child(medium(label, 16.0, WHITE()));
             if !editable && !busy && view.channel_request.is_none() && view.parent_request.is_none()
             {
                 form = form.child(text(
-                    "設定または権限が変わりました。一覧に戻って選択し直してください。",
+                    tr!(
+                        "設定または権限が変わりました。一覧に戻って選択し直してください。",
+                        "Settings or permissions changed. Go back to the list and select again."
+                    ),
                     13.0,
                     RED(),
                 ));
@@ -79,7 +89,11 @@ impl Root {
                     0
                 };
                 let mut options = div().flex().gap(z(3.0));
-                for (state, label) in [(0u8, "継承"), (1, "許可"), (2, "拒否")] {
+                for (state, label) in [
+                    (0u8, tr!("継承", "Inherit")),
+                    (1, tr!("許可", "Allow")),
+                    (2, tr!("拒否", "Deny")),
+                ] {
                     options = options.child(
                         fill_button(
                             format!("chperm-{index}-{state}"),
@@ -108,7 +122,7 @@ impl Root {
                         .items_center()
                         .gap(z(4.0))
                         .child(
-                            line(label.to_string(), 13.0, TEXT())
+                            line(label.s().to_string(), 13.0, TEXT())
                                 .flex_1()
                                 .min_w(z(100.0)),
                         )
@@ -124,9 +138,9 @@ impl Root {
                     fill_button(
                         "chperm-delete",
                         if confirm {
-                            "削除を確定"
+                            tr!("削除を確定", "Confirm delete")
                         } else {
-                            "上書きを削除"
+                            tr!("上書きを削除", "Delete overwrite")
                         },
                         if confirm { RED() } else { WIDGET() },
                         WHITE(),
@@ -151,29 +165,38 @@ impl Root {
                 );
                 if !can_delete && editable {
                     form = form.child(text(
-                        "変更できない権限を含む上書きは削除できません。",
+                        tr!(
+                            "変更できない権限を含む上書きは削除できません。",
+                            "Overwrites with permissions you can't change can't be deleted."
+                        ),
                         12.0,
                         MUTED(),
                     ));
                 }
             }
-            actions = actions.child(text_button("chperm-back", "一覧に戻る").on_click(
-                cx.listener(|this, _, _, cx| {
-                    if let Some(admin) = this.app.role_admin.as_mut() {
-                        if admin.mutation.is_none() {
-                            if let Some(view) = admin.channel_permissions.as_mut() {
-                                view.draft = None;
-                                view.confirm_delete = false;
+            actions = actions.child(
+                text_button("chperm-back", tr!("一覧に戻る", "Back to list")).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        if let Some(admin) = this.app.role_admin.as_mut() {
+                            if admin.mutation.is_none() {
+                                if let Some(view) = admin.channel_permissions.as_mut() {
+                                    view.draft = None;
+                                    view.confirm_delete = false;
+                                }
                             }
                         }
-                    }
-                    cx.notify();
-                }),
-            ));
+                        cx.notify();
+                    }),
+                ),
+            );
             actions = actions.child(
                 fill_button(
                     "chperm-save",
-                    if busy { "保存中…" } else { "保存" },
+                    if busy {
+                        tr!("保存中…", "Saving…")
+                    } else {
+                        tr!("保存", "Save")
+                    },
                     BLURPLE(),
                     WHITE(),
                     editable,
@@ -186,7 +209,10 @@ impl Root {
             return form.child(actions);
         }
         form = form.child(text(
-            "権限を設定するロールまたはメンバーを選択",
+            tr!(
+                "権限を設定するロールまたはメンバーを選択",
+                "Select a role or member to set permissions for"
+            ),
             13.0,
             MUTED(),
         ));
@@ -221,7 +247,9 @@ impl Root {
                         .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(HOVER())))
                         .when(!enabled, |d| d.opacity(0.5))
                         .child(line(role.name, 14.0, TEXT()).flex_1().min_w_0())
-                        .children(has.then(|| text("上書きあり", 11.0, MUTED())))
+                        .children(
+                            has.then(|| text(tr!("上書きあり", "Overwritten"), 11.0, MUTED())),
+                        )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if enabled {
                                 this.app.edit_channel_overwrite(&id, 0);
@@ -237,7 +265,7 @@ impl Root {
                 .app
                 .find_user(&id)
                 .map(|u| u.display().to_owned())
-                .unwrap_or_else(|| format!("メンバー {id}"));
+                .unwrap_or_else(|| tr!("メンバー {id}", "Member {id}",));
             let enabled = self.app.can_select_channel_target(&id, 1);
             list = list.child(
                 div()
@@ -251,7 +279,7 @@ impl Root {
                     .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(HOVER())))
                     .when(!enabled, |d| d.opacity(0.5))
                     .child(line(label, 14.0, TEXT()).flex_1().min_w_0())
-                    .child(text("メンバー", 11.0, MUTED()))
+                    .child(text(tr!("メンバー", "Members"), 11.0, MUTED()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if enabled {
                             this.app.edit_channel_overwrite(&id, 1);
@@ -284,9 +312,9 @@ impl Root {
                     fill_button(
                         "chperm-add-member",
                         if view.member_request.is_some() {
-                            "確認中…"
+                            tr!("確認中…", "Checking…")
                         } else {
-                            "メンバーを追加"
+                            tr!("メンバーを追加", "Add member")
                         },
                         BLURPLE(),
                         WHITE(),

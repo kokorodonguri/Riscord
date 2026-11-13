@@ -55,14 +55,18 @@ impl SearchView {
     pub fn result_label(&self) -> String {
         let count = self.hits.len();
         if self.partial {
-            return format!("表示中: {count} 件（一部の結果を表示できません）");
+            return tr!(
+                "表示中: {count} 件（一部の結果を表示できません）",
+                "Showing {count} (some results can't be shown)",
+            );
         }
         if count == 0 {
             return if self.total == 0 {
-                "一致するメッセージはありません".to_string()
+                tr!("一致するメッセージはありません", "No matching messages").to_string()
             } else {
-                format!(
+                tr!(
                     "このページに表示できる結果はありません（全 {} 件）",
+                    "No results to show on this page ({} total)",
                     self.total
                 )
             };
@@ -70,9 +74,16 @@ impl SearchView {
         let from = u64::from(self.offset) + 1;
         let to = u64::from(self.offset).saturating_add(count as u64);
         if to > u64::from(self.total) {
-            format!("表示中: {count} 件（全件数は確認できません）")
+            tr!(
+                "表示中: {count} 件（全件数は確認できません）",
+                "Showing {count} (total unknown)",
+            )
         } else {
-            format!("{from}–{to} 件目（全 {} 件）", self.total)
+            tr!(
+                "{from}–{to} 件目（全 {} 件）",
+                "{from}–{to} of {}",
+                self.total
+            )
         }
     }
 }
@@ -124,8 +135,12 @@ pub fn parse_search(
     let mut params = Vec::new();
     let mut words = Vec::new();
     let day = |v: &str| {
-        parse_day(v)
-            .ok_or_else(|| format!("日付「{v}」を読めません（2026-01-31 の形で書いてください）"))
+        parse_day(v).ok_or_else(|| {
+            tr!(
+                "日付「{v}」を読めません（2026-01-31 の形で書いてください）",
+                "Can't read the date \"{v}\" (write it like 2026-01-31)",
+            )
+        })
     };
     for tok in q.split_whitespace() {
         let Some((key, v)) = tok
@@ -137,9 +152,9 @@ pub fn parse_search(
         };
         match key.to_lowercase().as_str() {
             "from" | "mentions" => {
-                let id = names
-                    .user_id(v)
-                    .ok_or_else(|| format!("ユーザー「{v}」が見つかりません"))?;
+                let id = names.user_id(v).ok_or_else(|| {
+                    tr!("ユーザー「{v}」が見つかりません", "User \"{v}\" not found",)
+                })?;
                 params.push((
                     if key.eq_ignore_ascii_case("from") {
                         "author_id"
@@ -152,15 +167,18 @@ pub fn parse_search(
             }
             "in" => {
                 if !in_guild {
-                    return Err("DM では in: は使えません".into());
+                    return Err(tr!("DM では in: は使えません", "in: can't be used in DMs").into());
                 }
-                let id = names
-                    .channel_id(v)
-                    .ok_or_else(|| format!("チャンネル「{v}」が見つかりません"))?;
+                let id = names.channel_id(v).ok_or_else(|| {
+                    tr!(
+                        "チャンネル「{v}」が見つかりません",
+                        "Channel \"{v}\" not found",
+                    )
+                })?;
                 params.push(("channel_id".into(), id));
             }
             "has" => {
-                let k = has_kind(v).ok_or_else(|| format!("has:{v} は使えません（link・embed・file・video・image・sound・sticker・poll）"))?;
+                let k = has_kind(v).ok_or_else(|| tr!("has:{v} は使えません（link・embed・file・video・image・sound・sticker・poll）", "has:{v} isn't supported (link, embed, file, video, image, sound, sticker, poll)",))?;
                 params.push(("has".into(), k.into()));
             }
             "before" => params.push(("max_id".into(), snowflake_at(day(v)?).to_string())),
@@ -187,7 +205,7 @@ pub fn parse_search(
     let content = words.join(" ");
     if !content.is_empty() {
         if content.chars().count() > 1024 {
-            return Err("検索語が長すぎます".into());
+            return Err(tr!("検索語が長すぎます", "The search is too long").into());
         }
         params.insert(0, ("content".into(), content));
     }
@@ -361,8 +379,13 @@ impl App {
                 if let Some(s) = self.search.as_mut() {
                     *s = SearchView {
                         rev: s.rev + 1,
-                        error: (!q.is_empty())
-                            .then(|| "検索するチャンネルを選択してください".into()),
+                        error: (!q.is_empty()).then(|| {
+                            tr!(
+                                "検索するチャンネルを選択してください",
+                                "Select a channel to search"
+                            )
+                            .into()
+                        }),
                         ..Default::default()
                     };
                 }
@@ -466,7 +489,13 @@ impl App {
             } else {
                 s.request = 0;
                 s.loading = false;
-                s.error = Some("検索できませんでした。接続を確認して再試行してください".into());
+                s.error = Some(
+                    tr!(
+                        "検索できませんでした。接続を確認して再試行してください",
+                        "Couldn't search. Check your connection and try again"
+                    )
+                    .into(),
+                );
             }
         }
     }
@@ -507,18 +536,27 @@ impl App {
                     }
                     Err(Some(_)) => {
                         s.loading = false;
-                        s.error = Some("検索の準備に時間がかかっています。しばらくしてからもう一度お試しください".into());
+                        s.error = Some(tr!("検索の準備に時間がかかっています。しばらくしてからもう一度お試しください", "Search is taking a while to prepare. Try again in a moment").into());
                     }
                     Err(None) => {
                         s.loading = false;
-                        s.error = Some("検索結果を読めませんでした".into());
+                        s.error = Some(
+                            tr!(
+                                "検索結果を読めませんでした",
+                                "Couldn't read the search results"
+                            )
+                            .into(),
+                        );
                     }
                 }
             }
             Err(e) => {
                 eprintln!("検索に失敗しました: {e}");
                 s.loading = false;
-                s.error = Some(api_error_text(&e, "検索できませんでした"));
+                s.error = Some(api_error_text(
+                    &e,
+                    tr!("検索できませんでした", "Couldn't search"),
+                ));
             }
         }
     }

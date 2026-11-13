@@ -58,27 +58,27 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
             Surface(shape=RoundedCornerShape(topStart=28.dp),color=MobilePanel,border=BorderStroke(1.dp,Color.White.copy(alpha=.06f)),modifier=Modifier.weight(1f).fillMaxHeight()) {
                 Column {
                     Row(Modifier.fillMaxWidth().padding(start=16.dp,end=16.dp,top=12.dp,bottom=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                        Text(s.guild?.label() ?: "メッセージ",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                        Text(s.guild?.label() ?: tr("メッセージ","Messages"),Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
                     }
                     Row(Modifier.padding(horizontal=12.dp).padding(top=4.dp,bottom=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         Surface(shape=RoundedCornerShape(14.dp),color=MobileRaised,modifier=Modifier.weight(1f)) {
                             Row(Modifier.heightIn(min=48.dp).padding(start=12.dp),verticalAlignment=Alignment.CenterVertically) {
                                 MobileIcon(Glyph.Search,tint=MobileMuted,modifier=Modifier.size(20.dp))
-                                BasicTextField(query,{query=it},singleLine=true,textStyle=MaterialTheme.typography.bodyMedium.copy(color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MobileAccent),keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={focus.clearFocus()}),modifier=Modifier.weight(1f).padding(10.dp).semantics {contentDescription=if(s.guild==null) "DMを検索" else "チャンネルを検索"},decorationBox={inner->
-                                    Box {if(query.isEmpty()) Text(if(s.guild==null) "メッセージを検索" else "チャンネルを検索",color=MobileMuted,fontSize=13.sp,maxLines=1);inner()}
+                                BasicTextField(query,{query=it},singleLine=true,textStyle=MaterialTheme.typography.bodyMedium.copy(color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MobileAccent),keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),keyboardActions=KeyboardActions(onSearch={focus.clearFocus()}),modifier=Modifier.weight(1f).padding(10.dp).semantics {contentDescription=if(s.guild==null) tr("DMを検索","Search DMs") else tr("チャンネルを検索","Search channels")},decorationBox={inner->
+                                    Box {if(query.isEmpty()) Text(if(s.guild==null) tr("メッセージを検索","Search messages") else tr("チャンネルを検索","Search channels"),color=MobileMuted,fontSize=13.sp,maxLines=1);inner()}
                                 })
-                                if(query.isNotEmpty()) MobileIconButton(Glyph.Close,"検索をクリア",{query=""},modifier=Modifier.width(48.dp))
+                                if(query.isNotEmpty()) MobileIconButton(Glyph.Close,tr("検索をクリア","Clear search"),{query=""},modifier=Modifier.width(48.dp))
                             }
                         }
-                        if(s.guild==null) FilledIconButton(onClick={newDm=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.size(48.dp),colors=IconButtonDefaults.filledIconButtonColors(containerColor=MobileAccent)) {MobileIcon(Glyph.Plus,"新しいDM",tint=Color.White)}
+                        if(s.guild==null) FilledIconButton(onClick={newDm=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.size(48.dp),colors=IconButtonDefaults.filledIconButtonColors(containerColor=MobileAccent)) {MobileIcon(Glyph.Plus,tr("新しいDM","New DM"),tint=Color.White)}
                     }
                     val homeLoading=s.guild==null && s.homeLoading
                     if(s.loading || homeLoading) LinearProgressIndicator(Modifier.fillMaxWidth(),color=MobileAccent)
                     if(s.guild==null && s.homeLoadFailed && s.dms.isNotEmpty() && !homeLoading) {
-                        TextButton(onClick=model::retryHome,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text("メッセージを再読み込み")}
+                        TextButton(onClick=model::retryHome,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text(tr("メッセージを再読み込み","Reload messages"))}
                     }
                     if(s.guild!=null && s.channelLoadFailed && s.channels.isNotEmpty() && !s.loading) {
-                        TextButton(onClick=model::retryChannels,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text("チャンネルを再読み込み")}
+                        TextButton(onClick=model::retryChannels,modifier=Modifier.align(Alignment.End).padding(horizontal=12.dp)) {Text(tr("チャンネルを再読み込み","Reload channels"))}
                     }
                     val dms=s.dms.sortedByDescending {it.optString("last_message_id").padStart(20,'0')}.filter {it.channelLabel().contains(query,true)}
                     val sections=channelSections(s.channels,query)
@@ -99,10 +99,10 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                             items(dms,key={"dm-${it.optString("id")}"}) {dm->DmRow(dm,s,{model.openChannel(dm)})}
                             if(dms.isEmpty()&&!s.loading&&!homeLoading) item {
                                 if(s.homeLoadFailed && s.dms.isEmpty()) Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=36.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                                    Text("メッセージを読み込めませんでした",fontWeight=FontWeight.SemiBold,fontSize=16.sp)
-                                    Text("通信状態を確認して再試行してください。",color=MobileMuted,fontSize=13.sp)
-                                    TextButton(onClick=model::retryHome) {Text("再読み込み")}
-                                } else HomeEmpty(if(query.isNotEmpty()) "メッセージが見つかりません" else "会話をはじめよう",if(query.isNotEmpty()) "別の名前で検索してください" else "右上の＋からDMを開けます")
+                                    Text(tr("メッセージを読み込めませんでした","Couldn't load messages"),fontWeight=FontWeight.SemiBold,fontSize=16.sp)
+                                    Text(tr("通信状態を確認して再試行してください。","Check your connection and try again."),color=MobileMuted,fontSize=13.sp)
+                                    TextButton(onClick=model::retryHome) {Text(tr("再読み込み","Reload"))}
+                                } else HomeEmpty(if(query.isNotEmpty()) tr("メッセージが見つかりません","No messages found") else tr("会話をはじめよう","Start a conversation"),if(query.isNotEmpty()) tr("別の名前で検索してください","Try searching for a different name") else tr("右上の＋からDMを開けます","Open a DM with the + at the top right"))
                             }
                         } else {
                             sections.forEach {section->
@@ -110,7 +110,7 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                                     item("category-${category.optString("id")}") {
                                         Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clickable {
                                             val id=category.optString("id");collapsed=ArrayList(collapsed).apply {if(contains(id)) remove(id) else add(id)}
-                                        }.padding(horizontal=8.dp).semantics {stateDescription=if(category.optString("id") in collapsed) "折りたたみ" else "展開中"},verticalAlignment=Alignment.CenterVertically) {
+                                        }.padding(horizontal=8.dp).semantics {stateDescription=if(category.optString("id") in collapsed) tr("折りたたみ","Collapsed") else tr("展開中","Expanded")},verticalAlignment=Alignment.CenterVertically) {
                                             Text(category.channelLabel(),Modifier.weight(1f),color=MobileMuted,fontSize=12.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
                                             MobileIcon(if(category.optString("id") in collapsed) Glyph.Right else Glyph.Down,modifier=Modifier.size(16.dp),tint=MobileMuted)
                                         }
@@ -132,10 +132,10 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                             }
                             if(sections.isEmpty()&&!s.loading) item {
                                 if(s.channelLoadFailed && s.channels.isEmpty()) Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=36.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                                    Text("チャンネルを読み込めませんでした",fontWeight=FontWeight.SemiBold,fontSize=16.sp)
-                                    Text("通信状態を確認して再試行してください。",color=MobileMuted,fontSize=13.sp)
-                                    TextButton(onClick=model::retryChannels) {Text("再読み込み")}
-                                } else HomeEmpty(if(query.isBlank()) "チャンネルがありません" else "チャンネルが見つかりません",if(query.isBlank()) "サーバーを切り替えてください" else "別の名前で検索してください")
+                                    Text(tr("チャンネルを読み込めませんでした","Couldn't load channels"),fontWeight=FontWeight.SemiBold,fontSize=16.sp)
+                                    Text(tr("通信状態を確認して再試行してください。","Check your connection and try again."),color=MobileMuted,fontSize=13.sp)
+                                    TextButton(onClick=model::retryChannels) {Text(tr("再読み込み","Reload"))}
+                                } else HomeEmpty(if(query.isBlank()) tr("チャンネルがありません","No channels") else tr("チャンネルが見つかりません","No channels found"),if(query.isBlank()) tr("サーバーを切り替えてください","Switch to another server") else tr("別の名前で検索してください","Try searching for a different name"))
                             }
                         }
                     }
@@ -148,30 +148,30 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
                     MobileAvatar(s.me ?: JSONObject(),38.dp)
                     Column(Modifier.weight(1f)) {
                         Text(s.me?.label().orEmpty(),fontWeight=FontWeight.SemiBold,fontSize=15.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-                        Text(if(s.connection=="接続済み") "接続済み" else s.connection,color=MobileMuted,fontSize=11.sp,maxLines=1)
+                        Text(statusLabel(s.connection),color=MobileMuted,fontSize=11.sp,maxLines=1)
                     }
                     MobileIcon(Glyph.Down,modifier=Modifier.size(16.dp),tint=MobileMuted)
                 }
-                MobileIconButton(Glyph.Bell,if(s.persistent) "常駐通知を停止" else "常駐通知を有効にする",onNotifications,tint=if(s.persistent) MobileAccent else MobileMuted)
+                MobileIconButton(Glyph.Bell,if(s.persistent) tr("常駐通知を停止","Stop persistent notification") else tr("常駐通知を有効にする","Enable persistent notification"),onNotifications,tint=if(s.persistent) MobileAccent else MobileMuted)
             }
         }
     }
-    if(newDm) AlertDialog(onDismissRequest={newDm=false},title={Text("新しいメッセージ")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        Text("相手のユーザーIDを入力してください。",color=MobileMuted,fontSize=14.sp)
-        OutlinedTextField(recipient,{recipient=it.filter(Char::isDigit)},label={Text("ユーザーID")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.fillMaxWidth())
-    }},confirmButton={TextButton(onClick={model.createDm(recipient);newDm=false},enabled=recipient.isNotBlank()) {Text("DMを開く")}},dismissButton={TextButton(onClick={newDm=false}) {Text("キャンセル")}})
+    if(newDm) AlertDialog(onDismissRequest={newDm=false},title={Text(tr("新しいメッセージ","New Message"))},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        Text(tr("相手のユーザーIDを入力してください。","Enter the other person's user ID."),color=MobileMuted,fontSize=14.sp)
+        OutlinedTextField(recipient,{recipient=it.filter(Char::isDigit)},label={Text(tr("ユーザーID","User ID"))},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.fillMaxWidth())
+    }},confirmButton={TextButton(onClick={model.createDm(recipient);newDm=false},enabled=recipient.isNotBlank()) {Text(tr("DMを開く","Open DM"))}},dismissButton={TextButton(onClick={newDm=false}) {Text(tr("キャンセル","Cancel"))}})
     voice?.let {channel->ModalBottomSheet(onDismissRequest={voice=null},containerColor=MobileRaised) {
         Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
             MobileIcon(Glyph.Speaker,modifier=Modifier.size(32.dp),tint=MobileAccent)
             Text(channel.channelLabel(),style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
             Text(s.guild?.label().orEmpty(),color=MobileMuted)
-            Button(onClick={onVoice(channel,s.guild?.optString("id"));voice=null},modifier=Modifier.fillMaxWidth().height(52.dp)) {Text("通話に参加する")}
+            Button(onClick={onVoice(channel,s.guild?.optString("id"));voice=null},modifier=Modifier.fillMaxWidth().height(52.dp)) {Text(tr("通話に参加する","Join call"))}
         }
     }}
 }
 @Composable private fun ServerRail(s:ChatState,onSelect:(JSONObject?)->Unit) {
     LazyColumn(Modifier.width(72.dp).fillMaxHeight(),contentPadding=PaddingValues(top=8.dp,bottom=12.dp),verticalArrangement=Arrangement.spacedBy(10.dp),horizontalAlignment=Alignment.CenterHorizontally) {
-        item("home") {RailItem("メッセージ",s.guild==null,{onSelect(null)}) {MobileIcon(Glyph.Chat,modifier=Modifier.size(27.dp),tint=if(s.guild==null) Color.White else MobileMuted)}}
+        item("home") {RailItem(tr("メッセージ","Messages"),s.guild==null,{onSelect(null)}) {MobileIcon(Glyph.Chat,modifier=Modifier.size(27.dp),tint=if(s.guild==null) Color.White else MobileMuted)}}
         item("divider") {HorizontalDivider(Modifier.width(40.dp),color=Color.White.copy(alpha=.1f))}
         items(s.guilds,key={it.optString("id")}) {guild->
             RailItem(guild.label(),s.guild?.optString("id")==guild.optString("id"),{onSelect(guild)}) {
@@ -191,7 +191,7 @@ internal fun channelSections(channels:List<JSONObject>,query:String):List<Channe
 @Composable private fun DmRow(dm:JSONObject,s:ChatState,onClick:()->Unit) {
     val preview=s.previews[dm.optString("id")]
     val unread=dm.optString("id") in s.unreadChannels
-    val subtitle=preview?.let {displayContent(it).ifBlank {if(it.optJSONArray("attachments")?.length()?.let {n->n>0}==true) "添付ファイル" else "メッセージ"}} ?: if(dm.optInt("type")==3) "グループDM" else channelUser(dm).nonNull("username")?.let {"@$it"}.orEmpty()
+    val subtitle=preview?.let {displayContent(it).ifBlank {if(it.optJSONArray("attachments")?.length()?.let {n->n>0}==true) tr("添付ファイル","Attachment") else tr("メッセージ","Message")}} ?: if(dm.optInt("type")==3) tr("グループDM","Group DM") else channelUser(dm).nonNull("username")?.let {"@$it"}.orEmpty()
     Surface(onClick=onClick,shape=RoundedCornerShape(14.dp),color=if(s.lastChannelId==dm.optString("id")) MobileRaised else Color.Transparent,modifier=Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal=8.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             MobileAvatar(if(dm.optInt("type")==3) dm else channelUser(dm),40.dp,dm.optInt("type")==3)

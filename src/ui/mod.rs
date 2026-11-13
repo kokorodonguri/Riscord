@@ -354,6 +354,7 @@ pub struct Root {
     pub menu_guild: Option<String>,
     /// サーバーのメニューを、チャンネル一覧の上のサーバー名から開いた（見出しの下に出す）
     pub menu_from_header: bool,
+    pub guild_notify_expanded: bool,
     /// サーバー名の見出しの位置（描いたときに覚える。メニューを真下に出すため）
     pub guild_header_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     pub menu_folder: Option<String>,
@@ -611,72 +612,107 @@ impl Root {
         let bio = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(4, 8)
-                .placeholder("自分について書いてみましょう")
+                .placeholder(tr!(
+                    "自分について書いてみましょう",
+                    "Write something about yourself"
+                ))
         });
         let inp = Inputs {
             compose,
-            dm_filter: new_input(window, cx, "会話を検索", false),
-            switcher: new_input(window, cx, "会話・チャンネル・サーバーを検索", false),
+            dm_filter: new_input(window, cx, tr!("会話を検索", "Search conversations"), false),
+            switcher: new_input(
+                window,
+                cx,
+                tr!(
+                    "会話・チャンネル・サーバーを検索",
+                    "Search conversations, channels and servers"
+                ),
+                false,
+            ),
             email: new_input(window, cx, "", false),
             password: new_input(window, cx, "", true),
             mfa: new_input(window, cx, "123456", false),
-            settings_query: new_input(window, cx, "検索", false),
+            settings_query: new_input(window, cx, tr!("検索", "Search"), false),
             name: new_input(window, cx, "", false),
-            pronouns: new_input(window, cx, "代名詞を追加", false),
+            pronouns: new_input(window, cx, tr!("代名詞を追加", "Add pronouns"), false),
             bio,
             bg_image: new_input(
                 window,
                 cx,
-                "画像のパスか https:// の URL（空ならテーマの指定）",
+                tr!(
+                    "画像のパスか https:// の URL（空ならテーマの指定）",
+                    "Image path or https:// URL (empty uses the theme's)"
+                ),
                 false,
             ),
-            emoji_query: new_input(window, cx, "絵文字を検索", false),
-            search: new_input(window, cx, "検索（from: in: has: before: after:）", false),
-            thread_name: new_input(window, cx, "スレッド名", false),
-            role_name: new_input(window, cx, "ロール名", false),
-            guild_name: new_input(window, cx, "サーバー名", false),
+            emoji_query: new_input(window, cx, tr!("絵文字を検索", "Search emoji"), false),
+            search: new_input(
+                window,
+                cx,
+                tr!(
+                    "検索（from: in: has: before: after:）",
+                    "Search (from: in: has: before: after:)"
+                ),
+                false,
+            ),
+            thread_name: new_input(window, cx, tr!("スレッド名", "Thread name"), false),
+            role_name: new_input(window, cx, tr!("ロール名", "Role name"), false),
+            guild_name: new_input(window, cx, tr!("サーバー名", "Server name"), false),
             guild_description: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 4)
-                    .placeholder("サーバーの説明")
+                    .placeholder(tr!("サーバーの説明", "Server description"))
             }),
-            channel_member_id: new_input(window, cx, "メンバー ID", false),
-            friend_name: new_input(window, cx, "ユーザー名", false),
-            folder_name: new_input(window, cx, "フォルダ名", false),
-            poll_question: new_input(window, cx, "質問", false),
+            channel_member_id: new_input(window, cx, tr!("メンバー ID", "Member ID"), false),
+            friend_name: new_input(window, cx, tr!("ユーザー名", "Username"), false),
+            folder_name: new_input(window, cx, tr!("フォルダ名", "Folder name"), false),
+            poll_question: new_input(window, cx, tr!("質問", "Question"), false),
             poll_answers: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 6)
-                    .placeholder("選択肢を1行ずつ入力")
+                    .placeholder(tr!("選択肢を1行ずつ入力", "Enter one answer per line"))
             }),
-            channel_name: new_input(window, cx, "名前", false),
-            guild_nick: new_input(window, cx, "ニックネーム", false),
-            guild_pronouns: new_input(window, cx, "代名詞", false),
+            channel_name: new_input(window, cx, tr!("名前", "Name"), false),
+            guild_nick: new_input(window, cx, tr!("ニックネーム", "Nickname"), false),
+            guild_pronouns: new_input(window, cx, tr!("代名詞", "Pronouns"), false),
             guild_bio: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(3, 6)
-                    .placeholder("自己紹介")
+                    .placeholder(tr!("自己紹介", "About Me"))
             }),
-            event_name: new_input(window, cx, "イベント名", false),
-            event_start: new_input(window, cx, "開始 YYYY-MM-DD HH:MM", false),
-            event_end: new_input(window, cx, "終了 YYYY-MM-DD HH:MM", false),
-            event_location: new_input(window, cx, "場所", false),
+            event_name: new_input(window, cx, tr!("イベント名", "Event name"), false),
+            event_start: new_input(
+                window,
+                cx,
+                tr!("開始 YYYY-MM-DD HH:MM", "Start YYYY-MM-DD HH:MM"),
+                false,
+            ),
+            event_end: new_input(
+                window,
+                cx,
+                tr!("終了 YYYY-MM-DD HH:MM", "End YYYY-MM-DD HH:MM"),
+                false,
+            ),
+            event_location: new_input(window, cx, tr!("場所", "Location"), false),
             event_description: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 5)
-                    .placeholder("説明（任意）")
+                    .placeholder(tr!("説明（任意）", "Description (optional)"))
             }),
-            rule_name: new_input(window, cx, "ルール名", false),
+            rule_name: new_input(window, cx, tr!("ルール名", "Rule name"), false),
             rule_keywords: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 6)
-                    .placeholder("ブロックする語をカンマか改行で区切って入力")
+                    .placeholder(tr!(
+                        "ブロックする語をカンマか改行で区切って入力",
+                        "Enter words to block, separated by commas or newlines"
+                    ))
             }),
-            post_title: new_input(window, cx, "タイトル", false),
+            post_title: new_input(window, cx, tr!("タイトル", "Title"), false),
             post_body: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(3, 10)
-                    .placeholder("本文を入力")
+                    .placeholder(tr!("本文を入力", "Enter a message"))
             }),
         };
         let mut subs = vec![
@@ -961,6 +997,7 @@ impl Root {
             menu: None,
             menu_guild: None,
             menu_from_header: false,
+            guild_notify_expanded: false,
             guild_header_bounds: Rc::default(),
             menu_folder: None,
             menu_msg: None,
@@ -1022,7 +1059,8 @@ impl Root {
                         }
                     }
                     Err(e) => {
-                        self.app.theme_error = Some(format!("フォント {}: {e}", path.display()))
+                        self.app.theme_error =
+                            Some(tr!("フォント {}: {e}", "Font {}: {e}", path.display()))
                     }
                 }
             }
@@ -1144,10 +1182,10 @@ impl Root {
             self.downloads.retain(|(_, rx)| loop {
                 match rx.try_recv() {
                     Ok(crate::download::Event::Started) => {
-                        app.show_toast("ダウンロードしています…")
+                        app.show_toast(tr!("ダウンロードしています…", "Downloading…"))
                     }
                     Ok(crate::download::Event::Finished(path)) => {
-                        app.show_toast(&format!("保存しました: {}", path.display()));
+                        app.show_toast(&tr!("保存しました: {}", "Saved: {}", path.display()));
                         break false;
                     }
                     Ok(crate::download::Event::Failed(error)) => {
@@ -1358,7 +1396,7 @@ impl Root {
         let len = st::message_text_len(&a.input);
         if len > limit {
             // 送っても Discord に断られるので、送らずに入力を残して知らせる
-            a.compose_notice = Some((format!("本文は{limit}文字までです（いま{len}文字）。{}文字減らすか、分けて送ってください。", len - limit), Instant::now()));
+            a.compose_notice = Some((tr!("本文は{limit}文字までです（いま{len}文字）。{}文字減らすか、分けて送ってください。", "Messages can be up to {limit} characters (currently {len}). Remove {} characters or split it into several messages.", len - limit), Instant::now()));
             a.repaint_after(st::COMPOSE_NOTICE_TTL);
         } else if a
             .sel_channel

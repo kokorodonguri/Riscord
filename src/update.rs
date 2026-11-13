@@ -256,13 +256,30 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
     let asset = names
         .iter()
         .find_map(|n| rel.assets.iter().find(|a| a.name == *n))
-        .ok_or_else(|| anyhow!("{version} に {} がありません", names.join(" / ")))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                tr!(
+                    "{version} に {} がありません",
+                    "{version} has no {}",
+                    names.join(" / ")
+                )
+            )
+        })?;
     let name = &asset.name;
     let want = asset
         .digest
         .as_deref()
         .and_then(|d| d.strip_prefix("sha256:"))
-        .ok_or_else(|| anyhow!("{name} に SHA-256 が付いていません"))?
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                tr!(
+                    "{name} に SHA-256 が付いていません",
+                    "{name} has no SHA-256",
+                )
+            )
+        })?
         .to_ascii_lowercase();
 
     set(Status::Downloading(version.clone()), waker);
@@ -276,9 +293,13 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
         .await?;
     if bytes.len() as u64 != asset.size {
         bail!(
-            "ダウンロードしたサイズが合いません（{} / {} バイト）",
-            bytes.len(),
-            asset.size
+            "{}",
+            tr!(
+                "ダウンロードしたサイズが合いません（{} / {} バイト）",
+                "The downloaded size doesn't match ({} / {} bytes)",
+                bytes.len(),
+                asset.size
+            )
         );
     }
     let got: String = Sha256::digest(&bytes)
@@ -286,11 +307,18 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
         .map(|b| format!("{b:02x}"))
         .collect();
     if got != want {
-        bail!("ダウンロードしたファイルの SHA-256 が合いません");
+        bail!(
+            "{}",
+            tr!(
+                "ダウンロードしたファイルの SHA-256 が合いません",
+                "The SHA-256 of the downloaded file doesn't match",
+            )
+        );
     }
 
     let new = sibling(exe, ".new");
-    std::fs::write(&new, &bytes).with_context(|| format!("{} に書き込めません", new.display()))?;
+    std::fs::write(&new, &bytes)
+        .with_context(|| tr!("{} に書き込めません", "Can't write to {}", new.display()))?;
     if let Err(e) = replace(exe, &new) {
         let _ = std::fs::remove_file(&new);
         return Err(e);
@@ -305,27 +333,39 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(new, std::fs::Permissions::from_mode(0o755))?;
         // 実行中でも rename で置き換えられる（動いているプロセスは古い中身のまま）
-        std::fs::rename(new, exe).context("実行ファイルを置き換えられません")?;
+        std::fs::rename(new, exe).context(tr!(
+            "実行ファイルを置き換えられません",
+            "Can't replace the executable"
+        ))?;
     }
     #[cfg(windows)]
     {
         // 実行中の exe は上書きも削除もできないが、名前は変えられる
         let old = sibling(exe, ".old");
         let _ = std::fs::remove_file(&old);
-        std::fs::rename(exe, &old).context("実行ファイルの名前を変えられません")?;
+        std::fs::rename(exe, &old).context(tr!(
+            "実行ファイルの名前を変えられません",
+            "Can't rename the executable"
+        ))?;
         if let Err(e) = std::fs::rename(new, exe) {
             let _ = std::fs::rename(&old, exe);
-            return Err(e).context("新しい実行ファイルを置けません");
+            return Err(e).context(tr!(
+                "新しい実行ファイルを置けません",
+                "Can't place the new executable"
+            ));
         }
     }
     Ok(())
 }
 
 fn notify_ready(version: &str) {
-    let body = format!("{version} に更新しました。再起動すると新しい版になります。");
+    let body = tr!(
+        "{version} に更新しました。再起動すると新しい版になります。",
+        "Updated to {version}. Restart to use the new version.",
+    );
     if let Err(e) = notify_rust::Notification::new()
         .appname("Riscord")
-        .summary("Riscord を更新しました")
+        .summary(tr!("Riscord を更新しました", "Riscord updated"))
         .body(&body)
         .show()
     {

@@ -197,7 +197,7 @@ impl App {
                     if let Some(p) = parent {
                         self.pending_open = Some(p);
                     }
-                    self.show_toast("スレッドが削除されました");
+                    self.show_toast(tr!("スレッドが削除されました", "The thread was deleted"));
                 }
             }
             "THREAD_LIST_SYNC" => {
@@ -418,12 +418,24 @@ impl App {
             }
             Ok(Err(_)) => {
                 v.loading = false;
-                v.error = Some("スレッドの一覧を読めませんでした".into());
+                v.error = Some(
+                    tr!(
+                        "スレッドの一覧を読めませんでした",
+                        "Couldn't read the thread list"
+                    )
+                    .into(),
+                );
             }
             Err(e) => {
                 eprintln!("スレッドの一覧を読めませんでした: {e}");
                 v.loading = false;
-                v.error = Some(api_error_text(e, "スレッドの一覧を読めませんでした"));
+                v.error = Some(api_error_text(
+                    e,
+                    tr!(
+                        "スレッドの一覧を読めませんでした",
+                        "Couldn't read the thread list"
+                    ),
+                ));
             }
         }
     }
@@ -455,10 +467,10 @@ impl App {
             Ok(_) => {
                 if join {
                     self.joined_threads.insert(id);
-                    self.show_toast("スレッドに参加しました");
+                    self.show_toast(tr!("スレッドに参加しました", "Joined the thread"));
                 } else {
                     self.joined_threads.remove(&id);
-                    self.show_toast("スレッドから退出しました");
+                    self.show_toast(tr!("スレッドから退出しました", "Left the thread"));
                 }
             }
             Err(e) => {
@@ -466,9 +478,12 @@ impl App {
                 self.show_toast(&api_error_text(
                     &e,
                     if join {
-                        "スレッドに参加できませんでした"
+                        tr!("スレッドに参加できませんでした", "Couldn't join the thread")
                     } else {
-                        "スレッドから退出できませんでした"
+                        tr!(
+                            "スレッドから退出できませんでした",
+                            "Couldn't leave the thread"
+                        )
                     },
                 ));
             }
@@ -483,10 +498,16 @@ impl App {
         let perms = self.channel_perms(self.sel_guild.as_deref(), &c.id);
         let manage = perms.is_some_and(|p| p & model::MANAGE_THREADS != 0);
         if c.locked() && !manage {
-            return Some("このスレッドはロックされているため、メッセージを送信できません。");
+            return Some(tr!(
+                "このスレッドはロックされているため、メッセージを送信できません。",
+                "This thread is locked, so you can't send messages."
+            ));
         }
         if perms.is_some_and(|p| p & model::SEND_MESSAGES_IN_THREADS == 0) {
-            return Some("このスレッドでメッセージを送信する権限がありません。");
+            return Some(tr!(
+                "このスレッドでメッセージを送信する権限がありません。",
+                "You don't have permission to send messages in this thread."
+            ));
         }
         None
     }
@@ -514,7 +535,7 @@ impl App {
             .take(40)
             .collect();
         self.thread_name = if name.trim().is_empty() {
-            "新しいスレッド".into()
+            tr!("新しいスレッド", "New Thread").into()
         } else {
             name
         };
@@ -537,7 +558,7 @@ impl App {
             return;
         };
         if name.is_empty() {
-            d.error = Some("スレッド名を入力してください".into());
+            d.error = Some(tr!("スレッド名を入力してください", "Enter a thread name").into());
             return;
         }
         d.sending = true;
@@ -573,12 +594,17 @@ impl App {
                 self.open_thread(t);
             }
             (None, r) => {
-                let e = r.err().unwrap_or_else(|| "応答を読めませんでした".into());
+                let e = r.err().unwrap_or_else(|| {
+                    tr!("応答を読めませんでした", "Couldn't read the response").into()
+                });
                 eprintln!("スレッドを作れませんでした: {e}");
                 let text = if from_message {
-                    "スレッドを作成できませんでした"
+                    tr!(
+                        "スレッドを作成できませんでした",
+                        "Couldn't create the thread"
+                    )
                 } else {
-                    "投稿できませんでした"
+                    tr!("投稿できませんでした", "Couldn't post")
                 };
                 let msg = api_error_text(&e, text);
                 if from_message {
@@ -607,11 +633,17 @@ impl App {
             return;
         };
         d.error = if title.is_empty() {
-            Some("タイトルを入力してください".into())
+            Some(tr!("タイトルを入力してください", "Enter a title").into())
         } else if body.is_empty() {
-            Some("本文を入力してください".into())
+            Some(tr!("本文を入力してください", "Enter a message").into())
         } else if forum.requires_tag() && d.tags.is_empty() {
-            Some("このフォーラムではタグを1つ以上選んでください".into())
+            Some(
+                tr!(
+                    "このフォーラムではタグを1つ以上選んでください",
+                    "Choose at least one tag in this forum"
+                )
+                .into(),
+            )
         } else {
             None
         };

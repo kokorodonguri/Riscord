@@ -94,8 +94,8 @@ impl Root {
         let a = &self.app;
         let mut left = div().flex().items_center().gap(z(4.0));
         for (back, name, label) in [
-            (true, IconName::ArrowLeft, "戻る"),
-            (false, IconName::ArrowRight, "進む"),
+            (true, IconName::ArrowLeft, tr!("戻る", "Back")),
+            (false, IconName::ArrowRight, tr!("進む", "Forward")),
         ] {
             let enabled = if back {
                 !a.nav_back.is_empty()
@@ -124,9 +124,9 @@ impl Root {
         }
         if compact {
             let label = if a.compact_sidebar_closed {
-                "チャンネル一覧を開く"
+                tr!("チャンネル一覧を開く", "Open channel list")
             } else {
-                "チャンネル一覧を閉じる"
+                tr!("チャンネル一覧を閉じる", "Close channel list")
             };
             left = left.child(
                 icon_button("hamburger", IconName::Menu, 26.0)
@@ -141,7 +141,10 @@ impl Root {
         }
         // 中央に現在地（アイコン＋名前）
         let (label, url) = match &a.sel_guild {
-            None => ("ダイレクトメッセージ".to_string(), None),
+            None => (
+                tr!("ダイレクトメッセージ", "Direct Messages").to_string(),
+                None,
+            ),
             Some(g) => a
                 .guilds
                 .iter()
@@ -262,7 +265,7 @@ impl Root {
             .bg(WHITE())
             .when(!selected, |d| d.group_hover("rail", |s| s.h(z(20.0))));
         let tip_text = if name.is_empty() {
-            "ダイレクトメッセージ".to_string()
+            tr!("ダイレクトメッセージ", "Direct Messages").to_string()
         } else {
             name.to_string()
         };
@@ -403,7 +406,7 @@ impl Root {
                     let bg =
                         Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
                     let label = if folder.name.is_empty() {
-                        "フォルダ"
+                        tr!("フォルダ", "Folder")
                     } else {
                         &folder.name
                     };
@@ -540,6 +543,7 @@ impl Root {
                         this.menu = Some((PopMenu::Guild, ev.position));
                         this.menu_guild = Some(gid2.clone());
                         this.menu_from_header = false;
+                        this.guild_notify_expanded = false;
                         this.app.request_guild_boost(&gid2);
                         this.app.ensure_guild_channels(&gid2);
                         cx.stop_propagation();
@@ -577,7 +581,10 @@ impl Root {
                     .text_size(z(14.0))
                     .text_color(MUTED())
                     .cursor(CursorStyle::IBeam)
-                    .child("会話に参加または作成する")
+                    .child(tr!(
+                        "会話に参加または作成する",
+                        "Find or start a conversation"
+                    ))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.app.dm_search = true;
                         this.inp.dm_filter.update(cx, |s, cx| s.focus(window, cx));
@@ -646,6 +653,7 @@ impl Root {
                                 ));
                                 this.menu_guild = Some(gid.clone());
                                 this.menu_from_header = true;
+                                this.guild_notify_expanded = false;
                                 this.app.request_guild_boost(&gid);
                             }
                             cx.notify();
@@ -681,7 +689,7 @@ impl Root {
                         .gap(z(12.0))
                         .px(z(10.0))
                         .child(icon(IconName::UserPlus, 20.0, MUTED()))
-                        .child(text("フレンド", 16.0, TEXT()))
+                        .child(text(tr!("フレンド", "Friends"), 16.0, TEXT()))
                         .on_click(cx.listener(|this, _, _, cx| {
                             let before = (this.app.sel_guild.clone(), this.app.sel_channel.clone());
                             this.app.select(None, None);
@@ -705,7 +713,12 @@ impl Root {
                         .items_center()
                         .pl(z(16.0))
                         .child(
-                            text("ダイレクトメッセージ", 13.0, FAINT()).part(Part::SidebarCategory),
+                            text(
+                                tr!("ダイレクトメッセージ", "Direct Messages"),
+                                13.0,
+                                FAINT(),
+                            )
+                            .part(Part::SidebarCategory),
                         ),
                 );
                 let q = a.dm_filter.trim().to_lowercase();
@@ -759,7 +772,7 @@ impl Root {
                     );
                 } else if !q.is_empty() {
                     list = list.child(div().mt(z(12.0)).flex().justify_center().child(text(
-                        "見つかりませんでした",
+                        tr!("見つかりませんでした", "Nothing found"),
                         13.0,
                         FAINT(),
                     )));
@@ -767,7 +780,14 @@ impl Root {
                     // 一覧が届く前は読み込み中、届いて 0 件ならその旨を出す（何も無い画面にしない）
                     list = list.child(div().mt(z(12.0)).flex().justify_center().map(|d| {
                         if a.dms_loaded {
-                            d.child(text("ダイレクトメッセージはまだありません", 13.0, FAINT()))
+                            d.child(text(
+                                tr!(
+                                    "ダイレクトメッセージはまだありません",
+                                    "No direct messages yet"
+                                ),
+                                13.0,
+                                FAINT(),
+                            ))
                         } else {
                             d.child(spinner(20.0))
                         }
@@ -800,7 +820,11 @@ impl Root {
                                 .mt(z(12.0))
                                 .flex()
                                 .justify_center()
-                                .child(text("表示できるチャンネルがありません", 13.0, FAINT()))
+                                .child(text(
+                                    tr!("表示できるチャンネルがありません", "No channels to show"),
+                                    13.0,
+                                    FAINT(),
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -871,7 +895,7 @@ impl Root {
                                             IconName::Settings,
                                             20.0,
                                         )
-                                        .tooltip(tip("カテゴリの権限"))
+                                        .tooltip(tip(tr!("カテゴリの権限", "Category permissions")))
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
                                                 // 見出しのクリック（開閉）まで届かせない
@@ -939,9 +963,9 @@ impl Root {
             rows.push(
                 row_frame(SharedString::from(format!("ch{}", c.id)), 34.0, open, false)
                     .tooltip(tip(if here {
-                        "接続しています"
+                        tr!("接続しています", "Connected")
                     } else {
-                        "クリックで参加"
+                        tr!("クリックで参加", "Click to join")
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !here {
@@ -977,7 +1001,7 @@ impl Root {
                     let uid = v.user_id.clone();
                     row = row
                         .cursor_pointer()
-                        .tooltip(tip("配信を見る"))
+                        .tooltip(tip(tr!("配信を見る", "Watch stream")))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.app.watch_stream(&uid);
                             cx.notify();
@@ -1090,9 +1114,9 @@ impl Root {
             let in_guild = gid.is_some();
             // 通話はつながっていても、ゲートウェイが再接続中なら「接続済み」と出さない
             let (label, color) = match (connected, a.gateway_ok()) {
-                (true, true) => ("ボイス接続済み", GREEN()),
-                (true, false) => ("再接続中…", ORANGE()),
-                (false, _) => ("接続中…", ORANGE()),
+                (true, true) => (tr!("ボイス接続済み", "Voice Connected"), GREEN()),
+                (true, false) => (tr!("再接続中…", "Reconnecting…"), ORANGE()),
+                (false, _) => (tr!("接続中…", "Connecting…"), ORANGE()),
             };
             card = card.child(
                 div()
@@ -1143,7 +1167,7 @@ impl Root {
                     .when(connected && in_guild, |d| {
                         d.child(
                             icon_button("soundboard", IconName::Volume2, 32.0)
-                                .tooltip(tip("サウンドボード"))
+                                .tooltip(tip(tr!("サウンドボード", "Soundboard")))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.app.toggle_soundboard();
                                     cx.notify();
@@ -1166,14 +1190,14 @@ impl Root {
                             return d.child(
                                 b.opacity(0.4)
                                     .cursor_default()
-                                    .tooltip(tip(super::voice_stage::SCREEN_SHARE_UNSUPPORTED)),
+                                    .tooltip(tip(super::voice_stage::screen_share_unsupported())),
                             );
                         }
                         d.child(
                             b.tooltip(tip(if sharing {
-                                "画面共有を停止"
+                                tr!("画面共有を停止", "Stop sharing")
                             } else {
-                                "画面を共有"
+                                tr!("画面を共有", "Share screen")
                             }))
                             .on_click(cx.listener(
                                 |this, _, _, cx| {
@@ -1185,7 +1209,7 @@ impl Root {
                     })
                     .child(
                         icon_button("hangup", IconName::PhoneOff, 32.0)
-                            .tooltip(tip("切断"))
+                            .tooltip(tip(tr!("切断", "Disconnected")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.leave_voice();
                                 cx.notify();
@@ -1200,10 +1224,13 @@ impl Root {
                         .filter(|v| a.me.as_ref().is_none_or(|m| &m.id != *v))
                         .count()
                     {
-                        0 => "画面を共有しています".to_string(),
-                        n => format!("画面を共有しています・{n} 人が視聴中"),
+                        0 => tr!("画面を共有しています", "Sharing your screen").to_string(),
+                        n => tr!(
+                            "画面を共有しています・{n} 人が視聴中",
+                            "Sharing your screen · {n} watching",
+                        ),
                     },
-                    _ => "画面共有を準備しています…".to_string(),
+                    _ => tr!("画面共有を準備しています…", "Preparing screen share…").to_string(),
                 };
                 card = card.child(
                     div()
@@ -1249,7 +1276,7 @@ impl Root {
                         )
                         .child(
                             icon_button("voice_retry", IconName::RefreshCw, 32.0)
-                                .tooltip(tip("再試行"))
+                                .tooltip(tip(tr!("再試行", "Retry")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.app.join_voice(gid.clone(), cid.clone(), false);
                                     cx.notify();
@@ -1257,7 +1284,7 @@ impl Root {
                         )
                         .child(
                             icon_button("voice_error_close", IconName::X, 32.0)
-                                .tooltip(tip("閉じる"))
+                                .tooltip(tip(tr!("閉じる", "Close")))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.app.voice_view.error = None;
                                     cx.notify();
@@ -1338,11 +1365,11 @@ impl Root {
                 IconName::MicOff,
                 mic_off,
                 if mic_off {
-                    "ミュート解除"
+                    tr!("ミュート解除", "Unmute")
                 } else {
-                    "ミュート"
+                    tr!("ミュート", "Mute")
                 },
-                "入力オプション",
+                tr!("入力オプション", "Input options"),
                 PopMenu::Mic,
                 cx,
             ))
@@ -1352,11 +1379,11 @@ impl Root {
                 IconName::HeadphoneOff,
                 deaf,
                 if deaf {
-                    "スピーカーミュート解除"
+                    tr!("スピーカーミュート解除", "Undeafen")
                 } else {
-                    "スピーカーミュート"
+                    tr!("スピーカーミュート", "Deafen")
                 },
-                "出力オプション",
+                tr!("出力オプション", "Output options"),
                 PopMenu::Headset,
                 cx,
             ))
@@ -1365,9 +1392,12 @@ impl Root {
                 let badge = crate::commits::badge();
                 let btn = icon_button("settings_btn", IconName::Settings, 32.0)
                     .tooltip(tip(if badge {
-                        "ユーザー設定（新しいコミットがあります）"
+                        tr!(
+                            "ユーザー設定（新しいコミットがあります）",
+                            "User Settings (new commits available)"
+                        )
                     } else {
-                        "ユーザー設定"
+                        tr!("ユーザー設定", "User Settings")
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.settings_open = true;

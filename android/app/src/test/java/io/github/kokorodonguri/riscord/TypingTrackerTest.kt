@@ -1,9 +1,15 @@
 package io.github.kokorodonguri.riscord
 
+import org.junit.After
 import org.junit.Assert.*
+import org.junit.Before
 import org.junit.Test
+import java.util.Locale
 
 class TypingTrackerTest {
+    private val original=Locale.getDefault()
+    @Before fun japanese() { Locale.setDefault(Locale.JAPAN) }
+    @After fun restore() { Locale.setDefault(original) }
     private var time=0L
     private val tracker=TypingTracker {time}
     @Test fun repeatedEventsExtendTheSamePersonsDeadline() {
@@ -34,5 +40,11 @@ class TypingTrackerTest {
     @Test fun crowdedIndicatorIsShortAndUsersAreDeduplicated() {
         tracker.start("a","A");tracker.start("a","A");tracker.start("b","B");tracker.start("c","C")
         assertEquals("3人が入力中…",tracker.label())
+    }
+    @Test fun englishLabels() {
+        Locale.setDefault(Locale.US)
+        tracker.start("a","A");assertEquals("A is typing…",tracker.label())
+        tracker.start("b","B");assertEquals("A and B are typing…",tracker.label())
+        tracker.start("c","C");assertEquals("3 people are typing…",tracker.label())
     }
 }

@@ -49,9 +49,9 @@ pub fn name() -> Option<&'static str> {
 /// 画面に出す呼び名。既定はメインアカウント、追加したものはサブアカウント
 pub fn label(name: Option<&str>) -> String {
     match name {
-        None => "メインアカウント".into(),
-        Some("2") => "サブアカウント".into(),
-        Some(n) => format!("サブアカウント {n}"),
+        None => tr!("メインアカウント", "Main account").into(),
+        Some("2") => tr!("サブアカウント", "Sub account").into(),
+        Some(n) => tr!("サブアカウント {n}", "Sub account {n}",),
     }
 }
 
@@ -231,9 +231,10 @@ pub fn create(name: &str) -> std::io::Result<()> {
 /// 開いていないプロファイルを、記録・トークンごと消す
 pub fn remove(name: &str) -> std::io::Result<()> {
     if !valid(name) || is_running(Some(name)) {
-        return Err(std::io::Error::other(
+        return Err(std::io::Error::other(tr!(
             "開いているプロファイルは削除できません",
-        ));
+            "You can't delete the profile that's currently open"
+        )));
     }
     std::fs::remove_dir_all(dir_for(&shared_dir(), Some(name)))?;
     let cache = crate::app::cache_root()

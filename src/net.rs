@@ -496,12 +496,24 @@ impl Api {
             match r.status() {
                 StatusCode::TOO_MANY_REQUESTS => {
                     if attempt == MAX_RETRIES {
-                        bail!("Discord のレート制限: 再試行回数を超えました");
+                        bail!(
+                            "{}",
+                            tr!(
+                                "Discord のレート制限: 再試行回数を超えました",
+                                "Discord rate limit: too many retries",
+                            )
+                        );
                     }
                     let v: Value = r.json().await.unwrap_or_default();
                     let delay = retry_delay(&v)?;
                     if delay > Duration::from_secs(120) {
-                        bail!("Discord のレート制限: 待機時間が長すぎます");
+                        bail!(
+                            "{}",
+                            tr!(
+                                "Discord のレート制限: 待機時間が長すぎます",
+                                "Discord rate limit: the wait is too long",
+                            )
+                        );
                     }
                     let mut until = self.limits.cooldown.lock().await;
                     *until = (*until).max(tokio::time::Instant::now() + delay);
@@ -544,7 +556,7 @@ impl Api {
 struct UnauthorizedMarker;
 impl std::fmt::Display for UnauthorizedMarker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("トークンが無効です (401)")
+        f.write_str(tr!("トークンが無効です (401)", "Invalid token (401)"))
     }
 }
 
@@ -573,15 +585,34 @@ pub fn compose_reject_reason(e: &anyhow::Error) -> Option<String> {
     let code = body["code"].as_u64().unwrap_or(0);
     let raw = body.to_string();
     Some(match (h.status, code) {
-        (413, _) | (_, 40005) => "ファイルが大きすぎます".into(),
+        (413, _) | (_, 40005) => tr!("ファイルが大きすぎます", "The file is too large").into(),
         (_, 50035) if raw.contains("BASE_TYPE_MAX_LENGTH") || raw.contains("\"content\"") => {
-            "本文が長すぎます".into()
+            tr!("本文が長すぎます", "The message is too long").into()
         }
-        (_, 50006) => "空のメッセージは送信できません".into(),
-        (_, 20016) => "低速モード中です。しばらく待ってから送ってください".into(),
-        (_, 50007) => "相手がDMを受け付けていません".into(),
-        (403, _) | (_, 50013) | (_, 50001) => "このチャンネルで送信する権限がありません".into(),
-        (s, _) if (400..500).contains(&s) && s != 429 => format!("Discord に拒否されました（{s}）"),
+        (_, 50006) => tr!(
+            "空のメッセージは送信できません",
+            "Empty messages can't be sent"
+        )
+        .into(),
+        (_, 20016) => tr!(
+            "低速モード中です。しばらく待ってから送ってください",
+            "Slow mode is on. Wait a moment before sending"
+        )
+        .into(),
+        (_, 50007) => tr!(
+            "相手がDMを受け付けていません",
+            "This user isn't accepting DMs"
+        )
+        .into(),
+        (403, _) | (_, 50013) | (_, 50001) => tr!(
+            "このチャンネルで送信する権限がありません",
+            "You don't have permission to send messages in this channel"
+        )
+        .into(),
+        (s, _) if (400..500).contains(&s) && s != 429 => tr!(
+            "Discord に拒否されました（{s}）",
+            "Rejected by Discord ({s})",
+        ),
         _ => return None,
     })
 }
@@ -668,7 +699,11 @@ impl SoundCache {
                 Err(e) => {
                     eprintln!("サウンドボード {sound_id}: {e:#}");
                     tx.send(Event::Error(
-                        "サウンドボードの音を再生できませんでした".into(),
+                        tr!(
+                            "サウンドボードの音を再生できませんでした",
+                            "Couldn't play the soundboard sound"
+                        )
+                        .into(),
                     ));
                 }
             }
@@ -688,13 +723,13 @@ impl SoundCache {
             .content_length()
             .is_some_and(|n| n as usize > SOUND_MAX_BYTES)
         {
-            anyhow::bail!("大きすぎます");
+            anyhow::bail!("{}", tr!("大きすぎます", "Too large",));
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = res.chunk().await? {
             bytes.extend_from_slice(&chunk);
             if bytes.len() > SOUND_MAX_BYTES {
-                anyhow::bail!("大きすぎます");
+                anyhow::bail!("{}", tr!("大きすぎます", "Too large",));
             }
         }
         tokio::task::spawn_blocking(move || crate::voice::decode_sound(bytes)).await?
@@ -776,11 +811,14 @@ async fn run(
                     drop(perms);
                     tx.send(Event::Guilds(g))
                 }
-                Err(e) => tx.send(Event::Error(format!("サーバー一覧: {e:#}"))),
+                Err(e) => tx.send(Event::Error(tr!(
+                    "サーバー一覧: {e:#}",
+                    "Server list: {e:#}",
+                ))),
             }
             match api.get::<Vec<Channel>>("/users/@me/channels").await {
                 Ok(c) => tx.send(Event::Dms(c)),
-                Err(e) => tx.send(Event::Error(format!("DM一覧: {e:#}"))),
+                Err(e) => tx.send(Event::Error(tr!("DM一覧: {e:#}", "DM list: {e:#}",))),
             }
         });
     }
@@ -1205,19 +1243,39 @@ async fn update_profile(
 pub fn profile_error_text(e: &anyhow::Error) -> String {
     eprintln!("プロフィール保存失敗: {e:#}");
     let Some(h) = e.downcast_ref::<HttpError>() else {
-        return "保存できませんでした。通信状態を確認してください".into();
+        return tr!(
+            "保存できませんでした。通信状態を確認してください",
+            "Couldn't save. Check your connection"
+        )
+        .into();
     };
     let t = &h.text;
     if t.contains("captcha_key") {
-        "Discord が確認（CAPTCHA）を求めました。この変更は公式アプリで行ってください".into()
+        tr!(
+            "Discord が確認（CAPTCHA）を求めました。この変更は公式アプリで行ってください",
+            "Discord asked for verification (CAPTCHA). Please make this change in the official app"
+        )
+        .into()
     } else if t.contains("AVATAR_RATE_LIMIT") || t.contains("too fast") {
-        "アバターの変更が多すぎます。しばらく待ってから試してください".into()
+        tr!(
+            "アバターの変更が多すぎます。しばらく待ってから試してください",
+            "Too many avatar changes. Wait a while and try again"
+        )
+        .into()
     } else if t.contains("PASSWORD") {
-        "パスワードの確認が必要な変更です。公式アプリで行ってください".into()
+        tr!(
+            "パスワードの確認が必要な変更です。公式アプリで行ってください",
+            "This change requires password confirmation. Please make it in the official app"
+        )
+        .into()
     } else if t.contains("50035") {
-        "入力内容を受け付けてもらえませんでした。使えない言葉や長さを確認してください".into()
+        tr!(
+            "入力内容を受け付けてもらえませんでした。使えない言葉や長さを確認してください",
+            "The input was rejected. Check for disallowed words or length"
+        )
+        .into()
     } else {
-        format!("保存できませんでした（{}）", h.status)
+        tr!("保存できませんでした（{}）", "Couldn't save ({})", h.status)
     }
 }
 
@@ -1294,7 +1352,7 @@ async fn gateway_loop(
         }
         let wait = match end {
             GatewayEnd::Fatal(msg) => {
-                tx.send(Status(format!("エラー: {msg}")));
+                tx.send(Status(tr!("エラー: {msg}", "Error: {msg}",)));
                 return;
             }
             // 再開できないと言われたら一からログインし直す。Discord の推奨どおり 1〜5 秒待つ
@@ -1305,8 +1363,9 @@ async fn gateway_loop(
             GatewayEnd::Resume => reconnect_delay(failures),
         };
         failures = failures.saturating_add(1);
-        tx.send(Status(format!(
+        tx.send(Status(tr!(
             "接続が切れました。{}秒後に再接続します…",
+            "Disconnected. Reconnecting in {} seconds…",
             wait.as_secs().max(1)
         )));
         tokio::time::sleep(wait).await;
@@ -1342,9 +1401,16 @@ fn reconnect_delay(failures: u32) -> Duration {
 /// 切断コードごとの扱い（https://discord.com/developers/docs/topics/opcodes-and-status-codes）
 fn close_action(code: u16) -> GatewayEnd {
     match code {
-        4004 => GatewayEnd::Fatal("トークンが無効です。ログインし直してください。".into()),
-        4010..=4014 => GatewayEnd::Fatal(format!(
-            "Discord に接続を断られました（{code}）。再接続を止めました。"
+        4004 => GatewayEnd::Fatal(
+            tr!(
+                "トークンが無効です。ログインし直してください。",
+                "Your token is invalid. Please log in again."
+            )
+            .into(),
+        ),
+        4010..=4014 => GatewayEnd::Fatal(tr!(
+            "Discord に接続を断られました（{code}）。再接続を止めました。",
+            "Discord refused the connection ({code}). Stopped reconnecting.",
         )),
         // 連番が合わない・セッションの期限切れ: 再開はできない
         4007 | 4009 => GatewayEnd::Reidentify,
@@ -1402,7 +1468,15 @@ async fn gateway_once_at(
         tokio_tungstenite::connect_async(url.as_str()),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("Gateway 接続がタイムアウトしました"))??;
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "{}",
+            tr!(
+                "Gateway 接続がタイムアウトしました",
+                "Gateway connection timed out",
+            )
+        )
+    })??;
     let (mut write, mut read) = ws.split();
     let mut inflater = Inflater::new();
 
@@ -1417,15 +1491,32 @@ async fn gateway_once_at(
                 }
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(e.into()),
-                None => bail!("helloを受信する前に切断"),
+                None => bail!(
+                    "{}",
+                    tr!(
+                        "helloを受信する前に切断",
+                        "Disconnected before receiving hello",
+                    )
+                ),
             }
         }
     })
     .await
-    .map_err(|_| anyhow::anyhow!("Gateway Hello の受信がタイムアウトしました"))??;
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "{}",
+            tr!(
+                "Gateway Hello の受信がタイムアウトしました",
+                "Timed out waiting for Gateway Hello",
+            )
+        )
+    })??;
     let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41_250);
     if interval_ms == 0 {
-        bail!("無効な heartbeat interval");
+        bail!(
+            "{}",
+            tr!("無効な heartbeat interval", "Invalid heartbeat interval",)
+        );
     }
 
     let first = match &resume {
@@ -1455,7 +1546,7 @@ async fn gateway_once_at(
                 write.send(WsMsg::Text(v.to_string().into())).await?;
             }
             _ = hb.tick() => {
-                if !acked { bail!("heartbeat ACKなし"); }
+                if !acked { bail!("{}", tr!("heartbeat ACKなし", "No heartbeat ACK",)); }
                 acked = false;
                 write.send(WsMsg::Text(json!({"op": 1, "d": session.seq}).to_string().into())).await?;
             }
@@ -1473,7 +1564,7 @@ async fn gateway_once_at(
                     }
                     Some(Ok(_)) => continue,
                     Some(Err(e)) => return Err(e.into()),
-                    None => bail!("切断"),
+                    None => bail!("{}", tr!("切断", "Disconnected",)),
                 };
                 let Some(f) = decode_frame_as::<GatewayFrame>(&m, &mut inflater)? else { continue };
                 if let Some(s) = f.s.as_i64() { session.seq = Some(s); }
@@ -1702,14 +1793,14 @@ fn activity_text(acts: &Value) -> Option<String> {
     let a = acts.iter().find(|a| a["type"] != 4)?;
     let name = a["name"].as_str()?;
     Some(match a["type"].as_u64() {
-        Some(1) => format!("配信中: {name}"),
+        Some(1) => tr!("配信中: {name}", "Streaming: {name}",),
         Some(2) => match a["details"].as_str() {
-            Some(song) => format!("{name} を再生中: {song}"),
-            None => format!("{name} を再生中"),
+            Some(song) => tr!("{name} を再生中: {song}", "Listening to {name}: {song}",),
+            None => tr!("{name} を再生中", "Listening to {name}",),
         },
-        Some(3) => format!("視聴中: {name}"),
-        Some(5) => format!("参戦中: {name}"),
-        _ => format!("プレイ中: {name}"),
+        Some(3) => tr!("視聴中: {name}", "Watching: {name}",),
+        Some(5) => tr!("参戦中: {name}", "Competing in: {name}",),
+        _ => tr!("プレイ中: {name}", "Playing: {name}",),
     })
 }
 
@@ -2211,7 +2302,10 @@ async fn voice_task(
                         if std::mem::take(&mut t.ring) {
                             let path = format!("/channels/{}/call/ring", t.channel_id);
                             if let Err(e) = api.post(&path, &json!({ "recipients": null })).await {
-                                tx.send(Event::Error(format!("呼び出し失敗: {e:#}")));
+                                tx.send(Event::Error(tr!(
+                                    "呼び出し失敗: {e:#}",
+                                    "Request failed: {e:#}",
+                                )));
                             }
                         }
                     }

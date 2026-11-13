@@ -65,7 +65,13 @@ impl App {
             self.friends.loading = Some((id, self.friends.revision));
             self.friends.error = None;
         } else {
-            self.friends.error = Some("接続できません。再接続してからお試しください".into());
+            self.friends.error = Some(
+                tr!(
+                    "接続できません。再接続してからお試しください",
+                    "Not connected. Reconnect and try again"
+                )
+                .into(),
+            );
         }
     }
 
@@ -93,7 +99,8 @@ impl App {
                     || username.chars().count() > 100
                     || username.contains(char::is_whitespace)
                 {
-                    self.friends.error = Some("ユーザー名を入力してください".into());
+                    self.friends.error =
+                        Some(tr!("ユーザー名を入力してください", "Enter a username").into());
                     return;
                 }
                 net::ApiCall::SendFriendRequest {
@@ -171,8 +178,17 @@ impl App {
             self.friends.pending.insert(id, action);
             self.friends.error = None;
         } else {
-            self.friends.error = Some("接続できません。再接続してからお試しください".into());
-            self.show_toast("接続できません。再接続してからお試しください");
+            self.friends.error = Some(
+                tr!(
+                    "接続できません。再接続してからお試しください",
+                    "Not connected. Reconnect and try again"
+                )
+                .into(),
+            );
+            self.show_toast(tr!(
+                "接続できません。再接続してからお試しください",
+                "Not connected. Reconnect and try again"
+            ));
         }
     }
 
@@ -236,14 +252,22 @@ impl App {
                         let before = self.friends.revision;
                         self.friends_ready(&value);
                         if before == self.friends.revision {
-                            self.friends.error =
-                                Some("フレンド一覧の応答を読み取れませんでした".into());
+                            self.friends.error = Some(
+                                tr!(
+                                    "フレンド一覧の応答を読み取れませんでした",
+                                    "Couldn't read the friends list response"
+                                )
+                                .into(),
+                            );
                         }
                     }
                     Err(e) => {
                         self.friends.error = Some(super::pins::api_error_text(
                             &e,
-                            "フレンド一覧を取得できませんでした",
+                            tr!(
+                                "フレンド一覧を取得できませんでした",
+                                "Couldn't load the friends list"
+                            ),
                         ))
                     }
                 }
@@ -255,7 +279,10 @@ impl App {
         };
         match result {
             Err(e) => {
-                let message = super::pins::api_error_text(&e, "フレンド操作に失敗しました");
+                let message = super::pins::api_error_text(
+                    &e,
+                    tr!("フレンド操作に失敗しました", "The friend action failed"),
+                );
                 self.show_toast(&message);
                 self.friends.error = Some(message);
             }
@@ -279,17 +306,25 @@ impl App {
                             self.pending_open = Some(cid);
                         }
                     }
-                    _ => self.friends.error = Some("DM の応答を読み取れませんでした".into()),
+                    _ => {
+                        self.friends.error = Some(
+                            tr!(
+                                "DM の応答を読み取れませんでした",
+                                "Couldn't read the DM response"
+                            )
+                            .into(),
+                        )
+                    }
                 },
                 FriendAction::Request => {
                     self.friends.revision = self.friends.revision.wrapping_add(1);
                     self.friends.username.clear();
-                    self.show_toast("フレンド申請を送信しました");
+                    self.show_toast(tr!("フレンド申請を送信しました", "Friend request sent"));
                     self.fetch_friends();
                 }
                 _ => {
                     self.friends.revision = self.friends.revision.wrapping_add(1);
-                    self.show_toast("フレンド情報を更新しました");
+                    self.show_toast(tr!("フレンド情報を更新しました", "Friend info updated"));
                     self.fetch_friends();
                 }
             },

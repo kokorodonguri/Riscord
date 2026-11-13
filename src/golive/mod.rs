@@ -186,34 +186,46 @@ impl Manager {
             }
             Msg::Ended(id, err) => {
                 if self.broadcast.as_ref().is_some_and(|s| s.id == id) {
-                    self.stop_broadcast(Some(err.unwrap_or_else(|| "配信が終了しました".into())));
+                    self.stop_broadcast(Some(
+                        err.unwrap_or_else(|| tr!("配信が終了しました", "The stream ended").into()),
+                    ));
                 } else if self.watch.as_ref().is_some_and(|s| s.id == id) {
                     self.stop_watch(err);
                 }
             }
             Msg::Timeout(id) => {
-                const WHY: &str =
-                    "配信サーバーの情報が届きません。少し待ってからもう一度試してください";
+                let why = tr!(
+                    "配信サーバーの情報が届きません。少し待ってからもう一度試してください",
+                    "Stream server info didn't arrive. Wait a moment and try again"
+                );
                 if self
                     .broadcast
                     .as_ref()
                     .is_some_and(|s| s.id == id && !s.started && !s.picking)
                 {
                     conn::debug(format_args!(
-                        "配信: 接続情報が来ない rtc={:?} server={}",
-                        self.broadcast
-                            .as_ref()
-                            .and_then(|s| s.rtc_server_id.clone()),
-                        self.broadcast.as_ref().is_some_and(|s| s.server.is_some())
+                        "{}",
+                        tr!(
+                            "配信: 接続情報が来ない rtc={:?} server={}",
+                            "Stream: no connection info rtc={:?} server={}",
+                            self.broadcast
+                                .as_ref()
+                                .and_then(|s| s.rtc_server_id.clone()),
+                            self.broadcast.as_ref().is_some_and(|s| s.server.is_some())
+                        )
                     ));
-                    self.stop_broadcast(Some(WHY.into()));
+                    self.stop_broadcast(Some(why.into()));
                 } else if let Some(s) = self.watch.as_ref().filter(|s| s.id == id && !s.started) {
                     conn::debug(format_args!(
-                        "視聴: 接続情報が来ない rtc={:?} server={}",
-                        s.rtc_server_id,
-                        s.server.is_some()
+                        "{}",
+                        tr!(
+                            "視聴: 接続情報が来ない rtc={:?} server={}",
+                            "Watch: no connection info rtc={:?} server={}",
+                            s.rtc_server_id,
+                            s.server.is_some()
+                        )
                     ));
-                    self.stop_watch(Some(WHY.into()));
+                    self.stop_watch(Some(why.into()));
                 }
             }
             Msg::Gateway(t, d) => self.gateway(&t, &d, place),
@@ -241,7 +253,11 @@ impl Manager {
         }
         if place.is_none() {
             (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some(
-                "ボイスチャンネルに接続してから画面共有してください".into(),
+                tr!(
+                    "ボイスチャンネルに接続してから画面共有してください",
+                    "Join a voice channel before sharing your screen"
+                )
+                .into(),
             ))));
             return;
         }
@@ -274,7 +290,11 @@ impl Manager {
         let Some(p) = place else {
             self.broadcast = None;
             (self.emit)(StreamEvent::Broadcast(Phase::Ended(Some(
-                "ボイスチャンネルから切断されました".into(),
+                tr!(
+                    "ボイスチャンネルから切断されました",
+                    "Disconnected from the voice channel"
+                )
+                .into(),
             ))));
             return;
         };
@@ -301,7 +321,11 @@ impl Manager {
             (self.emit)(StreamEvent::Watch(
                 key,
                 Phase::Ended(Some(
-                    "ボイスチャンネルに接続してから視聴してください".into(),
+                    tr!(
+                        "ボイスチャンネルに接続してから視聴してください",
+                        "Join a voice channel before watching"
+                    )
+                    .into(),
                 )),
             ));
             return;
@@ -391,10 +415,20 @@ impl Manager {
             "STREAM_DELETE" => {
                 let reason = match d["reason"].as_str() {
                     Some("user_requested") | None => None,
-                    Some("stream_full") => Some("配信の視聴者が満員です".to_string()),
-                    Some("unauthorized") => Some("この配信を見る権限がありません".to_string()),
-                    Some("stream_ended") => Some("配信が終了しました".to_string()),
-                    Some(r) => Some(format!("配信が終了しました（{r}）")),
+                    Some("stream_full") => {
+                        Some(tr!("配信の視聴者が満員です", "The stream is full").to_string())
+                    }
+                    Some("unauthorized") => Some(
+                        tr!(
+                            "この配信を見る権限がありません",
+                            "You don't have permission to watch this stream"
+                        )
+                        .to_string(),
+                    ),
+                    Some("stream_ended") => {
+                        Some(tr!("配信が終了しました", "The stream ended").to_string())
+                    }
+                    Some(r) => Some(tr!("配信が終了しました（{r}）", "The stream ended ({r})",)),
                 };
                 // 鍵を空にしてから止める（STREAM_DELETE を送り返さない）
                 if mine {
@@ -420,7 +454,11 @@ impl Manager {
     fn try_connect(&mut self, mine: bool, place: Option<Place<'_>>) {
         let Some(place) = place else {
             conn::debug(format_args!(
-                "ボイスの session_id が無いので配信に接続できない"
+                "{}",
+                tr!(
+                    "ボイスの session_id が無いので配信に接続できない",
+                    "Can't connect to the stream without a voice session_id",
+                )
             ));
             return;
         };

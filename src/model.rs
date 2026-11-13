@@ -375,7 +375,7 @@ impl Channel {
         }
         let names: Vec<&str> = self.recipients.iter().map(|u| u.display()).collect();
         if names.is_empty() {
-            "(不明)".into()
+            tr!("(不明)", "(unknown)").into()
         } else {
             names.join(", ")
         }

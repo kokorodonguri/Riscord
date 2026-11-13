@@ -209,7 +209,11 @@ pub fn option_value(
     let t = text.trim();
     if t.is_empty() {
         return if o.required {
-            Err(format!("「{}」を入力してください", o.name))
+            Err(tr!(
+                "「{}」を入力してください",
+                "Please enter \"{}\"",
+                o.name
+            ))
         } else {
             Ok(None)
         };
@@ -227,41 +231,76 @@ pub fn option_value(
                         .is_some_and(|n| t.parse::<f64>().ok() == Some(n))
             })
             .map(|c| Some(c.value.clone()))
-            .ok_or_else(|| format!("「{}」は候補から選んでください", o.name));
+            .ok_or_else(|| {
+                tr!(
+                    "「{}」は候補から選んでください",
+                    "Choose \"{}\" from the suggestions",
+                    o.name
+                )
+            });
     }
     let range = |n: f64| -> Result<(), String> {
         if o.min_value.is_some_and(|m| n < m) || o.max_value.is_some_and(|m| n > m) {
-            return Err(format!("「{}」の値が範囲外です", o.name));
+            return Err(tr!(
+                "「{}」の値が範囲外です",
+                "The value of \"{}\" is out of range",
+                o.name
+            ));
         }
         Ok(())
     };
     Ok(Some(match o.kind {
         OPT_STRING => serde_json::Value::String(t.to_string()),
         OPT_INTEGER => {
-            let n: i64 = t
-                .parse()
-                .map_err(|_| format!("「{}」には整数を入力してください", o.name))?;
+            let n: i64 = t.parse().map_err(|_| {
+                tr!(
+                    "「{}」には整数を入力してください",
+                    "Enter an integer for \"{}\"",
+                    o.name
+                )
+            })?;
             range(n as f64)?;
             n.into()
         }
         OPT_NUMBER => {
-            let n: f64 = t
-                .parse()
-                .map_err(|_| format!("「{}」には数を入力してください", o.name))?;
+            let n: f64 = t.parse().map_err(|_| {
+                tr!(
+                    "「{}」には数を入力してください",
+                    "Enter a number for \"{}\"",
+                    o.name
+                )
+            })?;
             range(n)?;
             n.into()
         }
         OPT_BOOLEAN => match t {
-            "true" | "はい" => true.into(),
-            "false" | "いいえ" => false.into(),
-            _ => return Err(format!("「{}」ははい・いいえで選んでください", o.name)),
+            "true" | "はい" | "yes" | "Yes" => true.into(),
+            "false" | "いいえ" | "no" | "No" => false.into(),
+            _ => {
+                return Err(tr!(
+                    "「{}」ははい・いいえで選んでください",
+                    "Choose yes or no for \"{}\"",
+                    o.name
+                ))
+            }
         },
         OPT_USER | OPT_CHANNEL | OPT_ROLE | OPT_MENTIONABLE => {
-            let id = resolve(o.kind, t)
-                .ok_or_else(|| format!("「{}」の「{t}」が見つかりません", o.name))?;
+            let id = resolve(o.kind, t).ok_or_else(|| {
+                tr!(
+                    "「{}」の「{t}」が見つかりません",
+                    "\"{t}\" not found for \"{}\"",
+                    o.name
+                )
+            })?;
             serde_json::Value::String(id)
         }
-        OPT_ATTACHMENT => return Err("添付ファイルの引数にはまだ対応していません".into()),
+        OPT_ATTACHMENT => {
+            return Err(tr!(
+                "添付ファイルの引数にはまだ対応していません",
+                "Attachment arguments aren't supported yet"
+            )
+            .into())
+        }
         _ => serde_json::Value::String(t.to_string()),
     }))
 }
@@ -586,14 +625,19 @@ impl App {
         };
         if self.session_id.is_none() {
             if let Some(d) = self.cmd_draft.as_mut() {
-                d.error =
-                    Some("接続の準備ができていません。少し待ってからもう一度お試しください".into());
+                d.error = Some(
+                    tr!(
+                        "接続の準備ができていません。少し待ってからもう一度お試しください",
+                        "Not ready to connect yet. Wait a moment and try again"
+                    )
+                    .into(),
+                );
             }
             return;
         }
         if needs_sub(&d.command, &d.path) {
             if let Some(d) = self.cmd_draft.as_mut() {
-                d.error = Some("サブコマンドを選んでください".into());
+                d.error = Some(tr!("サブコマンドを選んでください", "Choose a subcommand").into());
             }
             return;
         }
@@ -659,7 +703,11 @@ impl App {
             .collect();
         for n in late {
             if let Some(p) = self.pending_interactions.remove(&n) {
-                self.show_toast(&format!("{} にアプリが応答しませんでした", p.label));
+                self.show_toast(&tr!(
+                    "{} にアプリが応答しませんでした",
+                    "The app didn't respond to {}",
+                    p.label
+                ));
             }
         }
     }
@@ -679,7 +727,7 @@ impl App {
         if let Some(p) = self.pending_interactions.remove(nonce) {
             self.show_toast(&api_error_text(
                 &e,
-                &format!("{} を実行できませんでした", p.label),
+                &tr!("{} を実行できませんでした", "Couldn't run {}", p.label),
             ));
         }
     }
@@ -699,7 +747,7 @@ impl App {
             }
             "INTERACTION_FAILURE" => {
                 if let Some(p) = self.pending_interactions.remove(nonce) {
-                    self.show_toast(&format!("{} の実行に失敗しました", p.label));
+                    self.show_toast(&tr!("{} の実行に失敗しました", "{} failed to run", p.label));
                 }
             }
             "APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE" => {

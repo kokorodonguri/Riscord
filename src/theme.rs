@@ -41,9 +41,9 @@ fn unpack(v: u32) -> Color32 {
 }
 
 macro_rules! palette {
-    ($($idx:literal $name:ident $key:literal $label:literal [$r:literal, $g:literal, $b:literal];)*) => {
+    ($($idx:literal $name:ident $key:literal $label:literal $en:literal [$r:literal, $g:literal, $b:literal];)*) => {
         /// (キー, 表示名, 既定の色)
-        pub const KEYS: &[(&str, &str, Color32)] = &[$(($key, $label, Color32::from_rgb($r, $g, $b))),*];
+        pub const KEYS: &[(&str, crate::i18n::Tr, Color32)] = &[$(($key, crate::i18n::Tr($label, $en), Color32::from_rgb($r, $g, $b))),*];
         static COLORS: [AtomicU32; KEYS.len()] = [$(AtomicU32::new(u32::from_le_bytes([$r, $g, $b, 255]))),*];
         $(
             #[allow(non_snake_case, dead_code)]
@@ -57,38 +57,38 @@ macro_rules! palette {
 
 // 既定は今までの黒テーマ（Vesktop の黒に合わせたもの）
 palette! {
-    0 BG "bg" "画面の地" [0x00, 0x00, 0x00];
-    1 RAIL "rail" "サーバー一覧・カード" [0x18, 0x18, 0x1b];
-    2 SIDEBAR "sidebar" "ポップアップ・浮いた面" [0x0e, 0x0e, 0x10];
-    3 CHAT "chat" "チャット欄" [0x00, 0x00, 0x00];
-    4 INPUT "input" "入力欄" [0x10, 0x10, 0x13];
-    5 USERBAR "userbar" "左下のユーザー欄" [0x00, 0x00, 0x00];
-    6 BLURPLE "accent" "アクセント" [0x58, 0x65, 0xf2];
-    7 TEXT "text" "本文" [0xdb, 0xdb, 0xde];
-    8 MUTED "muted" "控えめな文字" [0x94, 0x95, 0x9c];
-    9 FAINT "faint" "薄い文字（時刻など）" [0x6e, 0x6f, 0x77];
-    10 WHITE "strong" "強調する文字（名前など）" [0xf2, 0xf2, 0xf3];
-    11 HOVER "hover" "マウスを乗せた項目" [0x12, 0x12, 0x14];
-    12 SELECTED "selected" "選択中の項目" [0x1d, 0x1d, 0x20];
-    13 MSG_HOVER "msg_hover" "マウスを乗せたメッセージ" [0x0e, 0x0e, 0x10];
-    14 DIVIDER "divider" "区切り線" [0x1e, 0x1e, 0x20];
-    15 BORDER "border" "枠線" [0x2a, 0x2a, 0x2e];
-    16 LINK "link" "リンク" [0x00, 0xa8, 0xfc];
-    17 RED "danger" "危険（削除・切断）" [0xda, 0x37, 0x3c];
-    18 ORANGE "warning" "注意" [0xc2, 0x7c, 0x0e];
-    19 GREEN "success" "成功・通話" [0x23, 0xa5, 0x5a];
-    20 ST_ONLINE "online" "オンライン" [0x23, 0xa5, 0x5a];
-    21 ST_IDLE "idle" "退席中" [0xf0, 0xb2, 0x32];
-    22 ST_DND "dnd" "取り込み中" [0xf2, 0x3f, 0x43];
-    23 ST_OFFLINE "offline" "オフライン" [0x80, 0x84, 0x8e];
-    24 CALL_BG "call_bg" "通話画面の地" [0x00, 0x00, 0x00];
-    25 EMBED_BG "embed_bg" "埋め込みの地" [0x12, 0x12, 0x15];
-    26 EMBED_BAR "embed_bar" "埋め込みの縦線（色指定なし）" [0x2b, 0x2d, 0x31];
-    27 WIDGET "widget" "ボタン・スライダー" [0x24, 0x24, 0x28];
-    28 WIDGET_HOVER "widget_hover" "ボタン（マウスを乗せたとき）" [0x30, 0x30, 0x35];
-    29 REPLY_LINE "reply_line" "返信の線" [0x4e, 0x4f, 0x56];
-    30 SETTINGS_BG "settings_bg" "設定画面の地" [0x00, 0x00, 0x00];
-    31 SETTINGS_NAV "settings_nav" "設定画面のメニュー" [0x00, 0x00, 0x00];
+    0 BG "bg" "画面の地" "Base background" [0x00, 0x00, 0x00];
+    1 RAIL "rail" "サーバー一覧・カード" "Server list and cards" [0x18, 0x18, 0x1b];
+    2 SIDEBAR "sidebar" "ポップアップ・浮いた面" "Popups and floating surfaces" [0x0e, 0x0e, 0x10];
+    3 CHAT "chat" "チャット欄" "Chat area" [0x00, 0x00, 0x00];
+    4 INPUT "input" "入力欄" "Input box" [0x10, 0x10, 0x13];
+    5 USERBAR "userbar" "左下のユーザー欄" "User panel (bottom left)" [0x00, 0x00, 0x00];
+    6 BLURPLE "accent" "アクセント" "Accent" [0x58, 0x65, 0xf2];
+    7 TEXT "text" "本文" "Body text" [0xdb, 0xdb, 0xde];
+    8 MUTED "muted" "控えめな文字" "Muted text" [0x94, 0x95, 0x9c];
+    9 FAINT "faint" "薄い文字（時刻など）" "Faint text (timestamps, etc.)" [0x6e, 0x6f, 0x77];
+    10 WHITE "strong" "強調する文字（名前など）" "Emphasized text (names, etc.)" [0xf2, 0xf2, 0xf3];
+    11 HOVER "hover" "マウスを乗せた項目" "Hovered item" [0x12, 0x12, 0x14];
+    12 SELECTED "selected" "選択中の項目" "Selected item" [0x1d, 0x1d, 0x20];
+    13 MSG_HOVER "msg_hover" "マウスを乗せたメッセージ" "Hovered message" [0x0e, 0x0e, 0x10];
+    14 DIVIDER "divider" "区切り線" "Dividers" [0x1e, 0x1e, 0x20];
+    15 BORDER "border" "枠線" "Borders" [0x2a, 0x2a, 0x2e];
+    16 LINK "link" "リンク" "Links" [0x00, 0xa8, 0xfc];
+    17 RED "danger" "危険（削除・切断）" "Danger (delete, disconnect)" [0xda, 0x37, 0x3c];
+    18 ORANGE "warning" "注意" "Warning" [0xc2, 0x7c, 0x0e];
+    19 GREEN "success" "成功・通話" "Success and calls" [0x23, 0xa5, 0x5a];
+    20 ST_ONLINE "online" "オンライン" "Online" [0x23, 0xa5, 0x5a];
+    21 ST_IDLE "idle" "退席中" "Idle" [0xf0, 0xb2, 0x32];
+    22 ST_DND "dnd" "取り込み中" "Do Not Disturb" [0xf2, 0x3f, 0x43];
+    23 ST_OFFLINE "offline" "オフライン" "Offline" [0x80, 0x84, 0x8e];
+    24 CALL_BG "call_bg" "通話画面の地" "Call screen background" [0x00, 0x00, 0x00];
+    25 EMBED_BG "embed_bg" "埋め込みの地" "Embed background" [0x12, 0x12, 0x15];
+    26 EMBED_BAR "embed_bar" "埋め込みの縦線（色指定なし）" "Embed side bar (no color set)" [0x2b, 0x2d, 0x31];
+    27 WIDGET "widget" "ボタン・スライダー" "Buttons and sliders" [0x24, 0x24, 0x28];
+    28 WIDGET_HOVER "widget_hover" "ボタン（マウスを乗せたとき）" "Buttons (hovered)" [0x30, 0x30, 0x35];
+    29 REPLY_LINE "reply_line" "返信の線" "Reply line" [0x4e, 0x4f, 0x56];
+    30 SETTINGS_BG "settings_bg" "設定画面の地" "Settings background" [0x00, 0x00, 0x00];
+    31 SETTINGS_NAV "settings_nav" "設定画面のメニュー" "Settings menu" [0x00, 0x00, 0x00];
 }
 
 macro_rules! parts {
@@ -139,16 +139,16 @@ parts! {
 }
 
 /// 部品に書ける項目（名前, 説明）
-pub const PART_PROPS: &[(&str, &str)] = &[
-    ("bg", "地の色"),
-    ("text", "文字の色"),
-    ("border", "枠線の色"),
-    ("border_width", "枠線の太さ"),
-    ("radius", "角の丸み"),
-    ("opacity", "中身ごとの見え具合（0〜1）"),
+pub const PART_PROPS: &[(&str, crate::i18n::Tr)] = &[
+    ("bg", trc!("地の色", "Background color")),
+    ("text", trc!("文字の色", "Text color")),
+    ("border", trc!("枠線の色", "Border color")),
+    ("border_width", trc!("枠線の太さ", "Border width")),
+    ("radius", trc!("角の丸み", "Corner radius")),
+    ("opacity", trc!("中身ごとの見え具合（0〜1）", "Content opacity (0–1)")),
     (
         "hover_bg",
-        "マウスを乗せたときの地の色（行・ボタンなど、乗せると色が変わる部品だけ）",
+        trc!("マウスを乗せたときの地の色（行・ボタンなど、乗せると色が変わる部品だけ）", "Background color on hover (only for parts that change on hover, like rows and buttons)"),
     ),
 ];
 
@@ -185,21 +185,26 @@ fn resolve_parts(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<PartSty
     let mut out = vec![PartStyle::default(); PARTS.len()];
     for (group, v) in table {
         let Some(members) = v.as_table() else {
-            warnings.push(format!(
-                "parts.{group} は [parts.{group}.部品] の形で書いてください"
+            warnings.push(tr!(
+                "parts.{group} は [parts.{group}.部品] の形で書いてください",
+                "Write parts.{group} as [parts.{group}.part]",
             ));
             continue;
         };
         for (name, v) in members {
             let key = format!("{group}.{name}");
             let Some(props) = v.as_table() else {
-                warnings.push(format!(
-                    "parts.{key} は読めません。[parts.画面.部品] の下に項目を書いてください"
+                warnings.push(tr!(
+                    "parts.{key} は読めません。[parts.画面.部品] の下に項目を書いてください",
+                    "Can't read parts.{key}. Write items under [parts.screen.part]",
                 ));
                 continue;
             };
             let Some(i) = PARTS.iter().position(|p| p.0 == key) else {
-                warnings.push(format!("{key} という部品はありません"));
+                warnings.push(tr!(
+                    "{key} という部品はありません",
+                    "There is no part named {key}",
+                ));
                 continue;
             };
             for (prop, v) in props {
@@ -220,7 +225,10 @@ fn resolve_parts(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<PartSty
                     "radius" => number().map(|n| st.radius = Some(n)).is_some(),
                     "opacity" => number().map(|n| st.opacity = Some(n.min(1.0))).is_some(),
                     _ => {
-                        warnings.push(format!("{key} に {prop} という項目はありません"));
+                        warnings.push(tr!(
+                            "{key} に {prop} という項目はありません",
+                            "{key} has no property named {prop}",
+                        ));
                         continue;
                     }
                 };
@@ -230,9 +238,12 @@ fn resolve_parts(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<PartSty
                         toml::Value::Integer(n) => n.to_string(),
                         toml::Value::Float(n) => n.to_string(),
                         toml::Value::Boolean(b) => b.to_string(),
-                        _ => "表や配列".into(),
+                        _ => tr!("表や配列", "a table or array").into(),
                     };
-                    warnings.push(format!("{key} の {prop} を読めません（{shown}）"));
+                    warnings.push(tr!(
+                        "{key} の {prop} を読めません（{shown}）",
+                        "Can't read {prop} of {key} ({shown})",
+                    ));
                 }
             }
         }
@@ -320,11 +331,11 @@ pub struct Resolved {
 }
 
 /// 組み込みのテーマ（キー, 表示名, 上書きする色）
-pub const BUILTIN: &[(&str, &str, &[(&str, &str)])] = &[
-    ("black", "黒（既定）", &[]),
+pub const BUILTIN: &[(&str, crate::i18n::Tr, &[(&str, &str)])] = &[
+    ("black", trc!("黒（既定）", "Black (default)"), &[]),
     (
         "dark",
-        "ダーク（Discord 風）",
+        trc!("ダーク（Discord 風）", "Dark (Discord-like)"),
         &[
             ("bg", "#1e1f22"),
             ("rail", "#1e1f22"),
@@ -346,7 +357,7 @@ pub const BUILTIN: &[(&str, &str, &[(&str, &str)])] = &[
     ),
     (
         "midnight",
-        "ミッドナイト（青）",
+        trc!("ミッドナイト（青）", "Midnight (blue)"),
         &[
             ("bg", "#0b0e17"),
             ("rail", "#121726"),
@@ -374,7 +385,7 @@ pub const BUILTIN: &[(&str, &str, &[(&str, &str)])] = &[
     ),
     (
         "sakura",
-        "さくら（ピンク）",
+        trc!("さくら（ピンク）", "Sakura (pink)"),
         &[
             ("bg", "#1a1216"),
             ("rail", "#241a1f"),
@@ -405,10 +416,22 @@ pub const BUILTIN: &[(&str, &str, &[(&str, &str)])] = &[
 /// 組み込みテーマの説明（設定画面のカード用）
 pub fn builtin_description(key: &str) -> &'static str {
     match key {
-        "black" => "真っ黒な地に白い文字。Vesktop の黒テーマに合わせた既定の配色。",
-        "dark" => "公式 Discord のダークテーマに近い灰色の配色。",
-        "midnight" => "夜空のような紺色に、青いアクセント。",
-        "sakura" => "暗いピンクの地に、桜色のアクセント。",
+        "black" => tr!(
+            "真っ黒な地に白い文字。Vesktop の黒テーマに合わせた既定の配色。",
+            "White text on pure black. The default colors, matching Vesktop's black theme."
+        ),
+        "dark" => tr!(
+            "公式 Discord のダークテーマに近い灰色の配色。",
+            "Gray colors close to the official Discord dark theme."
+        ),
+        "midnight" => tr!(
+            "夜空のような紺色に、青いアクセント。",
+            "Navy like the night sky, with a blue accent."
+        ),
+        "sakura" => tr!(
+            "暗いピンクの地に、桜色のアクセント。",
+            "A dark pink background with a cherry-blossom accent."
+        ),
         _ => "",
     }
 }
@@ -489,9 +512,15 @@ pub fn resolve(
     let mut warnings = Vec::new();
     for (k, v) in &file.colors {
         if !KEYS.iter().any(|x| x.0 == k) {
-            warnings.push(format!("colors に {k} という色はありません"));
+            warnings.push(tr!(
+                "colors に {k} という色はありません",
+                "colors has no color named {k}",
+            ));
         } else if parse_color(v).is_none() {
-            warnings.push(format!("colors の {k} を読めません（\"{v}\"）"));
+            warnings.push(tr!(
+                "colors の {k} を読めません（\"{v}\"）",
+                "Can't read {k} in colors (\"{v}\")",
+            ));
         }
         set(k, v);
     }
@@ -573,7 +602,11 @@ pub fn export(name: &str, colors: &[Color32], background: &Background) -> String
         toml_str(name)
     );
     for ((key, label, _), c) in KEYS.iter().zip(colors) {
-        s.push_str(&format!("{key} = \"{}\"   # {label}\n", format_color(*c)));
+        s.push_str(&format!(
+            "{key} = \"{}\"   # {}\n",
+            format_color(*c),
+            label.s()
+        ));
     }
     s.push_str("\n[background]\n");
     match &background.image {
@@ -584,8 +617,9 @@ pub fn export(name: &str, colors: &[Color32], background: &Background) -> String
         "opacity = {}\n",
         background.opacity.unwrap_or(0.35)
     ));
-    s.push_str(&format!(
+    s.push_str(&tr!(
         "area = {}   # \"chat\" か \"window\"\n",
+        "area = {}   # \"chat\" or \"window\"\n",
         toml_str(background.area.as_deref().unwrap_or("chat"))
     ));
     s

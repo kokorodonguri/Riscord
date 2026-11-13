@@ -107,10 +107,15 @@ mod platform {
         use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
         use ashpd::desktop::PersistMode;
         let err = |e: ashpd::Error| match e {
-            ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => {
-                "画面の選択が取り消されました".to_string()
-            }
-            e => format!("画面共有のポータルを使えません: {e}"),
+            ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => tr!(
+                "画面の選択が取り消されました",
+                "Screen selection was canceled"
+            )
+            .to_string(),
+            e => tr!(
+                "画面共有のポータルを使えません: {e}",
+                "Can't use the screen sharing portal: {e}",
+            ),
         };
         let proxy = Screencast::new().await.map_err(err)?;
         let session = proxy.create_session().await.map_err(err)?;
@@ -139,10 +144,10 @@ mod platform {
             .map_err(err)?
             .response()
             .map_err(err)?;
-        let stream = streams
-            .streams()
-            .first()
-            .ok_or("共有する画面が選ばれませんでした")?;
+        let stream = streams.streams().first().ok_or(tr!(
+            "共有する画面が選ばれませんでした",
+            "No screen was chosen to share"
+        ))?;
         let node = stream.pipe_wire_node_id();
         let size = stream.size();
         let fd = proxy.open_pipe_wire_remote(&session).await.map_err(err)?;
@@ -171,7 +176,7 @@ mod platform {
                 q.bitrate
             ))
         } else {
-            Err("H264 のエンコーダーが見つかりません（gst-plugins-ugly の x264enc か、gst-plugins-bad の openh264enc を入れてください）".into())
+            Err(tr!("H264 のエンコーダーが見つかりません（gst-plugins-ugly の x264enc か、gst-plugins-bad の openh264enc を入れてください）", "No H264 encoder found (install x264enc from gst-plugins-ugly or openh264enc from gst-plugins-bad)").into())
         }
     }
 
@@ -203,7 +208,12 @@ mod platform {
             q: Quality,
             out: tokio::sync::mpsc::Sender<Encoded>,
         ) -> Result<Capture, String> {
-            gst::init().map_err(|e| format!("GStreamer を初期化できません: {e}"))?;
+            gst::init().map_err(|e| {
+                tr!(
+                    "GStreamer を初期化できません: {e}",
+                    "Can't initialize GStreamer: {e}",
+                )
+            })?;
             let desc = format!(
                 "{src} ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! videoscale ! videorate ! video/x-raw,format=I420,width={w},height={h},framerate={fps}/1,pixel-aspect-ratio=1/1 ! {enc} ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au ! appsink name=sink max-buffers=8 drop=true sync=false",
                 w = q.width,
@@ -211,16 +221,20 @@ mod platform {
                 fps = q.fps,
                 enc = encoder(&q)?,
             );
-            let pipeline = gst::parse::launch(&desc)
-                .map_err(|e| format!("映像の処理を組み立てられません: {e}"))?;
+            let pipeline = gst::parse::launch(&desc).map_err(|e| {
+                tr!(
+                    "映像の処理を組み立てられません: {e}",
+                    "Can't build the video pipeline: {e}",
+                )
+            })?;
             let bin = pipeline
                 .clone()
                 .downcast::<gst::Bin>()
-                .map_err(|_| "パイプラインが不正です")?;
+                .map_err(|_| tr!("パイプラインが不正です", "Invalid pipeline"))?;
             let sink = bin
                 .by_name("sink")
                 .and_then(|s| s.downcast::<gst_app::AppSink>().ok())
-                .ok_or("appsink がありません")?;
+                .ok_or(tr!("appsink がありません", "Missing appsink"))?;
             let offset: u32 = rand::random();
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
@@ -246,9 +260,12 @@ mod platform {
                     })
                     .build(),
             );
-            pipeline
-                .set_state(gst::State::Playing)
-                .map_err(|e| format!("画面の取り込みを始められません: {e}"))?;
+            pipeline.set_state(gst::State::Playing).map_err(|e| {
+                tr!(
+                    "画面の取り込みを始められません: {e}",
+                    "Can't start screen capture: {e}",
+                )
+            })?;
             Ok(Capture {
                 pipeline,
                 sink,
@@ -270,10 +287,20 @@ mod platform {
             while let Some(m) = bus.pop() {
                 match m.view() {
                     gst::MessageView::Error(e) => {
-                        return Some(format!("画面の取り込みが止まりました: {}", e.error()))
+                        return Some(tr!(
+                            "画面の取り込みが止まりました: {}",
+                            "Screen capture stopped: {}",
+                            e.error()
+                        ))
                     }
                     gst::MessageView::Eos(..) => {
-                        return Some("共有していた画面が閉じられました".into())
+                        return Some(
+                            tr!(
+                                "共有していた画面が閉じられました",
+                                "The shared screen was closed"
+                            )
+                            .into(),
+                        )
                     }
                     _ => {}
                 }
@@ -296,30 +323,40 @@ mod platform {
 
     impl Decoder {
         pub fn new(latest: Arc<Mutex<Option<Frame>>>, waker: Waker) -> Result<Decoder, String> {
-            gst::init().map_err(|e| format!("GStreamer を初期化できません: {e}"))?;
+            gst::init().map_err(|e| {
+                tr!(
+                    "GStreamer を初期化できません: {e}",
+                    "Can't initialize GStreamer: {e}",
+                )
+            })?;
             let dec = ["avdec_h264", "openh264dec", "v4l2h264dec"]
                 .into_iter()
                 .find(|d| have(d))
-                .ok_or(
+                .ok_or(tr!(
                     "H264 のデコーダーが見つかりません（gst-libav か openh264 を入れてください）",
-                )?;
+                    "No H264 decoder found (install gst-libav or openh264)"
+                ))?;
             let desc = format!(
                 "appsrc name=src is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! videoscale ! video/x-raw,format=BGRA,width=[16,1920],height=[16,1080],pixel-aspect-ratio=1/1 ! appsink name=sink max-buffers=1 drop=true sync=false"
             );
-            let pipeline = gst::parse::launch(&desc)
-                .map_err(|e| format!("映像の処理を組み立てられません: {e}"))?;
+            let pipeline = gst::parse::launch(&desc).map_err(|e| {
+                tr!(
+                    "映像の処理を組み立てられません: {e}",
+                    "Can't build the video pipeline: {e}",
+                )
+            })?;
             let bin = pipeline
                 .clone()
                 .downcast::<gst::Bin>()
-                .map_err(|_| "パイプラインが不正です")?;
+                .map_err(|_| tr!("パイプラインが不正です", "Invalid pipeline"))?;
             let src = bin
                 .by_name("src")
                 .and_then(|s| s.downcast::<gst_app::AppSrc>().ok())
-                .ok_or("appsrc がありません")?;
+                .ok_or(tr!("appsrc がありません", "Missing appsrc"))?;
             let sink = bin
                 .by_name("sink")
                 .and_then(|s| s.downcast::<gst_app::AppSink>().ok())
-                .ok_or("appsink がありません")?;
+                .ok_or(tr!("appsink がありません", "Missing appsink"))?;
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |sink| {
@@ -334,7 +371,7 @@ mod platform {
             );
             pipeline
                 .set_state(gst::State::Playing)
-                .map_err(|e| format!("映像を再生できません: {e}"))?;
+                .map_err(|e| tr!("映像を再生できません: {e}", "Can't play the video: {e}",))?;
             Ok(Decoder { pipeline, src })
         }
 
@@ -346,7 +383,11 @@ mod platform {
             let bus = self.pipeline.bus()?;
             while let Some(m) = bus.pop() {
                 if let gst::MessageView::Error(e) = m.view() {
-                    return Some(format!("映像を再生できません: {}", e.error()));
+                    return Some(tr!(
+                        "映像を再生できません: {}",
+                        "Can't play the video: {}",
+                        e.error()
+                    ));
                 }
             }
             None
@@ -456,7 +497,10 @@ mod platform {
     use crate::wake::Waker;
     use std::sync::{Arc, Mutex};
 
-    const UNSUPPORTED: &str = "この OS では画面共有にまだ対応していません";
+    const UNSUPPORTED: &str = tr!(
+        "この OS では画面共有にまだ対応していません",
+        "Screen sharing isn't supported on this OS yet"
+    );
 
     pub struct Source {
         pub size: Option<(i32, i32)>,
@@ -481,7 +525,11 @@ mod platform {
     pub struct Decoder;
     impl Decoder {
         pub fn new(_: Arc<Mutex<Option<Frame>>>, _: Waker) -> Result<Decoder, String> {
-            Err("この OS では配信の視聴にまだ対応していません".into())
+            Err(tr!(
+                "この OS では配信の視聴にまだ対応していません",
+                "Watching streams isn't supported on this OS yet"
+            )
+            .into())
         }
         pub fn push(&self, _: Vec<u8>) {}
         pub fn error(&self) -> Option<String> {

@@ -24,7 +24,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(z(6.0))
-                    .child(medium("サウンドボード", 20.0, WHITE()).flex_1())
+                    .child(medium(tr!("サウンドボード", "Soundboard"), 20.0, WHITE()).flex_1())
                     .child(icon_button("soundboard_close", IconName::X, 28.0).on_click(
                         cx.listener(|this, _, _, cx| {
                             this.app.soundboard = None;
@@ -46,8 +46,16 @@ impl Root {
             .flex_col()
             .gap(z(10.0));
         let groups: [(&str, &Option<Vec<Sound>>, bool); 2] = [
-            ("このサーバー", &sb.guild, sb.guild_request.is_some()),
-            ("標準", &sb.defaults, sb.default_request.is_some()),
+            (
+                tr!("このサーバー", "This server"),
+                &sb.guild,
+                sb.guild_request.is_some(),
+            ),
+            (
+                tr!("標準", "Default"),
+                &sb.defaults,
+                sb.default_request.is_some(),
+            ),
         ];
         for (title, list, loading) in groups {
             let mut grid = div().flex().flex_wrap().gap(z(6.0));
@@ -55,7 +63,7 @@ impl Root {
                 None if loading => grid = grid.child(spinner(16.0)),
                 None => {}
                 Some(l) if l.is_empty() => {
-                    grid = grid.child(text("音がありません", 13.0, FAINT()));
+                    grid = grid.child(text(tr!("音がありません", "No sounds"), 13.0, FAINT()));
                 }
                 Some(l) => {
                     for s in l {
@@ -69,7 +77,7 @@ impl Root {
                             fill_button(
                                 SharedString::from(format!("sound_{id}")),
                                 if busy {
-                                    "送信中…".to_string()
+                                    tr!("送信中…", "Sending…").to_string()
                                 } else {
                                     label
                                 },

@@ -74,7 +74,11 @@ fn read_limited(path: &Path) -> anyhow::Result<String> {
     let m = std::fs::metadata(path)?;
     anyhow::ensure!(
         m.is_file() && m.len() <= MAX_SCRIPT,
-        "ファイルが大きすぎるか通常のファイルではありません"
+        "{}",
+        tr!(
+            "ファイルが大きすぎるか通常のファイルではありません",
+            "The file is too large or isn't a regular file",
+        )
     );
     Ok(std::fs::read_to_string(path)?)
 }
@@ -83,7 +87,11 @@ fn entry_path(dir: &Path, entry: &str) -> anyhow::Result<PathBuf> {
     let path = dir.join(entry).canonicalize()?;
     anyhow::ensure!(
         path.starts_with(root),
-        "エントリポイントがプラグインフォルダの外です"
+        "{}",
+        tr!(
+            "エントリポイントがプラグインフォルダの外です",
+            "The entry point is outside the plugin folder",
+        )
     );
     Ok(path)
 }
@@ -103,7 +111,12 @@ impl Runtime {
         lua.set_memory_limit(16 * 1024 * 1024)?;
         lua.set_hook(
             HookTriggers::new().every_nth_instruction(100_000),
-            |_, _| Err(mlua::Error::runtime("実行時間の制限を超えました")),
+            |_, _| {
+                Err(mlua::Error::runtime(tr!(
+                    "実行時間の制限を超えました",
+                    "Exceeded the execution time limit"
+                )))
+            },
         );
         lua.globals().set("pcall", Value::Nil)?;
         lua.globals().set("xpcall", Value::Nil)?;
@@ -122,9 +135,10 @@ impl Runtime {
                     || content.len() > 8000
                     || q.borrow().len() >= 100
                 {
-                    return Err(mlua::Error::runtime(
+                    return Err(mlua::Error::runtime(tr!(
                         "無効な送信内容、または送信待ちが上限です",
-                    ));
+                        "Invalid message, or the send queue is full"
+                    )));
                 }
                 q.borrow_mut().push(Action::Send(channel, content));
                 Ok(())
@@ -135,7 +149,10 @@ impl Runtime {
             "set_timeout",
             lua.create_function(move |lua, (ms, f): (u64, Function)| {
                 if ts.borrow().len() >= 100 {
-                    return Err(mlua::Error::runtime("タイマーの上限です"));
+                    return Err(mlua::Error::runtime(tr!(
+                        "タイマーの上限です",
+                        "Timer limit reached"
+                    )));
                 }
                 let callback = lua.create_registry_value(f)?;
                 ts.borrow_mut().push(Timer {
@@ -169,13 +186,21 @@ impl Runtime {
                 let v: serde_json::Value = lua.from_value(value)?;
                 let bytes = serde_json::to_vec(&v).map_err(mlua::Error::external)?;
                 if bytes.len() > MAX_SCRIPT as usize {
-                    return Err(mlua::Error::runtime("保存データが大きすぎます"));
+                    return Err(mlua::Error::runtime(tr!(
+                        "保存データが大きすぎます",
+                        "The saved data is too large"
+                    )));
                 }
                 std::fs::create_dir_all(&data_dir).map_err(mlua::Error::external)?;
                 std::fs::write(&data_file, bytes).map_err(mlua::Error::external)
             })?,
         )?;
         api.set("api_version", API_VERSION)?;
+        // 表示言語（"ja" か "en"）。設定で切り替えられるので、表示を作るたびに呼ぶ
+        api.set(
+            "language",
+            lua.create_function(|_, ()| Ok(if crate::i18n::is_en() { "en" } else { "ja" }))?,
+        )?;
         lua.globals().set("riscord", api)?;
         let callbacks: Table = lua.load(script).set_name(&manifest.entry).eval()?;
         lua.globals().set("__plugin", callbacks)?;
@@ -186,7 +211,12 @@ impl Runtime {
     fn reset_budget(&self) {
         self.lua.set_hook(
             HookTriggers::new().every_nth_instruction(100_000),
-            |_, _| Err(mlua::Error::runtime("実行時間の制限を超えました")),
+            |_, _| {
+                Err(mlua::Error::runtime(tr!(
+                    "実行時間の制限を超えました",
+                    "Exceeded the execution time limit"
+                )))
+            },
         );
     }
     fn call<A: mlua::IntoLuaMulti>(&self, name: &str, args: A) -> mlua::Result<Value> {
@@ -195,8 +225,9 @@ impl Runtime {
         match t.get::<Value>(name)? {
             Value::Function(f) => f.call(args),
             Value::Nil => Ok(Value::Nil),
-            _ => Err(mlua::Error::runtime(format!(
-                "{name} は関数である必要があります"
+            _ => Err(mlua::Error::runtime(tr!(
+                "{name} は関数である必要があります",
+                "{name} must be a function",
             ))),
         }
     }
@@ -227,7 +258,11 @@ impl Plugins {
             id: "call-time-counter".into(),
             name: "CallTimeCounter".into(),
             version: "1.0.0".into(),
-            description: "ボイス通話の経過時間を表示します（同梱）".into(),
+            description: tr!(
+                "ボイス通話の経過時間を表示します（同梱）",
+                "Shows elapsed time in voice calls (bundled)"
+            )
+            .into(),
             api: API_VERSION,
             entry: "main.lua".into(),
         };
@@ -246,7 +281,11 @@ impl Plugins {
             id: "translator".into(),
             name: "Translator".into(),
             version: "1.0.0".into(),
-            description: "メッセージを Google 翻訳へ送信して翻訳します（同梱）".into(),
+            description: tr!(
+                "メッセージを Google 翻訳へ送信して翻訳します（同梱）",
+                "Translates messages by sending them to Google Translate (bundled)"
+            )
+            .into(),
             api: API_VERSION,
             entry: "main.lua".into(),
         };
@@ -265,7 +304,11 @@ impl Plugins {
             id: "message-logger".into(),
             name: "MessageLogger".into(),
             version: "1.0.0".into(),
-            description: "削除・編集されたメッセージを記録して表示します（同梱）".into(),
+            description: tr!(
+                "削除・編集されたメッセージを記録して表示します（同梱）",
+                "Records and shows deleted and edited messages (bundled)"
+            )
+            .into(),
             api: API_VERSION,
             entry: "main.lua".into(),
         };
@@ -303,9 +346,21 @@ impl Plugins {
             let result = (|| -> anyhow::Result<Manifest> {
                 let text = read_limited(&entry_path(&path, "plugin.toml")?)?;
                 let m: Manifest = toml::from_str(&text)?;
-                anyhow::ensure!(valid_id(&m.id), "不正な ID");
-                anyhow::ensure!(m.api == API_VERSION, "未対応の API バージョン: {}", m.api);
-                anyhow::ensure!(seen.insert(m.id.clone()), "ID が重複しています: {}", m.id);
+                anyhow::ensure!(valid_id(&m.id), "{}", tr!("不正な ID", "Invalid ID",));
+                anyhow::ensure!(
+                    m.api == API_VERSION,
+                    "{}",
+                    tr!(
+                        "未対応の API バージョン: {}",
+                        "Unsupported API version: {}",
+                        m.api
+                    )
+                );
+                anyhow::ensure!(
+                    seen.insert(m.id.clone()),
+                    "{}",
+                    tr!("ID が重複しています: {}", "Duplicate ID: {}", m.id)
+                );
                 Ok(m)
             })();
             match result {
@@ -455,11 +510,17 @@ impl Plugins {
             .entries
             .iter_mut()
             .find(|p| p.manifest.id == "translator")
-            .ok_or("翻訳プラグインが見つかりません")?;
+            .ok_or(tr!(
+                "翻訳プラグインが見つかりません",
+                "Translation plugin not found"
+            ))?;
         let result = p
             .runtime
             .as_ref()
-            .ok_or("翻訳プラグインが停止しています")?
+            .ok_or(tr!(
+                "翻訳プラグインが停止しています",
+                "The translation plugin is stopped"
+            ))?
             .call("translation_outgoing", ());
         match result {
             Ok(Value::String(value)) => {
@@ -467,7 +528,11 @@ impl Plugins {
             }
             Ok(Value::Nil) => Ok(None),
             Ok(_) => {
-                let error = "翻訳設定の読み取りに失敗しました".to_string();
+                let error = tr!(
+                    "翻訳設定の読み取りに失敗しました",
+                    "Couldn't read the translation settings"
+                )
+                .to_string();
                 p.fail(error.clone());
                 Err(error)
             }
@@ -518,11 +583,23 @@ impl Plugins {
             match result {
                 Some(Ok(Value::String(s))) => match s.to_str() {
                     Ok(value) if value.len() <= 256 => labels.push(value.to_owned()),
-                    Ok(_) => p.fail("voice_panel の文字列が長すぎます".into()),
+                    Ok(_) => p.fail(
+                        tr!(
+                            "voice_panel の文字列が長すぎます",
+                            "The voice_panel string is too long"
+                        )
+                        .into(),
+                    ),
                     Err(e) => p.fail(e.to_string()),
                 },
                 Some(Ok(Value::Nil)) | None => (),
-                Some(Ok(_)) => p.fail("voice_panel は文字列か nil を返してください".into()),
+                Some(Ok(_)) => p.fail(
+                    tr!(
+                        "voice_panel は文字列か nil を返してください",
+                        "voice_panel must return a string or nil"
+                    )
+                    .into(),
+                ),
                 Some(Err(e)) => p.fail(e.to_string()),
             }
         }
@@ -581,7 +658,10 @@ impl Plugins {
                     Err(e) => p.fail(e.to_string()),
                 },
                 Some(Ok(Value::Nil)) | None => (),
-                Some(Ok(_)) => p.fail(format!("{name} は文字列か nil を返してください")),
+                Some(Ok(_)) => p.fail(tr!(
+                    "{name} は文字列か nil を返してください",
+                    "{name} must return a string or nil",
+                )),
                 Some(Err(e)) => p.fail(e.to_string()),
             }
         }

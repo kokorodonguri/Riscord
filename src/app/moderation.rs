@@ -35,10 +35,10 @@ impl ModTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            ModTab::Audit => "監査ログ",
+            ModTab::Audit => tr!("監査ログ", "Audit Log"),
             ModTab::Bans => "BAN",
-            ModTab::Invites => "招待",
-            ModTab::Events => "イベント",
+            ModTab::Invites => tr!("招待", "Invites"),
+            ModTab::Events => tr!("イベント", "Events"),
             ModTab::AutoMod => "AutoMod",
         }
     }
@@ -198,46 +198,46 @@ fn iso(t: chrono::DateTime<chrono::Utc>) -> String {
 
 fn audit_action(kind: u64) -> &'static str {
     match kind {
-        1 => "サーバーを更新",
-        10 => "チャンネルを作成",
-        11 => "チャンネルを更新",
-        12 => "チャンネルを削除",
-        13..=15 => "チャンネル権限を変更",
-        20 => "メンバーをキック",
-        21 => "メンバーを整理",
-        22 => "メンバーを BAN",
-        23 => "BAN を解除",
-        24 => "メンバーを更新",
-        25 => "メンバーのロールを変更",
-        26 => "メンバーを移動",
-        27 => "メンバーを切断",
-        28 => "ボットを追加",
-        30 => "ロールを作成",
-        31 => "ロールを更新",
-        32 => "ロールを削除",
-        40 => "招待を作成",
-        41 => "招待を更新",
-        42 => "招待を削除",
-        50..=52 => "Webhook を変更",
-        60..=62 => "絵文字を変更",
-        72 => "メッセージを削除",
-        73 => "メッセージを一括削除",
-        74 => "メッセージをピン留め",
-        75 => "ピン留めを解除",
-        80..=82 => "連携を変更",
-        83..=85 => "ステージを変更",
-        90..=92 => "スタンプを変更",
-        100 => "イベントを作成",
-        101 => "イベントを更新",
-        102 => "イベントを削除",
-        110..=112 => "スレッドを変更",
-        121 => "コマンドの権限を変更",
-        130..=132 => "サウンドボードを変更",
-        140 => "AutoMod ルールを作成",
-        141 => "AutoMod ルールを更新",
-        142 => "AutoMod ルールを削除",
-        143..=145 => "AutoMod がブロック",
-        _ => "その他の操作",
+        1 => tr!("サーバーを更新", "updated the server"),
+        10 => tr!("チャンネルを作成", "created a channel"),
+        11 => tr!("チャンネルを更新", "updated a channel"),
+        12 => tr!("チャンネルを削除", "deleted a channel"),
+        13..=15 => tr!("チャンネル権限を変更", "changed channel permissions"),
+        20 => tr!("メンバーをキック", "kicked a member"),
+        21 => tr!("メンバーを整理", "pruned members"),
+        22 => tr!("メンバーを BAN", "banned a member"),
+        23 => tr!("BAN を解除", "unbanned a member"),
+        24 => tr!("メンバーを更新", "updated a member"),
+        25 => tr!("メンバーのロールを変更", "changed a member's roles"),
+        26 => tr!("メンバーを移動", "moved a member"),
+        27 => tr!("メンバーを切断", "disconnected a member"),
+        28 => tr!("ボットを追加", "added a bot"),
+        30 => tr!("ロールを作成", "created a role"),
+        31 => tr!("ロールを更新", "updated a role"),
+        32 => tr!("ロールを削除", "deleted a role"),
+        40 => tr!("招待を作成", "created an invite"),
+        41 => tr!("招待を更新", "updated an invite"),
+        42 => tr!("招待を削除", "deleted an invite"),
+        50..=52 => tr!("Webhook を変更", "changed a webhook"),
+        60..=62 => tr!("絵文字を変更", "changed emoji"),
+        72 => tr!("メッセージを削除", "deleted a message"),
+        73 => tr!("メッセージを一括削除", "bulk deleted messages"),
+        74 => tr!("メッセージをピン留め", "pinned a message"),
+        75 => tr!("ピン留めを解除", "unpinned a message"),
+        80..=82 => tr!("連携を変更", "changed an integration"),
+        83..=85 => tr!("ステージを変更", "changed a stage"),
+        90..=92 => tr!("スタンプを変更", "changed stickers"),
+        100 => tr!("イベントを作成", "created an event"),
+        101 => tr!("イベントを更新", "updated an event"),
+        102 => tr!("イベントを削除", "deleted an event"),
+        110..=112 => tr!("スレッドを変更", "changed a thread"),
+        121 => tr!("コマンドの権限を変更", "changed command permissions"),
+        130..=132 => tr!("サウンドボードを変更", "changed the soundboard"),
+        140 => tr!("AutoMod ルールを作成", "created an AutoMod rule"),
+        141 => tr!("AutoMod ルールを更新", "updated an AutoMod rule"),
+        142 => tr!("AutoMod ルールを削除", "deleted an AutoMod rule"),
+        143..=145 => tr!("AutoMod がブロック", "AutoMod blocked"),
+        _ => tr!("その他の操作", "did something else"),
     }
 }
 
@@ -253,7 +253,7 @@ fn parse_bans(v: &serde_json::Value) -> Option<Vec<ModRow>> {
             .get("reason")
             .and_then(|r| r.as_str())
             .filter(|r| !r.is_empty())
-            .unwrap_or("理由なし");
+            .unwrap_or(tr!("理由なし", "No reason"));
         out.push(ModRow {
             id: id.to_owned(),
             title: user_name(user).unwrap_or_else(|| id.to_owned()),
@@ -282,19 +282,19 @@ fn parse_invites(v: &serde_json::Value) -> Option<Vec<ModRow>> {
         }
         let uses = item.get("uses").and_then(|u| u.as_u64()).unwrap_or(0);
         match item.get("max_uses").and_then(|u| u.as_u64()) {
-            Some(m) if m > 0 => detail.push(format!("使用 {uses}/{m}")),
-            _ => detail.push(format!("使用 {uses}")),
+            Some(m) if m > 0 => detail.push(tr!("使用 {uses}/{m}", "Uses {uses}/{m}",)),
+            _ => detail.push(tr!("使用 {uses}", "Uses {uses}",)),
         }
         if let Some(name) = item.get("inviter").and_then(user_name) {
-            detail.push(format!("作成: {name}"));
+            detail.push(tr!("作成: {name}", "Created by: {name}",));
         }
         match item
             .get("expires_at")
             .and_then(|e| e.as_str())
             .and_then(local_time)
         {
-            Some(t) => detail.push(format!("期限 {t}")),
-            None => detail.push("無期限".into()),
+            Some(t) => detail.push(tr!("期限 {t}", "Expires {t}",)),
+            None => detail.push(tr!("無期限", "Never expires").into()),
         }
         out.push(ModRow {
             id: code.to_owned(),
@@ -327,12 +327,13 @@ fn parse_audit(v: &serde_json::Value) -> Option<(Vec<ModRow>, bool)> {
             .get("user_id")
             .and_then(|u| u.as_str())
             .map(|u| users.get(u).cloned().unwrap_or_else(|| u.to_owned()))
-            .unwrap_or_else(|| "システム".into());
+            .unwrap_or_else(|| tr!("システム", "System").into());
         let action = audit_action(e.get("action_type")?.as_u64()?);
         let mut detail = Vec::new();
         if let Some(t) = e.get("target_id").and_then(|t| t.as_str()) {
-            detail.push(format!(
+            detail.push(tr!(
                 "対象: {}",
+                "Target: {}",
                 users.get(t).cloned().unwrap_or_else(|| t.to_owned())
             ));
         }
@@ -341,7 +342,7 @@ fn parse_audit(v: &serde_json::Value) -> Option<(Vec<ModRow>, bool)> {
             .and_then(|r| r.as_str())
             .filter(|r| !r.is_empty())
         {
-            detail.push(format!("理由: {r}"));
+            detail.push(tr!("理由: {r}", "Reason: {r}",));
         }
         if let Ok(n) = id.parse::<u64>() {
             let ms = (n >> 22) as i64 + 1_420_070_400_000;
@@ -355,7 +356,7 @@ fn parse_audit(v: &serde_json::Value) -> Option<(Vec<ModRow>, bool)> {
         }
         out.push(ModRow {
             id: id.to_owned(),
-            title: format!("{actor} が{action}"),
+            title: tr!("{actor} が{action}", "{actor} {action}",),
             detail: detail.join(" · "),
             enabled: None,
             event: None,
@@ -391,17 +392,17 @@ fn parse_events(v: &serde_json::Value) -> Option<Vec<ModRow>> {
             .filter(|c| valid_id(c))
             .map(str::to_owned);
         let status = match e.get("status").and_then(|s| s.as_u64()) {
-            Some(2) => "開催中",
-            Some(3) => "終了",
-            Some(4) => "中止",
-            _ => "予定",
+            Some(2) => tr!("開催中", "Live"),
+            Some(3) => tr!("終了", "Ended"),
+            Some(4) => tr!("中止", "Canceled"),
+            _ => tr!("予定", "Scheduled"),
         };
         let mut detail = vec![status.to_owned(), start.clone()];
         if !location.is_empty() {
             detail.push(location.clone());
         }
         if let Some(n) = e.get("user_count").and_then(|n| n.as_u64()) {
-            detail.push(format!("{n} 人が興味あり"));
+            detail.push(tr!("{n} 人が興味あり", "{n} interested",));
         }
         let description = e
             .get("description")
@@ -444,18 +445,25 @@ fn parse_rules(v: &serde_json::Value) -> Option<Vec<ModRow>> {
                     .and_then(|m| m.get("keyword_filter"))
                     .and_then(|k| k.as_array())
                     .map_or(0, Vec::len);
-                format!("キーワード {n} 件")
+                tr!("キーワード {n} 件", "{n} keywords",)
             }
-            Some(3) => "スパム".into(),
-            Some(4) => "キーワードのプリセット".into(),
-            Some(5) => "メンションのスパム".into(),
-            Some(6) => "メンバーのプロフィール".into(),
-            _ => "その他".into(),
+            Some(3) => tr!("スパム", "Spam").into(),
+            Some(4) => tr!("キーワードのプリセット", "Keyword preset").into(),
+            Some(5) => tr!("メンションのスパム", "Mention spam").into(),
+            Some(6) => tr!("メンバーのプロフィール", "Member profile").into(),
+            _ => tr!("その他", "Other").into(),
         };
         out.push(ModRow {
             id: id.to_owned(),
             title: r.get("name")?.as_str()?.to_owned(),
-            detail: format!("{trigger} · {}", if enabled { "有効" } else { "無効" }),
+            detail: format!(
+                "{trigger} · {}",
+                if enabled {
+                    tr!("有効", "Enabled")
+                } else {
+                    tr!("無効", "Disabled")
+                }
+            ),
             enabled: Some(enabled),
             event: None,
         });
@@ -472,36 +480,64 @@ pub fn event_body(
 ) -> Result<serde_json::Value, &'static str> {
     let name = draft.name.trim();
     if name.is_empty() || name.chars().count() > 100 {
-        return Err("イベント名は 1〜100 文字にしてください");
+        return Err(tr!(
+            "イベント名は 1〜100 文字にしてください",
+            "Event names must be 1–100 characters"
+        ));
     }
     if draft.description.chars().count() > 1000 {
-        return Err("説明は 1000 文字までです");
+        return Err(tr!(
+            "説明は 1000 文字までです",
+            "Descriptions can be up to 1000 characters"
+        ));
     }
-    let start =
-        parse_local(&draft.start).ok_or("開始日時は YYYY-MM-DD HH:MM で入力してください")?;
+    let start = parse_local(&draft.start).ok_or(tr!(
+        "開始日時は YYYY-MM-DD HH:MM で入力してください",
+        "Enter the start time as YYYY-MM-DD HH:MM"
+    ))?;
     let end = match draft.end.trim() {
         "" => None,
-        s => Some(parse_local(s).ok_or("終了日時は YYYY-MM-DD HH:MM で入力してください")?),
+        s => Some(parse_local(s).ok_or(tr!(
+            "終了日時は YYYY-MM-DD HH:MM で入力してください",
+            "Enter the end time as YYYY-MM-DD HH:MM"
+        ))?),
     };
     let start_changed = original.is_none_or(|o| o.start.trim() != draft.start.trim());
     if start_changed && start <= now {
-        return Err("開始日時は未来にしてください");
+        return Err(tr!(
+            "開始日時は未来にしてください",
+            "The start time must be in the future"
+        ));
     }
     if end.is_some_and(|e| e <= start) {
-        return Err("終了日時は開始より後にしてください");
+        return Err(tr!(
+            "終了日時は開始より後にしてください",
+            "The end time must be after the start"
+        ));
     }
     let location = draft.location.trim();
     let voice = match &draft.channel_id {
         Some(c) if voice_channels.contains(c) => Some(c.clone()),
-        Some(_) => return Err("ボイスチャンネルが見つかりません"),
+        Some(_) => {
+            return Err(tr!(
+                "ボイスチャンネルが見つかりません",
+                "Voice channel not found"
+            ))
+        }
         None => None,
     };
     if voice.is_none() {
         if location.is_empty() || location.chars().count() > 100 {
-            return Err("場所（1〜100 文字）かボイスチャンネルを選んでください");
+            return Err(tr!(
+                "場所（1〜100 文字）かボイスチャンネルを選んでください",
+                "Choose a location (1–100 characters) or a voice channel"
+            ));
         }
         if end.is_none() {
-            return Err("場所を指定するイベントには終了日時が必要です");
+            return Err(tr!(
+                "場所を指定するイベントには終了日時が必要です",
+                "Events with a location need an end time"
+            ));
         }
     }
     let mut body = serde_json::Map::new();
@@ -552,7 +588,7 @@ pub fn event_body(
         put("privacy_level", 2.into());
     }
     if body.is_empty() {
-        return Err("変更がありません");
+        return Err(tr!("変更がありません", "No changes"));
     }
     Ok(serde_json::Value::Object(body))
 }
@@ -561,7 +597,10 @@ pub fn event_body(
 pub fn rule_body(draft: &RuleDraft) -> Result<serde_json::Value, &'static str> {
     let name = draft.name.trim();
     if name.is_empty() || name.chars().count() > 100 {
-        return Err("ルール名は 1〜100 文字にしてください");
+        return Err(tr!(
+            "ルール名は 1〜100 文字にしてください",
+            "Rule names must be 1–100 characters"
+        ));
     }
     let mut keywords: Vec<&str> = Vec::new();
     for k in draft.keywords.split([',', '、', '\n']).map(str::trim) {
@@ -569,15 +608,21 @@ pub fn rule_body(draft: &RuleDraft) -> Result<serde_json::Value, &'static str> {
             continue;
         }
         if k.chars().count() > 60 {
-            return Err("キーワードは 1 つ 60 文字までです");
+            return Err(tr!(
+                "キーワードは 1 つ 60 文字までです",
+                "Each keyword can be up to 60 characters"
+            ));
         }
         keywords.push(k);
     }
     if keywords.is_empty() {
-        return Err("キーワードを 1 つ以上入力してください");
+        return Err(tr!(
+            "キーワードを 1 つ以上入力してください",
+            "Enter at least one keyword"
+        ));
     }
     if keywords.len() > 1000 {
-        return Err("キーワードは 1000 件までです");
+        return Err(tr!("キーワードは 1000 件までです", "Up to 1000 keywords"));
     }
     Ok(serde_json::json!({
         "name": name,
@@ -706,7 +751,13 @@ impl App {
         let m = self.moderation.as_mut().unwrap();
         m.request = id;
         if id.is_none() {
-            m.error = Some("読み込めませんでした。再接続してください".into());
+            m.error = Some(
+                tr!(
+                    "読み込めませんでした。再接続してください",
+                    "Couldn't load. Please reconnect"
+                )
+                .into(),
+            );
         }
     }
 
@@ -736,7 +787,15 @@ impl App {
         m.error = None;
         match id {
             Some(id) => m.mutation = Some((id, done)),
-            None => m.error = Some("送信できませんでした。再接続してください".into()),
+            None => {
+                m.error = Some(
+                    tr!(
+                        "送信できませんでした。再接続してください",
+                        "Couldn't send. Please reconnect"
+                    )
+                    .into(),
+                )
+            }
         }
     }
 
@@ -762,25 +821,25 @@ impl App {
                     guild_id: g,
                     user_id: id.to_owned(),
                 },
-                "BAN を解除しました",
+                tr!("BAN を解除しました", "Unbanned"),
             ),
             ModTab::Invites => (
                 net::ApiCall::DeleteInvite(id.to_owned()),
-                "招待を削除しました",
+                tr!("招待を削除しました", "Invite deleted"),
             ),
             ModTab::Events => (
                 net::ApiCall::DeleteScheduledEvent {
                     guild_id: g,
                     event_id: id.to_owned(),
                 },
-                "イベントを削除しました",
+                tr!("イベントを削除しました", "Event deleted"),
             ),
             ModTab::AutoMod => (
                 net::ApiCall::DeleteAutoModRule {
                     guild_id: g,
                     rule_id: id.to_owned(),
                 },
-                "ルールを削除しました",
+                tr!("ルールを削除しました", "Rule deleted"),
             ),
             ModTab::Audit => return,
         };
@@ -812,9 +871,9 @@ impl App {
         self.mutate(
             call,
             if enabled {
-                "ルールを無効にしました"
+                tr!("ルールを無効にしました", "Rule disabled")
             } else {
-                "ルールを有効にしました"
+                tr!("ルールを有効にしました", "Rule enabled")
             },
         );
     }
@@ -905,11 +964,11 @@ impl App {
                     event_id,
                     body,
                 },
-                "イベントを更新しました",
+                tr!("イベントを更新しました", "Event updated"),
             ),
             None => (
                 net::ApiCall::CreateScheduledEvent { guild_id, body },
-                "イベントを作成しました",
+                tr!("イベントを作成しました", "Event created"),
             ),
         };
         self.mutate(call, done);
@@ -931,7 +990,7 @@ impl App {
                     guild_id: m.guild_id.clone(),
                     body,
                 };
-                self.mutate(call, "ルールを作成しました");
+                self.mutate(call, tr!("ルールを作成しました", "Rule created"));
             }
             Err(e) => self.moderation.as_mut().unwrap().error = Some(e.into()),
         }
@@ -968,9 +1027,9 @@ impl App {
                         body: serde_json::json!({ "communication_disabled_until": until }),
                     },
                     if secs <= 0 {
-                        "タイムアウトを解除しました"
+                        tr!("タイムアウトを解除しました", "Timeout removed")
                     } else {
-                        "タイムアウトしました"
+                        tr!("タイムアウトしました", "Timed out")
                     },
                 )
             }
@@ -979,7 +1038,7 @@ impl App {
                     guild_id: guild_id.to_owned(),
                     user_id: user_id.to_owned(),
                 },
-                "キックしました",
+                tr!("キックしました", "Kicked"),
             ),
             MemberAction::Ban => (
                 net::ApiCall::Ban {
@@ -987,7 +1046,7 @@ impl App {
                     user_id: user_id.to_owned(),
                     delete_message_seconds: 0,
                 },
-                "BAN しました",
+                tr!("BAN しました", "Banned"),
             ),
         };
         match self.role_queue(call) {
@@ -996,7 +1055,10 @@ impl App {
                 true
             }
             None => {
-                self.show_toast("送信できませんでした。再接続してください");
+                self.show_toast(tr!(
+                    "送信できませんでした。再接続してください",
+                    "Couldn't send. Please reconnect"
+                ));
                 false
             }
         }
@@ -1016,7 +1078,10 @@ impl App {
             match result {
                 Ok(_) => self.show_toast(done),
                 Err(e) => {
-                    let text = super::pins::api_error_text(&e, "処分できませんでした");
+                    let text = super::pins::api_error_text(
+                        &e,
+                        tr!("処分できませんでした", "Couldn't apply the action"),
+                    );
                     self.show_toast(&text);
                 }
             }
@@ -1030,7 +1095,10 @@ impl App {
             let value = match result {
                 Ok(v) => v,
                 Err(e) => {
-                    m.error = Some(super::pins::api_error_text(&e, "読み込めませんでした"));
+                    m.error = Some(super::pins::api_error_text(
+                        &e,
+                        tr!("読み込めませんでした", "Couldn't load"),
+                    ));
                     return;
                 }
             };
@@ -1052,7 +1120,9 @@ impl App {
                 },
                 None => {
                     m.has_more = false;
-                    m.error = Some("応答を読み取れませんでした".into());
+                    m.error = Some(
+                        tr!("応答を読み取れませんでした", "Couldn't read the response").into(),
+                    );
                 }
             }
             return;
@@ -1068,7 +1138,12 @@ impl App {
                     self.reload_moderation();
                 }
                 // 下書きは残して、直してもう一度送れるようにする
-                Err(e) => m.error = Some(super::pins::api_error_text(&e, "変更できませんでした")),
+                Err(e) => {
+                    m.error = Some(super::pins::api_error_text(
+                        &e,
+                        tr!("変更できませんでした", "Couldn't change it"),
+                    ))
+                }
             }
         }
     }

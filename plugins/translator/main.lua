@@ -1,5 +1,5 @@
 local state = riscord.load() or {}
-state.target = state.target or "ja"
+state.target = state.target or (riscord.language() == "en" and "en" or "ja")
 state.outgoing = state.outgoing or "en"
 local function valid(value)
   return value and value:match("^[a-zA-Z][a-zA-Z%-]+$") and #value <= 10
@@ -8,6 +8,17 @@ return {
   translation_target = function() return state.target end,
   translation_outgoing = function() if state.auto_send then return state.outgoing end end,
   page = function()
+    if riscord.language() == "en" then
+      return {
+        {kind="text", label="Text to translate is sent to Google Translate."},
+        {kind="text", label="Incoming messages to: " .. state.target .. " / Outgoing messages to: " .. state.outgoing},
+        {kind="switch", label="Auto-translate when sending", action="toggle_auto", enabled=not not state.auto_send},
+        {kind="input", label="Language code for incoming messages (ja, en, fr, etc.)", action="target"},
+        {kind="input", label="Language code for outgoing messages", action="outgoing"},
+        {kind="button", label="Save languages", action="save"},
+        {kind="text", label="Even with auto-translate off, you can type $ja hello. To skip auto-translate once, type !tr hello."},
+      }
+    end
     return {
       {kind="text", label="翻訳対象の本文は Google 翻訳に送信されます。"},
       {kind="text", label="受信文の翻訳先: " .. state.target .. " / 送信文の翻訳先: " .. state.outgoing},

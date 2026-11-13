@@ -59,7 +59,7 @@ impl Root {
                         Hit {
                             prefix: "",
                             label: g.name.clone(),
-                            sub: "サーバー".into(),
+                            sub: tr!("サーバー", "Server").into(),
                             target: (Some(g.id.clone()), None),
                         },
                     ));
@@ -127,7 +127,9 @@ impl Root {
         let w = (self.app.screen_w - 48.0).clamp(0.0, 540.0);
         let mut rows = div().flex().flex_col();
         if hits.is_empty() {
-            rows = rows.child(text("見つかりませんでした", 14.0, MUTED()).mt(z(8.0)));
+            rows = rows.child(
+                text(tr!("見つかりませんでした", "Nothing found"), 14.0, MUTED()).mt(z(8.0)),
+            );
         }
         for (i, h) in hits.into_iter().enumerate() {
             let on = i == sel;
@@ -169,7 +171,11 @@ impl Root {
             .w(z(w))
             .flex()
             .flex_col()
-            .child(medium("どこに行きますか？", 18.0, WHITE()))
+            .child(medium(
+                tr!("どこに行きますか？", "Where would you like to go?"),
+                18.0,
+                WHITE(),
+            ))
             .child(
                 div()
                     .mt(z(10.0))
@@ -184,9 +190,9 @@ impl Root {
             .child(
                 text(
                     if query.trim().is_empty() {
-                        "最近の会話"
+                        tr!("最近の会話", "Recent conversations")
                     } else {
-                        "検索結果"
+                        tr!("検索結果", "Search results")
                     },
                     12.0,
                     FAINT(),
@@ -195,7 +201,17 @@ impl Root {
                 .mb(z(4.0)),
             )
             .child(rows)
-            .child(text("↑↓ で選択 · Enter で移動 · Esc で閉じる", 11.0, FAINT()).mt(z(10.0)));
+            .child(
+                text(
+                    tr!(
+                        "↑↓ で選択 · Enter で移動 · Esc で閉じる",
+                        "↑↓ to select · Enter to go · Esc to close"
+                    ),
+                    11.0,
+                    FAINT(),
+                )
+                .mt(z(10.0)),
+            );
         let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.app.switcher = None;
             cx.notify();
@@ -214,8 +230,19 @@ impl Root {
             .w(z(w))
             .flex()
             .flex_col()
-            .child(medium("メッセージを削除", 20.0, WHITE()))
-            .child(text("このメッセージを削除しますか？", 15.0, TEXT()).mt(z(8.0)))
+            .child(medium(
+                tr!("メッセージを削除", "Delete Message"),
+                20.0,
+                WHITE(),
+            ))
+            .child(
+                text(
+                    tr!("このメッセージを削除しますか？", "Delete this message?"),
+                    15.0,
+                    TEXT(),
+                )
+                .mt(z(8.0)),
+            )
             .child(
                 card(BG(), DIVIDER(), 8.0)
                     .mt(z(12.0))
@@ -236,7 +263,10 @@ impl Root {
             )
             .child(
                 text(
-                    "ヒント: Shift を押しながら削除すると、この確認を省けます",
+                    tr!(
+                        "ヒント: Shift を押しながら削除すると、この確認を省けます",
+                        "Tip: hold Shift while deleting to skip this confirmation"
+                    ),
                     12.0,
                     FAINT(),
                 )
@@ -249,7 +279,7 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("delete_cancel", "キャンセル")
+                        text_button("delete_cancel", tr!("キャンセル", "Cancel"))
                             .min_w(z(96.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.pending_delete = None;
@@ -257,17 +287,23 @@ impl Root {
                             })),
                     )
                     .child(
-                        fill_button("delete_ok", "削除", RED(), Color32::WHITE, true)
-                            .min_w(z(96.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(m) = this.app.pending_delete.take() {
-                                    this.app.send(Cmd::Delete {
-                                        channel_id: m.channel_id,
-                                        id: m.id,
-                                    });
-                                }
-                                cx.notify();
-                            })),
+                        fill_button(
+                            "delete_ok",
+                            tr!("削除", "Delete"),
+                            RED(),
+                            Color32::WHITE,
+                            true,
+                        )
+                        .min_w(z(96.0))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(m) = this.app.pending_delete.take() {
+                                this.app.send(Cmd::Delete {
+                                    channel_id: m.channel_id,
+                                    id: m.id,
+                                });
+                            }
+                            cx.notify();
+                        })),
                     ),
             );
         let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -294,10 +330,10 @@ impl Root {
             .w(z(w))
             .flex()
             .flex_col()
-            .child(medium(format!("「{name}」から脱退"), 20.0, WHITE()))
+            .child(medium(tr!("「{name}」から脱退", "Leave \"{name}\"",), 20.0, WHITE()))
             .child(
                 text(
-                    "本当に脱退しますか？ 招待されない限り、再び参加することはできません。",
+                    tr!("本当に脱退しますか？ 招待されない限り、再び参加することはできません。", "Are you sure you want to leave? You won't be able to rejoin unless you're invited again."),
                     15.0,
                     TEXT(),
                 )
@@ -310,7 +346,7 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("leave_cancel", "キャンセル")
+                        text_button("leave_cancel", tr!("キャンセル", "Cancel"))
                             .min_w(z(96.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.confirm_leave = None;
@@ -318,7 +354,7 @@ impl Root {
                             })),
                     )
                     .child(
-                        fill_button("leave_ok", "サーバーから脱退", RED(), Color32::WHITE, true)
+                        fill_button("leave_ok", tr!("サーバーから脱退", "Leave Server"), RED(), Color32::WHITE, true)
                             .min_w(z(96.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(gid) = this.app.confirm_leave.take() {
@@ -346,7 +382,9 @@ impl Root {
             .find(|(cid, r)| r.contains(&me.id) && here.as_deref() != Some(cid.as_str()))?;
         let cid = cid.clone();
         let ch = a.dms.iter().find(|c| c.id == cid);
-        let name = ch.map(|c| c.dm_label()).unwrap_or_else(|| "不明".into());
+        let name = ch
+            .map(|c| c.dm_label())
+            .unwrap_or_else(|| tr!("不明", "Unknown").into());
         let url = ch.and_then(dm_icon_url);
         let (c1, c2) = (cid.clone(), cid.clone());
         let ring = div()
@@ -377,7 +415,7 @@ impl Root {
                 BLURPLE(),
             )))
             .child(medium(name.clone(), 18.0, WHITE()).mt(z(12.0)))
-            .child(text("着信中…", 13.0, MUTED()))
+            .child(text(tr!("着信中…", "Incoming call…"), 13.0, MUTED()))
             .child(
                 div()
                     .mt(z(16.0))
@@ -385,7 +423,7 @@ impl Root {
                     .gap(z(40.0))
                     .child(
                         round("call_decline", IconName::PhoneOff, RED())
-                            .tooltip(tip("拒否"))
+                            .tooltip(tip(tr!("拒否", "Decline")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let a = &mut this.app;
                                 if let (Some(r), Some(me)) = (a.calls.get_mut(&c1), &a.me) {
@@ -397,7 +435,7 @@ impl Root {
                     )
                     .child(
                         round("call_answer", IconName::Phone, GREEN())
-                            .tooltip(tip("応答"))
+                            .tooltip(tip(tr!("応答", "Answer")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.app.join_voice(None, c2.clone(), false);
                                 cx.notify();

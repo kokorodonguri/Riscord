@@ -34,7 +34,11 @@ pub fn clipboard_image() -> Option<Result<Upload, String>> {
     let mut png = Vec::new();
     if let Err(e) = rgba.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png) {
         eprintln!("貼り付け画像の変換失敗: {e}");
-        return Some(Err("クリップボードの画像を読み込めませんでした。".into()));
+        return Some(Err(tr!(
+            "クリップボードの画像を読み込めませんでした。",
+            "Couldn't read the image from the clipboard."
+        )
+        .into()));
     }
     let name = format!("image-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
     Some(Ok(Upload {
@@ -52,7 +56,10 @@ pub fn load_file(path: &Path) -> Result<Upload, String> {
         .unwrap_or_else(|| "file".into());
     let data = std::fs::read(path).map_err(|e| {
         eprintln!("{} を読めません: {e}", path.display());
-        format!("「{name}」を読み込めませんでした。ファイルを確認して、もう一度お試しください。")
+        tr!(
+            "「{name}」を読み込めませんでした。ファイルを確認して、もう一度お試しください。",
+            "Couldn't read \"{name}\". Check the file and try again.",
+        )
     })?;
     let thumb = image::load_from_memory(&data)
         .ok()

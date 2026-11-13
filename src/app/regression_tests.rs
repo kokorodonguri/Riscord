@@ -214,7 +214,7 @@ fn successful_refresh_clears_only_its_own_error_status() {
     app.backend = Some(Backend { cmd, ev });
     tx.send(Event::MessagesFailed("c".into())).unwrap();
     app.poll();
-    assert_eq!(app.status, MESSAGE_RELOAD_ERROR);
+    assert_eq!(app.status, MESSAGE_RELOAD_ERROR.s());
     tx.send(Event::Messages("c".into(), Vec::new())).unwrap();
     app.poll();
     assert!(app.status.is_empty());

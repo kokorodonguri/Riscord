@@ -248,7 +248,13 @@ impl App {
                 view.channel_request = queued.map(|id| (id, revision));
             }
             if queued.is_none() {
-                admin.error = Some("チャンネル権限を取得できませんでした".into());
+                admin.error = Some(
+                    tr!(
+                        "チャンネル権限を取得できませんでした",
+                        "Couldn't load channel permissions"
+                    )
+                    .into(),
+                );
             }
         }
     }
@@ -383,8 +389,13 @@ impl App {
         };
         let id = view.member_id.trim().to_owned();
         if !valid_id(&id) {
-            self.role_admin.as_mut().unwrap().error =
-                Some("メンバー ID は数字で入力してください".into());
+            self.role_admin.as_mut().unwrap().error = Some(
+                tr!(
+                    "メンバー ID は数字で入力してください",
+                    "Enter the member ID as a number"
+                )
+                .into(),
+            );
             return;
         }
         if let Some(existing) = view
@@ -395,8 +406,13 @@ impl App {
             if existing.kind == 1 {
                 self.edit_channel_overwrite(&id, 1);
             } else {
-                self.role_admin.as_mut().unwrap().error =
-                    Some("その ID はロールに使用されています".into());
+                self.role_admin.as_mut().unwrap().error = Some(
+                    tr!(
+                        "その ID はロールに使用されています",
+                        "That ID is used by a role"
+                    )
+                    .into(),
+                );
             }
             return;
         }
@@ -410,7 +426,13 @@ impl App {
                 view.member_request = queued.map(|n| (n, revision, id));
             }
             if queued.is_none() {
-                admin.error = Some("メンバーを確認できませんでした".into());
+                admin.error = Some(
+                    tr!(
+                        "メンバーを確認できませんでした",
+                        "Couldn't verify the member"
+                    )
+                    .into(),
+                );
             }
         }
     }
@@ -517,7 +539,7 @@ impl App {
             return;
         }
         if draft.allow == old_allow && draft.deny == old_deny {
-            self.show_toast("変更はありません");
+            self.show_toast(tr!("変更はありません", "No changes"));
             return;
         }
         let body = serde_json::json!({"type": draft.kind, "allow":draft.allow.to_string(), "deny":draft.deny.to_string()});
@@ -550,7 +572,7 @@ impl App {
         };
         if (original.allow | original.deny) & !editable != 0 {
             self.role_admin.as_mut().unwrap().error =
-                Some("自分が変更できない権限を含むため、上書きを削除できません".into());
+                Some(tr!("自分が変更できない権限を含むため、上書きを削除できません", "You can't delete this overwrite because it includes permissions you can't change").into());
             return;
         }
         self.submit_role_action(net::ApiCall::DeletePermission {
@@ -602,15 +624,23 @@ impl App {
                 Err(e) => {
                     self.role_admin.as_mut().unwrap().error = Some(super::pins::api_error_text(
                         &e,
-                        "チャンネル権限を取得できませんでした",
+                        tr!(
+                            "チャンネル権限を取得できませんでした",
+                            "Couldn't load channel permissions"
+                        ),
                     ));
                     return;
                 }
             };
             let parsed = parse_channel(&value, &guild_id, &expected);
             let Some(snapshot) = parsed else {
-                self.role_admin.as_mut().unwrap().error =
-                    Some("チャンネル権限を読み取れませんでした".into());
+                self.role_admin.as_mut().unwrap().error = Some(
+                    tr!(
+                        "チャンネル権限を読み取れませんでした",
+                        "Couldn't read channel permissions"
+                    )
+                    .into(),
+                );
                 return;
             };
             let parent = snapshot.parent_id.clone();
@@ -627,7 +657,13 @@ impl App {
                 admin.channel_permissions.as_mut().unwrap().parent_request =
                     queued.map(|n| (n, revision, parent_id));
                 if queued.is_none() {
-                    admin.error = Some("親カテゴリの権限を確認できませんでした".into());
+                    admin.error = Some(
+                        tr!(
+                            "親カテゴリの権限を確認できませんでした",
+                            "Couldn't check the parent category's permissions"
+                        )
+                        .into(),
+                    );
                 }
             }
         } else if view
@@ -654,7 +690,10 @@ impl App {
                 Err(e) => {
                     self.role_admin.as_mut().unwrap().error = Some(super::pins::api_error_text(
                         &e,
-                        "親カテゴリの権限を取得できませんでした",
+                        tr!(
+                            "親カテゴリの権限を取得できませんでした",
+                            "Couldn't load the parent category's permissions"
+                        ),
                     ));
                     return;
                 }
@@ -662,7 +701,13 @@ impl App {
             let parsed = parse_channel(&value, &guild_id, &parent_id).filter(|s| s.kind == 4);
             let admin = self.role_admin.as_mut().unwrap();
             if parsed.is_none() {
-                admin.error = Some("親カテゴリの権限を確認できませんでした".into());
+                admin.error = Some(
+                    tr!(
+                        "親カテゴリの権限を確認できませんでした",
+                        "Couldn't check the parent category's permissions"
+                    )
+                    .into(),
+                );
             }
             admin.channel_permissions.as_mut().unwrap().parent = parsed;
         } else if view
@@ -689,7 +734,10 @@ impl App {
                 Err(e) => {
                     self.role_admin.as_mut().unwrap().error = Some(super::pins::api_error_text(
                         &e,
-                        "メンバーを確認できませんでした",
+                        tr!(
+                            "メンバーを確認できませんでした",
+                            "Couldn't verify the member"
+                        ),
                     ));
                     return;
                 }
@@ -699,8 +747,13 @@ impl App {
             {
                 self.set_channel_draft(&user_id, 1, Some(revision));
             } else {
-                self.role_admin.as_mut().unwrap().error =
-                    Some("サーバーのメンバーを確認できませんでした".into());
+                self.role_admin.as_mut().unwrap().error = Some(
+                    tr!(
+                        "サーバーのメンバーを確認できませんでした",
+                        "Couldn't verify server members"
+                    )
+                    .into(),
+                );
             }
         }
     }

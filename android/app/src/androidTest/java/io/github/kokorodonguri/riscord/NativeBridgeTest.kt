@@ -8,6 +8,8 @@ import org.json.JSONObject
 
 @RunWith(AndroidJUnit4::class)
 class NativeBridgeTest {
+    // コアのエラー文は日本語で確かめる
+    @org.junit.Before fun japanese() = NativeBridge.setEnglish(false)
     @Test fun nativeSessionLifecycleAndUnicodeErrors() {
         val id=NativeBridge.create()
         assertTrue(id>0)

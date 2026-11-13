@@ -235,7 +235,13 @@ impl App {
                 admin.roles = None;
                 admin.roles_request = queued.map(|id| (id, revision));
                 if queued.is_none() {
-                    admin.error = Some("接続できません。再接続してからお試しください".into());
+                    admin.error = Some(
+                        tr!(
+                            "接続できません。再接続してからお試しください",
+                            "Not connected. Reconnect and try again"
+                        )
+                        .into(),
+                    );
                 }
             }
         }
@@ -250,7 +256,13 @@ impl App {
                 admin.my_roles = None;
                 admin.member_request = queued.map(|id| (id, revision));
                 if queued.is_none() {
-                    admin.error = Some("自分の権限を確認できませんでした".into());
+                    admin.error = Some(
+                        tr!(
+                            "自分の権限を確認できませんでした",
+                            "Couldn't check your permissions"
+                        )
+                        .into(),
+                    );
                 }
             }
         }
@@ -266,7 +278,13 @@ impl App {
                         target.member_request = queued.map(|id| (id, revision));
                     }
                     if queued.is_none() {
-                        admin.error = Some("対象メンバーを取得できませんでした".into());
+                        admin.error = Some(
+                            tr!(
+                                "対象メンバーを取得できませんでした",
+                                "Couldn't load the target member"
+                            )
+                            .into(),
+                        );
                     }
                 }
             }
@@ -280,7 +298,13 @@ impl App {
                 }
                 admin.owner_request = queued.map(|id| (id, revision));
                 if queued.is_none() {
-                    admin.error = Some("サーバーの所有者を確認できませんでした".into());
+                    admin.error = Some(
+                        tr!(
+                            "サーバーの所有者を確認できませんでした",
+                            "Couldn't verify the server owner"
+                        )
+                        .into(),
+                    );
                 }
             }
         }
@@ -364,8 +388,13 @@ impl App {
         };
         let name = draft.name.trim();
         if !(2..=100).contains(&name.chars().count()) || draft.description.chars().count() > 300 {
-            self.role_admin.as_mut().unwrap().error =
-                Some("サーバー名は2〜100文字、説明は300文字以内で入力してください".into());
+            self.role_admin.as_mut().unwrap().error = Some(
+                tr!(
+                    "サーバー名は2〜100文字、説明は300文字以内で入力してください",
+                    "Server names must be 2–100 characters and descriptions up to 300 characters"
+                )
+                .into(),
+            );
             return;
         }
         let mut body = serde_json::Map::new();
@@ -412,15 +441,20 @@ impl App {
         ] {
             if old != new {
                 let Some(value) = new.filter(|v| old.is_some() && valid.contains(v)) else {
-                    self.role_admin.as_mut().unwrap().error =
-                        Some("設定値が不正です。再読み込みしてください".into());
+                    self.role_admin.as_mut().unwrap().error = Some(
+                        tr!(
+                            "設定値が不正です。再読み込みしてください",
+                            "A setting value is invalid. Please reload"
+                        )
+                        .into(),
+                    );
                     return;
                 };
                 body.insert(key.into(), value.into());
             }
         }
         if body.is_empty() {
-            self.show_toast("変更はありません");
+            self.show_toast(tr!("変更はありません", "No changes"));
             return;
         }
         let guild_id = admin.guild_id.clone();
@@ -560,8 +594,13 @@ impl App {
             .as_ref()
             .map_or(Some(0), |r| r.permissions.parse::<u128>().ok())
         else {
-            self.role_admin.as_mut().unwrap().error =
-                Some("権限の値が大きすぎるか不正なため編集できません".into());
+            self.role_admin.as_mut().unwrap().error = Some(
+                tr!(
+                    "権限の値が大きすぎるか不正なため編集できません",
+                    "Can't edit because the permission value is too large or invalid"
+                )
+                .into(),
+            );
             return;
         };
         let draft = RoleDraft {
@@ -640,8 +679,13 @@ impl App {
         }
         let name = draft.name.trim();
         if name.is_empty() || name.chars().count() > 100 || draft.color > 0xffffff {
-            self.role_admin.as_mut().unwrap().error =
-                Some("ロール名は1〜100文字で入力してください".into());
+            self.role_admin.as_mut().unwrap().error = Some(
+                tr!(
+                    "ロール名は1〜100文字で入力してください",
+                    "Role names must be 1–100 characters"
+                )
+                .into(),
+            );
             return;
         }
         let old = draft
@@ -650,15 +694,25 @@ impl App {
             .and_then(|r| r.permissions.parse::<u128>().ok())
             .unwrap_or(0);
         if (old ^ draft.permissions) & !allowed != 0 {
-            self.role_admin.as_mut().unwrap().error =
-                Some("自分が持たない権限は変更できません".into());
+            self.role_admin.as_mut().unwrap().error = Some(
+                tr!(
+                    "自分が持たない権限は変更できません",
+                    "You can't change permissions you don't have"
+                )
+                .into(),
+            );
             return;
         }
         let guild_id = admin.guild_id.clone();
         let call = if let Some(role) = &draft.original {
             if !self.can_manage_role(role) || !self.current_role_matches(role) {
-                self.role_admin.as_mut().unwrap().error =
-                    Some("ロールが更新されました。一覧を再読み込みしてください".into());
+                self.role_admin.as_mut().unwrap().error = Some(
+                    tr!(
+                        "ロールが更新されました。一覧を再読み込みしてください",
+                        "The role was updated. Please reload the list"
+                    )
+                    .into(),
+                );
                 return;
             }
             let mut body = serde_json::Map::new();
@@ -747,7 +801,13 @@ impl App {
             admin.error = if queued.is_some() {
                 None
             } else {
-                Some("接続できません。再接続してからお試しください".into())
+                Some(
+                    tr!(
+                        "接続できません。再接続してからお試しください",
+                        "Not connected. Reconnect and try again"
+                    )
+                    .into(),
+                )
             };
         }
     }
@@ -819,8 +879,13 @@ impl App {
                     admin.roles = Some(roles);
                 }
                 None => {
-                    admin.error =
-                        Some("ロール一覧を取得できませんでした。再読み込みしてください".into())
+                    admin.error = Some(
+                        tr!(
+                            "ロール一覧を取得できませんでした。再読み込みしてください",
+                            "Couldn't load the role list. Please reload"
+                        )
+                        .into(),
+                    )
                 }
             }
         } else if admin.member_request.is_some_and(|(n, _)| n == id) {
@@ -840,8 +905,13 @@ impl App {
                     admin.my_roles = Some(member.roles);
                 }
                 None => {
-                    admin.error =
-                        Some("自分のロールを取得できませんでした。再読み込みしてください".into())
+                    admin.error = Some(
+                        tr!(
+                            "自分のロールを取得できませんでした。再読み込みしてください",
+                            "Couldn't load your roles. Please reload"
+                        )
+                        .into(),
+                    )
                 }
             }
         } else if admin
@@ -872,7 +942,15 @@ impl App {
                     }
                     target.roles = Some(member.roles);
                 }
-                None => admin.error = Some("対象メンバーのロールを取得できませんでした".into()),
+                None => {
+                    admin.error = Some(
+                        tr!(
+                            "対象メンバーのロールを取得できませんでした",
+                            "Couldn't load the target member's roles"
+                        )
+                        .into(),
+                    )
+                }
             }
         } else if admin.owner_request.is_some_and(|(n, _)| n == id) {
             let (_, revision) = admin.owner_request.take().unwrap();
@@ -891,7 +969,13 @@ impl App {
                     .map(str::to_owned)
             });
             if admin.owner_id.is_none() {
-                admin.error = Some("サーバーの所有者を確認できませんでした".into());
+                admin.error = Some(
+                    tr!(
+                        "サーバーの所有者を確認できませんでした",
+                        "Couldn't verify the server owner"
+                    )
+                    .into(),
+                );
             } else if admin.editing_guild {
                 let config = value.as_ref().and_then(parse_guild_config);
                 if let Some(config) = config {
@@ -909,7 +993,13 @@ impl App {
                         admin.guild_edit = Some(GuildEdit::new(config));
                     }
                 } else {
-                    admin.error = Some("サーバー設定を読み取れませんでした".into());
+                    admin.error = Some(
+                        tr!(
+                            "サーバー設定を読み取れませんでした",
+                            "Couldn't read server settings"
+                        )
+                        .into(),
+                    );
                 }
             }
         } else if admin.mutation == Some(id) {
@@ -929,11 +1019,14 @@ impl App {
                     admin.confirm_delete = None;
                     admin.revision = admin.revision.wrapping_add(1);
                     let toast = if channel_guild.is_some() {
-                        "チャンネル権限を更新しました"
+                        tr!(
+                            "チャンネル権限を更新しました",
+                            "Channel permissions updated"
+                        )
                     } else if admin.editing_guild {
-                        "サーバー設定を更新しました"
+                        tr!("サーバー設定を更新しました", "Server settings updated")
                     } else {
-                        "ロールを更新しました"
+                        tr!("ロールを更新しました", "Role updated")
                     };
                     self.show_toast(toast);
                     if let Some(guild) = channel_guild {
@@ -943,11 +1036,17 @@ impl App {
                 }
                 Err(e) => {
                     let what = if admin.channel_permissions.is_some() {
-                        "チャンネル権限を更新できませんでした"
+                        tr!(
+                            "チャンネル権限を更新できませんでした",
+                            "Couldn't update channel permissions"
+                        )
                     } else if admin.editing_guild {
-                        "サーバー設定を更新できませんでした"
+                        tr!(
+                            "サーバー設定を更新できませんでした",
+                            "Couldn't update server settings"
+                        )
                     } else {
-                        "ロールを更新できませんでした"
+                        tr!("ロールを更新できませんでした", "Couldn't update the role")
                     };
                     admin.error = Some(super::pins::api_error_text(&e, what))
                 }

@@ -15,20 +15,20 @@ use crate::net::{self, Cmd};
 use crate::{theme, voice};
 
 /// 設定のページ。添字は settings_tab（一覧での並び順は SETTINGS_GROUPS）
-const SETTINGS_TABS: [(&str, IconName); 6] = [
-    ("マイアカウント", IconName::UserRound),
-    ("表示", IconName::Settings),
-    ("音声・ビデオ", IconName::Mic),
-    ("テーマ", IconName::Palette),
-    ("プロフィール", IconName::Pencil),
-    ("プラグイン", IconName::Cpu),
+const SETTINGS_TABS: [(crate::i18n::Tr, IconName); 6] = [
+    (trc!("マイアカウント", "My Account"), IconName::UserRound),
+    (trc!("表示", "Appearance"), IconName::Settings),
+    (trc!("音声・ビデオ", "Voice & Video"), IconName::Mic),
+    (trc!("テーマ", "Themes"), IconName::Palette),
+    (trc!("プロフィール", "Profiles"), IconName::Pencil),
+    (trc!("プラグイン", "Plugins"), IconName::Cpu),
 ];
 /// 左の一覧のカテゴリ（見出し, ページの添字）。見出しが None の組は見出しを出さない（公式の先頭と同じ）。
 /// 本家と同じく「マイアカウント」の次に「プロフィール」
-const SETTINGS_GROUPS: [(Option<&str>, &[usize]); 3] = [
+const SETTINGS_GROUPS: [(Option<crate::i18n::Tr>, &[usize]); 3] = [
     (None, &[0, 4]),
-    (Some("体験"), &[2, 1, 3]),
-    (Some("Riscord"), &[5]),
+    (Some(trc!("体験", "Experience")), &[2, 1, 3]),
+    (Some(crate::i18n::Tr("Riscord", "Riscord")), &[5]),
 ];
 
 /// カテゴリを平たくした並び（狭い画面の横並びタブ）
@@ -36,18 +36,33 @@ fn settings_order() -> impl Iterator<Item = usize> {
     SETTINGS_GROUPS.iter().flat_map(|(_, p)| p.iter().copied())
 }
 /// 設定検索で各ページに含まれる項目を探すための見出し
-const SETTINGS_SECTIONS: [&[&str]; 6] = [
+const SETTINGS_SECTIONS: [&[crate::i18n::Tr]; 6] = [
     &[
-        "アカウント情報",
-        "アクティビティ",
-        "別のアカウント",
-        "バージョン",
+        trc!("アカウント情報", "Account Info"),
+        trc!("アクティビティ", "Activity"),
+        trc!("別のアカウント", "Other Accounts"),
+        trc!("バージョン", "Version"),
     ],
-    &["表示サイズ", "メッセージ表示"],
-    &["デバイス", "音量", "入力モード", "入力感度", "配信画質"],
-    &["テーマ", "背景画像", "色の調整"],
-    &["プロフィール"],
-    &["プラグイン"],
+    &[
+        trc!("表示サイズ", "Display Size"),
+        trc!("メッセージ表示", "Message Display"),
+        trc!("言語", "Language"),
+        trc!("Language", "言語"),
+    ],
+    &[
+        trc!("デバイス", "Devices"),
+        trc!("音量", "Volume"),
+        trc!("入力モード", "Input Mode"),
+        trc!("入力感度", "Input Sensitivity"),
+        trc!("配信画質", "Stream Quality"),
+    ],
+    &[
+        trc!("テーマ", "Themes"),
+        trc!("背景画像", "Background Image"),
+        trc!("色の調整", "Color Adjustments"),
+    ],
+    &[trc!("プロフィール", "Profiles")],
+    &[trc!("プラグイン", "Plugins")],
 ];
 
 /// スライダーの範囲（最小, 最大, 刻み）
@@ -457,7 +472,7 @@ impl Root {
                         .hover(|s| s.bg(HOVER()))
                         .text_size(z(14.0))
                         .text_color(if on { WHITE() } else { TEXT() })
-                        .child(SETTINGS_TABS[i].0)
+                        .child(SETTINGS_TABS[i].0.s())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.jump(i);
                             cx.notify();
@@ -477,7 +492,7 @@ impl Root {
                     .hover(|s| s.bg(HOVER()))
                     .text_size(z(14.0))
                     .text_color(RED())
-                    .child("ログアウト")
+                    .child(tr!("ログアウト", "Log Out"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.confirm_logout = true;
                         cx.notify();
@@ -485,7 +500,7 @@ impl Root {
             );
             tabs.into_any_element()
         } else {
-            text(SETTINGS_TABS[tab].0, 16.0, WHITE())
+            text(SETTINGS_TABS[tab].0.s(), 16.0, WHITE())
                 .flex_1()
                 .into_any_element()
         };
@@ -501,7 +516,7 @@ impl Root {
             .child(title)
             .child(
                 icon_button("settings_close", IconName::X, 32.0)
-                    .tooltip(tip("閉じる (Esc)"))
+                    .tooltip(tip(tr!("閉じる (Esc)", "Close (Esc)")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.close_settings();
                         cx.notify();
@@ -618,7 +633,11 @@ impl Root {
                                     .cursor_pointer()
                                     .text_color(MUTED())
                                     .hover(|s| s.text_color(TEXT()))
-                                    .child(div().text_size(z(14.0)).child("プロフィールを編集"))
+                                    .child(
+                                        div()
+                                            .text_size(z(14.0))
+                                            .child(tr!("プロフィールを編集", "Edit Profile")),
+                                    )
                                     .child(icon(IconName::Pencil, 14.0, MUTED()))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.jump(4);
@@ -662,7 +681,8 @@ impl Root {
                 .iter()
                 .copied()
                 .filter(|&i| {
-                    matches(SETTINGS_TABS[i].0) || SETTINGS_SECTIONS[i].iter().any(|s| matches(s))
+                    matches(SETTINGS_TABS[i].0.s())
+                        || SETTINGS_SECTIONS[i].iter().any(|s| matches(s.s()))
                 })
                 .collect();
             if shown.is_empty() {
@@ -673,7 +693,7 @@ impl Root {
             }
             any = true;
             if let Some(head) = head {
-                list = list.child(text(head, 13.0, MUTED()).pl(z(10.0)).mb(z(6.0)));
+                list = list.child(text(head.s(), 13.0, MUTED()).pl(z(10.0)).mb(z(6.0)));
             }
             for i in shown {
                 let (name, ic) = SETTINGS_TABS[i];
@@ -691,7 +711,11 @@ impl Root {
                         .when(selected, |d| d.bg(SELECTED()))
                         .hover(|s| s.bg(if selected { SELECTED() } else { HOVER() }))
                         .child(icon(ic, 20.0, if selected { WHITE() } else { TEXT() }))
-                        .child(text(name, 16.0, if selected { WHITE() } else { TEXT() }))
+                        .child(text(
+                            name.s(),
+                            16.0,
+                            if selected { WHITE() } else { TEXT() },
+                        ))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.jump(i);
                             cx.notify();
@@ -700,7 +724,9 @@ impl Root {
             }
         }
         if !any {
-            list = list.child(text("見つかりませんでした", 14.0, MUTED()).mt(z(8.0)));
+            list = list.child(
+                text(tr!("見つかりませんでした", "Nothing found"), 14.0, MUTED()).mt(z(8.0)),
+            );
         }
         list = list.child(div().my(z(8.0)).child(hline(DIVIDER()))).child(
             div()
@@ -714,7 +740,7 @@ impl Root {
                 .cursor_pointer()
                 .hover(|s| s.bg(HOVER()))
                 .child(icon(IconName::LogOut, 20.0, RED()))
-                .child(text("ログアウト", 16.0, RED()))
+                .child(text(tr!("ログアウト", "Log Out"), 16.0, RED()))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.app.confirm_logout = true;
                     cx.notify();
@@ -729,19 +755,19 @@ impl Root {
             .w(z((sw - 56.0).clamp(0.0, 400.0)))
             .flex()
             .flex_col()
-            .child(medium("ログアウト", 20.0, WHITE()))
-            .child(text("本当にログアウトしますか？ このPCに保存したトークンも削除されるため、次はログインし直す必要があります。", 15.0, TEXT()).mt(z(8.0)))
+            .child(medium(tr!("ログアウト", "Log Out"), 20.0, WHITE()))
+            .child(text(tr!("本当にログアウトしますか？ このPCに保存したトークンも削除されるため、次はログインし直す必要があります。", "Are you sure you want to log out? The token saved on this PC will also be deleted, so you'll need to log in again."), 15.0, TEXT()).mt(z(8.0)))
             .child(
                 div()
                     .mt(z(20.0))
                     .flex()
                     .justify_end()
                     .gap(z(8.0))
-                    .child(text_button("logout_cancel", "キャンセル").min_w(z(96.0)).on_click(cx.listener(|this, _, _, cx| {
+                    .child(text_button("logout_cancel", tr!("キャンセル", "Cancel")).min_w(z(96.0)).on_click(cx.listener(|this, _, _, cx| {
                         this.app.confirm_logout = false;
                         cx.notify();
                     })))
-                    .child(fill_button("logout_ok", "ログアウト", RED(), Color32::WHITE, true).min_w(z(96.0)).on_click(cx.listener(|this, _, _, cx| {
+                    .child(fill_button("logout_ok", tr!("ログアウト", "Log Out"), RED(), Color32::WHITE, true).min_w(z(96.0)).on_click(cx.listener(|this, _, _, cx| {
                         this.app.confirm_logout = false;
                         this.app.profile_draft = None;
                         this.app.logout();
@@ -760,44 +786,44 @@ impl Root {
 
     fn account_page(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut pages = Vec::new();
-        let mut s0 = section(0, "アカウント情報");
+        let mut s0 = section(0, tr!("アカウント情報", "Account Info"));
         if let Some(me) = self.app.me.clone() {
             let id = me.id.clone();
             s0 = s0
                 .child(row(
-                    "表示名",
+                    tr!("表示名", "Display Name"),
                     None,
                     text(me.display().to_string(), 15.0, WHITE()),
                 ))
                 .child(row(
-                    "ユーザー名",
+                    tr!("ユーザー名", "Username"),
                     None,
                     text(me.username.clone(), 15.0, WHITE()),
                 ))
                 .child(row(
-                    "ユーザーID",
+                    tr!("ユーザーID", "User ID"),
                     None,
                     div()
                         .flex()
                         .items_center()
                         .gap(z(16.0))
                         .child(text(me.id.clone(), 15.0, WHITE()))
-                        .child(button("copy_my_id", "コピー", false).on_click(cx.listener(
-                            move |this, _, _, cx| {
+                        .child(button("copy_my_id", tr!("コピー", "Copy"), false).on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
-                                this.app.show_toast("コピーしました");
+                                this.app.show_toast(tr!("コピーしました", "Copied"));
                                 cx.notify();
-                            },
-                        ))),
+                            }),
+                        )),
                 ));
         }
         pages.push(s0.into_any_element());
         let on = self.app.settings.show_activity;
         pages.push(
-            section(1, "アクティビティ")
+            section(1, tr!("アクティビティ", "Activity"))
                 .child(row(
-                    "「Riscord をプレイ中」を表示",
-                    Some("Riscord を使っている間、プロフィールのアクティビティに表示します。他の人にも見えます（オフライン表示のときは出ません）。".into()),
+                    tr!("「Riscord をプレイ中」を表示", "Show \"Playing Riscord\""),
+                    Some(tr!("Riscord を使っている間、プロフィールのアクティビティに表示します。他の人にも見えます（オフライン表示のときは出ません）。", "Shows it as your profile activity while you use Riscord. Others can see it (not shown while Invisible).").into()),
                     toggle_switch("activity_switch", on).on_click(cx.listener(move |this, _, _, cx| {
                         this.app.settings.show_activity = !on;
                         this.app.send(Cmd::SetActivity(!on));
@@ -808,16 +834,29 @@ impl Root {
                 .into_any_element(),
         );
         let state = match crate::update::status() {
-            crate::update::Status::Off => {
-                "自動アップデートは無効です（開発中のビルド・対応していない環境など）".to_string()
+            crate::update::Status::Off => tr!(
+                "自動アップデートは無効です（開発中のビルド・対応していない環境など）",
+                "Auto-update is disabled (development build, unsupported environment, etc.)"
+            )
+            .to_string(),
+            crate::update::Status::Checking => {
+                tr!("新しい版を確認しています…", "Checking for a new version…").into()
             }
-            crate::update::Status::Checking => "新しい版を確認しています…".into(),
-            crate::update::Status::Latest => "最新の版です".into(),
-            crate::update::Status::Downloading(v) => format!("{v} をダウンロードしています…"),
+            crate::update::Status::Latest => {
+                tr!("最新の版です", "You're on the latest version").into()
+            }
+            crate::update::Status::Downloading(v) => {
+                tr!("{v} をダウンロードしています…", "Downloading {v}…",)
+            }
             crate::update::Status::Ready(v) => {
-                format!("{v} に更新しました。次に起動したときから使われます")
+                tr!(
+                    "{v} に更新しました。次に起動したときから使われます",
+                    "Updated to {v}. It will be used from the next launch",
+                )
             }
-            crate::update::Status::Failed(e) => format!("更新できませんでした: {e}"),
+            crate::update::Status::Failed(e) => {
+                tr!("更新できませんでした: {e}", "Couldn't update: {e}",)
+            }
         };
         pages.push(self.profiles_section(cx));
         let version = match crate::commits::build_short() {
@@ -825,7 +864,7 @@ impl Root {
             None => format!("Riscord v{}", crate::update::current_version()),
         };
         pages.push(
-            section(3, "バージョン")
+            section(3, tr!("バージョン", "Version"))
                 .child(row(version, Some(state), div()))
                 .child(Self::commits_rows())
                 .into_any_element(),
@@ -839,24 +878,39 @@ impl Root {
         crate::commits::mark_seen();
         let status = crate::commits::status();
         let desc = match &status {
-            Status::Off => "ビルド元のコミットが分からないため確認していません".to_string(),
-            Status::Checking => "確認しています…".into(),
-            Status::UpToDate => "このビルドは main の最新です".into(),
+            Status::Off => tr!(
+                "ビルド元のコミットが分からないため確認していません",
+                "Not checked because the build's commit is unknown"
+            )
+            .to_string(),
+            Status::Checking => tr!("確認しています…", "Checking…").into(),
+            Status::UpToDate => tr!(
+                "このビルドは main の最新です",
+                "This build is the latest on main"
+            )
+            .into(),
             Status::Behind { ahead_by, .. } => {
-                format!("main に {ahead_by} 件の新しいコミットがあります")
+                tr!(
+                    "main に {ahead_by} 件の新しいコミットがあります",
+                    "main has {ahead_by} new commits",
+                )
             }
             Status::Unknown(e) => e.clone(),
-            Status::Failed(e) => format!("確認できませんでした: {e}"),
+            Status::Failed(e) => tr!("確認できませんでした: {e}", "Couldn't check: {e}",),
         };
         let open = match &status {
             Status::Behind { compare_url, .. } => compare_url.clone(),
             _ => "https://github.com/kokorodonguri/Riscord/commits/main".into(),
         };
         let mut d = div().flex().flex_col().child(row(
-            "GitHub の新しいコミット",
+            tr!("GitHub の新しいコミット", "New commits on GitHub"),
             Some(desc),
-            button("commits_open", "GitHub で見る", false)
-                .on_click(move |_, _, cx| cx.open_url(&open)),
+            button(
+                "commits_open",
+                tr!("GitHub で見る", "View on GitHub"),
+                false,
+            )
+            .on_click(move |_, _, cx| cx.open_url(&open)),
         ));
         if let Status::Behind { commits, .. } = status {
             let mut list = div().flex().flex_col().gap(z(8.0)).mb(z(24.0));
@@ -887,8 +941,8 @@ impl Root {
     fn profiles_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
         use crate::profile;
         let current = self.app.profile.clone();
-        let mut s = section(2, "別のアカウント").child(
-            text("「横に並べる」で、このウィンドウを左右に分けて2つのアカウントを同時に使えます。別のウィンドウで開くこともできます。どれも同時にログインしたまま使え、通話にもそれぞれ入れます。", 15.0, MUTED()).mb(z(16.0)),
+        let mut s = section(2, tr!("別のアカウント", "Other Accounts")).child(
+            text(tr!("「横に並べる」で、このウィンドウを左右に分けて2つのアカウントを同時に使えます。別のウィンドウで開くこともできます。どれも同時にログインしたまま使え、通話にもそれぞれ入れます。", "\"Side by side\" splits this window so you can use two accounts at once. You can also open one in a separate window. All of them stay logged in at the same time and can each join calls."), 15.0, MUTED()).mb(z(16.0)),
         );
         let names: Vec<Option<String>> = std::iter::once(None)
             .chain(profile::list().into_iter().map(Some))
@@ -898,15 +952,16 @@ impl Root {
             let beside = self.other.as_ref() == Some(&name);
             let running = here || beside || profile::is_running(name.as_deref());
             let title = profile::label(name.as_deref());
-            let who = profile::account_name(name.as_deref()).unwrap_or_else(|| "未ログイン".into());
+            let who = profile::account_name(name.as_deref())
+                .unwrap_or_else(|| tr!("未ログイン", "Not logged in").into());
             let state = if here {
-                "この区画"
+                tr!("この区画", "This pane")
             } else if beside {
-                "横に並べています"
+                tr!("横に並べています", "Side by side")
             } else if running {
-                "別のウィンドウで開いています"
+                tr!("別のウィンドウで開いています", "Open in another window")
             } else {
-                "閉じています"
+                tr!("閉じています", "Closed")
             };
             let key = name.clone().unwrap_or_default();
             let mut actions = div().flex().items_center().gap(z(8.0));
@@ -915,7 +970,7 @@ impl Root {
                 actions = actions.child(
                     button(
                         SharedString::from(format!("profile_split_{key}")),
-                        "横に並べる",
+                        tr!("横に並べる", "Side by Side"),
                         false,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -927,13 +982,15 @@ impl Root {
                 actions = actions.child(
                     button(
                         SharedString::from(format!("profile_open_{key}")),
-                        "別ウィンドウ",
+                        tr!("別ウィンドウ", "New Window"),
                         false,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Err(e) = profile::launch(n.as_deref()) {
-                            this.app
-                                .show_toast(&format!("ウィンドウを開けませんでした: {e}"));
+                            this.app.show_toast(&tr!(
+                                "ウィンドウを開けませんでした: {e}",
+                                "Couldn't open the window: {e}",
+                            ));
                         }
                         cx.notify();
                     })),
@@ -944,9 +1001,9 @@ impl Root {
                         button(
                             SharedString::from(format!("profile_del_{key}")),
                             if confirming {
-                                "本当に削除"
+                                tr!("本当に削除", "Really delete")
                             } else {
-                                "削除"
+                                tr!("削除", "Delete")
                             },
                             true,
                         )
@@ -956,10 +1013,14 @@ impl Root {
                             } else {
                                 this.confirm_profile_delete = None;
                                 match profile::remove(&n) {
-                                    Ok(()) => this.app.show_toast("サブアカウントを削除しました"),
-                                    Err(e) => {
-                                        this.app.show_toast(&format!("削除できませんでした: {e}"))
-                                    }
+                                    Ok(()) => this.app.show_toast(tr!(
+                                        "サブアカウントを削除しました",
+                                        "Sub account deleted"
+                                    )),
+                                    Err(e) => this.app.show_toast(&tr!(
+                                        "削除できませんでした: {e}",
+                                        "Couldn't delete: {e}",
+                                    )),
                                 }
                             }
                             cx.notify();
@@ -969,41 +1030,65 @@ impl Root {
             }
             s = s.child(row(title, Some(format!("{who} · {state}")), actions));
         }
-        s = s.child(div().mt(z(8.0)).child(
-            button("profile_add", "サブアカウントを追加して横に並べる", false).on_click(
-                cx.listener(|this, _, _, cx| {
+        s = s.child(
+            div().mt(z(8.0)).child(
+                button(
+                    "profile_add",
+                    tr!(
+                        "サブアカウントを追加して横に並べる",
+                        "Add a sub account side by side"
+                    ),
+                    false,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
                     let name = profile::next_name(&profile::list());
                     match profile::create(&name) {
                         Ok(()) => {
                             this.app.settings_open = false;
                             cx.emit(PaneEvent::OpenSplit(Some(name)));
                         }
-                        Err(e) => this
-                            .app
-                            .show_toast(&format!("サブアカウントを作れませんでした: {e}")),
+                        Err(e) => this.app.show_toast(&tr!(
+                            "サブアカウントを作れませんでした: {e}",
+                            "Couldn't create the sub account: {e}",
+                        )),
                     }
                     cx.notify();
-                }),
+                })),
             ),
-        ));
+        );
         s.into_any_element()
     }
 
     fn display_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut pages = Vec::new();
         pages.push(
-            section(0, "表示サイズ")
-                .child(self.slider_row("zoom", "UIの拡大率", window, cx))
-                .child(self.slider_row("font_size", "メッセージの文字サイズ", window, cx))
+            section(0, tr!("表示サイズ", "Display Size"))
+                .child(self.slider_row("zoom", tr!("UIの拡大率", "UI Zoom"), window, cx))
+                .child(self.slider_row(
+                    "font_size",
+                    tr!("メッセージの文字サイズ", "Message Font Size"),
+                    window,
+                    cx,
+                ))
                 .into_any_element(),
         );
-        let mut s1 = section(1, "メッセージ表示");
+        let mut s1 = section(1, tr!("メッセージ表示", "Message Display"));
         for (compact, title, desc) in [
-            (false, "標準", "アバターと名前を付けて表示します"),
+            (
+                false,
+                tr!("標準", "Cozy"),
+                tr!(
+                    "アバターと名前を付けて表示します",
+                    "Shows avatars and names"
+                ),
+            ),
             (
                 true,
-                "コンパクト",
-                "1行にまとめて、より多くのメッセージを表示します",
+                tr!("コンパクト", "Compact"),
+                tr!(
+                    "1行にまとめて、より多くのメッセージを表示します",
+                    "Fits each message on one line to show more messages"
+                ),
             ),
         ] {
             s1 = s1.child(
@@ -1023,9 +1108,15 @@ impl Root {
             );
         }
         s1 = s1.child(div().h(z(16.0))).child(row(
-            "表示設定を初期化",
-            Some("このページの項目だけを初期値に戻します（テーマ・音声は変わりません）".into()),
-            button("reset_display", "初期化", false).on_click(cx.listener(
+            tr!("表示設定を初期化", "Reset Appearance Settings"),
+            Some(
+                tr!(
+                    "このページの項目だけを初期値に戻します（テーマ・音声は変わりません）",
+                    "Resets only the items on this page (themes and voice stay unchanged)"
+                )
+                .into(),
+            ),
+            button("reset_display", tr!("初期化", "Reset"), false).on_click(cx.listener(
                 |this, _, window, cx| {
                     let d = Settings::default();
                     let s = &mut this.app.settings;
@@ -1039,6 +1130,56 @@ impl Root {
             )),
         ));
         pages.push(s1.into_any_element());
+
+        // 言語。どちらの言語でも見つけられるよう、見出しは両方で書く
+        let mut s2 = section(2, tr!("言語 / Language", "Language / 言語"));
+        let current = crate::i18n::setting();
+        for (value, title, desc) in [
+            (
+                crate::i18n::AUTO,
+                tr!("自動", "Automatic"),
+                tr!(
+                    "OS の言語に合わせます（日本語以外は英語）",
+                    "Follows the OS language (English unless it's Japanese)"
+                ),
+            ),
+            (crate::i18n::JA, "日本語", "Japanese"),
+            (crate::i18n::EN, "English", "英語"),
+        ] {
+            s2 = s2.child(
+                radio_card(
+                    SharedString::from(format!("lang_{value}")),
+                    current == value,
+                    title,
+                    Some(desc),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if crate::i18n::setting() != value {
+                        if let Err(e) = crate::app::choose_language(value) {
+                            this.app.status = tr!(
+                                "言語を保存できませんでした: {e}",
+                                "Couldn't save the language: {e}",
+                            );
+                        }
+                        this.app.theme_dirty = true;
+                        window.refresh();
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        s2 = s2.child(
+            text(
+                tr!(
+                    "入力欄の案内文など一部の表示は、再起動すると切り替わります。",
+                    "Some text, such as input placeholders, switches after a restart."
+                ),
+                13.0,
+                MUTED(),
+            )
+            .mt(z(8.0)),
+        );
+        pages.push(s2.into_any_element());
         pages
     }
 
@@ -1059,8 +1200,10 @@ impl Root {
             .flex()
             .gap(z(16.0))
             .when(col_w < 500.0, |d| d.flex_col());
-        for (input, title, list) in [(true, "入力デバイス", ins), (false, "出力デバイス", outs)]
-        {
+        for (input, title, list) in [
+            (true, tr!("入力デバイス", "Input Device"), ins),
+            (false, tr!("出力デバイス", "Output Device"), outs),
+        ] {
             let cur = if input {
                 self.app.settings.input_device.clone()
             } else {
@@ -1080,7 +1223,9 @@ impl Root {
                 .enumerate()
             {
                 let on = cur == d;
-                let label = d.clone().unwrap_or_else(|| "デフォルト".into());
+                let label = d
+                    .clone()
+                    .unwrap_or_else(|| tr!("デフォルト", "Default").into());
                 l = l.child(
                     div()
                         .id(("devrow", i))
@@ -1118,32 +1263,50 @@ impl Root {
             );
         }
         pages.push(
-            section(0, "デバイス")
+            section(0, tr!("デバイス", "Devices"))
                 .child(cols)
                 .child(div().h(z(12.0)))
                 .child(row(
-                    "デバイスが見つからないとき",
-                    Some("つなぎ直したマイクやヘッドホンを読み込み直します".into()),
-                    button("redetect", "再検出", false).on_click(cx.listener(|this, _, _, cx| {
-                        this.app.audio_devs = None;
-                        cx.notify();
-                    })),
+                    tr!("デバイスが見つからないとき", "When a device isn't found"),
+                    Some(
+                        tr!(
+                            "つなぎ直したマイクやヘッドホンを読み込み直します",
+                            "Reloads reconnected microphones and headphones"
+                        )
+                        .into(),
+                    ),
+                    button("redetect", tr!("再検出", "Rescan"), false).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.app.audio_devs = None;
+                            cx.notify();
+                        },
+                    )),
                 ))
                 .into_any_element(),
         );
         pages.push(
-            section(1, "音量")
-                .child(self.slider_row("in_gain", "入力音量", window, cx))
-                .child(self.slider_row("out_gain", "出力音量", window, cx))
+            section(1, tr!("音量", "Volume"))
+                .child(self.slider_row("in_gain", tr!("入力音量", "Input Volume"), window, cx))
+                .child(self.slider_row("out_gain", tr!("出力音量", "Output Volume"), window, cx))
                 .into_any_element(),
         );
-        let mut s2 = section(2, "入力モード");
+        let mut s2 = section(2, tr!("入力モード", "Input Mode"));
         for (ptt, title, desc) in [
-            (false, "音声検出", "話し始めると自動で送信します"),
+            (
+                false,
+                tr!("音声検出", "Voice Activity"),
+                tr!(
+                    "話し始めると自動で送信します",
+                    "Transmits automatically when you start talking"
+                ),
+            ),
             (
                 true,
-                "プッシュトゥトーク",
-                "キーを押している間だけ送信します",
+                tr!("プッシュトゥトーク", "Push to Talk"),
+                tr!(
+                    "キーを押している間だけ送信します",
+                    "Transmits only while you hold the key"
+                ),
             ),
         ] {
             s2 = s2.child(
@@ -1165,16 +1328,24 @@ impl Root {
         }
         if self.app.settings.ptt {
             let label = if self.app.binding_ptt {
-                "キーを押してください…（Escで取消）".to_string()
+                tr!(
+                    "キーを押してください…（Escで取消）",
+                    "Press a key… (Esc to cancel)"
+                )
+                .to_string()
             } else {
                 self.app
                     .settings
                     .ptt_key
                     .clone()
-                    .unwrap_or_else(|| "未設定".into())
+                    .unwrap_or_else(|| tr!("未設定", "Not set").into())
             };
             s2 = s2
-                .child(text("ショートカット", 12.0, MUTED()).mt(z(16.0)).mb(z(6.0)))
+                .child(
+                    text(tr!("ショートカット", "Shortcut"), 12.0, MUTED())
+                        .mt(z(16.0))
+                        .mb(z(6.0)),
+                )
                 .child(
                     div().flex().child(
                         small_button("bind_ptt", label)
@@ -1188,7 +1359,15 @@ impl Root {
                     ),
                 )
                 .child(
-                    text("このウィンドウが前面にあるときだけ有効です", 12.0, MUTED()).mt(z(6.0)),
+                    text(
+                        tr!(
+                            "このウィンドウが前面にあるときだけ有効です",
+                            "Works only while this window is in front"
+                        ),
+                        12.0,
+                        MUTED(),
+                    )
+                    .mt(z(6.0)),
                 );
         }
         pages.push(s2.into_any_element());
@@ -1231,10 +1410,10 @@ impl Root {
             );
         }
         let noise = self.app.settings.noise_suppression;
-        let mut s3 = section(3, "入力感度")
+        let mut s3 = section(3, tr!("入力感度", "Input Sensitivity"))
             .child(row(
-                "ノイズ抑制",
-                Some("キーボードの音や空調など、声以外の雑音を減らします。少し CPU を使い、音声が 10 ms 遅れます。".into()),
+                tr!("ノイズ抑制", "Noise Suppression"),
+                Some(tr!("キーボードの音や空調など、声以外の雑音を減らします。少し CPU を使い、音声が 10 ms 遅れます。", "Reduces non-voice noise like keyboard sounds and air conditioning. Uses a little CPU and delays audio by 10 ms.").into()),
                 toggle_switch("noise_switch", noise).on_click(cx.listener(move |this, _, _, cx| {
                     this.app.settings.noise_suppression = !noise;
                     this.app.apply_voice_settings();
@@ -1245,17 +1424,20 @@ impl Root {
             .child(meter.mb(z(12.0)));
         if !ptt {
             s3 = s3
-                .child(self.slider_row("vad_db", "しきい値", window, cx))
+                .child(self.slider_row("vad_db", tr!("しきい値", "Threshold"), window, cx))
                 .child(text(
-                    "話したときにバーが緑になれば送信されます",
+                    tr!(
+                        "話したときにバーが緑になれば送信されます",
+                        "Your voice is transmitted when the bar turns green while talking"
+                    ),
                     12.0,
                     MUTED(),
                 ));
         }
         pages.push(s3.into_any_element());
         use crate::golive::media::QualityPreset;
-        let mut quality = section(4, "配信画質").child(text(
-            "画面共有を開始する前に選択します。利用できる画質は接続先や端末によって異なります。",
+        let mut quality = section(4, tr!("配信画質", "Stream Quality")).child(text(
+            tr!("画面共有を開始する前に選択します。利用できる画質は接続先や端末によって異なります。", "Choose before starting screen sharing. Available quality depends on the connection and device."),
             14.0,
             MUTED(),
         ).mb(z(12.0)));
@@ -1287,9 +1469,13 @@ impl Root {
 
     fn plugins_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let path = crate::plugins::directory();
-        let mut page = section(0, "プラグイン")
+        let mut page = section(0, tr!("プラグイン", "Plugins"))
             .child(text(
-                format!("プラグインフォルダ: {}", path.display()),
+                tr!(
+                    "プラグインフォルダ: {}",
+                    "Plugin folder: {}",
+                    path.display()
+                ),
                 14.0,
                 MUTED(),
             ))
@@ -1299,17 +1485,25 @@ impl Root {
                     .gap(z(10.0))
                     .mt(z(12.0))
                     .child(
-                        action_button("open_plugins", IconName::Folder, "フォルダを開く")
-                            .on_click(move |_, _, _| open_folder(&path)),
+                        action_button(
+                            "open_plugins",
+                            IconName::Folder,
+                            tr!("フォルダを開く", "Open Folder"),
+                        )
+                        .on_click(move |_, _, _| open_folder(&path)),
                     )
                     .child(
-                        action_button("reload_plugins", IconName::RefreshCw, "読み込み直す")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.app.plugins.reload(&this.app.settings.enabled_plugins);
-                                this.plugin_inputs.clear();
-                                this.app.waker.wake();
-                                cx.notify();
-                            })),
+                        action_button(
+                            "reload_plugins",
+                            IconName::RefreshCw,
+                            tr!("読み込み直す", "Reload"),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.app.plugins.reload(&this.app.settings.enabled_plugins);
+                            this.plugin_inputs.clear();
+                            this.app.waker.wake();
+                            cx.notify();
+                        })),
                     ),
             );
         page = page.child(
@@ -1319,44 +1513,50 @@ impl Root {
                 .gap(z(10.0))
                 .mt(z(12.0))
                 .child(
-                    action_button("enable_all_plugins", IconName::Check, "すべてオン").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.app
-                                .plugins
-                                .set_all(true, &mut this.app.settings.enabled_plugins);
-                            this.app.save_settings();
-                            this.app.waker.wake();
-                            cx.notify();
-                        }),
-                    ),
+                    action_button(
+                        "enable_all_plugins",
+                        IconName::Check,
+                        tr!("すべてオン", "Turn All On"),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app
+                            .plugins
+                            .set_all(true, &mut this.app.settings.enabled_plugins);
+                        this.app.save_settings();
+                        this.app.waker.wake();
+                        cx.notify();
+                    })),
                 )
                 .child(
-                    action_button("disable_all_plugins", IconName::X, "すべてオフ").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.app
-                                .plugins
-                                .set_all(false, &mut this.app.settings.enabled_plugins);
-                            this.plugin_inputs.clear();
-                            this.app.save_settings();
-                            this.app.waker.wake();
-                            cx.notify();
-                        }),
-                    ),
+                    action_button(
+                        "disable_all_plugins",
+                        IconName::X,
+                        tr!("すべてオフ", "Turn All Off"),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app
+                            .plugins
+                            .set_all(false, &mut this.app.settings.enabled_plugins);
+                        this.plugin_inputs.clear();
+                        this.app.save_settings();
+                        this.app.waker.wake();
+                        cx.notify();
+                    })),
                 ),
         );
         for error in &self.app.plugins.errors {
-            page = page.child(notice(RED(), "読み込みエラー", error));
+            page = page.child(notice(RED(), tr!("読み込みエラー", "Load error"), error));
         }
         for p in &self.app.plugins.entries {
             let id = p.manifest.id.clone();
             let page_id = id.clone();
             let enabled = self.app.settings.enabled_plugins.contains(&id);
             let status = if p.running() {
-                "実行中"
+                tr!("実行中", "Running")
             } else if enabled {
-                "停止中"
+                tr!("停止中", "Stopped")
             } else {
-                "無効"
+                tr!("無効", "Disabled")
             };
             let desc = format!(
                 "{} · {} · {}\n{}{}",
@@ -1366,7 +1566,7 @@ impl Root {
                 p.manifest.description,
                 p.error
                     .as_ref()
-                    .map(|e| format!("\nエラー: {e}"))
+                    .map(|e| tr!("\nエラー: {e}", "\nError: {e}",))
                     .unwrap_or_default()
             );
             page = page.child(
@@ -1382,7 +1582,7 @@ impl Root {
                                     div()
                                         .id(SharedString::from(format!("plugin-page-{id}")))
                                         .cursor_pointer()
-                                        .child(text("ページ", 14.0, LINK()))
+                                        .child(text(tr!("ページ", "Page"), 14.0, LINK()))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.app.plugins.selected = Some(page_id.clone());
                                             cx.notify();
@@ -1395,9 +1595,9 @@ impl Root {
                                     enabled,
                                 )
                                 .tooltip(tip(if enabled {
-                                    "無効にする"
+                                    tr!("無効にする", "Disable")
                                 } else {
-                                    "有効にする"
+                                    tr!("有効にする", "Enable")
                                 }))
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -1422,7 +1622,7 @@ impl Root {
                 .any(|p| p.manifest.id == *id && p.has_page())
         }) {
             page = page.child(div().mt(z(24.0)).child(medium(
-                format!("{id} のページ"),
+                tr!("{id} のページ", "{id} page",),
                 20.0,
                 WHITE(),
             )));
@@ -1440,7 +1640,10 @@ impl Root {
                                 // MessageLogger の記録は本体が持っているので、消すのも本体で行う
                                 if id == "message-logger" && action == "clear" {
                                     this.app.message_log.clear();
-                                    this.app.show_toast("メッセージの記録を消しました");
+                                    this.app.show_toast(tr!(
+                                        "メッセージの記録を消しました",
+                                        "Message log cleared"
+                                    ));
                                 }
                                 let values = this
                                     .plugin_inputs
@@ -1471,9 +1674,9 @@ impl Root {
                                     item.enabled,
                                 )
                                 .tooltip(tip(if item.enabled {
-                                    "オフにする"
+                                    tr!("オフにする", "Turn Off")
                                 } else {
-                                    "オンにする"
+                                    tr!("オンにする", "Turn On")
                                 }))
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -1547,9 +1750,9 @@ impl Root {
                     let mut lines: Vec<(String, Color32)> = e
                         .history
                         .iter()
-                        .map(|h| (format!("編集前: {}", h.content), FAINT()))
+                        .map(|h| (tr!("編集前: {}", "Before edit: {}", h.content), FAINT()))
                         .collect();
-                    lines.push((format!("現在: {}", e.message.content), TEXT()));
+                    lines.push((tr!("現在: {}", "Now: {}", e.message.content), TEXT()));
                     (
                         e.history.last().map(|h| h.at.clone()).unwrap_or_default(),
                         &e.message,
@@ -1564,7 +1767,7 @@ impl Root {
                 .map(|d| {
                     let mut lines = vec![(d.message.content.clone(), TEXT())];
                     for f in &d.message.attachments {
-                        lines.push((format!("添付: {}", f.filename), FAINT()));
+                        lines.push((tr!("添付: {}", "Attachments: {}", f.filename), FAINT()));
                     }
                     (d.at.clone(), &d.message, lines)
                 })
@@ -1577,8 +1780,15 @@ impl Root {
             .flex()
             .gap(z(16.0))
             .items_center()
-            .child(medium("記録", 20.0, WHITE()).mr(z(8.0)));
-        for (i, label) in ["削除", "編集", "ゴーストピン"].into_iter().enumerate() {
+            .child(medium(tr!("記録", "Log"), 20.0, WHITE()).mr(z(8.0)));
+        for (i, label) in [
+            tr!("削除", "Deleted"),
+            tr!("編集", "Edited"),
+            tr!("ゴーストピン", "Ghost pings"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let on = i == tab;
             tabs = tabs.child(
                 div()
@@ -1601,11 +1811,11 @@ impl Root {
         }
         let mut col = div().flex().flex_col().child(tabs);
         if total == 0 {
-            col = col.child(
-                div()
-                    .mt(z(12.0))
-                    .child(text("まだ記録はありません", 16.0, MUTED())),
-            );
+            col = col.child(div().mt(z(12.0)).child(text(
+                tr!("まだ記録はありません", "Nothing logged yet"),
+                16.0,
+                MUTED(),
+            )));
         }
         for (n, (at, m, lines)) in entries.into_iter().take(SHOWN).enumerate() {
             // 開くときに使うサーバー（REST で読んだメッセージには guild_id が無いので、チャンネル一覧から探す）
@@ -1622,7 +1832,7 @@ impl Root {
                         .get(g)
                         .and_then(|l| l.iter().find(|c| c.id == m.channel_id))
                         .and_then(|c| c.name.clone())
-                        .unwrap_or_else(|| "不明なチャンネル".into());
+                        .unwrap_or_else(|| tr!("不明なチャンネル", "Unknown channel").into());
                     let gn = a
                         .guilds
                         .iter()
@@ -1636,7 +1846,7 @@ impl Root {
                     .iter()
                     .find(|c| c.id == m.channel_id)
                     .map(|c| c.dm_label())
-                    .unwrap_or_else(|| "ダイレクトメッセージ".into()),
+                    .unwrap_or_else(|| tr!("ダイレクトメッセージ", "Direct Messages").into()),
             };
             let when = crate::app::local_dt(&at)
                 .map(|t| t.format("%Y/%-m/%-d %H:%M").to_string())
@@ -1675,7 +1885,10 @@ impl Root {
         }
         if total > SHOWN {
             col = col.child(div().mt(z(8.0)).child(text(
-                format!("新しい {SHOWN} 件だけ表示しています（全 {total} 件）"),
+                tr!(
+                    "新しい {SHOWN} 件だけ表示しています（全 {total} 件）",
+                    "Showing only the newest {SHOWN} ({total} total)",
+                ),
                 13.0,
                 FAINT(),
             )));
@@ -1711,52 +1924,66 @@ impl Root {
 
         let mut s0 = div().flex().flex_col().child(notice(
             LINK(),
-            "テーマについて",
-            &format!(
-                "テーマは {} に置く .toml ファイルです。色・背景画像・フォントを書けて、保存するとすぐ反映されます。\n書き方は「今の配色を書き出す」で作ったファイルか、見本の sample.toml を見てください。",
-                dir.display()
-            ),
+            tr!("テーマについて", "About Themes"),
+            &tr!("テーマは {} に置く .toml ファイルです。色・背景画像・フォントを書けて、保存するとすぐ反映されます。\n書き方は「今の配色を書き出す」で作ったファイルか、見本の sample.toml を見てください。", "Themes are .toml files in {}. They can set colors, a background image and fonts, and changes apply as soon as you save.\nFor the format, see a file made with \"Export current colors\" or the sample.toml example.", dir.display()),
         ));
         if let Some(e) = &self.app.theme_error {
-            s0 = s0.child(
-                div()
-                    .mt(z(12.0))
-                    .child(notice(RED(), "テーマを読めませんでした", e)),
-            );
+            s0 = s0.child(div().mt(z(12.0)).child(notice(
+                RED(),
+                tr!("テーマを読めませんでした", "Couldn't read the theme"),
+                e,
+            )));
         }
         if !self.app.theme_warnings.is_empty() {
             s0 = s0.child(div().mt(z(12.0)).child(notice(
                 ORANGE(),
-                "テーマの一部を読み飛ばしました",
+                tr!(
+                    "テーマの一部を読み飛ばしました",
+                    "Skipped part of the theme"
+                ),
                 &self.app.theme_warnings.join("\n"),
             )));
         }
         let d2 = dir.clone();
         let d3 = dir.clone();
         s0 = s0.child(div().h(z(40.0))).child(
-            section(0, "テーマ").child(
+            section(0, tr!("テーマ", "Themes")).child(
                 settings_card(None).child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap(z(10.0))
                         .child(
-                            action_button("open_themes", IconName::Folder, "テーマフォルダを開く")
-                                .on_click(move |_, _, _| open_folder(&d2)),
+                            action_button(
+                                "open_themes",
+                                IconName::Folder,
+                                tr!("テーマフォルダを開く", "Open Themes Folder"),
+                            )
+                            .on_click(move |_, _, _| open_folder(&d2)),
                         )
                         .child(
-                            action_button("reload_themes", IconName::RefreshCw, "読み込み直す")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.app.apply_theme(true);
-                                    cx.notify();
-                                })),
+                            action_button(
+                                "reload_themes",
+                                IconName::RefreshCw,
+                                tr!("読み込み直す", "Reload"),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.app.apply_theme(true);
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            action_button("export_theme", IconName::Upload, "今の配色を書き出す")
-                                .tooltip(tip(
-                                    "themes/ に my-theme.toml を作って、それに切り替えます",
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                            action_button(
+                                "export_theme",
+                                IconName::Upload,
+                                tr!("今の配色を書き出す", "Export current colors"),
+                            )
+                            .tooltip(tip(tr!(
+                                "themes/ に my-theme.toml を作って、それに切り替えます",
+                                "Creates my-theme.toml in themes/ and switches to it"
+                            )))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     let dir = &d3;
                                     let _ = std::fs::create_dir_all(dir);
                                     let mut path = dir.join("my-theme.toml");
@@ -1766,7 +1993,7 @@ impl Root {
                                         n += 1;
                                     }
                                     let text = theme::export(
-                                        "マイテーマ",
+                                        tr!("マイテーマ", "My Theme"),
                                         &theme::current_colors(),
                                         &this.app.settings.background,
                                     );
@@ -1788,7 +2015,8 @@ impl Root {
                                         }
                                     }
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         ),
                 ),
             ),
@@ -1799,7 +2027,7 @@ impl Root {
             .map(|(k, name, _)| {
                 (
                     format!("builtin:{k}"),
-                    name.to_string(),
+                    name.s().to_string(),
                     "riscord".to_string(),
                     theme::builtin_description(k).to_string(),
                 )
@@ -1815,7 +2043,7 @@ impl Root {
                 None => (
                     file.clone(),
                     String::new(),
-                    "読めないファイルです".to_string(),
+                    tr!("読めないファイルです", "Unreadable file").to_string(),
                 ),
             };
             entries.push((file.clone(), name, author, desc));
@@ -1866,9 +2094,9 @@ impl Root {
         let area = self.app.settings.background.area.clone();
         let mut areas = div().flex().flex_wrap().gap(z(8.0)).mt(z(8.0));
         for (val, label) in [
-            (None, "テーマの指定"),
-            (Some("chat"), "チャット欄だけ"),
-            (Some("window"), "ウィンドウ全体"),
+            (None, tr!("テーマの指定", "Theme's setting")),
+            (Some("chat"), tr!("チャット欄だけ", "Chat area only")),
+            (Some("window"), tr!("ウィンドウ全体", "Whole window")),
         ] {
             let on = area.as_deref() == val;
             let v = val.map(String::from);
@@ -1902,7 +2130,7 @@ impl Root {
         }
         let picking = self.app.bg_pick.is_some();
         pages.push(
-            section(1, "背景画像")
+            section(1, tr!("背景画像", "Background Image"))
                 .child(
                     settings_card(None)
                         .flex()
@@ -1927,30 +2155,41 @@ impl Root {
                                                 .h(z(34.0)),
                                         ),
                                 )
-                                .child(small_button("pick_bg", "選ぶ…").when(!picking, |b| {
-                                    b.on_click(cx.listener(|this, _, _, cx| {
-                                        this.app.bg_pick = Some(spawn_file_dialog(
-                                            &this.app.waker,
-                                            "背景画像を選ぶ",
-                                            false,
-                                            Some(("画像", &["png", "jpg", "jpeg", "webp", "gif"])),
-                                        ));
-                                        cx.notify();
-                                    }))
-                                })),
+                                .child(small_button("pick_bg", tr!("選ぶ…", "Choose…")).when(
+                                    !picking,
+                                    |b| {
+                                        b.on_click(cx.listener(|this, _, _, cx| {
+                                            this.app.bg_pick = Some(spawn_file_dialog(
+                                                &this.app.waker,
+                                                tr!("背景画像を選ぶ", "Choose a background image"),
+                                                false,
+                                                Some((
+                                                    tr!("画像", "Images"),
+                                                    &["png", "jpg", "jpeg", "webp", "gif"],
+                                                )),
+                                            ));
+                                            cx.notify();
+                                        }))
+                                    },
+                                )),
                         )
                         .child(areas)
-                        .child(self.slider_row("bg_opacity", "画像の見え具合", window, cx)),
+                        .child(self.slider_row(
+                            "bg_opacity",
+                            tr!("画像の見え具合", "Image opacity"),
+                            window,
+                            cx,
+                        )),
                 )
                 .into_any_element(),
         );
 
         let has_overrides = !self.app.settings.color_overrides.is_empty();
-        let mut s2 = section(2, "色の調整").child(row(
-            "色ごとの調整",
-            Some("ここで変えた色はテーマより優先されます。#rrggbb（透かすなら #rrggbbaa）で入力して Enter".into()),
+        let mut s2 = section(2, tr!("色の調整", "Color Adjustments")).child(row(
+            tr!("色ごとの調整", "Per-color Adjustments"),
+            Some(tr!("ここで変えた色はテーマより優先されます。#rrggbb（透かすなら #rrggbbaa）で入力して Enter", "Colors changed here override the theme. Enter #rrggbb (or #rrggbbaa for transparency) and press Enter").into()),
             div().when(has_overrides, |d| {
-                d.child(button("clear_overrides", "調整をすべて消す", false).on_click(cx.listener(|this, _, _, cx| {
+                d.child(button("clear_overrides", tr!("調整をすべて消す", "Clear All Adjustments"), false).on_click(cx.listener(|this, _, _, cx| {
                     this.app.settings.color_overrides.clear();
                     this.app.save_settings();
                     this.app.apply_theme(false);
@@ -1989,16 +2228,21 @@ impl Root {
                             .px(z(6.0))
                             .child(Input::new(&input).appearance(false).h(z(30.0))),
                     )
-                    .child(text(*label, 14.0, TEXT()).flex_1())
+                    .child(text(label.s(), 14.0, TEXT()).flex_1())
                     .when(overridden, |d| {
                         d.child(
-                            small_button(SharedString::from(format!("reset_{k}")), "戻す")
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                            small_button(
+                                SharedString::from(format!("reset_{k}")),
+                                tr!("戻す", "Revert"),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     this.app.settings.color_overrides.remove(k);
                                     this.app.save_settings();
                                     this.app.apply_theme(false);
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         )
                     }),
             );
@@ -2123,17 +2367,26 @@ impl Root {
             }
         }
         let Some(draft) = self.app.profile_draft.as_ref() else {
-            let mut s = section(0, "プロフィール");
+            let mut s = section(0, tr!("プロフィール", "Profiles"));
             if matches!(self.app.profiles.get(&key), Some(ProfileState::Failed)) {
                 s = s.child(row(
-                    "プロフィールを読み込めませんでした",
-                    Some("通信状態を確認して、もう一度読み込んでください".into()),
-                    button("reload_profile", "再読み込み", false).on_click(cx.listener(
-                        move |this, _, _, cx| {
+                    tr!(
+                        "プロフィールを読み込めませんでした",
+                        "Couldn't load the profile"
+                    ),
+                    Some(
+                        tr!(
+                            "通信状態を確認して、もう一度読み込んでください",
+                            "Check your connection and load it again"
+                        )
+                        .into(),
+                    ),
+                    button("reload_profile", tr!("再読み込み", "Reload"), false).on_click(
+                        cx.listener(move |this, _, _, cx| {
                             this.app.profiles.remove(&key);
                             cx.notify();
-                        },
-                    )),
+                        }),
+                    ),
                 ));
             } else {
                 s = s.child(
@@ -2142,7 +2395,11 @@ impl Root {
                         .items_center()
                         .gap(z(8.0))
                         .child(spinner(18.0))
-                        .child(text("プロフィールを読み込み中…", 15.0, MUTED())),
+                        .child(text(
+                            tr!("プロフィールを読み込み中…", "Loading profile…"),
+                            15.0,
+                            MUTED(),
+                        )),
                 );
             }
             return vec![s.into_any_element()];
@@ -2168,21 +2425,29 @@ impl Root {
         };
         let mut form = div().w(z(form_w)).flex().flex_col();
         form = form
-            .child(text("表示名", 13.0, MUTED()).mb(z(6.0)))
+            .child(text(tr!("表示名", "Display Name"), 13.0, MUTED()).mb(z(6.0)))
             .child(boxed(
                 Input::new(&self.inp.name)
                     .appearance(false)
                     .h(z(36.0))
                     .into_any_element(),
             ))
-            .child(text("代名詞", 13.0, MUTED()).mt(z(20.0)).mb(z(6.0)))
+            .child(
+                text(tr!("代名詞", "Pronouns"), 13.0, MUTED())
+                    .mt(z(20.0))
+                    .mb(z(6.0)),
+            )
             .child(boxed(
                 Input::new(&self.inp.pronouns)
                     .appearance(false)
                     .h(z(36.0))
                     .into_any_element(),
             ))
-            .child(text("アバター", 13.0, MUTED()).mt(z(20.0)).mb(z(6.0)))
+            .child(
+                text(tr!("アバター", "Avatar"), 13.0, MUTED())
+                    .mt(z(20.0))
+                    .mb(z(6.0)),
+            )
             .child(
                 div()
                     .flex()
@@ -2190,7 +2455,7 @@ impl Root {
                     .child(
                         fill_button(
                             "change_avatar",
-                            "アバターを変更",
+                            tr!("アバターを変更", "Change Avatar"),
                             BLURPLE(),
                             Color32::WHITE,
                             true,
@@ -2200,34 +2465,43 @@ impl Root {
                             if this.app.avatar_pick.is_none() {
                                 this.app.avatar_pick = Some(spawn_file_dialog(
                                     &this.app.waker,
-                                    "アバターを選ぶ",
+                                    tr!("アバターを選ぶ", "Choose an avatar"),
                                     false,
-                                    Some(("画像", &["png", "jpg", "jpeg", "gif", "webp"])),
+                                    Some((
+                                        tr!("画像", "Images"),
+                                        &["png", "jpg", "jpeg", "gif", "webp"],
+                                    )),
                                 ));
                             }
                             cx.notify();
                         })),
                     )
                     .when(has_avatar, |d| {
-                        d.child(text_button("remove_avatar", "アバターを削除").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                if let Some(d) = this.app.profile_draft.as_mut() {
-                                    d.avatar = Some(AvatarEdit::Remove);
-                                }
-                                cx.notify();
-                            }),
-                        ))
+                        d.child(
+                            text_button("remove_avatar", tr!("アバターを削除", "Remove Avatar"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(d) = this.app.profile_draft.as_mut() {
+                                        d.avatar = Some(AvatarEdit::Remove);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
                     }),
             )
-            .child(text("自己紹介", 13.0, MUTED()).mt(z(20.0)).mb(z(6.0)))
+            .child(
+                text(tr!("自己紹介", "About Me"), 13.0, MUTED())
+                    .mt(z(20.0))
+                    .mb(z(6.0)),
+            )
             .child(boxed(
                 Textarea::new(&self.inp.bio)
                     .appearance(false)
                     .into_any_element(),
             ))
             .child(div().flex().justify_end().child(text(
-                format!(
+                tr!(
                     "残り {}",
+                    "{} left",
                     st::PROFILE_BIO_MAX.saturating_sub(draft.fields[2].chars().count())
                 ),
                 12.0,
@@ -2236,7 +2510,7 @@ impl Root {
         let preview = div()
             .flex()
             .flex_col()
-            .child(text("プレビュー", 13.0, MUTED()).mb(z(6.0)))
+            .child(text(tr!("プレビュー", "Preview"), 13.0, MUTED()).mb(z(6.0)))
             .child(profile_preview(
                 &me,
                 draft,
@@ -2258,7 +2532,7 @@ impl Root {
                 .child(preview)
         };
         // 保存バーに隠れないよう下を空けておく
-        vec![section(0, "プロフィール")
+        vec![section(0, tr!("プロフィール", "Profiles"))
             .child(body)
             .child(div().h(z(72.0)))
             .into_any_element()]
@@ -2279,16 +2553,23 @@ impl Root {
             .profile_nag
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200));
         let (msg, color) = if a.profile_saving {
-            ("保存中…".to_string(), MUTED())
+            (tr!("保存中…", "Saving…").to_string(), MUTED())
         } else if let Some(e) = &a.profile_error {
             (e.clone(), if nag { Color32::WHITE } else { RED() })
         } else if dirty {
             (
-                "ご注意ください — 保存されていない変更があります！".to_string(),
+                tr!(
+                    "ご注意ください — 保存されていない変更があります！",
+                    "Careful — you have unsaved changes!"
+                )
+                .to_string(),
                 if nag { Color32::WHITE } else { TEXT() },
             )
         } else {
-            ("プロフィールを保存しました".to_string(), GREEN())
+            (
+                tr!("プロフィールを保存しました", "Profile saved").to_string(),
+                GREEN(),
+            )
         };
         let mut bar = div()
             .w(z(col_w))
@@ -2309,7 +2590,7 @@ impl Root {
         } else {
             bar = bar
                 .child(
-                    text_button("profile_reset", "リセット").on_click(cx.listener(
+                    text_button("profile_reset", tr!("リセット", "Reset")).on_click(cx.listener(
                         |this, _, _, cx| {
                             if let Some(d) = this.app.profile_draft.as_mut() {
                                 d.fields = d.base.clone();
@@ -2321,12 +2602,18 @@ impl Root {
                     )),
                 )
                 .child(
-                    fill_button("profile_save", "変更を保存", GREEN(), Color32::WHITE, true)
-                        .w(z(120.0))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.app.save_profile();
-                            cx.notify();
-                        })),
+                    fill_button(
+                        "profile_save",
+                        tr!("変更を保存", "Save Changes"),
+                        GREEN(),
+                        Color32::WHITE,
+                        true,
+                    )
+                    .w(z(120.0))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.save_profile();
+                        cx.notify();
+                    })),
                 );
         }
         Some(
@@ -2375,7 +2662,7 @@ fn profile_preview(me: &crate::model::User, draft: &ProfileDraft, w: f32) -> Div
     if !draft.fields[2].trim().is_empty() {
         info = info
             .child(div().my(z(10.0)).child(hline(DIVIDER())))
-            .child(text("自己紹介", 12.0, MUTED()))
+            .child(text(tr!("自己紹介", "About Me"), 12.0, MUTED()))
             .child(text(draft.fields[2].trim().to_string(), 14.0, TEXT()));
     }
     card(RAIL(), BORDER(), 8.0)

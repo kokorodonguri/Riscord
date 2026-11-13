@@ -134,7 +134,11 @@ async fn fetch() -> Result<Status> {
     // 404 = GitHub にないコミット（まだプッシュしていない手元のビルドなど）
     if matches!(res.status().as_u16(), 404 | 422) {
         return Ok(Status::Unknown(
-            "このビルドのコミットは GitHub にありません".into(),
+            tr!(
+                "このビルドのコミットは GitHub にありません",
+                "This build's commit isn't on GitHub"
+            )
+            .into(),
         ));
     }
     parse_compare(&res.error_for_status()?.text().await?)

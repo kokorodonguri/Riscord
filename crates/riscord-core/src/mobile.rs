@@ -41,7 +41,10 @@ const FORWARD: &[&str] = &[
 pub struct AuthExpired;
 impl std::fmt::Display for AuthExpired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ログインの有効期限が切れました。もう一度ログインしてください。")
+        f.write_str(tr!(
+            "ログインの有効期限が切れました。もう一度ログインしてください。",
+            "Your login has expired. Please log in again."
+        ))
     }
 }
 impl std::error::Error for AuthExpired {}
@@ -349,7 +352,7 @@ impl Client {
                         if *code == 4004 {
                             self.push(json!({"t":"AUTH_EXPIRED","d":{}}));
                         }
-                        self.push(json!({"t":"ERROR","d":{"message":if *code==4004 {"認証に失敗しました。ログインし直してください。".to_string()} else {format!("接続が拒否されました（{code}）")}}}));
+                        self.push(json!({"t":"ERROR","d":{"message":if *code==4004 {tr!("認証に失敗しました。ログインし直してください。", "Authentication failed. Please log in again.").to_string()} else {tr!("接続が拒否されました（{code}）", "Connection refused ({code})",)}}}));
                         self.push(json!({"t":"CONNECTION","d":{"status":"未接続"}}));
                         break;
                     }

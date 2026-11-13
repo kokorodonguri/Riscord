@@ -18,7 +18,7 @@ pub struct ChannelDraft {
 /// 作る本体を作る。テキスト系の名前は公式クライアントと同じく小文字にし、空白を - にする
 pub fn channel_body(d: &ChannelDraft) -> Result<serde_json::Value, &'static str> {
     if !matches!(d.kind, 0 | 2 | 4 | 15) {
-        return Err("作れない種類です");
+        return Err(tr!("作れない種類です", "This type can't be created"));
     }
     let mut name = d.name.trim().to_owned();
     if matches!(d.kind, 0 | 15) {
@@ -29,7 +29,10 @@ pub fn channel_body(d: &ChannelDraft) -> Result<serde_json::Value, &'static str>
             .to_lowercase();
     }
     if name.is_empty() || name.chars().count() > 100 {
-        return Err("名前は 1〜100 文字にしてください");
+        return Err(tr!(
+            "名前は 1〜100 文字にしてください",
+            "Names must be 1–100 characters"
+        ));
     }
     let mut body = serde_json::json!({ "name": name, "type": d.kind });
     if d.kind != 4 {
@@ -89,8 +92,13 @@ impl App {
             }
         };
         if !self.can_create_channels(&d.guild_id) {
-            self.channel_draft.as_mut().unwrap().error =
-                Some("チャンネルを管理する権限がありません".into());
+            self.channel_draft.as_mut().unwrap().error = Some(
+                tr!(
+                    "チャンネルを管理する権限がありません",
+                    "You don't have permission to manage channels"
+                )
+                .into(),
+            );
             return;
         }
         let id = self.role_queue(net::ApiCall::CreateChannel {
@@ -101,7 +109,15 @@ impl App {
         draft.error = None;
         match id {
             Some(id) => draft.pending = Some(id),
-            None => draft.error = Some("送信できませんでした。再接続してください".into()),
+            None => {
+                draft.error = Some(
+                    tr!(
+                        "送信できませんでした。再接続してください",
+                        "Couldn't send. Please reconnect"
+                    )
+                    .into(),
+                )
+            }
         }
     }
 
@@ -129,9 +145,14 @@ impl App {
                         self.open_channel(id);
                     }
                 }
-                self.show_toast("作成しました");
+                self.show_toast(tr!("作成しました", "Created"));
             }
-            Err(e) => d.error = Some(super::pins::api_error_text(&e, "作成できませんでした")),
+            Err(e) => {
+                d.error = Some(super::pins::api_error_text(
+                    &e,
+                    tr!("作成できませんでした", "Couldn't create"),
+                ))
+            }
         }
     }
 

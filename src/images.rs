@@ -198,7 +198,7 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
             .map_err(|e| format!("{path}: {e}"));
     }
     if !(uri.starts_with("http://") || uri.starts_with("https://")) {
-        return Err("対応していない URI".into());
+        return Err(tr!("対応していない URI", "Unsupported URI").into());
     }
     let disk = disk_path(uri);
     if let Some(p) = &disk {
@@ -222,12 +222,20 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
         .content_length()
         .is_some_and(|n| n > MAX_DOWNLOAD_BYTES as u64)
     {
-        return Err("画像のダウンロードサイズが上限を超えました".into());
+        return Err(tr!(
+            "画像のダウンロードサイズが上限を超えました",
+            "The image download exceeded the size limit"
+        )
+        .into());
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         if chunk.len() > MAX_DOWNLOAD_BYTES - bytes.len() {
-            return Err("画像のダウンロードサイズが上限を超えました".into());
+            return Err(tr!(
+                "画像のダウンロードサイズが上限を超えました",
+                "The image download exceeded the size limit"
+            )
+            .into());
         }
         bytes.extend_from_slice(&chunk);
     }

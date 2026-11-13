@@ -18,24 +18,26 @@ use crate::net::{self, Cmd, Event, VoiceStatus};
 use crate::wake::Waker;
 use crate::{cache, clip, images, theme, voice};
 
-pub const MESSAGE_RELOAD_ERROR: &str =
-    "エラー: メッセージを更新できませんでした。再読み込みしてください。";
+pub const MESSAGE_RELOAD_ERROR: crate::i18n::Tr = trc!(
+    "エラー: メッセージを更新できませんでした。再読み込みしてください。",
+    "Error: Couldn't update the message. Please reload."
+);
 
 /// 選べるステータス（キー, 表示名）
-pub const STATUSES: [(&str, &str); 4] = [
-    ("online", "オンライン"),
-    ("idle", "退席中"),
-    ("dnd", "取り込み中"),
-    ("invisible", "オフライン表示"),
+pub const STATUSES: [(&str, crate::i18n::Tr); 4] = [
+    ("online", trc!("オンライン", "Online")),
+    ("idle", trc!("退席中", "Idle")),
+    ("dnd", trc!("取り込み中", "Do Not Disturb")),
+    ("invisible", trc!("オフライン表示", "Invisible")),
 ];
 
 pub fn status_label(s: &str) -> &'static str {
     match s {
-        "online" => "オンライン",
-        "idle" => "退席中",
-        "dnd" => "取り込み中",
-        "invisible" => "オフライン表示",
-        _ => "オフライン",
+        "online" => tr!("オンライン", "Online"),
+        "idle" => tr!("退席中", "Idle"),
+        "dnd" => tr!("取り込み中", "Do Not Disturb"),
+        "invisible" => tr!("オフライン表示", "Invisible"),
+        _ => tr!("オフライン", "Offline"),
     }
 }
 
@@ -285,6 +287,35 @@ pub fn save_settings(profile: Option<&str>, s: &Settings) -> std::io::Result<()>
     std::fs::rename(tmp, p)
 }
 
+fn language_path() -> PathBuf {
+    // 言語は全アカウントで共通
+    crate::profile::shared_dir().join("language")
+}
+
+/// 起動時に保存した言語を読む。まだ選んでいなければ、前から使っている人（設定ファイルがある）は日本語、
+/// 初めての人は OS の言語に合わせる
+pub fn init_language() {
+    let saved = std::fs::read_to_string(language_path())
+        .ok()
+        .and_then(|s| crate::i18n::parse_setting(&s));
+    let setting = match saved {
+        Some(s) => s,
+        None if settings_path(None).exists() => crate::i18n::JA,
+        None => crate::i18n::AUTO,
+    };
+    crate::i18n::set_setting(setting);
+}
+
+/// 設定画面で選んだ言語に切り替えて保存する
+pub fn choose_language(setting: &'static str) -> std::io::Result<()> {
+    crate::i18n::set_setting(setting);
+    let path = language_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, setting)
+}
+
 pub fn themes_dir() -> PathBuf {
     // テーマはどのプロファイル（アカウント）でも共有する
     theme::themes_dir(&crate::profile::shared_dir())
@@ -388,9 +419,9 @@ pub fn fmt_time(ts: &str) -> String {
     let today = Local::now().date_naive();
     let d = t.date_naive();
     if d == today {
-        format!("今日 {}", t.format("%H:%M"))
+        tr!("今日 {}", "Today at {}", t.format("%H:%M"))
     } else if today.pred_opt() == Some(d) {
-        format!("昨日 {}", t.format("%H:%M"))
+        tr!("昨日 {}", "Yesterday at {}", t.format("%H:%M"))
     } else {
         t.format("%Y/%m/%d %H:%M").to_string()
     }
@@ -663,21 +694,24 @@ pub fn resolve_mentions<'a>(
                         .and_then(|l| l.iter().find(|c| c.id == id))
                         .or_else(|| channels.values().flatten().find(|c| c.id == id))
                         .and_then(|c| c.name.clone())
-                        .unwrap_or_else(|| "不明なチャンネル".into())
+                        .unwrap_or_else(|| tr!("不明なチャンネル", "Unknown channel").into())
                 ),
                 '&' => format!(
                     "@{}",
                     roles
                         .iter()
                         .find(|r| r.id == id)
-                        .map_or("不明なロール", |r| r.name.as_str())
+                        .map_or(tr!("不明なロール", "Unknown role"), |r| r
+                            .name
+                            .as_str())
                 ),
                 _ => format!(
                     "@{}",
                     m.mentions
                         .iter()
                         .find(|u| u.id == id)
-                        .map_or("不明なユーザー", |u| u.display())
+                        .map_or(tr!("不明なユーザー", "Unknown user"), |u| u
+                            .display())
                 ),
             })
         });
@@ -861,12 +895,12 @@ impl MemberListCache {
                         .find(|g| &g.0 == id)
                         .map_or(*count, |g| g.1);
                     let name = match id.as_str() {
-                        "online" => "オンライン",
-                        "offline" => "オフライン",
+                        "online" => tr!("オンライン", "Online"),
+                        "offline" => tr!("オフライン", "Offline"),
                         id => roles
                             .iter()
                             .find(|r| r.id == id)
-                            .map_or("メンバー", |r| r.name.as_str()),
+                            .map_or(tr!("メンバー", "Members"), |r| r.name.as_str()),
                     };
                     out.height += MEMBER_HEAD_H;
                     out.rows
@@ -919,7 +953,7 @@ impl MemberListCache {
         let names = hoisted
             .iter()
             .map(|r| r.name.as_str())
-            .chain(["オンライン", "オフライン"]);
+            .chain([tr!("オンライン", "Online"), tr!("オフライン", "Offline")]);
         let mut out = MemberListCache {
             gid: gid.to_string(),
             ver,
@@ -975,7 +1009,11 @@ pub fn snowflake_date(id: &str) -> String {
         .map(|i| (i >> 22) + 1_420_070_400_000)
         .unwrap_or(0);
     chrono::DateTime::from_timestamp_millis(ms as i64)
-        .map(|t| t.with_timezone(&Local).format("%Y年%-m月%-d日").to_string())
+        .map(|t| {
+            t.with_timezone(&Local)
+                .format(tr!("%Y年%-m月%-d日", "%b %-d, %Y"))
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -1700,7 +1738,10 @@ impl App {
         self.settings_dirty = false;
         if let Err(e) = save_settings(self.profile.as_deref(), &self.settings) {
             eprintln!("設定を保存できませんでした: {e}");
-            self.show_toast(&format!("設定を保存できませんでした: {e}"));
+            self.show_toast(&tr!(
+                "設定を保存できませんでした: {e}",
+                "Couldn't save settings: {e}",
+            ));
         }
     }
 
@@ -1932,7 +1973,11 @@ impl App {
         {
             self.input = content;
             self.compose_notice = Some((
-                "プラグインによる変換後の本文が文字数制限を超えました".into(),
+                tr!(
+                    "プラグインによる変換後の本文が文字数制限を超えました",
+                    "The message transformed by a plugin exceeds the character limit"
+                )
+                .into(),
                 std::time::Instant::now(),
             ));
             self.repaint_after(COMPOSE_NOTICE_TTL);
@@ -2062,7 +2107,11 @@ impl App {
                         {
                             item.result
                         } else {
-                            Err("翻訳中にプラグインが無効になりました".into())
+                            Err(tr!(
+                                "翻訳中にプラグインが無効になりました",
+                                "The plugin was disabled while translating"
+                            )
+                            .into())
                         };
                         match result {
                             Ok(text)
@@ -2089,13 +2138,19 @@ impl App {
                                     .is_none_or(|b| b.cmd.send(cmd).is_err())
                                 {
                                     sub.failed = true;
-                                    sub.rejected = Some("送信できませんでした".into());
+                                    sub.rejected =
+                                        Some(tr!("送信できませんでした", "Couldn't send").into());
                                 }
                             }
                             Ok(_) => {
                                 sub.failed = true;
-                                sub.rejected =
-                                    Some("翻訳結果が空か文字数制限を超えています".into());
+                                sub.rejected = Some(
+                                    tr!(
+                                        "翻訳結果が空か文字数制限を超えています",
+                                        "The translation is empty or exceeds the character limit"
+                                    )
+                                    .into(),
+                                );
                             }
                             Err(error) => {
                                 sub.failed = true;
@@ -2262,7 +2317,7 @@ impl App {
                         if let Err(e) = save_token(self.profile.as_deref(), self.token_input.trim())
                         {
                             eprintln!("トークン保存失敗: {e}");
-                            self.status = "エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。".into();
+                            self.status = tr!("エラー: ログイン情報をこのPCに保存できませんでした。次回はもう一度ログインしてください。", "Error: Couldn't save your login on this PC. You'll need to log in again next time.").into();
                         }
                     }
                     self.token_input.clear();
@@ -2274,8 +2329,13 @@ impl App {
                 Event::AuthFailed => {
                     cache::remove(self.profile.as_deref());
                     self.reset();
-                    self.login_error =
-                        Some("ログイン情報が無効です。もう一度ログインしてください。".into());
+                    self.login_error = Some(
+                        tr!(
+                            "ログイン情報が無効です。もう一度ログインしてください。",
+                            "Your login is no longer valid. Please log in again."
+                        )
+                        .into(),
+                    );
                     return;
                 }
                 Event::LoginFailed if self.me.is_some() => {
@@ -2284,7 +2344,11 @@ impl App {
                     for s in self.compose_submissions.values_mut() {
                         s.failed = true;
                     }
-                    self.status = "接続できませんでした。もう一度つないでいます…".into();
+                    self.status = tr!(
+                        "接続できませんでした。もう一度つないでいます…",
+                        "Couldn't connect. Reconnecting…"
+                    )
+                    .into();
                     self.gateway_status = self.status.clone();
                     self.login_retry_at = Some(std::time::Instant::now() + LOGIN_RETRY_DELAY);
                     self.repaint_after(LOGIN_RETRY_DELAY);
@@ -2293,14 +2357,18 @@ impl App {
                 Event::LoginFailed => {
                     self.backend = None;
                     self.login_error = Some(
-                        "接続できませんでした。通信状態を確認して、もう一度お試しください。".into(),
+                        tr!(
+                            "接続できませんでした。通信状態を確認して、もう一度お試しください。",
+                            "Couldn't connect. Check your connection and try again."
+                        )
+                        .into(),
                     );
                 }
                 Event::MessagesFailed(cid) => {
                     self.pending_message_loads.remove(&cid);
                     if self.loaded_channels.iter().any(|id| id == &cid) {
                         if self.messages.contains_key(&cid) {
-                            self.status = MESSAGE_RELOAD_ERROR.into();
+                            self.status = MESSAGE_RELOAD_ERROR.s().into();
                             self.message_status_channel = Some(cid.clone());
                         }
                         self.message_errors.insert(cid);
@@ -2394,7 +2462,7 @@ impl App {
                                 }
                             }
                         } else {
-                            self.status = "処理は完了しました。表示が更新されない場合は再読み込みしてください。".into();
+                            self.status = tr!("処理は完了しました。表示が更新されない場合は再読み込みしてください。", "Done. If the display doesn't update, please reload.").into();
                         }
                     }
                 }
@@ -2666,17 +2734,28 @@ impl App {
                 }
                 Event::Error(s) => {
                     eprintln!("操作失敗: {s}");
-                    let action = if s.starts_with("サーバー一覧:") {
-                        "サーバー一覧を取得できませんでした。"
-                    } else if s.starts_with("DM一覧:") {
-                        "DM一覧を取得できませんでした。"
-                    } else if s.starts_with("呼び出し失敗:") {
-                        "呼び出しに失敗しました。"
+                    let action = if s.starts_with(tr!("サーバー一覧:", "Server list:")) {
+                        tr!(
+                            "サーバー一覧を取得できませんでした。",
+                            "Couldn't load the server list."
+                        )
+                    } else if s.starts_with(tr!("DM一覧:", "DM list:")) {
+                        tr!(
+                            "DM一覧を取得できませんでした。",
+                            "Couldn't load the DM list."
+                        )
+                    } else if s.starts_with(tr!("呼び出し失敗:", "Request failed:")) {
+                        tr!("呼び出しに失敗しました。", "The request failed.")
                     } else {
-                        "操作を完了できませんでした。"
+                        tr!(
+                            "操作を完了できませんでした。",
+                            "Couldn't complete the action."
+                        )
                     };
-                    self.status =
-                        format!("エラー: {action}通信状態を確認して、もう一度お試しください。");
+                    self.status = tr!(
+                        "エラー: {action}通信状態を確認して、もう一度お試しください。",
+                        "Error: {action} Check your connection and try again.",
+                    );
                 }
                 Event::Profile { key, result } => {
                     let st = match result {
@@ -2711,12 +2790,16 @@ impl App {
                                 self.voice_view.error = Some((
                                     g.clone(),
                                     c.clone(),
-                                    "ボイスに接続できませんでした".into(),
+                                    tr!(
+                                        "ボイスに接続できませんでした",
+                                        "Couldn't connect to voice"
+                                    )
+                                    .into(),
                                 ));
                             }
                             self.voice_status = None;
                             eprintln!("ボイス接続失敗: {e}");
-                            self.status = "エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。".into();
+                            self.status = tr!("エラー: ボイスに接続できませんでした。通信状態と音声設定を確認してください。", "Error: Couldn't connect to voice. Check your connection and audio settings.").into();
                         }
                         st => {
                             if matches!(st, VoiceStatus::Connected { .. }) {
@@ -2863,6 +2946,8 @@ impl App {
                 self.status.as_str(),
                 "選択したファイルは元のチャンネルに戻ると添付されます。"
                     | "先に開いたファイル選択を完了し、元のチャンネルで確認してください。"
+                    | "The selected files will be attached when you return to the original channel."
+                    | "Finish the file picker you opened first, then check it in the original channel."
             ) {
                 self.status = self.gateway_status.clone();
             }
@@ -2942,30 +3027,31 @@ impl App {
         let dropped = over.len() + skipped;
         if dropped > 0 {
             lines.push(match over.first() {
-                Some(name) if dropped > 1 => format!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」ほか{}件は追加していません。", dropped - 1),
-                Some(name) => format!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」は追加していません。"),
-                None => format!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。{dropped}件のファイルは追加していません。"),
+                Some(name) if dropped > 1 => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」ほか{}件は追加していません。", "You can attach up to {MAX_UPLOADS} files per message. \"{name}\" and {} more were not added.", dropped - 1),
+                Some(name) => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。「{name}」は追加していません。", "You can attach up to {MAX_UPLOADS} files per message. \"{name}\" was not added.",),
+                None => tr!("添付できるのは1メッセージ{MAX_UPLOADS}件までです。{dropped}件のファイルは追加していません。", "You can attach up to {MAX_UPLOADS} files per message. {dropped} files were not added.",),
             });
         }
         if let Some((name, len)) = too_big.first() {
             let more = if too_big.len() > 1 {
-                format!("ほか{}件", too_big.len() - 1)
+                tr!("ほか{}件", " and {} more", too_big.len() - 1)
             } else {
                 String::new()
             };
-            lines.push(format!(
+            lines.push(tr!(
                 "「{name}」（{}）{more}は大きすぎるため追加していません。1ファイル{}までです。",
+                "\"{name}\" ({}){more} is too large and was not added. The limit is {} per file.",
                 fmt_size(*len),
                 fmt_size(hard)
             ));
         }
         if let (Some((name, len)), Some(s)) = (risky.first(), soft) {
             let more = if risky.len() > 1 {
-                format!("ほか{}件", risky.len() - 1)
+                tr!("ほか{}件", " and {} more", risky.len() - 1)
             } else {
                 String::new()
             };
-            lines.push(format!("「{name}」（{}）{more}はアカウントの上限 {} を超えています。サーバーのブーストが足りないと送信できません。", fmt_size(*len), fmt_size(s)));
+            lines.push(tr!("「{name}」（{}）{more}はアカウントの上限 {} を超えています。サーバーのブーストが足りないと送信できません。", "\"{name}\" ({}){more} exceeds your account's limit of {}. It can't be sent without enough server boosts.", fmt_size(*len), fmt_size(s)));
         }
         if lines.is_empty() {
             return;
@@ -3004,7 +3090,10 @@ impl App {
         });
         if !sent {
             self.pending_poll_votes.remove(&key);
-            self.show_toast("投票結果を更新できませんでした。再接続してください");
+            self.show_toast(tr!(
+                "投票結果を更新できませんでした。再接続してください",
+                "Couldn't update poll results. Please reconnect"
+            ));
             self.bump_msgs();
         }
     }
@@ -3062,12 +3151,15 @@ impl App {
             match result {
                 Ok(_) => {
                     self.poll_draft = None;
-                    self.show_toast("投票を作成しました");
+                    self.show_toast(tr!("投票を作成しました", "Poll created"));
                 }
                 Err(e) => {
                     if let Some(d) = self.poll_draft.as_mut() {
                         d.pending = None;
-                        d.error = Some(format!("投票を作成できませんでした: {e}"));
+                        d.error = Some(tr!(
+                            "投票を作成できませんでした: {e}",
+                            "Couldn't create the poll: {e}",
+                        ));
                     }
                 }
             }
@@ -3114,7 +3206,7 @@ impl App {
                 if let Err(e) = result {
                     self.pending_poll_votes.remove(&(channel_id, message_id));
                     eprintln!("投票を終了できませんでした: {e}");
-                    self.show_toast("投票を終了できませんでした");
+                    self.show_toast(tr!("投票を終了できませんでした", "Couldn't end the poll"));
                     self.bump_msgs();
                 } else {
                     self.refresh_poll(channel_id, message_id);
@@ -3129,7 +3221,7 @@ impl App {
                 if let Err(e) = result {
                     self.pending_poll_votes.remove(&(channel_id, message_id));
                     eprintln!("投票できませんでした: {e}");
-                    self.show_toast("投票できませんでした");
+                    self.show_toast(tr!("投票できませんでした", "Couldn't vote"));
                 } else {
                     self.refresh_poll(channel_id, message_id);
                 }
@@ -3157,12 +3249,18 @@ impl App {
                                 existing.poll = Some(poll);
                             }
                         } else {
-                            self.show_toast("投票結果を更新できませんでした");
+                            self.show_toast(tr!(
+                                "投票結果を更新できませんでした",
+                                "Couldn't update poll results"
+                            ));
                         }
                     }
                     Err(e) => {
                         eprintln!("投票結果を更新できませんでした: {e}");
-                        self.show_toast("投票結果を更新できませんでした");
+                        self.show_toast(tr!(
+                            "投票結果を更新できませんでした",
+                            "Couldn't update poll results"
+                        ));
                     }
                 }
                 self.bump_msgs();
@@ -3175,7 +3273,10 @@ impl App {
                     if let Some(undo) = op.undo() {
                         self.apply_reaction_op(&cid, &mid, undo);
                     }
-                    self.show_toast("リアクションできませんでした");
+                    self.show_toast(tr!(
+                        "リアクションできませんでした",
+                        "Couldn't add the reaction"
+                    ));
                 }
                 return;
             }
@@ -3185,13 +3286,27 @@ impl App {
             Ok(v) => v,
             Err(e) => {
                 let what = match &call {
-                    A::CreateInvite { .. } => "招待リンクを作れませんでした",
-                    A::LeaveGuild(_) => "サーバーから脱退できませんでした",
+                    A::CreateInvite { .. } => tr!(
+                        "招待リンクを作れませんでした",
+                        "Couldn't create an invite link"
+                    ),
+                    A::LeaveGuild(_) => tr!(
+                        "サーバーから脱退できませんでした",
+                        "Couldn't leave the server"
+                    ),
                     A::ModifyGuildSettings { .. } | A::ModifyChannelSettings { .. } => {
-                        "通知設定を変えられませんでした"
+                        tr!(
+                            "通知設定を変えられませんでした",
+                            "Couldn't change notification settings"
+                        )
                     }
-                    A::AckGuild(_) | A::AckBulk(_) => "既読にできませんでした",
-                    _ => "Discord への操作に失敗しました",
+                    A::AckGuild(_) | A::AckBulk(_) => {
+                        tr!("既読にできませんでした", "Couldn't mark as read")
+                    }
+                    _ => tr!(
+                        "Discord への操作に失敗しました",
+                        "The Discord request failed"
+                    ),
                 };
                 eprintln!("{what}: {call:?}: {e}");
                 self.show_toast(what);
@@ -3202,7 +3317,7 @@ impl App {
             A::CreateInvite { .. } => {
                 if let Some(code) = v["code"].as_str() {
                     self.clipboard_out = Some(format!("https://discord.gg/{code}"));
-                    self.show_toast("招待リンクをコピーしました");
+                    self.show_toast(tr!("招待リンクをコピーしました", "Invite link copied"));
                 }
             }
             A::LeaveGuild(gid) => self.remove_guild(&gid),
@@ -3231,20 +3346,32 @@ impl App {
             .filter(|s| !s.is_empty())
             .collect();
         let error = if question.is_empty() || question.chars().count() > 300 {
-            Some("質問は1〜300文字で入力してください")
+            Some(tr!(
+                "質問は1〜300文字で入力してください",
+                "Enter a question of 1–300 characters"
+            ))
         } else if !(2..=10).contains(&answers.len())
             || answers.iter().any(|s| s.chars().count() > 55)
         {
-            Some("選択肢は1行につき55文字以内で2〜10個入力してください")
+            Some(tr!(
+                "選択肢は1行につき55文字以内で2〜10個入力してください",
+                "Enter 2–10 answers, one per line, up to 55 characters each"
+            ))
         } else if ![1, 4, 8, 24, 72, 168].contains(&draft.duration) {
-            Some("投票期間を選択してください")
+            Some(tr!("投票期間を選択してください", "Choose a poll duration"))
         } else if self.sel_channel.as_deref() != Some(draft.channel_id.as_str()) {
-            Some("投票を作成したチャンネルに戻ってください")
+            Some(tr!(
+                "投票を作成したチャンネルに戻ってください",
+                "Go back to the channel where you created the poll"
+            ))
         } else if self
             .channel_perms(self.sel_guild.as_deref(), &draft.channel_id)
             .is_some_and(|p| p & (1 << 49) == 0)
         {
-            Some("このチャンネルで投票を作成する権限がありません")
+            Some(tr!(
+                "このチャンネルで投票を作成する権限がありません",
+                "You don't have permission to create polls in this channel"
+            ))
         } else {
             None
         };
@@ -3273,7 +3400,13 @@ impl App {
             draft.pending = Some(id);
             draft.error = None;
         } else {
-            draft.error = Some("接続できません。再接続してからお試しください".into());
+            draft.error = Some(
+                tr!(
+                    "接続できません。再接続してからお試しください",
+                    "Not connected. Reconnect and try again"
+                )
+                .into(),
+            );
         }
     }
 
@@ -3310,7 +3443,7 @@ impl App {
                 .is_ok()
         });
         if !sent {
-            self.show_toast("接続していません");
+            self.show_toast(tr!("接続していません", "Not connected"));
             return;
         }
         self.pending_poll_votes.insert(key);
@@ -3354,7 +3487,7 @@ impl App {
                 .is_ok()
         });
         if !sent {
-            self.show_toast("接続していません");
+            self.show_toast(tr!("接続していません", "Not connected"));
             return;
         }
         self.pending_poll_votes.insert(key);
@@ -3824,7 +3957,7 @@ impl App {
         self.remove_guild_from_folder(guild_id);
         self.settings.guild_folders.push(GuildFolder {
             id: id.clone(),
-            name: "フォルダ".into(),
+            name: tr!("フォルダ", "Folder").into(),
             guild_ids: vec![guild_id.into()],
             ..Default::default()
         });
@@ -4065,8 +4198,11 @@ impl App {
             .and_then(|c| c.name.as_deref())
             .unwrap_or("");
         let title = match (channel.is_empty(), guild.is_empty()) {
-            (false, false) => format!("{author}（#{channel}・{guild}）"),
-            (true, false) => format!("{author}（{guild}）"),
+            (false, false) => tr!(
+                "{author}（#{channel}・{guild}）",
+                "{author} (#{channel} · {guild})",
+            ),
+            (true, false) => tr!("{author}（{guild}）", "{author} ({guild})",),
             _ => author,
         };
         let roles = self.roles.get(gid).map(Vec::as_slice).unwrap_or_default();
@@ -4074,13 +4210,13 @@ impl App {
             crate::notify::excerpt(&resolve_mentions(&m.content, m, &self.channels, roles), 200);
         if body.is_empty() {
             body = if m.is_call() {
-                "通話を開始しました".into()
+                tr!("通話を開始しました", "Started a call").into()
             } else if !m.attachments.is_empty() {
-                "添付ファイルを送信しました".into()
+                tr!("添付ファイルを送信しました", "Sent an attachment").into()
             } else if !m.sticker_items.is_empty() {
-                "スタンプを送信しました".into()
+                tr!("スタンプを送信しました", "Sent a sticker").into()
             } else {
-                "新しいメッセージ".into()
+                tr!("新しいメッセージ", "New message").into()
             };
         }
         crate::notify::show(
@@ -4129,7 +4265,10 @@ impl App {
             .and_then(|cs| cs.iter().find(|c| c.is_text()).map(|c| c.id.clone()))
         else {
             self.ensure_guild_channels(gid);
-            self.show_toast("チャンネルを読み込み中です。少し待ってからもう一度お試しください");
+            self.show_toast(tr!(
+                "チャンネルを読み込み中です。少し待ってからもう一度お試しください",
+                "The channel is still loading. Wait a moment and try again"
+            ));
             return;
         };
         self.api(net::ApiCall::CreateInvite {
@@ -4156,7 +4295,7 @@ impl App {
                 if !paths.is_empty() {
                     if self.sel_channel.as_ref() != Some(&channel_id) {
                         self.status =
-                            "選択したファイルは元のチャンネルに戻ると添付されます。".into();
+                            tr!("選択したファイルは元のチャンネルに戻ると添付されます。", "The selected files will be attached when you return to the original channel.").into();
                     }
                     self.picked_files = Some((channel_id, paths));
                 }
@@ -4169,14 +4308,22 @@ impl App {
     /// OS のファイル選択ダイアログを別スレッドで開く。
     pub fn pick_files(&mut self) {
         if self.file_pick.is_some() || self.picked_files.is_some() {
-            self.status =
-                "先に開いたファイル選択を完了し、元のチャンネルで確認してください。".into();
+            self.status = tr!(
+                "先に開いたファイル選択を完了し、元のチャンネルで確認してください。",
+                "Finish the file picker you opened first, then check it in the original channel."
+            )
+            .into();
             return;
         }
         if let Some(channel_id) = self.sel_channel.clone() {
             self.file_pick = Some((
                 channel_id,
-                spawn_file_dialog(&self.waker, "ファイルをアップロード", true, None),
+                spawn_file_dialog(
+                    &self.waker,
+                    tr!("ファイルをアップロード", "Upload a file"),
+                    true,
+                    None,
+                ),
             ));
         }
     }
@@ -4208,7 +4355,8 @@ impl App {
                 // ファイルの背景は毎回読み直す（同じ名前のまま描き変えても反映させる）
                 images::forget(uri);
                 if let Err(e) = std::fs::metadata(path) {
-                    self.theme_error = Some(format!("背景画像 {path}: {e}"));
+                    self.theme_error =
+                        Some(tr!("背景画像 {path}: {e}", "Background image {path}: {e}",));
                 }
             }
         }
@@ -4290,7 +4438,7 @@ impl App {
 
     pub fn clear_message_error_status(&mut self, channel_id: &str) {
         if self.message_status_channel.as_deref() == Some(channel_id) {
-            if self.status == MESSAGE_RELOAD_ERROR {
+            if self.status == MESSAGE_RELOAD_ERROR.s() {
                 self.status = self.gateway_status.clone();
             }
             self.message_status_channel = None;
@@ -4487,8 +4635,13 @@ impl App {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.login.busy = None;
-                    self.login_error =
-                        Some("ログインできませんでした。もう一度お試しください。".into());
+                    self.login_error = Some(
+                        tr!(
+                            "ログインできませんでした。もう一度お試しください。",
+                            "Couldn't log in. Please try again."
+                        )
+                        .into(),
+                    );
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -4767,7 +4920,7 @@ impl App {
                     .find(|x| x.id == g)
                     .map(|x| x.name.clone());
                 (
-                    ch.unwrap_or_else(|| "ボイス".into()),
+                    ch.unwrap_or_else(|| tr!("ボイス", "Voice").into()),
                     gn.unwrap_or_default(),
                 )
             }
@@ -4778,7 +4931,7 @@ impl App {
                     .find(|c| c.id == channel_id)
                     .map(|c| c.dm_label())
                     .unwrap_or_default();
-                (n, "ダイレクトメッセージ".into())
+                (n, tr!("ダイレクトメッセージ", "Direct Messages").into())
             }
         }
     }
@@ -4921,7 +5074,10 @@ impl App {
             .voice_channel()
             .map(|(g, c, k)| (g.clone(), c.clone(), k))
         else {
-            self.show_toast("配信を見るには、そのボイスチャンネルに接続してください");
+            self.show_toast(tr!(
+                "配信を見るには、そのボイスチャンネルに接続してください",
+                "To watch a stream, join that voice channel"
+            ));
             return;
         };
         if self.me.as_ref().is_some_and(|m| m.id == user_id) {
@@ -5196,13 +5352,18 @@ impl ProfileDraft {
 }
 
 pub fn make_avatar(path: &std::path::Path) -> Result<AvatarEdit, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("画像を読めません: {e}"))?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| tr!("画像を読めません: {e}", "Couldn't read the image: {e}",))?;
     let img = image::load_from_memory(&bytes).map_err(|_| {
-        "画像として読み込めませんでした（PNG・JPEG・GIF・WebP が使えます）".to_string()
+        tr!(
+            "画像として読み込めませんでした（PNG・JPEG・GIF・WebP が使えます）",
+            "Couldn't load it as an image (PNG, JPEG, GIF and WebP are supported)"
+        )
+        .to_string()
     })?;
     let s = img.width().min(img.height());
     if s == 0 {
-        return Err("画像が空です".into());
+        return Err(tr!("画像が空です", "The image is empty").into());
     }
     let mut sq = img.crop_imm((img.width() - s) / 2, (img.height() - s) / 2, s, s);
     if s > AVATAR_SIZE {
@@ -5216,7 +5377,12 @@ pub fn make_avatar(path: &std::path::Path) -> Result<AvatarEdit, String> {
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(rgba.clone())
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("画像を変換できませんでした: {e}"))?;
+        .map_err(|e| {
+            tr!(
+                "画像を変換できませんでした: {e}",
+                "Couldn't convert the image: {e}",
+            )
+        })?;
     let tex = images::render_image(rgba);
     Ok(AvatarEdit::Set {
         uri: format!("data:image/png;base64,{}", base64_encode(&png)),

@@ -66,10 +66,10 @@ pub fn row_layout_at(
 fn call_length(d: chrono::Duration) -> String {
     let s = d.num_seconds().max(0);
     match (s / 3600, s % 3600 / 60) {
-        (0, 0) => "数秒".into(),
-        (0, m) => format!("{m}分"),
-        (h, 0) => format!("{h}時間"),
-        (h, m) => format!("{h}時間{m}分"),
+        (0, 0) => tr!("数秒", "a few seconds").into(),
+        (0, m) => tr!("{m}分", "{m}m",),
+        (h, 0) => tr!("{h}時間", "{h}h",),
+        (h, m) => tr!("{h}時間{m}分", "{h}h {m}m",),
     }
 }
 
@@ -363,26 +363,17 @@ fn human_size(bytes: u64) -> String {
 }
 
 /// 画像・動画以外の添付ファイル。名前を押すとブラウザで開き、右のボタンで保存する
-fn file_card(
-    id: SharedString,
-    a: &model::Attachment,
-    cx: &mut Context<Root>,
-) -> Stateful<Div> {
+fn file_card(id: SharedString, a: &model::Attachment, cx: &mut Context<Root>) -> Stateful<Div> {
     let open = a.url.clone();
     let url = a.url.clone();
     let name = a.filename.clone();
-    let mut info = div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .child(
-            line(a.filename.clone(), 16.0, LINK())
-                .id(SharedString::from(format!("{id}-name")))
-                .cursor_pointer()
-                .hover(|s| s.underline())
-                .on_click(move |_, _, cx| cx.open_url(&open)),
-        );
+    let mut info = div().flex_1().min_w_0().flex().flex_col().child(
+        line(a.filename.clone(), 16.0, LINK())
+            .id(SharedString::from(format!("{id}-name")))
+            .cursor_pointer()
+            .hover(|s| s.underline())
+            .on_click(move |_, _, cx| cx.open_url(&open)),
+    );
     if let Some(size) = a.size {
         info = info.child(text(human_size(size), 12.0, MUTED()));
     }
@@ -408,7 +399,7 @@ fn file_card(
                 .rounded(z(4.0))
                 .cursor_pointer()
                 .hover(|s| s.bg(HOVER()))
-                .tooltip(tip("ダウンロード"))
+                .tooltip(tip(tr!("ダウンロード", "Download")))
                 .child(icon(IconName::Download, 20.0, MUTED()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.start_download(url.clone(), name.clone(), crate::download::Kind::File);
@@ -474,14 +465,16 @@ fn image_box(
             .child(icon(IconName::TriangleAlert, 20.0, FAINT())),
     };
     match download.filter(|_| size.0 >= DOWNLOAD_MIN && size.1 >= DOWNLOAD_MIN) {
-        Some(name) => d.child(download_button("download", "画像をダウンロード").on_click(
-            cx.listener(move |this, _, _, cx| {
-                // 下の画像（プレビューを開く）には伝えない
-                cx.stop_propagation();
-                this.start_download(open.clone(), name.clone(), crate::download::Kind::Image);
-                cx.notify();
-            }),
-        )),
+        Some(name) => d.child(
+            download_button("download", tr!("画像をダウンロード", "Download image")).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    // 下の画像（プレビューを開く）には伝えない
+                    cx.stop_propagation();
+                    this.start_download(open.clone(), name.clone(), crate::download::Kind::Image);
+                    cx.notify();
+                }),
+            ),
+        ),
         None => d,
     }
 }
@@ -551,8 +544,12 @@ impl Root {
                         .gap(z(8.0))
                         .child(div().flex_1().h(px(1.0)).bg(DIVIDER()))
                         .child(
-                            text(t.format("%Y年%-m月%-d日").to_string(), 12.0, FAINT())
-                                .part(Part::MessageDate),
+                            text(
+                                t.format(tr!("%Y年%-m月%-d日", "%b %-d, %Y")).to_string(),
+                                12.0,
+                                FAINT(),
+                            )
+                            .part(Part::MessageDate),
                         )
                         .child(div().flex_1().h(px(1.0)).bg(DIVIDER())),
                 );
@@ -814,7 +811,11 @@ impl Root {
                 div()
                     .pl(z(if compact { text_x } else { 72.0 }))
                     .pr(z(16.0))
-                    .child(text("あなただけに表示されています", 12.0, FAINT())),
+                    .child(text(
+                        tr!("あなただけに表示されています", "Only you can see this"),
+                        12.0,
+                        FAINT(),
+                    )),
             );
         }
         if self.app.plugins.translator_enabled() {
@@ -830,7 +831,7 @@ impl Root {
                         .pl(z(if compact { text_x } else { 72.0 }))
                         .pr(z(16.0))
                         .child(text(
-                            format!("翻訳: {translated}"),
+                            tr!("翻訳: {translated}", "Translation: {translated}",),
                             self.app.settings.font_size,
                             MUTED(),
                         )),
@@ -847,7 +848,11 @@ impl Root {
                         .map(|t| t.format("%-m/%-d %H:%M").to_string())
                         .unwrap_or_default();
                     col = col.child(text(
-                        format!("編集前（{t} に変更）: {}", e.content),
+                        tr!(
+                            "編集前（{t} に変更）: {}",
+                            "Before edit (changed {t}): {}",
+                            e.content
+                        ),
                         fs - 1.0,
                         FAINT(),
                     ));
@@ -859,7 +864,7 @@ impl Root {
                     .map(|t| t.format("%-m/%-d %H:%M").to_string())
                     .unwrap_or_default();
                 row = row.child(div().pl(z(pad)).pr(z(16.0)).child(text(
-                    format!("削除済み（{t}）"),
+                    tr!("削除済み（{t}）", "Deleted ({t})",),
                     12.0,
                     RED(),
                 )));
@@ -887,10 +892,10 @@ impl Root {
             && call.is_some_and(|c| me.is_some_and(|me| !c.participants.iter().any(|p| p == me)));
         let length = ended.and_then(|e| Some(call_length(local_dt(e)? - local_dt(&m.timestamp)?)));
         let after = match (missed, &length) {
-            (true, Some(l)) => format!(" からの不在着信（{l}）"),
-            (true, None) => " からの不在着信".to_string(),
-            (false, Some(l)) => format!(" が通話を開始しました（{l}）"),
-            (false, None) => " が通話を開始しました".to_string(),
+            (true, Some(l)) => tr!(" からの不在着信（{l}）", " · missed call ({l})",),
+            (true, None) => tr!(" からの不在着信", " · missed call").to_string(),
+            (false, Some(l)) => tr!(" が通話を開始しました（{l}）", " started a call ({l})",),
+            (false, None) => tr!(" が通話を開始しました", " started a call").to_string(),
         };
         let author = m.author.clone();
         let fs = self.app.settings.font_size;
@@ -991,7 +996,7 @@ impl Root {
         bar = bar.when(!deleted, |bar| {
             bar.child(
                 btn("tb_reply", IconName::Reply, false)
-                    .tooltip(tip("返信"))
+                    .tooltip(tip(tr!("返信", "Reply")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.app.editing.take().is_some() {
                             this.app.input.clear();
@@ -1006,7 +1011,7 @@ impl Root {
             let m2 = m.clone();
             bar = bar.child(
                 btn("tb_edit", IconName::Pencil, false)
-                    .tooltip(tip("編集"))
+                    .tooltip(tip(tr!("編集", "Edit")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.app.input = crate::emoji::shorten(&m2.content).0;
                         this.app.editing = Some(m2.clone());
@@ -1020,10 +1025,11 @@ impl Root {
             let t = m.content.clone();
             bar = bar.child(
                 btn("tb_copy", IconName::Copy, false)
-                    .tooltip(tip("テキストをコピー"))
+                    .tooltip(tip(tr!("テキストをコピー", "Copy Text")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(t.clone()));
-                        this.app.show_toast("テキストをコピーしました");
+                        this.app
+                            .show_toast(tr!("テキストをコピーしました", "Text copied"));
                         cx.notify();
                     })),
             );
@@ -1032,7 +1038,10 @@ impl Root {
             let m3 = m.clone();
             bar = bar.child(
                 btn("tb_delete", IconName::Trash, true)
-                    .tooltip(tip("メッセージを削除（Shift+クリックで確認なし）"))
+                    .tooltip(tip(tr!(
+                        "メッセージを削除（Shift+クリックで確認なし）",
+                        "Delete message (Shift+click to skip confirmation)"
+                    )))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                         if ev.modifiers().shift {
                             this.app.send(Cmd::Delete {
@@ -1058,9 +1067,9 @@ impl Root {
             bar = bar.child(
                 btn("tb_translate", IconName::Settings, false)
                     .tooltip(tip(if translated {
-                        "翻訳を閉じる"
+                        tr!("翻訳を閉じる", "Close translation")
                     } else {
-                        "Google で翻訳"
+                        tr!("Google で翻訳", "Translate with Google")
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let key = (message.channel_id.clone(), message.id.clone());
@@ -1088,7 +1097,10 @@ impl Root {
                             ) {
                                 this.app.show_toast(&e);
                             } else {
-                                this.app.show_toast("Google で翻訳しています…");
+                                this.app.show_toast(tr!(
+                                    "Google で翻訳しています…",
+                                    "Translating with Google…"
+                                ));
                             }
                         }
                         cx.notify();
@@ -1141,7 +1153,14 @@ impl Root {
             .gap(z(4.0))
             .child(curve);
         let Some(r) = m.referenced_message.as_deref() else {
-            return row.child(text("元のメッセージは削除されました", 13.0, FAINT()));
+            return row.child(text(
+                tr!(
+                    "元のメッセージは削除されました",
+                    "The original message was deleted"
+                ),
+                13.0,
+                FAINT(),
+            ));
         };
         let nc = r
             .member
@@ -1154,9 +1173,9 @@ impl Root {
             rich = preview_rich(&content, self.revealed.contains(&r.id));
             String::new()
         } else if !r.attachments.is_empty() {
-            "添付ファイル".to_string()
+            tr!("添付ファイル", "Attachment").to_string()
         } else if !r.sticker_items.is_empty() {
-            "スタンプ".to_string()
+            tr!("スタンプ", "Sticker").to_string()
         } else {
             String::new()
         };
@@ -1293,7 +1312,14 @@ impl Root {
                     let body = self.text_block(
                         &format!("t{}_{i}", m.id),
                         spans,
-                        &m.mentions.iter().filter(|u| m.content.contains(&format!("<@{}>", u.id)) || m.content.contains(&format!("<@!{}>", u.id))).map(|u| format!("@{}", u.display())).collect::<Vec<_>>(),
+                        &m.mentions
+                            .iter()
+                            .filter(|u| {
+                                m.content.contains(&format!("<@{}>", u.id))
+                                    || m.content.contains(&format!("<@!{}>", u.id))
+                            })
+                            .map(|u| format!("@{}", u.display()))
+                            .collect::<Vec<_>>(),
                         fs,
                         edited && i == last,
                         revealed,
@@ -1323,7 +1349,7 @@ impl Root {
             items.push(item);
         }
         if edited && matches!(blocks.last(), Some(md::Block::Code(_))) {
-            items.push(text("(編集済)", 11.0, MUTED()));
+            items.push(text(tr!("(編集済)", "(edited)"), 11.0, MUTED()));
         }
         let style = |d: Div| {
             d.min_w_0()
@@ -1379,14 +1405,36 @@ impl Root {
                     Seg::Text(t) => {
                         let mut rest = t;
                         while !rest.is_empty() && !(span.style.spoiler && !revealed) {
-                            let found = mentions.iter().filter_map(|name| rest.find(name).map(|pos| (pos, name))).min_by_key(|(pos, name)| (*pos, std::cmp::Reverse(name.len())));
+                            let found = mentions
+                                .iter()
+                                .filter_map(|name| rest.find(name).map(|pos| (pos, name)))
+                                .min_by_key(|(pos, name)| (*pos, std::cmp::Reverse(name.len())));
                             let Some((pos, name)) = found else { break };
-                            cur.span(&md::Span { text: rest[..pos].to_string(), style: span.style }, revealed);
-                            cur.push(name, Some(HighlightStyle { color: Some(rgb(0x9baafa).into()), background_color: Some(rgb(0x30375b).into()), ..highlight(span.style).unwrap_or_default() }));
+                            cur.span(
+                                &md::Span {
+                                    text: rest[..pos].to_string(),
+                                    style: span.style,
+                                },
+                                revealed,
+                            );
+                            cur.push(
+                                name,
+                                Some(HighlightStyle {
+                                    color: Some(rgb(0x9baafa).into()),
+                                    background_color: Some(rgb(0x30375b).into()),
+                                    ..highlight(span.style).unwrap_or_default()
+                                }),
+                            );
                             rest = &rest[pos + name.len()..];
                         }
-                        cur.span(&md::Span { text: rest.to_string(), style: span.style }, revealed);
-                    },
+                        cur.span(
+                            &md::Span {
+                                text: rest.to_string(),
+                                style: span.style,
+                            },
+                            revealed,
+                        );
+                    }
                     Seg::Emoji { name, id, animated } => {
                         pieces.push(Piece::Text(std::mem::take(&mut cur)));
                         pieces.push(Piece::Emoji { name, id, animated });
@@ -1397,7 +1445,7 @@ impl Root {
         if pieces.is_empty() {
             if edited {
                 cur.push(
-                    " (編集済)",
+                    tr!(" (編集済)", " (edited)"),
                     Some(HighlightStyle {
                         color: Some(MUTED().into()),
                         ..Default::default()
@@ -1458,7 +1506,7 @@ impl Root {
             self.note_image(&u);
         }
         if edited {
-            row = row.child(text(" (編集済)", 11.0, MUTED()));
+            row = row.child(text(tr!(" (編集済)", " (edited)"), 11.0, MUTED()));
         }
         row
     }
@@ -1559,10 +1607,15 @@ impl Root {
                 );
                 let count = result
                     .map(|r| {
-                        format!(
+                        tr!(
                             "{} 票{}",
+                            "{} votes{}",
                             r.count,
-                            if r.me_voted { " · 回答済み" } else { "" }
+                            if r.me_voted {
+                                tr!(" · 回答済み", " · Voted")
+                            } else {
+                                ""
+                            }
                         )
                     })
                     .unwrap_or_default();
@@ -1597,7 +1650,14 @@ impl Root {
                 );
             }
             if poll.results.is_none() {
-                card = card.child(text("投票結果を取得できませんでした", 12.0, MUTED()));
+                card = card.child(text(
+                    tr!(
+                        "投票結果を取得できませんでした",
+                        "Couldn't load poll results"
+                    ),
+                    12.0,
+                    MUTED(),
+                ));
             }
             col = col.child(card);
         }
@@ -1689,12 +1749,12 @@ impl Root {
         let has_preview = preview.is_some();
         let frame = frame.or(preview);
         let label = match active {
-            Some(v) if v.error.is_some() => "再生できません",
-            Some(v) if v.ended => "もう一度再生",
-            Some(v) if v.paused => "再生",
-            Some(v) if v.image.is_some() => "一時停止",
-            Some(_) => "読み込み中…",
-            None => "動画を再生",
+            Some(v) if v.error.is_some() => tr!("再生できません", "Can't play"),
+            Some(v) if v.ended => tr!("もう一度再生", "Play again"),
+            Some(v) if v.paused => tr!("再生", "Play"),
+            Some(v) if v.image.is_some() => tr!("一時停止", "Pause"),
+            Some(_) => tr!("読み込み中…", "Loading…"),
+            None => tr!("動画を再生", "Play video"),
         };
         let error = active.and_then(|v| v.error.clone());
         let mut screen = div()
@@ -1752,7 +1812,7 @@ impl Root {
         screen = screen.child(
             download_button(
                 SharedString::from(format!("video-download-{key}")),
-                "動画をダウンロード",
+                tr!("動画をダウンロード", "Download video"),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
@@ -1804,7 +1864,7 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("video-close-{key}")))
                     .cursor_pointer()
-                    .child(text("停止", 12.0, LINK()))
+                    .child(text(tr!("停止", "Stop"), 12.0, LINK()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.video = None;
                         cx.notify();
@@ -1815,7 +1875,7 @@ impl Root {
             div()
                 .id(SharedString::from(format!("video-open-{key}")))
                 .cursor_pointer()
-                .child(text("開く", 12.0, LINK()))
+                .child(text(tr!("開く", "Open"), 12.0, LINK()))
                 .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&link))),
         );
         content.child(controls)
@@ -1835,9 +1895,12 @@ impl Root {
                         .object_fit(ObjectFit::Contain),
                 )
                 .into_any_element(),
-            Some(StickerState::Failed) => {
-                text(format!("[スタンプ: {}]", st.name), 16.0, MUTED()).into_any_element()
-            }
+            Some(StickerState::Failed) => text(
+                tr!("[スタンプ: {}]", "[Sticker: {}]", st.name),
+                16.0,
+                MUTED(),
+            )
+            .into_any_element(),
             state => {
                 if state.is_none() {
                     self.app

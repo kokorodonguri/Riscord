@@ -20,6 +20,7 @@ Riscord プラグイン API 1 は Lua 5.4 を使います。`examples/plugins/he
 ホスト API:
 
 - `riscord.api_version`: API バージョン（1）。
+- `riscord.language()`: Riscord の表示言語（`"ja"` か `"en"`）。設定で切り替えられるので、ページや表示を作るたびに呼んでください。
 - `riscord.send_message(channel_id, content)`: メッセージを送信待ちに追加します。自動送信にも使えるので、信頼できるプラグインのみ有効にしてください。送信結果の通知は現在ありません。
 - `riscord.set_timeout(milliseconds, function() ... end)`: 一度だけ実行するタイマー。最短 100 ミリ秒、最長 24 時間、プラグインあたり最大 100 個です。
 - `riscord.load()` / `riscord.save(value)`: プラグインごとに JSON としてデータを読み書きします。値は JSON で表せるテーブル、文字列、数値、真偽値などにしてください。データ上限は 1 MiB です。

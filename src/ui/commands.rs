@@ -17,15 +17,15 @@ const SUGGEST_MAX: usize = 8;
 /// 引数の種類の名前
 fn kind_label(k: u8) -> &'static str {
     match k {
-        3 => "文字",
-        4 => "整数",
-        5 => "はい/いいえ",
-        6 => "ユーザー",
-        7 => "チャンネル",
-        8 => "ロール",
-        9 => "ユーザー・ロール",
-        10 => "数",
-        11 => "添付ファイル",
+        3 => tr!("文字", "String"),
+        4 => tr!("整数", "Integer"),
+        5 => tr!("はい/いいえ", "Yes/No"),
+        6 => tr!("ユーザー", "User"),
+        7 => tr!("チャンネル", "Channel"),
+        8 => tr!("ロール", "Role"),
+        9 => tr!("ユーザー・ロール", "User/Role"),
+        10 => tr!("数", "Number"),
+        11 => tr!("添付ファイル", "Attachment"),
         _ => "",
     }
 }
@@ -115,18 +115,18 @@ impl Root {
             .flex_col()
             .gap(z(1.0));
         col = col.child(div().px(z(6.0)).pb(z(4.0)).child(medium(
-            format!("「/{q}」に一致するコマンド"),
+            tr!("「/{q}」に一致するコマンド", "Commands matching \"/{q}\"",),
             12.0,
             MUTED(),
         )));
         if hits.is_empty() {
             return Some(col.child(div().px(z(6.0)).py(z(6.0)).flex().items_center().gap(z(8.0)).when(loading, |d| d.child(spinner(14.0))).child(text(
                 if loading {
-                    "コマンドを読み込み中…"
+                    tr!("コマンドを読み込み中…", "Loading commands…")
                 } else if failed {
-                    "コマンドを読み込めませんでした。しばらくしてから「/」を入力し直してください"
+                    tr!("コマンドを読み込めませんでした。しばらくしてから「/」を入力し直してください", "Couldn't load commands. Type \"/\" again in a moment")
                 } else {
-                    "使えるコマンドがありません"
+                    tr!("使えるコマンドがありません", "No commands available")
                 },
                 13.0,
                 MUTED(),
@@ -345,7 +345,7 @@ impl Root {
                 .child(line(c.app_name.clone(), 12.0, FAINT()).flex_1().min_w_0())
                 .child(
                     icon_button("cmd_cancel", IconName::CircleX, 22.0)
-                        .tooltip(tip("やめる（Esc）"))
+                        .tooltip(tip(tr!("やめる（Esc）", "Cancel (Esc)")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.cancel_command();
                             cx.notify();
@@ -383,7 +383,11 @@ impl Root {
                 );
             }
             boxed = boxed
-                .child(text("サブコマンドを選んでください", 12.0, MUTED()))
+                .child(text(
+                    tr!("サブコマンドを選んでください", "Choose a subcommand"),
+                    12.0,
+                    MUTED(),
+                ))
                 .child(chips);
         } else {
             let opts: Vec<CommandOption> = leaf_options(c, &d.path).to_vec();
@@ -400,7 +404,8 @@ impl Root {
                 let editor: AnyElement = match o.kind {
                     OPT_BOOLEAN => {
                         let mut row = div().flex().gap(z(6.0));
-                        for (v, l) in [(true, "はい"), (false, "いいえ")] {
+                        for (v, l) in [(true, tr!("はい", "Yes")), (false, tr!("いいえ", "No"))]
+                        {
                             let on = chosen.as_ref().and_then(|x| x.as_bool()) == Some(v);
                             let name = o.name.clone();
                             row = row.child(
@@ -424,10 +429,15 @@ impl Root {
                         }
                         row.into_any_element()
                     }
-                    OPT_ATTACHMENT => {
-                        text("添付ファイルの引数にはまだ対応していません", 12.0, ORANGE())
-                            .into_any_element()
-                    }
+                    OPT_ATTACHMENT => text(
+                        tr!(
+                            "添付ファイルの引数にはまだ対応していません",
+                            "Attachment arguments aren't supported yet"
+                        ),
+                        12.0,
+                        ORANGE(),
+                    )
+                    .into_any_element(),
                     _ => match self.cmd_inputs.get(&o.name) {
                         Some(e) => div()
                             .bg(CHAT())
@@ -503,14 +513,20 @@ impl Root {
                 .flex()
                 .justify_end()
                 .gap(z(8.0))
-                .child(text("Enter で実行・Esc でやめる", 12.0, FAINT()).flex_1())
                 .child(
-                    fill_button("cmd_run", "実行", BLURPLE(), WHITE(), !blocked).on_click(
-                        cx.listener(|this, _, _, cx| {
+                    text(
+                        tr!("Enter で実行・Esc でやめる", "Enter to run · Esc to cancel"),
+                        12.0,
+                        FAINT(),
+                    )
+                    .flex_1(),
+                )
+                .child(
+                    fill_button("cmd_run", tr!("実行", "Run"), BLURPLE(), WHITE(), !blocked)
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.app.run_command();
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 ),
         );
         boxed

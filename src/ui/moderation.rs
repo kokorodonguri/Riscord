@@ -63,12 +63,16 @@ impl Root {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(medium("サーバー管理", 20.0, WHITE()))
+                                .child(medium(
+                                    tr!("サーバー管理", "Server Management"),
+                                    20.0,
+                                    WHITE(),
+                                ))
                                 .child(line(guild_name, 13.0, MUTED())),
                         )
                         .child(
                             icon_button("moderation_reload", IconName::RefreshCw, 28.0)
-                                .tooltip(tip("再読み込み"))
+                                .tooltip(tip(tr!("再読み込み", "Reload")))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if this
                                         .app
@@ -136,11 +140,17 @@ impl Root {
                 ModTab::Events => {
                     content = content.child(
                         div().flex().child(
-                            fill_button("event_new", "イベントを作成", BLURPLE(), WHITE(), !busy)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.app.start_event_draft(None);
-                                    cx.notify();
-                                })),
+                            fill_button(
+                                "event_new",
+                                tr!("イベントを作成", "Create Event"),
+                                BLURPLE(),
+                                WHITE(),
+                                !busy,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.app.start_event_draft(None);
+                                cx.notify();
+                            })),
                         ),
                     );
                 }
@@ -149,7 +159,7 @@ impl Root {
                         div().flex().child(
                             fill_button(
                                 "rule_new",
-                                "キーワードのルールを作成",
+                                tr!("キーワードのルールを作成", "Create Keyword Rule"),
                                 BLURPLE(),
                                 WHITE(),
                                 !busy,
@@ -191,8 +201,11 @@ impl Root {
                 .items_center()
                 .gap(z(8.0))
                 .when(m.request.is_some(), |d| {
-                    d.child(spinner(16.0))
-                        .child(text("読み込み中…", 14.0, MUTED()))
+                    d.child(spinner(16.0)).child(text(
+                        tr!("読み込み中…", "Loading…"),
+                        14.0,
+                        MUTED(),
+                    ))
                 })
                 .into_any_element();
         };
@@ -206,11 +219,11 @@ impl Root {
         if rows.is_empty() {
             list = list.child(text(
                 match m.tab {
-                    ModTab::Audit => "記録はありません",
-                    ModTab::Bans => "BAN されたユーザーはいません",
-                    ModTab::Invites => "招待はありません",
-                    ModTab::Events => "予定されたイベントはありません",
-                    ModTab::AutoMod => "ルールはありません",
+                    ModTab::Audit => tr!("記録はありません", "No entries"),
+                    ModTab::Bans => tr!("BAN されたユーザーはいません", "No banned users"),
+                    ModTab::Invites => tr!("招待はありません", "No invites"),
+                    ModTab::Events => tr!("予定されたイベントはありません", "No scheduled events"),
+                    ModTab::AutoMod => tr!("ルールはありません", "No rules"),
                 },
                 14.0,
                 MUTED(),
@@ -220,12 +233,14 @@ impl Root {
             let mut actions = div().flex().flex_none().gap(z(4.0));
             if m.tab == ModTab::Events && row.event.is_some() {
                 let id = row.id.clone();
-                actions = actions.child(text_button(format!("event_edit_{id}"), "編集").on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.app.start_event_draft(Some(&id));
-                        cx.notify();
-                    }),
-                ));
+                actions = actions.child(
+                    text_button(format!("event_edit_{id}"), tr!("編集", "Edit")).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.app.start_event_draft(Some(&id));
+                            cx.notify();
+                        }),
+                    ),
+                );
             }
             if let Some(enabled) = row.enabled {
                 let id = row.id.clone();
@@ -233,9 +248,9 @@ impl Root {
                     fill_button(
                         format!("rule_toggle_{id}"),
                         if enabled {
-                            "無効にする"
+                            tr!("無効にする", "Disable")
                         } else {
-                            "有効にする"
+                            tr!("有効にする", "Enable")
                         },
                         WIDGET(),
                         WHITE(),
@@ -251,9 +266,9 @@ impl Root {
                 let id = row.id.clone();
                 let confirming = m.confirm.as_deref() == Some(format!("delete:{id}").as_str());
                 let label = match (m.tab, confirming) {
-                    (_, true) => "もう一度押して確定",
-                    (ModTab::Bans, _) => "BAN を解除",
-                    _ => "削除",
+                    (_, true) => tr!("もう一度押して確定", "Press again to confirm"),
+                    (ModTab::Bans, _) => tr!("BAN を解除", "Unban"),
+                    _ => tr!("削除", "Delete"),
                 };
                 actions = actions.child(
                     fill_button(
@@ -295,7 +310,7 @@ impl Root {
                 if m.request.is_some() {
                     spinner(16.0).into_any_element()
                 } else {
-                    text_button("audit_more", "さらに読み込む")
+                    text_button("audit_more", tr!("さらに読み込む", "Load more"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.more_audit_log();
                             cx.notify();
@@ -314,7 +329,7 @@ impl Root {
         let mut places = div().flex().flex_wrap().gap(z(4.0)).child(
             fill_button(
                 "event_place_external",
-                "場所を指定",
+                tr!("場所を指定", "Set location"),
                 if d.channel_id.is_none() {
                     BLURPLE()
                 } else {
@@ -364,15 +379,15 @@ impl Root {
             .gap(z(8.0))
             .child(medium(
                 if editing {
-                    "イベントを編集"
+                    tr!("イベントを編集", "Edit Event")
                 } else {
-                    "イベントを作成"
+                    tr!("イベントを作成", "Create Event")
                 },
                 16.0,
                 WHITE(),
             ))
             .child(field(
-                "イベント名",
+                tr!("イベント名", "Event name"),
                 Input::new(&self.inp.event_name)
                     .appearance(false)
                     .disabled(busy)
@@ -385,7 +400,7 @@ impl Root {
                     .gap(z(8.0))
                     .child(
                         field(
-                            "開始（ローカル時刻）",
+                            tr!("開始（ローカル時刻）", "Start (local time)"),
                             Input::new(&self.inp.event_start)
                                 .appearance(false)
                                 .disabled(busy)
@@ -396,7 +411,7 @@ impl Root {
                     )
                     .child(
                         field(
-                            "終了",
+                            tr!("終了", "End"),
                             Input::new(&self.inp.event_end)
                                 .appearance(false)
                                 .disabled(busy)
@@ -406,11 +421,11 @@ impl Root {
                         .min_w(z(180.0)),
                     ),
             )
-            .child(text("開催場所", 13.0, MUTED()))
+            .child(text(tr!("開催場所", "Location"), 13.0, MUTED()))
             .child(places);
         if d.channel_id.is_none() {
             form = form.child(field(
-                "場所",
+                tr!("場所", "Location"),
                 Input::new(&self.inp.event_location)
                     .appearance(false)
                     .disabled(busy)
@@ -418,7 +433,7 @@ impl Root {
             ));
         }
         form.child(field(
-            "説明",
+            tr!("説明", "Description"),
             Textarea::new(&self.inp.event_description)
                 .appearance(false)
                 .disabled(busy),
@@ -431,21 +446,28 @@ impl Root {
             .flex()
             .flex_col()
             .gap(z(8.0))
-            .child(medium("キーワードのルールを作成", 16.0, WHITE()))
+            .child(medium(
+                tr!("キーワードのルールを作成", "Create Keyword Rule"),
+                16.0,
+                WHITE(),
+            ))
             .child(text(
-                "入力した語を含むメッセージの送信をブロックします。",
+                tr!(
+                    "入力した語を含むメッセージの送信をブロックします。",
+                    "Blocks messages that contain the words you enter."
+                ),
                 13.0,
                 MUTED(),
             ))
             .child(field(
-                "ルール名",
+                tr!("ルール名", "Rule name"),
                 Input::new(&self.inp.rule_name)
                     .appearance(false)
                     .disabled(busy)
                     .h(z(34.0)),
             ))
             .child(field(
-                "キーワード",
+                tr!("キーワード", "Keywords"),
                 Textarea::new(&self.inp.rule_keywords)
                     .appearance(false)
                     .disabled(busy),
@@ -459,8 +481,8 @@ impl Root {
             .justify_end()
             .gap(z(8.0))
             .child(
-                text_button(format!("{kind}_cancel"), "キャンセル").on_click(cx.listener(
-                    |this, _, _, cx| {
+                text_button(format!("{kind}_cancel"), tr!("キャンセル", "Cancel")).on_click(
+                    cx.listener(|this, _, _, cx| {
                         if let Some(m) = this
                             .app
                             .moderation
@@ -473,13 +495,17 @@ impl Root {
                             m.error = None;
                         }
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
             .child(
                 fill_button(
                     format!("{kind}_save"),
-                    if busy { "保存中…" } else { "保存" },
+                    if busy {
+                        tr!("保存中…", "Saving…")
+                    } else {
+                        tr!("保存", "Save")
+                    },
                     BLURPLE(),
                     WHITE(),
                     !busy,

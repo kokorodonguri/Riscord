@@ -31,7 +31,13 @@ impl Inflater {
 
     pub(crate) fn push_with_limit(&mut self, data: &[u8], limit: usize) -> Result<Option<&str>> {
         if data.len() > limit.saturating_sub(self.buf.len()) {
-            bail!("圧縮ゲートウェイメッセージが上限を超えました");
+            bail!(
+                "{}",
+                tr!(
+                    "圧縮ゲートウェイメッセージが上限を超えました",
+                    "Compressed gateway message exceeded the limit",
+                )
+            );
         }
         if self.buf.is_empty() && self.buf.capacity() > Self::KEEP {
             self.buf = Vec::new();
@@ -66,14 +72,26 @@ impl Inflater {
             let used = (self.z.total_in() - in0) as usize;
             let made = self.z.total_out() - out0;
             if self.out.len() > limit {
-                bail!("展開済みゲートウェイメッセージが上限を超えました");
+                bail!(
+                    "{}",
+                    tr!(
+                        "展開済みゲートウェイメッセージが上限を超えました",
+                        "Decompressed gateway message exceeded the limit",
+                    )
+                );
             }
             input = &input[used..];
             if input.is_empty() && self.out.len() < self.out.capacity() {
                 break;
             }
             if used == 0 && made == 0 && self.out.len() < self.out.capacity() {
-                bail!("zlib-stream の展開が進みません");
+                bail!(
+                    "{}",
+                    tr!(
+                        "zlib-stream の展開が進みません",
+                        "zlib-stream decompression is stuck",
+                    )
+                );
             }
         }
         if self.buf.capacity() > Self::KEEP {

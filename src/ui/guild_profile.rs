@@ -56,7 +56,11 @@ impl Root {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(medium("サーバープロフィールを編集", 20.0, WHITE()))
+                            .child(medium(
+                                tr!("サーバープロフィールを編集", "Edit Server Profile"),
+                                20.0,
+                                WHITE(),
+                            ))
                             .child(line(guild_name, 13.0, MUTED())),
                     )
                     .child(
@@ -75,12 +79,12 @@ impl Root {
                     .items_center()
                     .gap(z(8.0))
                     .child(spinner(16.0))
-                    .child(text("読み込み中…", 14.0, MUTED())),
+                    .child(text(tr!("読み込み中…", "Loading…"), 14.0, MUTED())),
             );
         }
         if nick_allowed {
             content = content.child(field(
-                "ニックネーム",
+                tr!("ニックネーム", "Nickname"),
                 Some((e.draft.nick.chars().count(), st::NICK_MAX)),
                 Input::new(&self.inp.guild_nick)
                     .appearance(false)
@@ -91,7 +95,7 @@ impl Root {
         }
         content = content
             .child(field(
-                "代名詞",
+                tr!("代名詞", "Pronouns"),
                 Some((e.draft.pronouns.chars().count(), st::PRONOUNS_MAX)),
                 Input::new(&self.inp.guild_pronouns)
                     .appearance(false)
@@ -100,7 +104,7 @@ impl Root {
                     .into_any_element(),
             ))
             .child(field(
-                "自己紹介",
+                tr!("自己紹介", "About Me"),
                 Some((e.draft.bio.chars().count(), st::BIO_MAX)),
                 Textarea::new(&self.inp.guild_bio)
                     .appearance(false)
@@ -108,7 +112,7 @@ impl Root {
                     .into_any_element(),
             ))
             .child(text(
-                "このサーバーのメンバーにだけ表示されます。空にするとアカウントのプロフィールが使われます。",
+                tr!("このサーバーのメンバーにだけ表示されます。空にするとアカウントのプロフィールが使われます。", "Shown only to members of this server. Leave empty to use your account profile."),
                 12.0,
                 FAINT(),
             ));
@@ -121,17 +125,21 @@ impl Root {
                 .justify_end()
                 .gap(z(8.0))
                 .child(
-                    text_button("guild_profile_cancel", "キャンセル").on_click(cx.listener(
-                        |this, _, _, cx| {
+                    text_button("guild_profile_cancel", tr!("キャンセル", "Cancel")).on_click(
+                        cx.listener(|this, _, _, cx| {
                             this.app.close_guild_profile();
                             cx.notify();
-                        },
-                    )),
+                        }),
+                    ),
                 )
                 .child(
                     fill_button(
                         "guild_profile_save",
-                        if busy { "保存中…" } else { "保存" },
+                        if busy {
+                            tr!("保存中…", "Saving…")
+                        } else {
+                            tr!("保存", "Save")
+                        },
                         BLURPLE(),
                         WHITE(),
                         editable,

@@ -60,18 +60,23 @@ pub fn prefix(text: &str) -> Option<(String, &str)> {
     (!body.is_empty()).then_some((code, body))
 }
 fn parse_response(bytes: &[u8]) -> Result<String, String> {
-    let data: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|_| "翻訳サービスの応答を読み取れませんでした".to_string())?;
-    let sentences = data
-        .get("sentences")
-        .and_then(|s| s.as_array())
-        .ok_or("翻訳サービスの応答を読み取れませんでした")?;
+    let data: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| {
+        tr!(
+            "翻訳サービスの応答を読み取れませんでした",
+            "Couldn't read the translation service's response"
+        )
+        .to_string()
+    })?;
+    let sentences = data.get("sentences").and_then(|s| s.as_array()).ok_or(tr!(
+        "翻訳サービスの応答を読み取れませんでした",
+        "Couldn't read the translation service's response"
+    ))?;
     let text: String = sentences
         .iter()
         .filter_map(|s| s.get("trans").and_then(|v| v.as_str()))
         .collect();
     if text.is_empty() {
-        Err("翻訳結果が空でした".into())
+        Err(tr!("翻訳結果が空でした", "The translation was empty").into())
     } else {
         Ok(text)
     }
@@ -85,60 +90,96 @@ impl Translator {
         waker: Waker,
     ) -> Result<(), String> {
         if self.pending >= 4 {
-            return Err("翻訳中のリクエストが多すぎます".into());
+            return Err(tr!(
+                "翻訳中のリクエストが多すぎます",
+                "Too many translation requests in progress"
+            )
+            .into());
         }
         if text.is_empty() || text.len() > 8000 {
-            return Err("翻訳する文章または言語が無効です".into());
+            return Err(tr!(
+                "翻訳する文章または言語が無効です",
+                "Invalid text or language to translate"
+            )
+            .into());
         }
-        let language =
-            crate::translator::language(&language).ok_or("翻訳する文章または言語が無効です")?;
+        let language = crate::translator::language(&language).ok_or(tr!(
+            "翻訳する文章または言語が無効です",
+            "Invalid text or language to translate"
+        ))?;
         self.pending += 1;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result =
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|_| "翻訳処理を開始できませんでした".to_string())
-                    .and_then(|rt| {
-                        rt.block_on(async {
-                            let client = reqwest::Client::builder()
-                                .timeout(Duration::from_secs(15))
-                                .redirect(reqwest::redirect::Policy::none())
-                                .build()
-                                .map_err(|_| "翻訳処理を開始できませんでした".to_string())?;
-                            let response = client
-                                .get("https://translate.googleapis.com/translate_a/single")
-                                .query(&[
-                                    ("client", "gtx"),
-                                    ("dt", "t"),
-                                    ("dj", "1"),
-                                    ("sl", "auto"),
-                                    ("tl", language.as_str()),
-                                    ("q", text.as_str()),
-                                ])
-                                .send()
-                                .await
-                                .map_err(|_| "翻訳サービスに接続できませんでした".to_string())?;
-                            if !response.status().is_success() {
-                                return Err(format!(
-                                    "翻訳サービスがエラーを返しました ({})",
-                                    response.status().as_u16()
-                                ));
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| {
+                    tr!(
+                        "翻訳処理を開始できませんでした",
+                        "Couldn't start translating"
+                    )
+                    .to_string()
+                })
+                .and_then(|rt| {
+                    rt.block_on(async {
+                        let client = reqwest::Client::builder()
+                            .timeout(Duration::from_secs(15))
+                            .redirect(reqwest::redirect::Policy::none())
+                            .build()
+                            .map_err(|_| {
+                                tr!(
+                                    "翻訳処理を開始できませんでした",
+                                    "Couldn't start translating"
+                                )
+                                .to_string()
+                            })?;
+                        let response = client
+                            .get("https://translate.googleapis.com/translate_a/single")
+                            .query(&[
+                                ("client", "gtx"),
+                                ("dt", "t"),
+                                ("dj", "1"),
+                                ("sl", "auto"),
+                                ("tl", language.as_str()),
+                                ("q", text.as_str()),
+                            ])
+                            .send()
+                            .await
+                            .map_err(|_| {
+                                tr!(
+                                    "翻訳サービスに接続できませんでした",
+                                    "Couldn't connect to the translation service"
+                                )
+                                .to_string()
+                            })?;
+                        if !response.status().is_success() {
+                            return Err(tr!(
+                                "翻訳サービスがエラーを返しました ({})",
+                                "The translation service returned an error ({})",
+                                response.status().as_u16()
+                            ));
+                        }
+                        let mut response = response;
+                        let mut bytes = Vec::new();
+                        while let Some(chunk) = response.chunk().await.map_err(|_| {
+                            tr!(
+                                "翻訳サービスの応答を受信できませんでした",
+                                "Couldn't receive the translation service's response"
+                            )
+                            .to_string()
+                        })? {
+                            if bytes.len() + chunk.len() > 256 * 1024 {
+                                return Err(tr!(
+                                    "翻訳結果が大きすぎます",
+                                    "The translation is too large"
+                                )
+                                .into());
                             }
-                            let mut response = response;
-                            let mut bytes = Vec::new();
-                            while let Some(chunk) = response.chunk().await.map_err(|_| {
-                                "翻訳サービスの応答を受信できませんでした".to_string()
-                            })? {
-                                if bytes.len() + chunk.len() > 256 * 1024 {
-                                    return Err("翻訳結果が大きすぎます".into());
-                                }
-                                bytes.extend_from_slice(&chunk);
-                            }
-                            parse_response(&bytes)
-                        })
-                    });
+                            bytes.extend_from_slice(&chunk);
+                        }
+                        parse_response(&bytes)
+                    })
+                });
             let _ = tx.send(ResultItem { target, result });
             waker.wake();
         });

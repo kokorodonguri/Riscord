@@ -75,19 +75,31 @@ impl App {
     /// サウンドボードを使えない理由（使えるなら None）
     pub fn soundboard_block_reason(&self) -> Option<&'static str> {
         let Some((guild_id, channel_id)) = self.soundboard_voice() else {
-            return Some("ボイスチャンネルに接続していません");
+            return Some(tr!(
+                "ボイスチャンネルに接続していません",
+                "Not connected to a voice channel"
+            ));
         };
         let Some(guild_id) = guild_id else {
-            return Some("サウンドボードはサーバーのボイスチャンネルで使えます");
+            return Some(tr!(
+                "サウンドボードはサーバーのボイスチャンネルで使えます",
+                "The soundboard works in server voice channels"
+            ));
         };
         if self.settings.self_mute || self.settings.self_deaf {
-            return Some("ミュート中はサウンドボードを使えません");
+            return Some(tr!(
+                "ミュート中はサウンドボードを使えません",
+                "You can't use the soundboard while muted"
+            ));
         }
         if self
             .channel_perms(Some(&guild_id), &channel_id)
             .is_some_and(|p| p & (SPEAK | USE_SOUNDBOARD) != (SPEAK | USE_SOUNDBOARD))
         {
-            return Some("このチャンネルでサウンドボードを使う権限がありません");
+            return Some(tr!(
+                "このチャンネルでサウンドボードを使う権限がありません",
+                "You don't have permission to use the soundboard in this channel"
+            ));
         }
         None
     }
@@ -110,7 +122,13 @@ impl App {
             sb.guild = Some(Vec::new());
         }
         if sb.default_request.is_none() {
-            sb.error = Some("読み込めませんでした。再接続してください".into());
+            sb.error = Some(
+                tr!(
+                    "読み込めませんでした。再接続してください",
+                    "Couldn't load. Please reconnect"
+                )
+                .into(),
+            );
         }
         self.soundboard = Some(sb);
     }
@@ -148,7 +166,15 @@ impl App {
         sb.error = None;
         match id {
             Some(id) => sb.sending = Some((id, sound)),
-            None => sb.error = Some("送信できませんでした。再接続してください".into()),
+            None => {
+                sb.error = Some(
+                    tr!(
+                        "送信できませんでした。再接続してください",
+                        "Couldn't send. Please reconnect"
+                    )
+                    .into(),
+                )
+            }
         }
     }
 
@@ -175,7 +201,12 @@ impl App {
                         volume: sound.volume,
                     });
                 }
-                Err(e) => sb.error = Some(super::pins::api_error_text(&e, "鳴らせませんでした")),
+                Err(e) => {
+                    sb.error = Some(super::pins::api_error_text(
+                        &e,
+                        tr!("鳴らせませんでした", "Couldn't play it"),
+                    ))
+                }
             }
             return;
         }
@@ -188,7 +219,13 @@ impl App {
             sb.guild = Some(parsed.clone().unwrap_or_default());
         }
         if parsed.is_none() {
-            sb.error = Some("サウンドの一覧を読み込めませんでした".into());
+            sb.error = Some(
+                tr!(
+                    "サウンドの一覧を読み込めませんでした",
+                    "Couldn't load the sounds"
+                )
+                .into(),
+            );
         }
     }
 

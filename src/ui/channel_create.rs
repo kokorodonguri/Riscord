@@ -25,9 +25,9 @@ impl Root {
                     .child(
                         medium(
                             if category {
-                                "カテゴリを作成"
+                                tr!("カテゴリを作成", "Create Category")
                             } else {
-                                "チャンネルを作成"
+                                tr!("チャンネルを作成", "Create Channel")
                             },
                             20.0,
                             WHITE(),
@@ -52,8 +52,11 @@ impl Root {
             );
         if !category {
             let mut kinds = div().flex().flex_wrap().gap(z(6.0));
-            for (kind, label) in [(0u8, "# テキスト"), (2, "🔊 ボイス"), (15, "💬 フォーラム")]
-            {
+            for (kind, label) in [
+                (0u8, tr!("# テキスト", "# Text")),
+                (2, tr!("🔊 ボイス", "🔊 Voice")),
+                (15, tr!("💬 フォーラム", "💬 Forum")),
+            ] {
                 kinds = kinds.child(
                     fill_button(
                         SharedString::from(format!("channel_kind_{kind}")),
@@ -76,15 +79,15 @@ impl Root {
                 );
             }
             content = content
-                .child(text("チャンネルの種類", 13.0, MUTED()))
+                .child(text(tr!("チャンネルの種類", "Channel type"), 13.0, MUTED()))
                 .child(kinds);
         }
         content = content
             .child(text(
                 if category {
-                    "カテゴリ名"
+                    tr!("カテゴリ名", "Category name")
                 } else {
-                    "チャンネル名"
+                    tr!("チャンネル名", "Channel name")
                 },
                 13.0,
                 MUTED(),
@@ -100,8 +103,9 @@ impl Root {
         let cats = self.app.guild_categories(&d.guild_id);
         if !category && !cats.is_empty() {
             let mut picks = div().flex().flex_wrap().gap(z(6.0));
-            for (id, name) in std::iter::once((None, "カテゴリなし".to_string()))
-                .chain(cats.into_iter().map(|(id, n)| (Some(id), n.to_uppercase())))
+            for (id, name) in
+                std::iter::once((None, tr!("カテゴリなし", "No category").to_string()))
+                    .chain(cats.into_iter().map(|(id, n)| (Some(id), n.to_uppercase())))
             {
                 let selected = d.parent_id == id;
                 picks = picks.child(
@@ -128,13 +132,15 @@ impl Root {
                     })),
                 );
             }
-            content = content.child(text("カテゴリ", 13.0, MUTED())).child(
-                div()
-                    .id("channel-parents")
-                    .max_h(z(140.0))
-                    .overflow_y_scroll()
-                    .child(picks),
-            );
+            content = content
+                .child(text(tr!("カテゴリ", "Category"), 13.0, MUTED()))
+                .child(
+                    div()
+                        .id("channel-parents")
+                        .max_h(z(140.0))
+                        .overflow_y_scroll()
+                        .child(picks),
+                );
         }
         if let Some(e) = &d.error {
             content = content.child(text(e.clone(), 13.0, RED()));
@@ -143,7 +149,11 @@ impl Root {
             div().flex().justify_end().gap(z(8.0)).child(
                 fill_button(
                     "channel_create_submit",
-                    if busy { "作成中…" } else { "作成" },
+                    if busy {
+                        tr!("作成中…", "Creating…")
+                    } else {
+                        tr!("作成", "Create")
+                    },
                     BLURPLE(),
                     WHITE(),
                     !busy && !d.name.trim().is_empty(),

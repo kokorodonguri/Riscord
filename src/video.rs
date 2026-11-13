@@ -192,7 +192,7 @@ mod platform {
             waker: Waker,
         ) -> Result<Self, String> {
             if !(url.starts_with("https://") || url.starts_with("http://")) {
-                return Err("対応していない動画 URL です".into());
+                return Err(tr!("対応していない動画 URL です", "Unsupported video URL").into());
             }
             Self::new_inner(channel, url, width, height, waker)
         }
@@ -203,7 +203,12 @@ mod platform {
             height: u32,
             waker: Waker,
         ) -> Result<Self, String> {
-            gst::init().map_err(|e| format!("動画再生を初期化できません: {e}"))?;
+            gst::init().map_err(|e| {
+                tr!(
+                    "動画再生を初期化できません: {e}",
+                    "Can't initialize video playback: {e}",
+                )
+            })?;
             let (width, height) = dimensions(width, height);
             let caps = gst::Caps::builder("video/x-raw")
                 .field("format", "BGRA")
@@ -232,7 +237,12 @@ mod platform {
                 .property("uri", &url)
                 .property("video-sink", &sink)
                 .build()
-                .map_err(|e| format!("動画プレイヤーを作れません: {e}"))?;
+                .map_err(|e| {
+                    tr!(
+                        "動画プレイヤーを作れません: {e}",
+                        "Can't create the video player: {e}",
+                    )
+                })?;
             #[cfg(test)]
             pipeline.set_property(
                 "audio-sink",
@@ -242,7 +252,7 @@ mod platform {
             );
             pipeline
                 .set_state(gst::State::Playing)
-                .map_err(|e| format!("動画を再生できません: {e}"))?;
+                .map_err(|e| tr!("動画を再生できません: {e}", "Can't play the video: {e}",))?;
             Ok(Self {
                 channel,
                 url,
@@ -266,7 +276,11 @@ mod platform {
                 while let Some(message) = bus.pop() {
                     match message.view() {
                         gst::MessageView::Error(e) => {
-                            self.error = Some(format!("動画を再生できません: {}", e.error()));
+                            self.error = Some(tr!(
+                                "動画を再生できません: {}",
+                                "Can't play the video: {}",
+                                e.error()
+                            ));
                             self.paused = true;
                             let _ = self.pipeline.set_state(gst::State::Null);
                         }
@@ -292,7 +306,9 @@ mod platform {
                     )
                     .is_err()
                 {
-                    self.error = Some("動画を先頭に戻せませんでした".into());
+                    self.error = Some(
+                        tr!("動画を先頭に戻せませんでした", "Couldn't rewind the video").into(),
+                    );
                     return;
                 }
                 self.ended = false;
@@ -307,7 +323,13 @@ mod platform {
                 })
                 .is_err()
             {
-                self.error = Some("動画の再生状態を変更できませんでした".into());
+                self.error = Some(
+                    tr!(
+                        "動画の再生状態を変更できませんでした",
+                        "Couldn't change the video's playback state"
+                    )
+                    .into(),
+                );
             }
         }
     }
@@ -491,7 +513,11 @@ mod platform {
     }
     impl Player {
         pub fn new(_: String, _: String, _: u32, _: u32, _: Waker) -> Result<Self, String> {
-            Err("この OS では動画の埋め込み再生に対応していません".into())
+            Err(tr!(
+                "この OS では動画の埋め込み再生に対応していません",
+                "Embedded video playback isn't supported on this OS"
+            )
+            .into())
         }
         pub fn poll(&mut self) {}
         pub fn toggle(&mut self) {}

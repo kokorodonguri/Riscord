@@ -49,12 +49,12 @@ fn filter_chip(id: impl Into<ElementId>, label: &str, on: bool) -> Stateful<Div>
 fn thread_meta(t: &Channel) -> String {
     let mut parts = Vec::new();
     if let Some(n) = t.message_count {
-        parts.push(format!("{n} 件のメッセージ"));
+        parts.push(tr!("{n} 件のメッセージ", "{n} messages",));
     }
     let last = t.last_message_id.as_deref().unwrap_or(&t.id);
     let d = snowflake_date(last);
     if !d.is_empty() {
-        parts.push(format!("最終 {d}"));
+        parts.push(tr!("最終 {d}", "Last {d}",));
     }
     parts.join(" · ")
 }
@@ -82,17 +82,22 @@ impl Root {
             .is_none_or(|p| p & crate::model::SEND_MESSAGES != 0);
         if can_post && self.app.post_draft.is_none() {
             bar = bar.child(
-                fill_button("post_new", "新しい投稿", BLURPLE(), WHITE(), true).on_click(
-                    cx.listener(|this, _, window, cx| {
-                        this.app.post_draft = Some(PostDraft::default());
-                        this.inp.post_title.update(cx, |s, cx| s.focus(window, cx));
-                        cx.notify();
-                    }),
-                ),
+                fill_button(
+                    "post_new",
+                    tr!("新しい投稿", "New Post"),
+                    BLURPLE(),
+                    WHITE(),
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.app.post_draft = Some(PostDraft::default());
+                    this.inp.post_title.update(cx, |s, cx| s.focus(window, cx));
+                    cx.notify();
+                })),
             );
         }
         bar = bar.child(
-            filter_chip("forum_all", "すべて", f.tag.is_none()).on_click(cx.listener(
+            filter_chip("forum_all", tr!("すべて", "All"), f.tag.is_none()).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.app.set_thread_filter(true, Some(None), None);
                     cx.notify();
@@ -117,12 +122,15 @@ impl Root {
         }
         let archived = f.archived;
         bar = bar.child(
-            filter_chip("forum_archived", "アーカイブ済み", archived).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.app.set_thread_filter(true, None, Some(!archived));
-                    cx.notify();
-                },
-            )),
+            filter_chip(
+                "forum_archived",
+                tr!("アーカイブ済み", "Archived"),
+                archived,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.app.set_thread_filter(true, None, Some(!archived));
+                cx.notify();
+            })),
         );
         let (n, key) = (f.items.len() + 1, (3, f.channel_id.clone(), f.rev));
         if self.forum_key != key {
@@ -210,9 +218,9 @@ impl Root {
             .when(!forum.available_tags.is_empty(), |c| {
                 c.child(text(
                     if forum.requires_tag() {
-                        "タグ（1つ以上・5つまで）"
+                        tr!("タグ（1つ以上・5つまで）", "Tags (1 to 5)")
                     } else {
-                        "タグ（5つまで）"
+                        tr!("タグ（5つまで）", "Tags (up to 5)")
                     },
                     12.0,
                     MUTED(),
@@ -226,17 +234,21 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("post_cancel", "キャンセル").on_click(cx.listener(
-                            |this, _, _, cx| {
+                        text_button("post_cancel", tr!("キャンセル", "Cancel")).on_click(
+                            cx.listener(|this, _, _, cx| {
                                 this.app.post_draft = None;
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     )
                     .child(
                         fill_button(
                             "post_send",
-                            if sending { "投稿中…" } else { "投稿" },
+                            if sending {
+                                tr!("投稿中…", "Posting…")
+                            } else {
+                                tr!("投稿", "Post")
+                            },
                             BLURPLE(),
                             WHITE(),
                             !sending,
@@ -263,13 +275,16 @@ impl Root {
                     .items_center()
                     .gap(z(8.0))
                     .child(text(e.clone(), 14.0, RED()))
-                    .child(small_button("forum_retry", "再試行").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            let more = this.app.forum.as_ref().is_some_and(|f| !f.items.is_empty());
-                            this.app.load_threads(true, more);
-                            cx.notify();
-                        },
-                    )))
+                    .child(
+                        small_button("forum_retry", tr!("再試行", "Retry")).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                let more =
+                                    this.app.forum.as_ref().is_some_and(|f| !f.items.is_empty());
+                                this.app.load_threads(true, more);
+                                cx.notify();
+                            },
+                        )),
+                    )
             } else if f.loading {
                 div()
                     .p(z(16.0))
@@ -279,9 +294,9 @@ impl Root {
             } else if f.items.is_empty() {
                 div().p(z(24.0)).flex().justify_center().child(text(
                     if f.archived {
-                        "アーカイブ済みの投稿はありません"
+                        tr!("アーカイブ済みの投稿はありません", "No archived posts")
                     } else {
-                        "まだ投稿がありません"
+                        tr!("まだ投稿がありません", "No posts yet")
                     },
                     15.0,
                     MUTED(),
@@ -385,20 +400,23 @@ impl Root {
             .flex()
             .gap(z(6.0))
             .child(
-                filter_chip("threads_active", "アクティブ", !archived).on_click(cx.listener(
-                    |this, _, _, cx| {
+                filter_chip("threads_active", tr!("アクティブ", "Active"), !archived).on_click(
+                    cx.listener(|this, _, _, cx| {
                         this.app.set_thread_filter(false, None, Some(false));
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
             .child(
-                filter_chip("threads_archived", "アーカイブ済み", archived).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.app.set_thread_filter(false, None, Some(true));
-                        cx.notify();
-                    },
-                )),
+                filter_chip(
+                    "threads_archived",
+                    tr!("アーカイブ済み", "Archived"),
+                    archived,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.app.set_thread_filter(false, None, Some(true));
+                    cx.notify();
+                })),
             );
         let (n, key) = (
             v.items.len() + 1,
@@ -411,7 +429,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(super::panel::panel_head(
-                "スレッド",
+                tr!("スレッド", "Threads"),
                 IconName::MessagesSquare,
                 cx,
             ))
@@ -441,12 +459,12 @@ impl Root {
                     .gap(z(8.0))
                     .child(text(e.clone(), 14.0, RED()))
                     .child(
-                        small_button("threads_retry", "再試行").on_click(cx.listener(
-                            |this, _, _, cx| {
+                        small_button("threads_retry", tr!("再試行", "Retry")).on_click(
+                            cx.listener(|this, _, _, cx| {
                                 this.app.load_threads(false, false);
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     )
             } else if v.loading {
                 div()
@@ -457,9 +475,12 @@ impl Root {
             } else if v.items.is_empty() {
                 div().p(z(16.0)).flex().justify_center().child(text(
                     if v.archived {
-                        "アーカイブ済みのスレッドはありません"
+                        tr!(
+                            "アーカイブ済みのスレッドはありません",
+                            "No archived threads"
+                        )
                     } else {
-                        "スレッドはありません"
+                        tr!("スレッドはありません", "No threads")
                     },
                     14.0,
                     MUTED(),
@@ -502,7 +523,9 @@ impl Root {
                             .flex_1()
                             .min_w_0(),
                     )
-                    .when(joined, |d| d.child(text("参加中", 11.0, MUTED()))),
+                    .when(joined, |d| {
+                        d.child(text(tr!("参加中", "Joined"), 11.0, MUTED()))
+                    }),
             )
             .child(line(thread_meta(t), 12.0, FAINT()))
             .into_any_element()
@@ -541,55 +564,65 @@ impl Root {
                     })),
             );
         }
-        let content =
-            card(SIDEBAR(), BORDER(), 8.0)
-                .p(z(20.0))
-                .w(z(width))
-                .flex()
-                .flex_col()
-                .gap(z(10.0))
-                .child(medium("フォルダを編集", 20.0, WHITE()))
-                .child(
-                    div().bg(INPUT()).rounded(z(8.0)).px(z(8.0)).child(
-                        Input::new(&self.inp.folder_name)
-                            .appearance(false)
-                            .h(z(34.0)),
-                    ),
-                )
-                .child(colors)
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(z(8.0))
-                        .child(text_button("folder_edit_cancel", "キャンセル").on_click(
+        let content = card(SIDEBAR(), BORDER(), 8.0)
+            .p(z(20.0))
+            .w(z(width))
+            .flex()
+            .flex_col()
+            .gap(z(10.0))
+            .child(medium(tr!("フォルダを編集", "Edit Folder"), 20.0, WHITE()))
+            .child(
+                div().bg(INPUT()).rounded(z(8.0)).px(z(8.0)).child(
+                    Input::new(&self.inp.folder_name)
+                        .appearance(false)
+                        .h(z(34.0)),
+                ),
+            )
+            .child(colors)
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(z(8.0))
+                    .child(
+                        text_button("folder_edit_cancel", tr!("キャンセル", "Cancel")).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.app.folder_edit = None;
                                 cx.notify();
                             }),
-                        ))
-                        .child(
-                            fill_button("folder_edit_save", "保存", BLURPLE(), WHITE(), true)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let name = this.app.folder_name.trim();
-                                    if name.is_empty() {
-                                        this.app.show_toast("フォルダ名を入力してください");
-                                    } else if let Some(folder) = this
-                                        .app
-                                        .settings
-                                        .guild_folders
-                                        .iter_mut()
-                                        .find(|f| f.id == id)
-                                    {
-                                        folder.name = name.to_owned();
-                                        folder.color = this.app.folder_color;
-                                        this.app.folder_edit = None;
-                                        this.app.save_settings();
-                                    }
-                                    cx.notify();
-                                })),
                         ),
-                );
+                    )
+                    .child(
+                        fill_button(
+                            "folder_edit_save",
+                            tr!("保存", "Save"),
+                            BLURPLE(),
+                            WHITE(),
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let name = this.app.folder_name.trim();
+                            if name.is_empty() {
+                                this.app.show_toast(tr!(
+                                    "フォルダ名を入力してください",
+                                    "Enter a folder name"
+                                ));
+                            } else if let Some(folder) = this
+                                .app
+                                .settings
+                                .guild_folders
+                                .iter_mut()
+                                .find(|f| f.id == id)
+                            {
+                                folder.name = name.to_owned();
+                                folder.color = this.app.folder_color;
+                                this.app.folder_edit = None;
+                                this.app.save_settings();
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            );
         let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
             this.app.folder_edit = None;
             cx.notify();
@@ -609,7 +642,11 @@ impl Root {
             .flex()
             .flex_col()
             .gap(z(10.0))
-            .child(medium("スレッドを作成", 20.0, WHITE()))
+            .child(medium(
+                tr!("スレッドを作成", "Create Thread"),
+                20.0,
+                WHITE(),
+            ))
             .child(
                 card(BG(), DIVIDER(), 8.0)
                     .p(z(10.0))
@@ -643,7 +680,7 @@ impl Root {
                     .justify_end()
                     .gap(z(8.0))
                     .child(
-                        text_button("thread_cancel", "キャンセル")
+                        text_button("thread_cancel", tr!("キャンセル", "Cancel"))
                             .min_w(z(96.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.app.thread_draft = None;
@@ -653,7 +690,11 @@ impl Root {
                     .child(
                         fill_button(
                             "thread_ok",
-                            if sending { "作成中…" } else { "作成" },
+                            if sending {
+                                tr!("作成中…", "Creating…")
+                            } else {
+                                tr!("作成", "Create")
+                            },
                             BLURPLE(),
                             WHITE(),
                             !sending,

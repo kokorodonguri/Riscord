@@ -457,6 +457,7 @@ mod platform {
                 content_type: content_type.map(str::to_owned),
                 width: None,
                 height: None,
+                size: None,
             };
             assert!(attachment("clip.mp4", Some("video/mp4")).is_video());
             assert!(attachment("CLIP.WEBM", None).is_video());

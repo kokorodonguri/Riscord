@@ -401,6 +401,9 @@ pub struct Attachment {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
+    /// バイト数
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 impl Attachment {

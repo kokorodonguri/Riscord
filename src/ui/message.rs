@@ -346,6 +346,77 @@ fn download_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Di
         .child(icon(IconName::Download, 18.0, WHITE()))
 }
 
+/// 1024 区切りで KB / MB / GB にする（Discord と同じ表し方）
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["bytes", "KB", "MB", "GB"];
+    let mut v = bytes as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{bytes} bytes")
+    } else {
+        format!("{v:.2} {}", UNITS[u])
+    }
+}
+
+/// 画像・動画以外の添付ファイル。名前を押すとブラウザで開き、右のボタンで保存する
+fn file_card(
+    id: SharedString,
+    a: &model::Attachment,
+    cx: &mut Context<Root>,
+) -> Stateful<Div> {
+    let open = a.url.clone();
+    let url = a.url.clone();
+    let name = a.filename.clone();
+    let mut info = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(
+            line(a.filename.clone(), 16.0, LINK())
+                .id(SharedString::from(format!("{id}-name")))
+                .cursor_pointer()
+                .hover(|s| s.underline())
+                .on_click(move |_, _, cx| cx.open_url(&open)),
+        );
+    if let Some(size) = a.size {
+        info = info.child(text(human_size(size), 12.0, MUTED()));
+    }
+    div()
+        .id(id.clone())
+        .w(z(432.0))
+        .max_w_full()
+        .p(z(16.0))
+        .rounded(z(8.0))
+        .bg(WIDGET())
+        .border_1()
+        .border_color(DIVIDER())
+        .flex()
+        .items_center()
+        .gap(z(12.0))
+        .child(icon(IconName::File, 32.0, LINK()).flex_none())
+        .child(info)
+        .child(
+            div()
+                .id(SharedString::from(format!("{id}-dl")))
+                .flex_none()
+                .p(z(4.0))
+                .rounded(z(4.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(HOVER()))
+                .tooltip(tip("ダウンロード"))
+                .child(icon(IconName::Download, 20.0, MUTED()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.start_download(url.clone(), name.clone(), crate::download::Kind::File);
+                    cx.notify();
+                })),
+        )
+}
+
 /// ダウンロードのボタンを重ねる画像の最小の大きさ（これより小さいとボタンで絵が隠れる）
 const DOWNLOAD_MIN: f32 = 80.0;
 
@@ -1222,6 +1293,7 @@ impl Root {
                     let body = self.text_block(
                         &format!("t{}_{i}", m.id),
                         spans,
+                        &m.mentions.iter().filter(|u| m.content.contains(&format!("<@{}>", u.id)) || m.content.contains(&format!("<@!{}>", u.id))).map(|u| format!("@{}", u.display())).collect::<Vec<_>>(),
                         fs,
                         edited && i == last,
                         revealed,
@@ -1280,6 +1352,7 @@ impl Root {
         &mut self,
         key: &str,
         spans: &[md::Span],
+        mentions: &[String],
         fs: f32,
         edited: bool,
         revealed: bool,
@@ -1303,13 +1376,17 @@ impl Root {
             }
             for seg in split_emoji(&span.text) {
                 match seg {
-                    Seg::Text(t) => cur.span(
-                        &md::Span {
-                            text: t.to_string(),
-                            style: span.style,
-                        },
-                        revealed,
-                    ),
+                    Seg::Text(t) => {
+                        let mut rest = t;
+                        while !rest.is_empty() && !(span.style.spoiler && !revealed) {
+                            let found = mentions.iter().filter_map(|name| rest.find(name).map(|pos| (pos, name))).min_by_key(|(pos, name)| (*pos, std::cmp::Reverse(name.len())));
+                            let Some((pos, name)) = found else { break };
+                            cur.span(&md::Span { text: rest[..pos].to_string(), style: span.style }, revealed);
+                            cur.push(name, Some(HighlightStyle { color: Some(rgb(0x9baafa).into()), background_color: Some(rgb(0x30375b).into()), ..highlight(span.style).unwrap_or_default() }));
+                            rest = &rest[pos + name.len()..];
+                        }
+                        cur.span(&md::Span { text: rest.to_string(), style: span.style }, revealed);
+                    },
                     Seg::Emoji { name, id, animated } => {
                         pieces.push(Piece::Text(std::mem::take(&mut cur)));
                         pieces.push(Piece::Emoji { name, id, animated });
@@ -1547,12 +1624,10 @@ impl Root {
                     cx,
                 ));
             } else {
-                col = col.child(embed_line(
+                col = col.child(file_card(
                     SharedString::from(format!("af{}_{i}", m.id)),
-                    format!("📎 {}", a.filename),
-                    16.0,
-                    LINK(),
-                    Some(&a.url),
+                    a,
+                    cx,
                 ));
             }
         }

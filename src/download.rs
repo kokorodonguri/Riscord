@@ -23,6 +23,7 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 pub enum Kind {
     Video,
     Image,
+    File,
 }
 
 impl Kind {
@@ -30,6 +31,7 @@ impl Kind {
         match self {
             Kind::Video => "動画",
             Kind::Image => "画像",
+            Kind::File => "ファイル",
         }
     }
 
@@ -37,6 +39,7 @@ impl Kind {
         match self {
             Kind::Video => "video.mp4",
             Kind::Image => "image.png",
+            Kind::File => "file",
         }
     }
 }

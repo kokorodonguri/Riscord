@@ -28,7 +28,7 @@ local function convert(content)
 end
 return {
   message_actions = {
-    { label = "ColorTooltips: " .. t({ ja = "色を変換", en = "Convert colors", zh = "转换颜色" }), run = function(m)
+    { label = "ColorTooltips: " .. t({ ja = "色を変換", en = "Convert colors", zh = "转换颜色" }), icon = "palette", run = function(m)
       local lines = convert(m.content)
       if #lines == 0 then
         riscord.notify("ColorTooltips", t({ ja = "色コードが見つかりません", en = "No color codes found", zh = "未找到颜色代码" }))

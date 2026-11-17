@@ -1265,7 +1265,7 @@ impl Root {
                 .get(&key)
                 .is_some_and(|(original, _)| original == &m.content);
             bar = bar.child(
-                btn("tb_translate", IconName::Settings, false)
+                btn("tb_translate", IconName::Languages, false)
                     .tooltip(tip(if translated {
                         tr!("翻訳を閉じる", "Close translation", "关闭翻译")
                     } else {
@@ -1309,21 +1309,38 @@ impl Root {
             );
         }
         let actions = self.app.plugins.message_actions();
-        if self.app.plugins.on("show-all-message-buttons") || actions.len() <= 1 {
-            for (id, index, label) in actions {
-                let message = m.clone();
-                bar = bar.child(
-                    btn(&format!("plugin-{id}-{index}"), IconName::Settings, false)
-                        .tooltip(tip(label))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.app.plugins.message_action(&id, index, &message);
-                            this.app.waker.wake();
-                            cx.notify();
-                        })),
-                );
-            }
+        // 全部並べるときも、ツールバーが長くなりすぎないよう 6 個までにして残りは「…」へ
+        const MAX_INLINE: usize = 6;
+        let inline = if self.app.plugins.on("show-all-message-buttons") {
+            if actions.len() <= MAX_INLINE + 1 { actions.len() } else { MAX_INLINE }
+        } else if actions.len() <= 1 {
+            actions.len()
         } else {
-            // プラグインの操作が多いときは「…」から右クリックのメニューを開く
+            0
+        };
+        let overflow = actions.len() > inline;
+        if !actions.is_empty() {
+            // 本体の操作とプラグインの操作の区切り
+            bar = bar.child(div().w(z(1.0)).h(z(18.0)).mx(z(3.0)).bg(BORDER()));
+        }
+        for (id, index, label, icon_name) in actions.into_iter().take(inline) {
+            let message = m.clone();
+            bar = bar.child(
+                btn(
+                    &format!("plugin-{id}-{index}"),
+                    plugin_icon(icon_name.as_deref()),
+                    false,
+                )
+                .tooltip(tip(label))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.app.plugins.message_action(&id, index, &message);
+                    this.app.waker.wake();
+                    cx.notify();
+                })),
+            );
+        }
+        if overflow {
+            // 残りのプラグインの操作は「…」から右クリックのメニューを開く
             let (cid, id) = (m.channel_id.clone(), m.id.clone());
             bar = bar.child(
                 btn("tb_more", IconName::Ellipsis, false)

@@ -37,6 +37,53 @@ pub fn icon(name: IconName, size: f32, color: impl Into<Hsla>) -> Svg {
         .text_color(color)
 }
 
+/// プラグインのメッセージ操作の `icon`（lucide の名前、例 "link"）。知らない名前や無指定はパズルのピース
+pub fn plugin_icon(name: Option<&str>) -> IconName {
+    match name.unwrap_or("") {
+        "puzzle" => IconName::Puzzle,
+        "link" => IconName::Link,
+        "hash" => IconName::Hash,
+        "at-sign" => IconName::AtSign,
+        "quote" => IconName::Quote,
+        "text-quote" => IconName::TextQuote,
+        "paperclip" => IconName::Paperclip,
+        "code-xml" => IconName::CodeXml,
+        "pin" => IconName::Pin,
+        "palette" => IconName::Palette,
+        "clock" => IconName::Clock,
+        "tag" => IconName::Tag,
+        "languages" => IconName::Languages,
+        "copy" => IconName::Copy,
+        "bookmark" => IconName::Bookmark,
+        "star" => IconName::Star,
+        "search" => IconName::Search,
+        "eye" => IconName::Eye,
+        "bell" => IconName::Bell,
+        "user" => IconName::User,
+        "image" => IconName::Image,
+        "reply" => IconName::Reply,
+        "heart" => IconName::Heart,
+        "flag" => IconName::Flag,
+        "sparkles" => IconName::Sparkles,
+        "wand" => IconName::Wand,
+        "hourglass" => IconName::Hourglass,
+        "calendar" => IconName::Calendar,
+        "clipboard" => IconName::Clipboard,
+        "message-square" => IconName::MessageSquare,
+        "share" => IconName::Share,
+        "download" => IconName::Download,
+        "info" => IconName::Info,
+        "lock" => IconName::Lock,
+        "volume-2" => IconName::Volume2,
+        "pencil" => IconName::Pencil,
+        "trash" => IconName::Trash,
+        "settings" => IconName::Settings,
+        "braces" => IconName::Braces,
+        "square-code" => IconName::SquareCode,
+        _ => IconName::Puzzle,
+    }
+}
+
 /// マウスを乗せたときに出す説明
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text: SharedString = text.into();

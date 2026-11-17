@@ -3,7 +3,7 @@ local S = settings({
 })
 return plugin(S, {
   message_actions = {
-    { label = "Quoter: " .. t({ ja = "名言として引用", en = "Quote as a saying", zh = "作为名言引用" }), run = function(m)
+    { label = "Quoter: " .. t({ ja = "名言として引用", en = "Quote as a saying", zh = "作为名言引用" }), icon = "quote", run = function(m)
       local when = m.timestamp:sub(1, 10)
       local out = "> “" .. m.content:gsub("\n", "\n> ") .. "”\n> — **" .. m.author_name .. "**, " .. when
       if S.state.link then

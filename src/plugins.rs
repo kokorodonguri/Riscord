@@ -597,13 +597,14 @@ impl Plugins {
         }
         false
     }
-    pub fn message_actions(&mut self) -> Vec<(String, usize, String)> {
+    /// (プラグイン id, 番号, 表示名, アイコン名)
+    pub fn message_actions(&mut self) -> Vec<(String, usize, String, Option<String>)> {
         let mut all = Vec::new();
         for p in &mut self.entries {
             let result = p
                 .runtime
                 .as_ref()
-                .map(|r| -> mlua::Result<Vec<(usize, String)>> {
+                .map(|r| -> mlua::Result<Vec<(usize, String, Option<String>)>> {
                     r.reset_budget();
                     let callbacks: Table = r.lua.globals().get("__plugin")?;
                     let actions: Option<Table> = callbacks.get("message_actions")?;
@@ -613,7 +614,11 @@ impl Plugins {
                     let mut items = Vec::new();
                     for (i, item) in actions.sequence_values::<Table>().take(20).enumerate() {
                         let item = item?;
-                        items.push((i + 1, item.get::<String>("label")?));
+                        items.push((
+                            i + 1,
+                            item.get::<String>("label")?,
+                            item.get::<Option<String>>("icon")?,
+                        ));
                     }
                     Ok(items)
                 });
@@ -621,7 +626,7 @@ impl Plugins {
                 Some(Ok(items)) => all.extend(
                     items
                         .into_iter()
-                        .map(|(i, label)| (p.manifest.id.clone(), i, label)),
+                        .map(|(i, label, icon)| (p.manifest.id.clone(), i, label, icon)),
                 ),
                 Some(Err(e)) => p.fail(e.to_string()),
                 None => (),

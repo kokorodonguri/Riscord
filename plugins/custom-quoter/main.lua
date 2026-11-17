@@ -11,7 +11,7 @@ local function link(m)
 end
 return plugin(S, {
   message_actions = {
-    { label = "CustomQuoter: " .. t({ ja = "引用", en = "Quote", zh = "引用" }), run = function(m)
+    { label = "CustomQuoter: " .. t({ ja = "引用", en = "Quote", zh = "引用" }), icon = "message-square", run = function(m)
       local quote = ("\n" .. m.content):gsub("\n", "\n> "):sub(2)
       local date = riscord.date("%Y-%m-%d %H:%M")
       local f = (S.state.format or "{quote}\n"):gsub("\\n", "\n")

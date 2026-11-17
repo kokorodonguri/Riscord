@@ -404,12 +404,12 @@ impl Root {
         if !actions.is_empty() {
             col = col.child(menu_divider());
         }
-        for (id, index, label) in actions {
+        for (id, index, label, icon_name) in actions {
             let message = m.clone();
             col = col.child(
                 menu_row(
                     SharedString::from(format!("mm_plugin_{id}_{index}")),
-                    icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
+                    icon(plugin_icon(icon_name.as_deref()), 18.0, TEXT()).into_any_element(),
                     &label,
                     false,
                 )

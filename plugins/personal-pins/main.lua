@@ -34,7 +34,7 @@ S.handle = function(action)
 end
 return plugin(S, {
   message_actions = {
-    { label = "PersonalPins: " .. t({ ja = "自分用にピン留め", en = "Pin for me", zh = "为自己置顶" }), run = function(m)
+    { label = "PersonalPins: " .. t({ ja = "自分用にピン留め", en = "Pin for me", zh = "为自己置顶" }), icon = "pin", run = function(m)
       for _, p in ipairs(state.pins) do
         if p.id == m.id then return end
       end

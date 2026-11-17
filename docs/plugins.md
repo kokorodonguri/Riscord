@@ -13,7 +13,7 @@ Riscord プラグイン API 1 は Lua 5.4 を使います。`examples/plugins/he
 - `on_delete(message)`: メッセージが削除されたとき。`message` は削除前の内容で、`on_message` と同じ項目を持ちます。本文が分かっているメッセージ（受信済み・読み込み済み）だけが対象です。
 - `on_edit(message, new_content)`: 本文が編集されたとき。`message` は編集前の内容、`new_content` は編集後の本文です。
 - `commands = { 名前 = function(args, channel_id) ... end }`: チャット欄に `/名前 引数` と入力すると実行します。同名の場合はフォルダ順で先に読み込まれたものが使われます。
-- `message_actions = { { label = "説明", run = function(message) ... end } }`: メッセージにマウスを重ねたときのツールバーに操作を追加します。
+- `message_actions = { { label = "説明", icon = "link", run = function(message) ... end } }`: メッセージにマウスを重ねたときのツールバーに操作を追加します。`icon` は lucide のアイコン名（`link` `hash` `at-sign` `quote` `pin` `tag` `clock` `palette` など。一覧は `src/ui/kit.rs` の `plugin_icon`）で、省略するとパズルのピースになります。
 - `page()`: 専用ページに表示する部品の配列を返します。`{kind="text", label="表示"}`、`{kind="input", label="見出し", action="キー"}`、`{kind="button", label="ボタン", action="操作名"}`、`{kind="switch", label="スイッチ", action="操作名", enabled=true}` が使えます。スイッチ操作も `on_action` に通知されるので、状態を更新して次の `page()` で返してください。
 - `on_action(action, values)`: ページのボタン操作を受け取ります。`values` は入力部品の `action` をキーにした文字列テーブルです。
 

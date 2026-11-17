@@ -3,6 +3,6 @@ local S = settings({
 })
 return plugin(S, {
   message_actions = {
-    { label = "Timezones: " .. t({ ja = "この人の ID を入力欄へ", en = "Put this user's ID in the input", zh = "将此人的 ID 放入输入框" }), run = function(m) riscord.insert(m.author_id .. "=") end },
+    { label = "Timezones: " .. t({ ja = "この人の ID を入力欄へ", en = "Put this user's ID in the input", zh = "将此人的 ID 放入输入框" }), icon = "clock", run = function(m) riscord.insert(m.author_id .. "=") end },
   },
 })

@@ -533,7 +533,9 @@ impl Root {
                     })),
             );
         let side = if compact { 16.0 } else { 24.0 };
-        let col_w = (w - nav_w - side * 2.0).clamp(0.0, 700.0);
+        // プラグインの一覧はカードを横に並べるので広く使う
+        let max_w = if tab == 5 { 1400.0 } else { 700.0 };
+        let col_w = (w - nav_w - side * 2.0).clamp(0.0, max_w);
         let mut content = div().w(z(col_w)).flex().flex_col().pt(z(40.0)).pb(z(64.0));
         content = content.child(div());
         let pages: Vec<AnyElement> = match tab {
@@ -541,7 +543,7 @@ impl Root {
             2 => self.voice_page(col_w, window, cx),
             3 => self.theme_page(col_w, window, cx),
             4 => self.profile_page(col_w, window, cx),
-            5 => self.plugins_page(window, cx),
+            5 => self.plugins_page(col_w, window, cx),
             _ => self.display_page(window, cx),
         };
         content = content.children(pages);
@@ -1721,7 +1723,7 @@ impl Root {
         pages
     }
 
-    fn plugins_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn plugins_page(&mut self, col_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let path = crate::plugins::directory();
         let mut page = section(0, tr!("プラグイン", "Plugins", "插件"))
             .child(text(
@@ -1872,84 +1874,102 @@ impl Root {
             })
             .map(|(i, _)| i)
             .collect();
-        for index in shown {
-            let p = &self.app.plugins.entries[index];
-            let id = p.manifest.id.clone();
-            let id_for_page = id.clone();
-            let page_id = id.clone();
-            let enabled = self.app.settings.enabled_plugins.contains(&id);
-            let status = if p.running() {
-                tr!("実行中", "Running", "运行中")
-            } else if enabled {
-                tr!("停止中", "Stopped", "已停止")
-            } else {
-                tr!("無効", "Disabled", "已禁用")
-            };
-            let desc = format!(
-                "{}{} · {} · {}\n{}{}",
-                if p.manifest.bd { "BetterDiscord · " } else { "" },
-                p.manifest.id,
-                p.manifest.version,
-                status,
-                p.manifest.describe(),
-                p.error
-                    .as_ref()
-                    .map(|e| tr!("\nエラー: {e}", "\nError: {e}", "\n错误：{e}",))
-                    .unwrap_or_default()
-            );
-            page = page.child(
-                div().mt(z(16.0)).child(
-                    settings_card(None).child(row(
-                        p.manifest.name.clone(),
-                        Some(desc),
-                        div()
-                            .flex()
-                            .gap(z(8.0))
-                            .when(p.has_page(), |d| {
-                                d.child(
-                                    div()
-                                        .id(SharedString::from(format!("plugin-page-{id}")))
-                                        .cursor_pointer()
-                                        .child(text(tr!("ページ", "Page", "页面"), 14.0, LINK()))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if this.app.plugins.selected.as_deref() == Some(page_id.as_str()) {
-                                                this.app.plugins.selected = None;
-                                            } else {
-                                                this.app.plugins.selected = Some(page_id.clone());
-                                            }
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .child(
-                                toggle_switch(
-                                    SharedString::from(format!("plugin-toggle-{id}")),
-                                    enabled,
-                                )
-                                .tooltip(tip(if enabled {
-                                    tr!("無効にする", "Disable", "禁用")
-                                } else {
-                                    tr!("有効にする", "Enable", "启用")
-                                }))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.app
-                                            .plugins
-                                            .toggle(&id, &mut this.app.settings.enabled_plugins);
-                                        this.app.save_settings();
-                                        this.app.waker.wake();
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                    )),
-                ),
-            );
-                    if self.app.plugins.selected.as_deref() == Some(id_for_page.as_str()) {
-                page = page.child(self.plugin_page(id_for_page, window, cx));
+        // 幅に合わせて列の数を決め、1 行ずつ並べる（ページを開いたらその行の下に出す）
+        const CARD_MIN_W: f32 = 400.0;
+        const GAP: f32 = 12.0;
+        let cols = (((col_w + GAP) / (CARD_MIN_W + GAP)).floor() as usize).max(1);
+        for chunk in shown.chunks(cols) {
+            let mut line_row = div().mt(z(GAP)).flex().gap(z(GAP));
+            let mut open_page = None;
+            for &index in chunk {
+                let p = &self.app.plugins.entries[index];
+                let id = p.manifest.id.clone();
+                if self.app.plugins.selected.as_deref() == Some(id.as_str()) {
+                    open_page = Some(id.clone());
+                }
+                line_row = line_row.child(self.plugin_card(index, cx));
+            }
+            // 最後の行の空きを埋めて、カードの幅をそろえる
+            for _ in chunk.len()..cols {
+                line_row = line_row.child(div().flex_1().min_w_0());
+            }
+            page = page.child(line_row);
+            if let Some(id) = open_page {
+                page = page.child(self.plugin_page(id, window, cx));
             }
         }
         vec![page.into_any_element()]
+    }
+
+    /// プラグイン一覧のカード 1 枚（名前・操作・説明）
+    fn plugin_card(&mut self, index: usize, cx: &mut Context<Self>) -> Div {
+        let p = &self.app.plugins.entries[index];
+        let id = p.manifest.id.clone();
+        let page_id = id.clone();
+        let enabled = self.app.settings.enabled_plugins.contains(&id);
+        let selected = self.app.plugins.selected.as_deref() == Some(id.as_str());
+        let status = if p.running() {
+            tr!("実行中", "Running", "运行中")
+        } else if enabled {
+            tr!("停止中", "Stopped", "已停止")
+        } else {
+            tr!("無効", "Disabled", "已禁用")
+        };
+        let meta = format!(
+            "{}{} · {} · {}",
+            if p.manifest.bd { "BetterDiscord · " } else { "" },
+            p.manifest.id,
+            p.manifest.version,
+            status,
+        );
+        let error = p.error.clone();
+        let has_page = p.has_page();
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(z(8.0))
+            .child(line(p.manifest.name.clone(), 16.0, WHITE()).font_weight(FontWeight::SEMIBOLD).flex_1())
+            .when(has_page, |d| {
+                d.child(
+                    icon_button(SharedString::from(format!("plugin-page-{id}")), IconName::Settings, 32.0)
+                        .tooltip(tip(tr!("設定", "Settings", "设置")))
+                        .when(selected, |b| b.bg(SELECTED()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.app.plugins.selected.as_deref() == Some(page_id.as_str()) {
+                                this.app.plugins.selected = None;
+                            } else {
+                                this.app.plugins.selected = Some(page_id.clone());
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(
+                toggle_switch(SharedString::from(format!("plugin-toggle-{id}")), enabled)
+                    .tooltip(tip(if enabled {
+                        tr!("無効にする", "Disable", "禁用")
+                    } else {
+                        tr!("有効にする", "Enable", "启用")
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.plugins.toggle(&id, &mut this.app.settings.enabled_plugins);
+                        this.app.save_settings();
+                        this.app.waker.wake();
+                        cx.notify();
+                    })),
+            );
+        settings_card(if error.is_some() { Some(RED()) } else if selected { Some(BLURPLE()) } else { None })
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(z(6.0))
+            .child(header)
+            .child(text(p.manifest.describe().to_string(), 14.0, MUTED()))
+            .child(line(meta, 12.0, FAINT()))
+            .when_some(error, |d, e| {
+                d.child(text(tr!("エラー: {e}", "Error: {e}", "错误：{e}",), 13.0, RED()))
+            })
     }
 
     /// プラグインのページ（page() の部品）。一覧の、そのプラグインの行の直下に出す

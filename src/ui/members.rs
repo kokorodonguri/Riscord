@@ -204,8 +204,23 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(z(4.0))
-                    .child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM))
-                    .children(super::message::tag_elements(&tags, &format!("m{}", user.id)));
+                    .child(
+                        line(name, 16.0, color)
+                            .font_weight(FontWeight::MEDIUM)
+                            .flex_shrink_0()
+                            .max_w(relative(0.7)),
+                    )
+                    // タグが多くても名前は残し、入りきらないタグは切る
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .gap(z(4.0))
+                            .children(super::message::tag_elements(&tags, &format!("m{}", user.id))),
+                    );
                 let names = match presence.and_then(|p| a.bd_activity(p)) {
                     Some(act) => div()
                         .flex_1()

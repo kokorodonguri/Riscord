@@ -339,6 +339,10 @@ impl Root {
                         .px(z(14.0))
                         .py(z(8.0))
                         .shadow_lg()
+                        // プラグインの通知は長いことがあるので、幅と高さに上限をつける
+                        .max_w(relative(0.8))
+                        .max_h(z(200.0))
+                        .overflow_hidden()
                         .child(text(t.clone(), 14.0, WHITE())),
                 )
                 .into_any_element(),
@@ -1252,6 +1256,7 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("tab{i}")))
                     .group("tab")
+                    .flex_none()
                     .h(z(28.0))
                     .max_w(z(220.0))
                     .px(z(10.0))
@@ -2211,6 +2216,9 @@ impl Root {
             let rich = super::message::preview_rich(&self.app.input, true);
             boxed = boxed.child(
                 div()
+                    .id("compose_preview_box")
+                    .max_h(z(160.0))
+                    .overflow_y_scroll()
                     .px(z(12.0))
                     .pt(z(8.0))
                     .flex()

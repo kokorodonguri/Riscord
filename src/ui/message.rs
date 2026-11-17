@@ -327,6 +327,8 @@ pub fn tag_elements(tags: &[crate::app::bd_display::Tag], key: &str) -> Vec<AnyE
             let el = div()
                 .id(SharedString::from(format!("tag{key}_{i}")))
                 .flex_none()
+                .max_w(z(160.0))
+                .truncate()
                 .text_size(z(11.0))
                 .text_color(t.color)
                 .when(t.pill, |d| {
@@ -773,8 +775,11 @@ impl Root {
             let name: AnyElement = if grouped || tags.is_empty() {
                 name
             } else {
+                // タグが多くても本文の幅を残す（あふれたタグは切る）
                 div()
                     .flex_none()
+                    .max_w(relative(0.45))
+                    .overflow_hidden()
                     .flex()
                     .items_baseline()
                     .gap(z(4.0))
@@ -884,10 +889,13 @@ impl Root {
             if !grouped {
                 let author = author.clone();
                 content = content.child(
+                    // プラグインのタグが多いときは横にはみ出さず折り返す
                     div()
                         .flex()
+                        .flex_wrap()
                         .items_baseline()
-                        .gap(z(8.0))
+                        .gap_x(z(8.0))
+                        .gap_y(z(2.0))
                         .child(
                             div()
                                 .id(SharedString::from(format!("an{}", m.id)))
@@ -1120,9 +1128,12 @@ impl Root {
             .absolute()
             .top(z(-16.0))
             .right(z(16.0))
-            .h(z(32.0))
+            .min_h(z(32.0))
+            .max_w(relative(0.9))
             .px(z(2.0))
             .flex()
+            .flex_wrap()
+            .justify_end()
             .items_center()
             .bg(SIDEBAR())
             .border_1()
@@ -1963,6 +1974,7 @@ impl Root {
                 .id(SharedString::from(format!("blur{}", m.id)))
                 .mt(z(4.0))
                 .w(z(320.0))
+                .max_w_full()
                 .h(z(120.0))
                 .rounded(z(8.0))
                 .bg(WIDGET())

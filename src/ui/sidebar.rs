@@ -476,8 +476,11 @@ impl Root {
                     .w(z(72.0))
                     .flex_none()
                     .flex()
-                    .justify_center()
-                    .child(text(tr!("{n} オンライン", "{n} Online", "{n} 在线",), 10.0, MUTED())),
+                    .flex_col()
+                    .items_center()
+                    .px(z(4.0))
+                    .child(text(n.to_string(), 12.0, TEXT()).font_weight(FontWeight::MEDIUM))
+                    .child(line(tr!("オンライン", "Online", "在线"), 9.0, MUTED())),
             );
         }
         if a.plugins.on("server-counter") {
@@ -487,8 +490,11 @@ impl Root {
                     .w(z(72.0))
                     .flex_none()
                     .flex()
-                    .justify_center()
-                    .child(text(tr!("{n} サーバー", "{n} Servers", "{n} 个服务器",), 10.0, MUTED())),
+                    .flex_col()
+                    .items_center()
+                    .px(z(4.0))
+                    .child(text(n.to_string(), 12.0, TEXT()).font_weight(FontWeight::MEDIUM))
+                    .child(line(tr!("サーバー", "Servers", "服务器"), 9.0, MUTED())),
             );
         }
         col = col.child(
@@ -1523,12 +1529,14 @@ impl Root {
                         .child(text(label, 12.0, MUTED())),
                 );
             }
+            // プラグインの行。いくつ動いていても 1 行ずつに収める
             for label in labels {
                 card = card.child(
                     div()
                         .pl(z(22.0))
                         .pb(z(4.0))
-                        .child(text(label, 12.0, MUTED())),
+                        .min_w_0()
+                        .child(line(label, 12.0, MUTED())),
                 );
             }
             card = card.child(div().my(z(6.0)).child(hline(DIVIDER())));

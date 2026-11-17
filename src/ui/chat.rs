@@ -720,9 +720,9 @@ impl Root {
             left = left.child(text(prefix, 22.0, FAINT()));
         }
         left = left.child(
+            // 狭いときは名前も縮めて … で切る（右のボタンに重ならないように）
             line(cname.to_string(), 16.0, WHITE())
                 .font_weight(FontWeight::MEDIUM)
-                .flex_none()
                 .max_w(z(360.0)),
         );
         if let Some(topic) = c.topic.as_deref().filter(|t| !t.is_empty()) {
@@ -737,6 +737,28 @@ impl Root {
                 )
                 .child(line(topic.replace('\n', " "), 14.0, MUTED()).flex_1());
         }
+        // 狭い画面では、優先度の低いボタン（スレッド・最初へ・ピン・再読込）を「…」へ回す
+        let mut extras = Vec::new();
+        if c.is_thread() {
+            extras.push(HeaderExtra::Thread);
+        } else if a.sel_guild.is_some() && c.is_text() {
+            extras.push(HeaderExtra::Threads);
+        }
+        if a.plugins.on("jump-to-top") {
+            extras.push(HeaderExtra::JumpTop);
+        }
+        extras.push(HeaderExtra::Pins);
+        extras.push(HeaderExtra::Reload);
+        let fixed =
+            usize::from(a.sel_guild.is_some() && matches!(c.kind, 0 | 2 | 4 | 5 | 13 | 15 | 16))
+                + if a.sel_guild.is_none() { 2 } else { 0 }
+                + 1
+                + usize::from(a.sel_guild.is_some() || has_dm_user);
+        let n_inline = header_fit(self.stage_width(), fixed, extras.len());
+        let shown = |e: HeaderExtra| extras[..n_inline].contains(&e);
+        self.header_more = extras[n_inline..].to_vec();
+        let more = !self.header_more.is_empty();
+        let a = &self.app;
         // 右から: 通話・ビデオ・再読込・一覧/プロフィール切替（Vesktop の並び）
         let mut right = div().flex().items_center().gap(z(6.0)).flex_none();
         if let Some(guild_id) = a
@@ -812,7 +834,7 @@ impl Root {
                 })),
         );
         // スレッド: 参加・退出。テキストチャンネル: スレッド一覧
-        if c.is_thread() {
+        if c.is_thread() && shown(HeaderExtra::Thread) {
             let (tid, joined) = (c.id.clone(), a.joined_threads.contains(&c.id));
             right = right.child(
                 toggle_icon(
@@ -834,7 +856,7 @@ impl Root {
                     cx.notify();
                 })),
             );
-        } else if a.sel_guild.is_some() && c.is_text() {
+        } else if shown(HeaderExtra::Threads) {
             let open = a.side == crate::app::SidePanel::Threads;
             right = right.child(
                 toggle_icon("threads_toggle", IconName::MessagesSquare, open)
@@ -849,7 +871,7 @@ impl Root {
                     })),
             );
         }
-        if a.plugins.on("jump-to-top") {
+        if shown(HeaderExtra::JumpTop) {
             right = right.child(
                 toggle_icon("jump_top", IconName::ArrowUp, false)
                     .tooltip(tip(tr!(
@@ -864,45 +886,68 @@ impl Root {
             );
         }
         let pins_open = a.side == crate::app::SidePanel::Pins;
-        right = right.child(
-            toggle_icon("pins_toggle", IconName::Pin, pins_open)
-                .tooltip(tip(if pins_open {
-                    tr!("ピン留めを閉じる", "Close pins", "关闭置顶")
-                } else {
-                    tr!("ピン留めされたメッセージ", "Pinned messages", "置顶消息")
-                }))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.app.toggle_pins();
-                    cx.notify();
-                })),
-        );
+        right = right.when(shown(HeaderExtra::Pins), |right| {
+            right.child(
+                toggle_icon("pins_toggle", IconName::Pin, pins_open)
+                    .tooltip(tip(if pins_open {
+                        tr!("ピン留めを閉じる", "Close pins", "关闭置顶")
+                    } else {
+                        tr!("ピン留めされたメッセージ", "Pinned messages", "置顶消息")
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.toggle_pins();
+                        cx.notify();
+                    })),
+            )
+        });
         let loading = a
             .sel_channel
             .as_ref()
             .is_some_and(|id| a.pending_message_loads.contains_key(id));
-        right = right.child(if loading {
-            div()
-                .id("reload")
-                .size(z(32.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .tooltip(tip(tr!(
-                    "メッセージを読み込み中",
-                    "Loading messages",
-                    "正在加载消息"
-                )))
-                .child(spinner(18.0))
-        } else {
-            icon_button("reload", IconName::RotateCw, 32.0)
-                .tooltip(tip(tr!("再読み込み", "Reload", "重新加载")))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(c) = this.app.sel_channel.clone() {
-                        this.app.load_messages(c);
-                    }
-                    cx.notify();
-                }))
+        right = right.when(shown(HeaderExtra::Reload), |right| {
+            right.child(if loading {
+                div()
+                    .id("reload")
+                    .size(z(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .tooltip(tip(tr!(
+                        "メッセージを読み込み中",
+                        "Loading messages",
+                        "正在加载消息"
+                    )))
+                    .child(spinner(18.0))
+                    .into_any_element()
+            } else {
+                icon_button("reload", IconName::RotateCw, 32.0)
+                    .tooltip(tip(tr!("再読み込み", "Reload", "重新加载")))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(c) = this.app.sel_channel.clone() {
+                            this.app.load_messages(c);
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
         });
+        if more {
+            right = right.child(
+                icon_button("header_more", IconName::Ellipsis, 32.0)
+                    .tooltip(tip(tr!("その他", "More", "更多")))
+                    .on_click(cx.listener(|this, ev: &ClickEvent, window, cx| {
+                        let p = ev.position();
+                        let p = if p.x == px(0.) && p.y == px(0.) {
+                            window.mouse_position()
+                        } else {
+                            p
+                        };
+                        this.menu = Some((PopMenu::Header, p));
+                        cx.stop_propagation();
+                        cx.notify();
+                    })),
+            );
+        }
         if a.sel_guild.is_some() {
             right = right.child(
                 toggle_icon("members_toggle", IconName::Users, members_shown)
@@ -2258,6 +2303,91 @@ impl Root {
 }
 
 /// ヘッダーの表示切替アイコン（オンのときは白）
+/// チャットのヘッダーで、狭いときに「…」へ回すボタン
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum HeaderExtra {
+    /// スレッドへの参加・退出
+    Thread,
+    /// スレッド一覧
+    Threads,
+    /// JumpToTop
+    JumpTop,
+    Pins,
+    Reload,
+}
+
+/// ヘッダーの右に並べる HeaderExtra の数。stage_w はチャット欄の幅、fixed は常に出すボタンの数。
+/// 名前の分（アイコン込みで 130）を残し、入りきらなければ 1 つ分を「…」に使う
+pub fn header_fit(stage_w: f32, fixed: usize, extras: usize) -> usize {
+    const SLOT: f32 = 38.0;
+    let slots = (((stage_w - 32.0 - 130.0) / SLOT).floor().max(0.0) as usize).saturating_sub(fixed);
+    if extras <= slots {
+        extras
+    } else {
+        slots.saturating_sub(1)
+    }
+}
+
+impl Root {
+    /// ヘッダーの「…」から選んだボタンを、並んでいるときと同じように動かす
+    pub(super) fn run_header_extra(&mut self, e: HeaderExtra) {
+        let a = &mut self.app;
+        match e {
+            HeaderExtra::Thread => {
+                if let Some(tid) = a.sel_channel.clone() {
+                    let joined = a.joined_threads.contains(&tid);
+                    a.join_thread(&tid, !joined);
+                }
+            }
+            HeaderExtra::Threads => a.toggle_thread_panel(),
+            HeaderExtra::JumpTop => a.jump_to_top(),
+            HeaderExtra::Pins => a.toggle_pins(),
+            HeaderExtra::Reload => {
+                if let Some(c) = a.sel_channel.clone() {
+                    a.load_messages(c);
+                }
+            }
+        }
+    }
+
+    /// 「…」のメニューでの (印, 名前)
+    pub(super) fn header_extra_label(&self, e: HeaderExtra) -> (IconName, &'static str) {
+        let a = &self.app;
+        match e {
+            HeaderExtra::Thread => {
+                if a.sel_channel
+                    .as_ref()
+                    .is_some_and(|c| a.joined_threads.contains(c))
+                {
+                    (
+                        IconName::LogOut,
+                        tr!("スレッドから退出", "Leave thread", "退出子区"),
+                    )
+                } else {
+                    (
+                        IconName::UserPlus,
+                        tr!("スレッドに参加", "Join thread", "加入子区"),
+                    )
+                }
+            }
+            HeaderExtra::Threads => (IconName::MessagesSquare, tr!("スレッド", "Threads", "子区")),
+            HeaderExtra::JumpTop => (
+                IconName::ArrowUp,
+                tr!(
+                    "最初のメッセージへ",
+                    "Jump to first message",
+                    "跳到第一条消息"
+                ),
+            ),
+            HeaderExtra::Pins => (
+                IconName::Pin,
+                tr!("ピン留めされたメッセージ", "Pinned messages", "置顶消息"),
+            ),
+            HeaderExtra::Reload => (IconName::RotateCw, tr!("再読み込み", "Reload", "重新加载")),
+        }
+    }
+}
+
 fn toggle_icon(id: &'static str, name: IconName, on: bool) -> Stateful<Div> {
     div()
         .id(id)
@@ -2346,5 +2476,23 @@ mod tests {
         sync_list(&mut l, vec![10, 101, 102, 1], vec![0, 1001, 1002, 0]);
         assert!(l.state.is_following_tail());
         assert_eq!(l.ids, vec![0, 1001, 1002, 0]);
+    }
+
+    /// 320px 相当ではヘッダーのボタンを「…」へ回し、名前の分を残す。広ければ全部並べる
+    #[test]
+    fn header_buttons_fit_narrow_and_wide_windows() {
+        use super::header_fit;
+        // サーバーのテキストチャンネル（権限・検索・メンバーの 3 つが常に出る）、追加は 4 つ
+        assert_eq!(header_fit(1920.0, 3, 4), 4);
+        let n = header_fit(320.0, 3, 4);
+        assert!(n < 4);
+        // 並ぶボタン（常に出す分 + 並べた追加 + 「…」）と名前の分が幅に収まる
+        let used = 32.0 + 130.0 + 38.0 * (3 + n + 1) as f32;
+        assert!(used <= 320.0 + 38.0, "{used}");
+        // 200% 表示で 1920px のウィンドウ（論理幅 960）でも収まる
+        assert_eq!(header_fit(960.0, 3, 4), 4);
+        // 極端に狭くても負にならない
+        assert_eq!(header_fit(0.0, 3, 4), 0);
+        assert_eq!(header_fit(100.0, 0, 0), 0);
     }
 }

@@ -171,7 +171,7 @@ fn activity_art(size: f32) -> Div {
 
 impl Root {
     /// チャット欄の幅（左のサーバー・チャンネル一覧、右のメンバー一覧などを除いたもの）
-    fn stage_width(&self) -> f32 {
+    pub(super) fn stage_width(&self) -> f32 {
         let a = &self.app;
         let (pane_w, mem_w) = a.pane_widths();
         let mut w = a.screen_w;

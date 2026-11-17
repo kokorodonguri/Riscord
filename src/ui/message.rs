@@ -319,6 +319,14 @@ pub static PENDING_PREVIEW: std::sync::Mutex<Option<String>> = std::sync::Mutex:
 /// 押されたメンションのユーザー ID（Root の描画で開く）
 pub static PENDING_MENTION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// メッセージのツールバーで、1 行（slots 個）に収まるよう (並べるクイックリアクションの数, プラグインの操作の数) を決める。
+/// 本体のボタン（base 個）は常に並べ、プラグインの操作があれば「…」かボタン 1 つ分を残す
+pub fn toolbar_fit(slots: usize, base: usize, reacts: usize, actions: usize) -> (usize, usize) {
+    let room = slots.saturating_sub(base);
+    let n_reacts = reacts.min(room.saturating_sub(usize::from(actions > 0)));
+    (n_reacts, room - n_reacts)
+}
+
 /// 名前の横のタグ（同梱プラグインの StaffTag・PlatformIndicators など）
 pub fn tag_elements(tags: &[crate::app::bd_display::Tag], key: &str) -> Vec<AnyElement> {
     tags.iter()
@@ -1134,6 +1142,20 @@ impl Root {
         // 削除済みとして残しているメッセージには、返信・編集・削除をさせない
         let deleted = m.log.as_ref().is_some_and(|l| l.deleted_at.is_some());
         let mine = !deleted && self.app.me.as_ref().is_some_and(|u| u.id == m.author.id);
+        let actions = self.app.plugins.message_actions();
+        let reacts = if deleted {
+            Vec::new()
+        } else {
+            self.app.quick_reacts()
+        };
+        // 1 行に並ぶボタンの数（幅 30 ずつ）。狭い画面や拡大時は、プラグインのボタンから「…」へ回す
+        let base = usize::from(!deleted)
+            + usize::from(!deleted && self.app.plugins.on("quick-mention"))
+            + 2 * usize::from(mine)
+            + usize::from(!m.content.is_empty())
+            + usize::from(self.app.plugins.translator_enabled() && !m.content.trim().is_empty());
+        let slots = ((self.stage_width() * 0.9 - 12.0) / 30.0).floor().max(4.0) as usize;
+        let (n_reacts, max_inline) = toolbar_fit(slots, base, reacts.len(), actions.len());
         let mut bar = div()
             .absolute()
             .top(z(-16.0))
@@ -1182,7 +1204,7 @@ impl Root {
             )
         });
         if !deleted {
-            for (i, emoji) in self.app.quick_reacts().into_iter().enumerate() {
+            for (i, emoji) in reacts.into_iter().take(n_reacts).enumerate() {
                 let (cid, mid) = (m.channel_id.clone(), m.id.clone());
                 let e = crate::model::ReactionEmoji {
                     id: None,
@@ -1329,7 +1351,6 @@ impl Root {
                     })),
             );
         }
-        let actions = self.app.plugins.message_actions();
         // 全部並べるときも、ツールバーが長くなりすぎないよう 6 個までにして残りは「…」へ
         const MAX_INLINE: usize = 6;
         let inline = if self.app.plugins.on("show-all-message-buttons") {
@@ -1342,6 +1363,12 @@ impl Root {
             actions.len()
         } else {
             0
+        };
+        // 幅に入りきらない分も「…」へ
+        let inline = if inline < actions.len() || inline > max_inline {
+            inline.min(max_inline.saturating_sub(1))
+        } else {
+            inline
         };
         let overflow = actions.len() > inline;
         if !actions.is_empty() {
@@ -2644,6 +2671,19 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    /// メッセージのツールバーは 1 行に収め、入りきらないプラグインの操作は「…」へ回す
+    #[test]
+    fn toolbar_fits_one_row() {
+        use super::toolbar_fit;
+        // 広い画面: クイックリアクション 10 個と操作 6 個がそのまま並ぶ
+        assert_eq!(toolbar_fit(50, 6, 10, 6), (10, 34));
+        // 320px 相当（slots = 9）: 本体 6 個のほかは「…」の 1 つ分だけ
+        assert_eq!(toolbar_fit(9, 6, 10, 6), (2, 1));
+        // 操作がなければ、残りはすべてリアクションに使える
+        assert_eq!(toolbar_fit(9, 6, 10, 0), (3, 0));
+        // 本体のボタンだけで埋まっていても負にならない
+        assert_eq!(toolbar_fit(4, 6, 10, 6), (0, 0));
+    }
     use super::{call_length, preview_rich, Message};
 
     #[test]

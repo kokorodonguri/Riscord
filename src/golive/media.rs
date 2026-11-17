@@ -521,17 +521,21 @@ mod platform {
     use crate::wake::Waker;
     use std::sync::{Arc, Mutex};
 
-    const UNSUPPORTED: &str = tr!(
-        "この OS では画面共有にまだ対応していません",
-        "Screen sharing isn't supported on this OS yet",
-        "此操作系统暂不支持屏幕共享"
-    );
+    // tr! は表示言語を実行時に選ぶので const にはできない
+    fn unsupported() -> String {
+        tr!(
+            "この OS では画面共有にまだ対応していません",
+            "Screen sharing isn't supported on this OS yet",
+            "此操作系统暂不支持屏幕共享"
+        )
+        .into()
+    }
 
     pub struct Source {
         pub size: Option<(i32, i32)>,
     }
     pub async fn pick_source() -> Result<Source, String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub struct Capture;
     impl Capture {
@@ -540,7 +544,7 @@ mod platform {
             _: Quality,
             _: tokio::sync::mpsc::Sender<Encoded>,
         ) -> Result<Capture, String> {
-            Err(UNSUPPORTED.into())
+            Err(unsupported())
         }
         pub fn force_keyframe(&self) {}
         pub fn error(&self) -> Option<String> {

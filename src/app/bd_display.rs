@@ -41,6 +41,27 @@ fn tag(text: impl Into<String>, color: Color32, tip: Option<String>) -> Tag {
     }
 }
 
+/// 名前の横に並べるタグの上限。超えた分は「+N」の 1 つにまとめ、ツールチップで中身を見せる
+pub const MAX_TAGS: usize = 6;
+
+/// タグが多すぎるときに、先頭の MAX_TAGS - 1 個と「+N」にまとめる
+pub fn cap_tags(mut tags: Vec<Tag>) -> Vec<Tag> {
+    if tags.len() <= MAX_TAGS {
+        return tags;
+    }
+    let rest = tags.split_off(MAX_TAGS - 1);
+    let tip = rest
+        .iter()
+        .map(|t| match &t.tip {
+            Some(tip) => format!("{} {tip}", t.text),
+            None => t.text.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    tags.push(tag(format!("+{}", rest.len()), rgb(0x949ba4), Some(tip)));
+    tags
+}
+
 /// "a=b; c=d" を読む
 pub fn parse_map(s: &str) -> Vec<(String, String)> {
     s.split(';')
@@ -523,7 +544,7 @@ impl App {
                 tags.push(tag(format!("@{}", user.username), rgb(0x949ba4), None));
             }
         }
-        tags
+        cap_tags(tags)
     }
 
     /// メッセージの投稿者の横に並べるタグ
@@ -715,5 +736,44 @@ mod tests {
         );
         assert!(parse_color("#ff0000").is_some());
         assert!(parse_color("red").is_none());
+    }
+
+    /// タグが多いときは MAX_TAGS 個にまとめ、まとめた分はツールチップに残す
+    #[test]
+    fn many_tags_are_capped() {
+        let few: Vec<Tag> = (0..MAX_TAGS)
+            .map(|i| tag(i.to_string(), rgb(0), None))
+            .collect();
+        assert_eq!(cap_tags(few).len(), MAX_TAGS);
+        let many: Vec<Tag> = (0..30)
+            .map(|i| tag(format!("タグ{i}"), rgb(0), Some(format!("说明 {i}"))))
+            .collect();
+        let capped = cap_tags(many);
+        assert_eq!(capped.len(), MAX_TAGS);
+        let last = capped.last().unwrap();
+        assert_eq!(last.text, format!("+{}", 30 - (MAX_TAGS - 1)));
+        let tip = last.tip.as_deref().unwrap();
+        assert!(tip.contains("タグ29 说明 29"));
+        assert!(!tip.contains("タグ0 "));
+    }
+
+    /// 同梱プラグインをすべて有効にしても、名前の横のタグは上限を超えない
+    #[test]
+    fn all_bundled_plugins_keep_tags_within_limit() {
+        let mut app = App::default();
+        app.plugins.data_root =
+            std::env::temp_dir().join(format!("riscord-tags-test-{}", std::process::id()));
+        app.plugins.reload(&[]);
+        app.plugins.set_all(true, &mut app.settings.enabled_plugins);
+        let user: User = serde_json::from_value(serde_json::json!({
+            "id": "80351110224678912", "username": "someone_with_a_really_long_username",
+            "global_name": "表示名", "public_flags": 0x3ffff
+        }))
+        .unwrap();
+        let tags = app.bd_user_tags(&user, None, None);
+        // バッジ 11 個・状態・@ユーザー名で上限を超えるので、最後は「+N」になる
+        assert_eq!(tags.len(), MAX_TAGS);
+        assert!(tags.last().unwrap().text.starts_with('+'));
+        let _ = std::fs::remove_dir_all(&app.plugins.data_root);
     }
 }

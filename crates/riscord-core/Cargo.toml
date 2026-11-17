@@ -30,3 +30,5 @@ cpal = "0.18.2"
 async-trait = "0.1.92"
 symphonia-core = "0.5"
 ndk-context = "0.1"
+# src/voice.rs のマイクの雑音抑制（本体の Cargo.toml と同じ版）
+nnnoiseless = { version = "0.5", default-features = false }

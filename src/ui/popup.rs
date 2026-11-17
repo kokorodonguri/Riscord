@@ -163,6 +163,21 @@ impl Root {
             PopMenu::Folder => self.folder_menu(cx)?.into_any_element(),
             PopMenu::Message => self.message_menu(cx)?.into_any_element(),
             PopMenu::Emoji => self.emoji_picker(cx).into_any_element(),
+            PopMenu::Header => self.header_menu(cx)?.into_any_element(),
+        };
+        // プラグインの操作などで行が増えても、ウィンドウに収めて中をスクロールさせる
+        let content = if matches!(
+            menu,
+            PopMenu::Guild | PopMenu::Folder | PopMenu::Message | PopMenu::Header
+        ) {
+            div()
+                .id("menu_scroll")
+                .max_h((window.viewport_size().height - z(16.0)).max(z(120.0)))
+                .overflow_y_scroll()
+                .child(content)
+                .into_any_element()
+        } else {
+            content
         };
         // 右クリックのメニューはカーソルの右下に、ボタンのメニューはボタンの上に出す
         let (at, anchor) = if menu == PopMenu::Guild && self.menu_from_header {
@@ -170,6 +185,9 @@ impl Root {
             (pos, Anchor::TopLeft)
         } else if matches!(menu, PopMenu::Guild | PopMenu::Folder | PopMenu::Message) {
             (pos + point(z(4.0), z(0.0)), Anchor::TopLeft)
+        } else if menu == PopMenu::Header {
+            // ヘッダーの右端の「…」から、左下へ開く
+            (pos + point(z(0.0), z(16.0)), Anchor::TopRight)
         } else if menu == PopMenu::Emoji {
             // 入力欄の右端のボタンから、左上へ開く
             (pos - point(z(0.0), z(20.0)), Anchor::BottomRight)
@@ -187,6 +205,36 @@ impl Root {
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    /// チャットのヘッダーの「…」（狭くて並べきれなかったボタン）
+    fn header_menu(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.header_more.is_empty() {
+            return None;
+        }
+        let mut col = popup_box()
+            .p(z(6.0))
+            .w(z(240.0))
+            .flex()
+            .flex_col()
+            .gap(z(2.0));
+        for e in self.header_more.clone() {
+            let (mark, label) = self.header_extra_label(e);
+            col = col.child(
+                menu_row(
+                    SharedString::from(format!("hm_{e:?}")),
+                    icon(mark, 18.0, TEXT()).into_any_element(),
+                    label,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.menu = None;
+                    this.run_header_extra(e);
+                    cx.notify();
+                })),
+            );
+        }
+        Some(col)
     }
 
     /// メッセージの右クリックメニュー

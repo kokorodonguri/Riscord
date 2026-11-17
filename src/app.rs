@@ -1569,6 +1569,7 @@ impl App {
             ..Default::default()
         };
         app.set_profile(profile);
+        app.plugins.waker = app.waker.clone();
         app.plugins.reload(&app.settings.enabled_plugins);
         app.theme_watch = Some(watch_themes(app.waker.clone()));
         app.apply_theme(false);
@@ -2269,6 +2270,25 @@ impl App {
         self.run_plugin_actions(actions);
         if let Some(delay) = next {
             self.repaint_after(delay);
+        }
+        // 実行中のエラーで止まったプラグインは、本体の標準の表示に戻して知らせる
+        let stopped = self.plugins.take_stopped();
+        if let Some(first) = stopped.first() {
+            let msg = if stopped.len() == 1 {
+                tr!(
+                    "プラグイン「{first}」はエラーで停止しました",
+                    "Plugin \"{first}\" stopped because of an error",
+                    "插件“{first}”因错误已停止",
+                )
+            } else {
+                let n = stopped.len();
+                tr!(
+                    "プラグイン「{first}」など {n} 個がエラーで停止しました",
+                    "{n} plugins, including \"{first}\", stopped because of errors",
+                    "插件“{first}”等 {n} 个因错误已停止",
+                )
+            };
+            self.show_toast(&msg);
         }
         if self
             .login_retry_at
@@ -5440,8 +5460,12 @@ impl App {
     /// プラグインが頼んだ操作を行う
     pub fn run_plugin_actions(&mut self, actions: Vec<crate::plugins::Action>) {
         use crate::plugins::Action;
+        // 通知は 1 件ごとにスレッドを使うので、一度に出す数と長さを抑える（大量に有効でも埋もれないように）
+        const MAX_NOTIFY: usize = 3;
+        let mut notified = 0;
         for action in actions {
             match action {
+                Action::Notify(..) if notified >= MAX_NOTIFY => {}
                 Action::Send(channel_id, content) => {
                     let content = self.plugins.transform("on_send", &content, &channel_id);
                     self.send(Cmd::Send {
@@ -5453,6 +5477,11 @@ impl App {
                     })
                 }
                 Action::Notify(title, body) => {
+                    notified += 1;
+                    let (title, body) = (
+                        crate::plugins::clip(&title, 100),
+                        crate::plugins::clip(&body, 400),
+                    );
                     let target = (
                         self.sel_guild.clone(),
                         self.sel_channel.clone().unwrap_or_default(),

@@ -34,7 +34,7 @@ impl Root {
                 None => MemberListCache::build(&gid, a.member_ver, members, roles, &a.presences),
             };
         }
-        let key = (gid.clone(), a.member_ver);
+        let key = (gid.clone(), a.member_ver, a.plugins.revision);
         let n = a.member_cache.rows.len();
         if self.member_key != key {
             if self.member_key.0 != gid || self.member_list.item_count() != n {

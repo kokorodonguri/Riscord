@@ -321,6 +321,8 @@ pub enum PopMenu {
     Message,
     /// 入力欄の絵文字ボタン
     Emoji,
+    /// チャットのヘッダーの「…」（狭くて入りきらないボタン。中身は Root::header_more）
+    Header,
 }
 
 pub struct Root {
@@ -334,7 +336,8 @@ pub struct Root {
     /// ペインの境界のドラッグ（対象, 押したときのマウスの X, そのときの幅）
     pub resize_drag: Option<(ResizeTarget, f32, f32)>,
     pub member_list: ListState,
-    pub member_key: (String, u64),
+    /// (サーバー, メンバーの版, プラグインの状態)。プラグインでタグや行の中身が変わったら測り直す
+    pub member_key: (String, u64, u64),
     /// 右側の枠（ピン一覧・検索結果）の一覧と、作ったときの目印
     pub side_list: ListState,
     pub side_key: (u8, String, u64),
@@ -362,6 +365,8 @@ pub struct Root {
     pub menu_folder: Option<String>,
     /// PopMenu::Message の対象のメッセージ
     pub menu_msg: Option<crate::model::Message>,
+    /// ヘッダーで「…」へ回したボタン（描くたびに決め直す）
+    pub header_more: Vec<chat::HeaderExtra>,
     /// 絵文字ピッカーの行（目印が変わったら作り直す）
     pub emoji_rows: Option<(emoji::EmojiKey, Rc<Vec<emoji::EmojiRow>>)>,
     /// :名前: の補完で選んでいる候補（打ちかけの名前, 何番目か）
@@ -1089,7 +1094,7 @@ impl Root {
             side_key: (0, String::new(), 0),
             forum_list: ListState::new(0, ListAlignment::Top, px(600.0)),
             forum_key: (0, String::new(), 0),
-            member_key: (String::new(), u64::MAX),
+            member_key: (String::new(), u64::MAX, 0),
             hover_msg: None,
             revealed: Default::default(),
             collapsed_media: Default::default(),
@@ -1102,6 +1107,7 @@ impl Root {
             guild_header_bounds: Rc::default(),
             menu_folder: None,
             menu_msg: None,
+            header_more: Vec::new(),
             emoji_rows: None,
             emoji_ac_sel: (String::new(), 0),
             cmd_ac_sel: 0,

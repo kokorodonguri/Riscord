@@ -1806,11 +1806,25 @@ impl Root {
                     })),
                 ),
         );
-        for error in &self.app.plugins.errors {
+        // 読み込みエラーは多くても数件だけ出し、残りは件数にまとめる
+        const MAX_ERRORS: usize = 5;
+        for error in self.app.plugins.errors.iter().take(MAX_ERRORS) {
             page = page.child(notice(
                 RED(),
                 tr!("読み込みエラー", "Load error", "加载错误"),
-                error,
+                &crate::plugins::clip(error, 600),
+            ));
+        }
+        if self.app.plugins.errors.len() > MAX_ERRORS {
+            let n = self.app.plugins.errors.len() - MAX_ERRORS;
+            page = page.child(text(
+                tr!(
+                    "ほか {n} 件の読み込みエラー",
+                    "{n} more load errors",
+                    "另有 {n} 个加载错误",
+                ),
+                13.0,
+                RED(),
             ));
         }
         // 絞り込み（名前・ID・説明）と「有効なものだけ」
@@ -1840,15 +1854,18 @@ impl Root {
             .iter()
             .filter(|p| p.running())
             .count();
+        // 狭い画面では検索欄を 1 行使い、件数とスイッチは次の行へ折り返す
         page = page.child(
             div()
                 .mt(z(16.0))
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(z(12.0))
                 .child(
                     div()
                         .flex_1()
+                        .min_w(z(200.0))
                         .bg(INPUT())
                         .border_1()
                         .border_color(BORDER())
@@ -1983,6 +2000,10 @@ impl Root {
                         this.app
                             .plugins
                             .toggle(&id, &mut this.app.settings.enabled_plugins);
+                        // 止めたプラグインの入力欄は捨てる（次に有効にしたとき、保存された値から作り直す）
+                        if !this.app.plugins.on(&id) {
+                            this.plugin_inputs.retain(|(p, _), _| p != &id);
+                        }
                         this.app.save_settings();
                         this.app.waker.wake();
                         cx.notify();
@@ -2001,7 +2022,11 @@ impl Root {
         .flex_col()
         .gap(z(6.0))
         .child(header)
-        .child(text(p.manifest.describe().to_string(), 14.0, MUTED()))
+        .child(text(
+            crate::plugins::clip(p.manifest.describe(), 400),
+            14.0,
+            MUTED(),
+        ))
         .child(line(meta, 12.0, FAINT()))
         .when_some(error, |d, e| {
             d.child(text(

@@ -2158,3 +2158,49 @@ fn find_message_looks_in_list_pins_and_search() {
     assert_eq!(app.find_message("other", "600").unwrap().content, "found");
     assert!(app.find_message("c", "999").is_none());
 }
+
+/// 同梱プラグインを全部有効にしたまま、受信・チャンネル切り替え・ON/OFF を長く繰り返しても、
+/// 止まるプラグインがなく、手元に溜まるもの（タブ・操作の一覧・タグ）が上限を超えない
+#[test]
+fn long_session_with_all_plugins_stays_bounded() {
+    let mut app = bench_app(200);
+    app.plugins.data_root =
+        std::env::temp_dir().join(format!("riscord-long-session-{}", std::process::id()));
+    app.plugins.reload(&[]);
+    app.plugins.set_all(true, &mut app.settings.enabled_plugins);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let channels: Vec<String> = (0..40).map(|i| format!("c{i}")).collect();
+    for round in 0..2000usize {
+        let channel = &channels[round % channels.len()];
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": format!("{}", 900000 + round), "channel_id": channel,
+            "author": { "id": "1", "username": "u" },
+            "content": format!("長い本文 long text 长文本 {} https://example.com/?utm_source=x", "x".repeat(round % 300)),
+            "timestamp": "2026-11-01T10:00:00+00:00"
+        }))
+        .unwrap();
+        tx.send(Event::MessageCreate(m.clone())).unwrap();
+        app.select(None, Some(channel.clone()));
+        app.remember_tab(channel);
+        app.poll();
+        let _ = app.bd_tags(&m);
+        let _ = app.plugins.message_actions();
+        let _ = app.plugins.transform("on_display", &m.content, channel);
+        if round % 250 == 0 {
+            // 途中で全部オフ → 全部オンにしても続けられる
+            app.plugins
+                .set_all(false, &mut app.settings.enabled_plugins);
+            app.poll();
+            app.plugins.set_all(true, &mut app.settings.enabled_plugins);
+        }
+    }
+    for p in &app.plugins.entries {
+        assert!(p.error.is_none(), "{}: {:?}", p.manifest.id, p.error);
+    }
+    assert!(app.plugins.take_stopped().is_empty());
+    assert!(app.tabs.len() <= channels.len());
+    assert!(app.plugins.message_actions().len() <= 40);
+    let _ = std::fs::remove_dir_all(&app.plugins.data_root);
+}

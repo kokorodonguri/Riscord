@@ -11,6 +11,21 @@ use std::{
 
 const API_VERSION: u32 = 1;
 const MAX_SCRIPT: u64 = 1024 * 1024;
+/// 画面に出すプラグインの文字列の上限（文字数）。長くても画面を押しつぶさないように切る
+const MAX_ERROR_CHARS: usize = 600;
+const MAX_ACTION_LABEL_CHARS: usize = 60;
+const MAX_PAGE_LABEL_CHARS: usize = 2000;
+/// メッセージの操作（全プラグイン合計）と、ボイスパネルの行の上限
+const MAX_MESSAGE_ACTIONS: usize = 40;
+const MAX_VOICE_LINES: usize = 8;
+
+/// 文字数で切り、切ったら末尾を … にする（UTF-8 の境目で切る）
+pub fn clip(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((end, _)) => format!("{}…", &s[..end]),
+        None => s.to_owned(),
+    }
+}
 
 #[derive(Clone, Deserialize)]
 pub struct Manifest {
@@ -83,6 +98,8 @@ pub struct HostInfo {
     pub guild_id: String,
     pub voice_channel_id: String,
 }
+/// メッセージの操作 (プラグイン id, 番号, 表示名, アイコン名)
+pub type MessageAction = (String, usize, String, Option<String>);
 #[derive(Clone)]
 pub struct PageItem {
     pub kind: String,
@@ -106,6 +123,10 @@ pub struct Plugin {
     runtime: Option<Runtime>,
     path: PathBuf,
     bundled_source: Option<&'static str>,
+    /// 実行中のエラーで止まったが、まだ Plugins::settle で表示に反映していない
+    failed: bool,
+    /// 止まったことを画面に知らせる（描画中に止まっても次の描画で反映する）
+    waker: crate::wake::Waker,
 }
 #[derive(Default)]
 pub struct Plugins {
@@ -121,6 +142,12 @@ pub struct Plugins {
     pub generation: u64,
     /// プラグインが riscord.save で書くフォルダ（アカウントごと）
     pub data_root: PathBuf,
+    /// プラグインが止まったときに描き直しを頼む先（App が入れる）
+    pub waker: crate::wake::Waker,
+    /// エラーで止まったが、まだ画面で知らせていないプラグインの名前（take_stopped で取り出す）
+    stopped: Vec<String>,
+    /// message_actions() の結果（revision ごと）。ツールバーは毎フレーム描くので Lua を毎回呼ばない
+    actions_cache: Option<(u64, Vec<MessageAction>)>,
 }
 
 pub fn directory() -> PathBuf {
@@ -474,6 +501,8 @@ impl Plugins {
         self.errors.clear();
         self.selected = None;
         self.options_cache.borrow_mut().clear();
+        self.actions_cache = None;
+        self.stopped.clear();
         let mut seen = std::collections::HashSet::new();
         for (toml_text, source) in bundled::BUNDLED {
             let manifest: Manifest = match toml::from_str(toml_text) {
@@ -490,6 +519,8 @@ impl Plugins {
                 runtime: None,
                 path: PathBuf::new(),
                 bundled_source: Some(source),
+                failed: false,
+                waker: self.waker.clone(),
             };
             if enabled.contains(&bundled.manifest.id) {
                 bundled.start(&self.data_root, &self.host);
@@ -549,6 +580,8 @@ impl Plugins {
                         runtime: None,
                         path,
                         bundled_source: None,
+                        failed: false,
+                        waker: self.waker.clone(),
                     };
                     if enabled.contains(&p.manifest.id) {
                         p.start(&self.data_root, &self.host);
@@ -595,6 +628,10 @@ impl Plugins {
             if enabled.iter().any(|v| v == id) {
                 enabled.retain(|v| v != id);
                 p.stop();
+                // 止めたプラグインの設定ページは開いたままにしない
+                if self.selected.as_deref() == Some(id) {
+                    self.selected = None;
+                }
             } else {
                 enabled.push(id.to_owned());
                 p.start(&self.data_root, &self.host);
@@ -636,8 +673,16 @@ impl Plugins {
     }
     /// (プラグイン id, 番号, 表示名, アイコン名)
     pub fn message_actions(&mut self) -> Vec<(String, usize, String, Option<String>)> {
+        if let Some((rev, cached)) = &self.actions_cache {
+            if *rev == self.revision {
+                return cached.clone();
+            }
+        }
         let mut all = Vec::new();
         for p in &mut self.entries {
+            if all.len() >= MAX_MESSAGE_ACTIONS {
+                break;
+            }
             let result =
                 p.runtime
                     .as_ref()
@@ -653,7 +698,7 @@ impl Plugins {
                             let item = item?;
                             items.push((
                                 i + 1,
-                                item.get::<String>("label")?,
+                                clip(&item.get::<String>("label")?, MAX_ACTION_LABEL_CHARS),
                                 item.get::<Option<String>>("icon")?,
                             ));
                         }
@@ -669,6 +714,10 @@ impl Plugins {
                 None => (),
             }
         }
+        all.truncate(MAX_MESSAGE_ACTIONS);
+        // 止まったプラグインがあれば revision が変わるので、次の呼び出しで作り直す
+        self.settle();
+        self.actions_cache = Some((self.revision, all.clone()));
         all
     }
     pub fn message_action(&mut self, id: &str, index: usize, m: &Message) {
@@ -729,29 +778,63 @@ impl Plugins {
             .insert(id.to_owned(), v.clone());
         v
     }
+    /// options の key を、全体を複製せずに読む（描画のたびに何度も呼ばれるため）
+    fn with_option<R>(
+        &self,
+        id: &str,
+        key: &str,
+        f: impl FnOnce(Option<&serde_json::Value>) -> R,
+    ) -> R {
+        if !self.on(id) {
+            return f(None);
+        }
+        if !self.options_cache.borrow().contains_key(id) {
+            let _ = self.options(id);
+        }
+        f(self.options_cache.borrow().get(id).and_then(|v| v.get(key)))
+    }
     /// 動いていれば options の key（真偽）。止まっていれば false
     pub fn opt_bool(&self, id: &str, key: &str) -> bool {
-        self.options(id)
-            .get(key)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+        self.with_option(id, key, |v| v.and_then(|v| v.as_bool()).unwrap_or(false))
     }
     pub fn opt_str(&self, id: &str, key: &str) -> String {
-        match self.options(id).get(key) {
+        self.with_option(id, key, |v| match v {
             Some(serde_json::Value::String(s)) => s.clone(),
             Some(serde_json::Value::Number(n)) => n.to_string(),
             _ => String::new(),
-        }
+        })
     }
     pub fn opt_f64(&self, id: &str, key: &str) -> Option<f64> {
-        match self.options(id).get(key)? {
+        self.with_option(id, key, |v| match v? {
             serde_json::Value::Number(n) => n.as_f64(),
             serde_json::Value::String(s) => s.trim().parse().ok(),
             _ => None,
-        }
+        })
     }
     fn dirty(&self) {
         self.options_cache.borrow_mut().clear();
+    }
+    /// 実行中のエラーで止まったプラグインを表示に反映する（キャッシュを捨てて描き直させる）
+    fn settle(&mut self) {
+        let mut any = false;
+        for p in &mut self.entries {
+            if std::mem::take(&mut p.failed) {
+                any = true;
+                if self.stopped.len() < 20 && !self.stopped.contains(&p.manifest.name) {
+                    self.stopped.push(p.manifest.name.clone());
+                }
+            }
+        }
+        if any {
+            self.dirty();
+            self.revision = self.revision.wrapping_add(1);
+            self.actions_cache = None;
+        }
+    }
+    /// エラーで止まったプラグインの名前（前回から増えた分）。表示の更新も済ませる
+    pub fn take_stopped(&mut self) -> Vec<String> {
+        self.settle();
+        std::mem::take(&mut self.stopped)
     }
     /// 任意のフック（on_typing / on_presence / on_voice など）を、動いている全プラグインへ知らせる
     pub fn hook(&mut self, name: &str, args: &[serde_json::Value]) {
@@ -877,6 +960,7 @@ impl Plugins {
                 r.call("voice_panel", call)
             });
             match result {
+                Some(Ok(Value::String(_))) if labels.len() >= MAX_VOICE_LINES => (),
                 Some(Ok(Value::String(s))) => match s.to_str() {
                     Ok(value) if value.len() <= 256 => labels.push(value.to_owned()),
                     Ok(_) => p.fail(
@@ -903,14 +987,42 @@ impl Plugins {
         }
         labels
     }
+    /// 受信したメッセージを知らせる。表示が変わりうるとき（on_display を持つ、または設定が変わった）だけ
+    /// revision を上げる。たくさん有効でも、受信のたびに全行を作り直さないため
     pub fn event(&mut self, m: &Message) {
-        self.dirty();
-        if self.entries.iter().any(Plugin::running) {
-            self.revision = self.revision.wrapping_add(1);
-        }
+        let mut changed = false;
         for p in &mut self.entries {
-            let result = p.runtime.as_ref().map(|r| r.message("on_message", m));
-            p.check(result);
+            let Some(r) = p.runtime.as_ref() else {
+                continue;
+            };
+            let result = (|| -> mlua::Result<bool> {
+                let callbacks: Table = r.lua.globals().get("__plugin")?;
+                if !matches!(
+                    callbacks.raw_get::<Value>("on_message")?,
+                    Value::Function(_)
+                ) {
+                    return Ok(false);
+                }
+                let options = || -> mlua::Result<serde_json::Value> {
+                    let v = r.call("options", ())?;
+                    Ok(r.lua.from_value(v).unwrap_or(serde_json::Value::Null))
+                };
+                let before = options()?;
+                r.message("on_message", m)?;
+                let display = matches!(
+                    callbacks.raw_get::<Value>("on_display")?,
+                    Value::Function(_)
+                );
+                Ok(display || options()? != before)
+            })();
+            match result {
+                Ok(c) => changed |= c,
+                Err(e) => p.fail(e.to_string()),
+            }
+        }
+        if changed {
+            self.dirty();
+            self.revision = self.revision.wrapping_add(1);
         }
     }
     /// 削除（on_delete）・編集（on_edit、2つ目の引数は編集後の本文）をプラグインへ知らせる。m は削除・編集前のメッセージ
@@ -996,7 +1108,10 @@ impl Plugins {
                 .filter_map(Result::ok)
                 .map(|v| PageItem {
                     kind: v.get("kind").unwrap_or_default(),
-                    label: v.get("label").unwrap_or_default(),
+                    label: clip(
+                        &v.get::<String>("label").unwrap_or_default(),
+                        MAX_PAGE_LABEL_CHARS,
+                    ),
                     action: v.get("action").unwrap_or_default(),
                     enabled: v.get("enabled").unwrap_or(false),
                 })
@@ -1100,7 +1215,7 @@ impl Plugin {
         };
         match runtime {
             Ok(r) => self.runtime = Some(r),
-            Err(e) => self.error = Some(format!("{e:#}")),
+            Err(e) => self.error = Some(clip(&format!("{e:#}"), MAX_ERROR_CHARS)),
         }
     }
     fn stop(&mut self) {
@@ -1108,9 +1223,12 @@ impl Plugin {
             let _ = r.call("stop", ());
         }
     }
+    /// 実行中のエラーで止める。本体側の機能は on() が false になるので標準の表示に戻る
     fn fail(&mut self, e: String) {
         self.runtime = None;
-        self.error = Some(e);
+        self.error = Some(clip(&e, MAX_ERROR_CHARS));
+        self.failed = true;
+        self.waker.wake();
     }
     fn check(&mut self, result: Option<mlua::Result<Value>>) {
         if let Some(Err(e)) = result {
@@ -1211,7 +1329,7 @@ mod tests {
                 description_zh: String::new(),
                 bd: false,
             };
-            plugins.entries.push(Plugin { manifest, error: None, runtime: None, path: PathBuf::new(), bundled_source: Some("local count = 0; return {start=function() count=count+1 end, page=function() return count end}") });
+            plugins.entries.push(Plugin { manifest, error: None, runtime: None, path: PathBuf::new(), failed: false, waker: Default::default(), bundled_source: Some("local count = 0; return {start=function() count=count+1 end, page=function() return count end}") });
         }
         let mut enabled = vec!["missing".to_string()];
         plugins.set_all(true, &mut enabled);
@@ -1249,6 +1367,8 @@ mod tests {
             runtime: None,
             path: PathBuf::new(),
             bundled_source: Some(include_str!("../plugins/call-time-counter/main.lua")),
+            failed: false,
+            waker: Default::default(),
         });
         let mut enabled = Vec::new();
         plugins.toggle("call-time-counter", &mut enabled);
@@ -1295,6 +1415,8 @@ mod tests {
                 runtime: Some(runtime),
                 path: PathBuf::new(),
                 bundled_source: None,
+                failed: false,
+                waker: Default::default(),
             });
         }
         assert_eq!(plugins.voice_panel(None, "channel", 0), vec!["channel"]);
@@ -1465,6 +1587,178 @@ mod tests {
         let mut p = only("to-do-list");
         assert!(p.command("/todo !buy milk", "1"));
         assert!(p.page("to-do-list").iter().any(|i| i.label == "! buy milk"));
+    }
+    /// スクリプトから直接プラグインを作る（id = 名前）
+    fn scripted(list: &[(&str, &str)]) -> (Plugins, Vec<String>) {
+        let mut plugins = Plugins::default();
+        let mut enabled = Vec::new();
+        for (id, source) in list {
+            let manifest = Manifest {
+                id: (*id).into(),
+                name: (*id).into(),
+                version: "1".into(),
+                description: String::new(),
+                api: 1,
+                entry: "main.lua".into(),
+                description_en: String::new(),
+                description_zh: String::new(),
+                bd: false,
+            };
+            let runtime = Runtime::from_source(&manifest, source, Path::new("")).unwrap();
+            plugins.entries.push(Plugin {
+                manifest,
+                error: None,
+                runtime: Some(runtime),
+                path: PathBuf::new(),
+                bundled_source: None,
+                failed: false,
+                waker: Default::default(),
+            });
+            enabled.push((*id).to_string());
+        }
+        plugins.index = plugins
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.manifest.id.clone(), i))
+            .collect();
+        (plugins, enabled)
+    }
+    fn message(content: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "id": "1", "channel_id": "2", "author": {"id": "3", "username": "u"},
+            "content": content, "timestamp": "2026-01-01T00:00:00+00:00"
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn clip_counts_characters_in_every_language() {
+        assert_eq!(clip("hello", 5), "hello");
+        assert_eq!(clip("hello world", 5), "hello…");
+        assert_eq!(clip("日本語のエラーです", 4), "日本語の…");
+        assert_eq!(clip("插件因错误已停止", 2), "插件…");
+        assert_eq!(clip("", 3), "");
+    }
+    /// 描画中（on_display）に落ちたプラグインは止まり、表示のキャッシュが作り直され、名前が 1 回だけ届く
+    #[test]
+    fn failing_plugin_stops_and_refreshes_display() {
+        let long = "x".repeat(5000);
+        let (mut plugins, _) = scripted(&[
+            (
+                "broken",
+                &format!("return {{on_display=function() error('{long}') end}}"),
+            ),
+            ("ok", "return {on_display=function(s) return s .. '!' end}"),
+        ]);
+        let before = plugins.revision;
+        assert_eq!(plugins.transform("on_display", "hi", "1"), "hi!");
+        assert!(!plugins.on("broken"));
+        assert!(plugins.on("ok"));
+        let error = plugins.entries[0].error.clone().unwrap();
+        assert!(
+            error.chars().count() <= MAX_ERROR_CHARS + 1,
+            "{}",
+            error.len()
+        );
+        assert_eq!(plugins.take_stopped(), vec!["broken".to_string()]);
+        assert_ne!(plugins.revision, before);
+        let after = plugins.revision;
+        assert!(plugins.take_stopped().is_empty());
+        assert_eq!(plugins.revision, after);
+    }
+    /// 受信のたびに revision を上げるのは、表示が変わりうるときだけ
+    #[test]
+    fn message_event_bumps_revision_only_when_display_can_change() {
+        let (mut plugins, _) = scripted(&[
+            ("quiet", "local n = 0; return {on_message=function() n = n + 1 end, options=function() return {} end}"),
+            ("plain", "return {}"),
+        ]);
+        let before = plugins.revision;
+        for _ in 0..100 {
+            plugins.event(&message("hello"));
+        }
+        assert_eq!(plugins.revision, before);
+        let (mut plugins, _) = scripted(&[(
+            "counter",
+            "local s = {n = 0}; return {on_message=function() s.n = s.n + 1 end, options=function() return s end}",
+        )]);
+        assert_eq!(plugins.opt_f64("counter", "n"), Some(0.0));
+        plugins.event(&message("hello"));
+        assert_eq!(plugins.opt_f64("counter", "n"), Some(1.0));
+        let (mut plugins, _) = scripted(&[(
+            "display",
+            "return {on_message=function() end, on_display=function(s) return s end}",
+        )]);
+        let before = plugins.revision;
+        plugins.event(&message("hello"));
+        assert_ne!(plugins.revision, before);
+    }
+    /// 操作が多すぎても上限で止め、長い名前は切り、同じ状態なら Lua を呼び直さない
+    #[test]
+    fn message_actions_are_capped_and_cached() {
+        let label = "長い名前".repeat(50);
+        let many = format!(
+            "local calls = 0; local a = {{}}; for i = 1, 20 do a[i] = {{label = '{label}', run = function() end}} end; return {{message_actions = a, page = function() return {{}} end}}"
+        );
+        let list: Vec<(String, String)> = (0..5).map(|i| (format!("p{i}"), many.clone())).collect();
+        let list: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let (mut plugins, _) = scripted(&list);
+        let actions = plugins.message_actions();
+        assert_eq!(actions.len(), MAX_MESSAGE_ACTIONS);
+        assert!(actions
+            .iter()
+            .all(|(_, _, l, _)| l.chars().count() <= MAX_ACTION_LABEL_CHARS + 1));
+        // キャッシュから返る（中身は同じ）
+        assert_eq!(plugins.message_actions().len(), MAX_MESSAGE_ACTIONS);
+        let mut enabled = vec!["p0".to_string()];
+        plugins.toggle("p0", &mut enabled);
+        assert!(!plugins.on("p0"));
+        assert!(plugins.message_actions().iter().all(|(id, ..)| id != "p0"));
+    }
+    /// 同梱プラグインの全 ON / 全 OFF と 1 つずつの切り替えを繰り返しても、状態がずれない
+    #[test]
+    fn toggling_all_bundled_plugins_repeatedly_stays_consistent() {
+        let dir = std::env::temp_dir().join(format!("riscord-toggle-test-{}", std::process::id()));
+        let mut plugins = Plugins::default();
+        plugins.data_root = dir.clone();
+        plugins.reload(&[]);
+        let ids: Vec<String> = plugins
+            .entries
+            .iter()
+            .filter(|p| p.bundled_source.is_some())
+            .map(|p| p.manifest.id.clone())
+            .collect();
+        let mut enabled = Vec::new();
+        for round in 0..5 {
+            plugins.set_all(true, &mut enabled);
+            for id in &ids {
+                assert!(plugins.on(id), "round {round}: {id}");
+            }
+            // 受信・表示・操作を何度も呼んでも止まらない
+            for i in 0..50 {
+                plugins.event(&message(&format!(
+                    "hello {i} https://example.com/?utm_source=x"
+                )));
+                let _ = plugins.transform("on_display", "hello world", "2");
+                let _ = plugins.message_actions();
+                let _ = plugins.tick();
+            }
+            assert!(plugins.take_stopped().is_empty());
+            plugins.selected = ids.first().cloned();
+            for id in &ids {
+                plugins.toggle(id, &mut enabled);
+                assert!(!plugins.on(id), "{id}");
+                plugins.toggle(id, &mut enabled);
+                assert!(plugins.on(id), "{id}");
+            }
+            plugins.toggle(&ids[0], &mut enabled);
+            assert!(plugins.selected.is_none());
+            plugins.set_all(false, &mut enabled);
+            assert!(enabled.is_empty());
+            assert!(plugins.entries.iter().all(|p| !p.running()));
+            assert!(plugins.message_actions().is_empty());
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn rejects_paths_outside_plugin() {

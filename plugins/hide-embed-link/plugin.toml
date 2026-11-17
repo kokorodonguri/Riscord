@@ -1,0 +1,9 @@
+id = "hide-embed-link"
+name = "HideEmbedLink"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "本文が URL だけで埋め込みが付いているメッセージの、URL の文字を隠します"
+description_en = "Hides the URL text of messages that are just a link with an embed"
+description_zh = "对仅含链接且带有嵌入的消息隐藏链接文字"

@@ -21,6 +21,7 @@ fn user(id: &str, name: &str) -> User {
         premium_type: None,
         bot: false,
         avatar_decoration_data: None,
+        public_flags: 0,
     }
 }
 
@@ -110,6 +111,7 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                 Presence {
                     status: "online".into(),
                     activity: None,
+                    ..Default::default()
                 },
             ),
             (
@@ -119,6 +121,7 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     activity: Some(
                         tr!("プレイ中: パズル", "Playing: Puzzle", "正在玩：拼图").into(),
                     ),
+                    ..Default::default()
                 },
             ),
             (
@@ -126,6 +129,7 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                 Presence {
                     status: "dnd".into(),
                     activity: None,
+                    ..Default::default()
                 },
             ),
         ]));

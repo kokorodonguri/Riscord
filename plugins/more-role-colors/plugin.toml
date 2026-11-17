@@ -1,0 +1,9 @@
+id = "more-role-colors"
+name = "MoreRoleColors"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "返信のプレビューや入力中の表示などでも、名前をロールの色で表示します"
+description_en = "Shows usernames in role colors in more places, like reply previews and typing"
+description_zh = "在回复预览和正在输入提示等更多位置以身份组颜色显示用户名"

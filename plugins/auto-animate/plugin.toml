@@ -1,0 +1,9 @@
+id = "auto-animate"
+name = "AutoAnimate"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "動くアイコン（アバター・サーバーアイコン）を、マウスを重ねなくても常に動かします"
+description_en = "Always animates animated avatars and server icons without hovering"
+description_zh = "无需悬停即可让动态头像和服务器图标一直播放动画"

@@ -269,6 +269,13 @@ impl App {
         if unchanged {
             return;
         }
+        if old.and_then(|o| o.channel_id.as_ref()) != v.channel_id.as_ref() {
+            if v.channel_id.is_some() {
+                self.voice_joined.insert(v.user_id.clone(), std::time::Instant::now());
+            } else {
+                self.voice_joined.remove(&v.user_id);
+            }
+        }
         let name = v
             .user
             .as_ref()
@@ -421,6 +428,14 @@ impl App {
             self.incognito_activity_hidden = hide;
             self.send(Cmd::SetActivity(self.settings.show_activity && !hide));
         }
+        if self.plugins.on("all-call-time-counter") && !self.voice_joined.is_empty() {
+            self.repaint_after(std::time::Duration::from_secs(1));
+        }
+        ICON_ANIMATE.store(self.plugins.on("auto-animate"), std::sync::atomic::Ordering::Relaxed);
+        ICON_HIRES.store(
+            self.plugins.on("high-res-profile-images"),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         net::GENERIC_CLIENT.store(
             self.plugins.opt_bool("incognito", "generic_client"),
             std::sync::atomic::Ordering::Relaxed,

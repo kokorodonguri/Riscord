@@ -1,0 +1,9 @@
+id = "timezones"
+name = "Timezones"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ユーザーごとに時差を設定して、名前の横に相手の現地時刻を出します"
+description_en = "Set a time zone per user and show their local time next to their name"
+description_zh = "为每个用户设置时区，并在名称旁显示对方的当地时间"

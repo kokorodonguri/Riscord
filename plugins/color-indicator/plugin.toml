@@ -1,0 +1,9 @@
+id = "color-indicator"
+name = "ColorIndicator"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージ中の #rrggbb の色コードを、その色で表示します"
+description_en = "Highlights color codes like #rrggbb in chat in their own color"
+description_zh = "以对应颜色显示聊天中的 #rrggbb 颜色代码"

@@ -1,0 +1,9 @@
+id = "status-everywhere"
+name = "StatusEverywhereV2"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージの名前の横にも、オンライン状態の点を出します"
+description_en = "Shows status dots next to names in chat too"
+description_zh = "在聊天中的名称旁也显示在线状态圆点"

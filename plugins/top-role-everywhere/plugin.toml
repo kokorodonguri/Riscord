@@ -1,0 +1,9 @@
+id = "top-role-everywhere"
+name = "TopRoleEverywhere"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージとメンバー一覧で、名前の横に一番上のロールを出します"
+description_en = "Shows a user's highest role as a tag next to their name"
+description_zh = "在名称旁以标签显示用户的最高身份组"

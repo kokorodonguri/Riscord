@@ -1,0 +1,9 @@
+id = "edit-users"
+name = "EditUsers"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ユーザーの名前や色を、手元でだけ変えます"
+description_en = "Locally change users' names and colors"
+description_zh = "仅在本地更改用户的名称和颜色"

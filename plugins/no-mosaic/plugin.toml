@@ -1,0 +1,9 @@
+id = "no-mosaic"
+name = "NoMosaic"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "複数の画像をタイル状に並べず、1 枚ずつそのまま表示します"
+description_en = "Shows images one by one instead of the mosaic layout"
+description_zh = "多张图片不以拼贴排列，而是逐张显示"

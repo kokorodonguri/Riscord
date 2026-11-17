@@ -1,0 +1,9 @@
+id = "cake-day"
+name = "CakeDay"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "アカウントを作った記念日の人の名前に 🎂 を付けます"
+description_en = "Shows 🎂 next to people on their account anniversary"
+description_zh = "在账号创建纪念日当天的人名旁显示 🎂"

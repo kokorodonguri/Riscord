@@ -345,6 +345,8 @@ pub struct Root {
     pub hover_msg: Option<String>,
     /// スポイラーを押して開いたメッセージ
     pub revealed: std::collections::HashSet<String>,
+    /// CollapseEmbeds: 既定から開閉を切り替えたメッセージ
+    pub collapsed_media: std::collections::HashSet<String>,
     /// メッセージ ID ごとの本文の控え（BodyCache）
     pub body_cache: HashMap<String, BodyCache>,
     /// 最初に挿入した順。既存項目の更新では順序を変えない。
@@ -1090,6 +1092,7 @@ impl Root {
             member_key: (String::new(), u64::MAX),
             hover_msg: None,
             revealed: Default::default(),
+            collapsed_media: Default::default(),
             body_cache: HashMap::new(),
             body_cache_order: Default::default(),
             menu: None,
@@ -1329,6 +1332,23 @@ impl Root {
             self.pick_guild(gid);
             self.open_channel(cid);
             window.activate_window();
+        }
+        // ClickableMentions: 押されたメンションの人のプロフィールを開く
+        let mention = crate::ui::message::PENDING_MENTION.lock().unwrap().take();
+        if let Some(uid) = mention {
+            let user = self
+                .app
+                .messages
+                .values()
+                .flatten()
+                .flat_map(|m| m.mentions.iter())
+                .find(|u| u.id == uid)
+                .cloned();
+            if let Some(user) = user {
+                let p = window.mouse_position();
+                self.app
+                    .open_profile(user, Bounds::new(p, size(px(0.), px(0.))), false);
+            }
         }
         self.app.poll_file_pick();
         if let Some(t) = self.app.clipboard_out.take() {

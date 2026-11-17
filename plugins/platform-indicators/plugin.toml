@@ -1,0 +1,9 @@
+id = "platform-indicators"
+name = "PlatformIndicators"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "名前の横に、使っている端末（デスクトップ・モバイル・ウェブ）を出します"
+description_en = "Shows which platforms (desktop, mobile, web) a user is on next to their name"
+description_zh = "在名称旁显示用户正在使用的平台（桌面、移动、网页）"

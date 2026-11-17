@@ -1,0 +1,9 @@
+id = "edit-channels"
+name = "EditChannels"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネルの名前を、手元でだけ変えます"
+description_en = "Locally rename channels"
+description_zh = "仅在本地重命名频道"

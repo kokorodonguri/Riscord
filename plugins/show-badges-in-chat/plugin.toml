@@ -1,0 +1,9 @@
+id = "show-badges-in-chat"
+name = "ShowBadgesInChat"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージとメンバー一覧に、Discord のバッジ（スタッフ・HypeSquad など）を出します"
+description_en = "Shows Discord badges (Staff, HypeSquad, etc.) in chat and the member list"
+description_zh = "在聊天和成员列表中显示 Discord 徽章（员工、HypeSquad 等）"

@@ -1,0 +1,9 @@
+id = "role-mention-icons"
+name = "RoleMentionIcons"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ロールへのメンションの前に 🏷 の印を付けて、ユーザーへのメンションと見分けやすくします"
+description_en = "Adds a 🏷 icon before role mentions so they stand out from user mentions"
+description_zh = "在身份组提及前添加 🏷 标记，便于与用户提及区分"

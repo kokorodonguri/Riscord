@@ -153,7 +153,7 @@ impl Root {
                 .guilds
                 .iter()
                 .find(|x| &x.id == g)
-                .map(|x| (x.name.clone(), guild_icon_url(x)))
+                .map(|x| (a.guild_label(&x.id, &x.name), guild_icon_url(x)))
                 .unwrap_or_default(),
         };
         let place_icon = if a.sel_guild.is_none() {
@@ -518,7 +518,7 @@ impl Root {
                     sel,
                     unread.contains(&Some(g.id.as_str())),
                     a.mention_count(Some(&g.id)),
-                    &g.name,
+                    &a.guild_label(&g.id, &g.name),
                     url.as_deref(),
                     false,
                 )
@@ -601,7 +601,7 @@ impl Root {
                     .guilds
                     .iter()
                     .find(|x| &x.id == g)
-                    .map(|x| x.name.clone())
+                    .map(|x| a.guild_label(&x.id, &x.name))
                     .unwrap_or_default();
                 // 押すとサーバーのメニュー（公式クライアントと同じく見出しの下に開く）
                 let open = self.menu.is_some_and(|(m, _)| m == PopMenu::Guild)
@@ -967,7 +967,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let a = &self.app;
-        let name = c.name.clone().unwrap_or_default();
+        let name = a.channel_label(&c.id, c.name.as_deref().unwrap_or_default());
         let id = c.id.clone();
         if c.is_voice() {
             let here = cur_voice == Some(c.id.as_str());
@@ -1002,6 +1002,7 @@ impl Root {
             for v in a.voice_members(&c.id) {
                 let u = v.user.clone().or_else(|| a.find_user(&v.user_id));
                 let live = a.is_streaming(&v.user_id);
+                let extra = a.voice_row_info(v.guild_id.as_deref(), &v.user_id, u.as_ref());
                 let mut row = voice_member_row(
                     u.as_ref(),
                     &v.user_id,
@@ -1009,6 +1010,7 @@ impl Root {
                     v.self_mute,
                     v.self_deaf,
                     live,
+                    extra,
                 );
                 // 自分以外の配信は、クリックで見る
                 if live && here && a.me.as_ref().is_none_or(|m| m.id != v.user_id) {
@@ -1617,11 +1619,16 @@ fn voice_member_row(
     mute: bool,
     deaf: bool,
     live: bool,
+    extra: crate::app::bd_display::VoiceRowInfo,
 ) -> Stateful<Div> {
-    let name = u
-        .map(|u| u.display().to_string())
-        .unwrap_or_else(|| id.to_string());
+    let name = extra.name.clone().unwrap_or_else(|| {
+        u.map(|u| u.display().to_string())
+            .unwrap_or_else(|| id.to_string())
+    });
     let mut right = div().flex().items_center().gap(z(4.0));
+    if let Some(t) = extra.timer {
+        right = right.child(text(t, 11.0, FAINT()));
+    }
     if live {
         right = right.child(live_badge());
     }
@@ -1644,7 +1651,18 @@ fn voice_member_row(
         .gap(z(8.0))
         .hover(|s| s.bg(HOVER()))
         .child(speaking_avatar(u, id, 22.0, speaking))
-        .child(line(name, 14.0, if speaking { WHITE() } else { MUTED() }).flex_1())
+        .child(
+            line(
+                name,
+                14.0,
+                if speaking {
+                    WHITE()
+                } else {
+                    extra.color.unwrap_or(MUTED())
+                },
+            )
+            .flex_1(),
+        )
         .child(right)
 }
 

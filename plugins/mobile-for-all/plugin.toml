@@ -1,0 +1,9 @@
+id = "mobile-for-all"
+name = "MobileForAll"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "モバイルからも使っている人には、モバイルの印を優先して出します"
+description_en = "Gives the mobile indicator priority over desktop and other indicators"
+description_zh = "对同时使用移动端的人优先显示移动端标记"

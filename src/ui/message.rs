@@ -117,6 +117,49 @@ fn highlight(st: md::Style) -> Option<HighlightStyle> {
 }
 
 impl Rich {
+    /// ColorIndicator: #rrggbb をその色で太字にする（ほかの飾り・リンクと重ならない所だけ）
+    pub fn color_codes(&mut self) {
+        let mut add = Vec::new();
+        let mut i = 0;
+        while let Some(pos) = self.text[i..].find('#') {
+            let s = i + pos;
+            let e = s + 7;
+            let ok = e <= self.text.len()
+                && self.text.is_char_boundary(e)
+                && self.text[s + 1..e].bytes().all(|b| b.is_ascii_hexdigit())
+                && !self.text[e..].starts_with(|c: char| c.is_ascii_alphanumeric());
+            if !ok {
+                i = s + 1;
+                continue;
+            }
+            let free = !self.styles.iter().any(|(r, _)| r.start < e && s < r.end)
+                && !self.links.iter().any(|(r, _)| r.start < e && s < r.end);
+            if free {
+                if let Ok(v) = u32::from_str_radix(&self.text[s + 1..e], 16) {
+                    let c = Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
+                    add.push((
+                        s..e,
+                        HighlightStyle {
+                            color: Some(c.into()),
+                            font_weight: Some(FontWeight::BOLD),
+                            underline: Some(UnderlineStyle {
+                                thickness: px(2.0),
+                                color: Some(c.into()),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+            i = e;
+        }
+        if !add.is_empty() {
+            self.styles.extend(add);
+            self.styles.sort_by_key(|(r, _)| r.start);
+        }
+    }
+
     fn push(&mut self, s: &str, style: Option<HighlightStyle>) {
         let start = self.text.len();
         self.text.push_str(s);
@@ -245,6 +288,10 @@ impl Rich {
         let clickable = ranges.iter().cloned().chain(spoilers).collect();
         InteractiveText::new(id, styled)
             .on_click(clickable, move |i, window, cx| match urls.get(i) {
+                Some(url) if url.starts_with(MENTION_LINK) => {
+                    *PENDING_MENTION.lock().unwrap() = Some(url[MENTION_LINK.len()..].to_string());
+                    window.refresh();
+                }
                 Some(url) => cx.open_url(url),
                 None => {
                     if let Some(f) = &on_spoiler {
@@ -254,10 +301,46 @@ impl Rich {
             })
             .tooltip(move |ix, window, cx| {
                 let i = ranges2.iter().position(|r| r.contains(&ix))?;
-                Some(gpui::component::tooltip::Tooltip::new(urls2[i].clone()).build(window, cx))
+                let label = if urls2[i].starts_with(MENTION_LINK) {
+                    tr!("プロフィールを開く", "Open profile", "打开个人资料").to_string()
+                } else {
+                    urls2[i].clone()
+                };
+                Some(gpui::component::tooltip::Tooltip::new(label).build(window, cx))
             })
             .into_any_element()
     }
+}
+
+/// ClickableMentions: 押せるメンションのリンク先の印（後ろはユーザー ID）
+pub const MENTION_LINK: &str = "riscord-mention:";
+/// 押されたメンションのユーザー ID（Root の描画で開く）
+pub static PENDING_MENTION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 名前の横のタグ（同梱プラグインの StaffTag・PlatformIndicators など）
+pub fn tag_elements(tags: &[crate::app::bd_display::Tag], key: &str) -> Vec<AnyElement> {
+    tags.iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let el = div()
+                .id(SharedString::from(format!("tag{key}_{i}")))
+                .flex_none()
+                .text_size(z(11.0))
+                .text_color(t.color)
+                .when(t.pill, |d| {
+                    d.px(z(5.0))
+                        .rounded(z(4.0))
+                        .border_1()
+                        .border_color(t.color)
+                        .font_weight(FontWeight::MEDIUM)
+                })
+                .child(t.text.clone());
+            match &t.tip {
+                Some(tip_text) => el.tooltip(tip(tip_text.clone())).into_any_element(),
+                None => el.into_any_element(),
+            }
+        })
+        .collect()
 }
 
 /// 返信のプレビュー用に、本文を記法を解いた1行にする。リンクは色だけで、押せない
@@ -528,11 +611,18 @@ impl Root {
             .is_some_and(|x| x.id == m.id)
             || self.app.is_jump_flash(&m.id);
         // ロールは行ごとに複製せず、色を決める間だけ借りる（ロールの多いサーバーで見えている行の数だけ Vec を作っていた）
-        let name_col = m
-            .member
-            .as_ref()
-            .and_then(|member| member_role_color(member, self.guild_roles()))
+        let name_col = self
+            .app
+            .bd_name_color(&m.author.id, m.member.as_ref(), self.app.sel_guild.as_deref())
+            .or_else(|| {
+                m.member
+                    .as_ref()
+                    .and_then(|member| member_role_color(member, self.guild_roles()))
+            })
             .unwrap_or(WHITE());
+        let shown_name = self.app.shown_name(&m.author.id, author_name(m));
+        let tags = self.app.bd_tags(m);
+        let always_time = self.app.bd_always_time();
         let mut outer = div().flex().flex_col().w_full();
         if new_day {
             if let Some(t) = local_dt(&m.timestamp) {
@@ -632,10 +722,12 @@ impl Root {
                 row = row.child(self.reply_preview(m, COMPACT_NAME_X + 8.0, text_x, cx));
             }
             // 時刻・名前・本文を固定の列にそろえる。連投は名前を省き、時刻はマウスを乗せたときだけ出す
-            let time = if !grouped || hovered {
-                local_dt(&m.timestamp)
-                    .map(|t| t.format("%H:%M").to_string())
-                    .unwrap_or_default()
+            let time = if !grouped || hovered || always_time {
+                self.app.bd_time(&m.timestamp, true).unwrap_or_else(|| {
+                    local_dt(&m.timestamp)
+                        .map(|t| t.format("%H:%M").to_string())
+                        .unwrap_or_default()
+                })
             } else {
                 String::new()
             };
@@ -661,11 +753,23 @@ impl Root {
                         );
                         cx.notify();
                     }))
-                    .child(author_name(m).to_string())
+                    .child(shown_name.clone())
+                    .into_any_element()
+            };
+            let name: AnyElement = if grouped || tags.is_empty() {
+                name
+            } else {
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_baseline()
+                    .gap(z(4.0))
+                    .child(name)
+                    .children(tag_elements(&tags, &m.id))
                     .into_any_element()
             };
             let mut body = div().flex_1().min_w_0();
-            if !m.content.is_empty() {
+            if !m.content.is_empty() && !self.app.bd_hide_content(m) {
                 body = body.child(self.inline_content(m, cx));
             }
             // 本文のない連投（画像だけなど）は、空の行を作らない
@@ -699,7 +803,7 @@ impl Root {
                     div()
                         .pl(z(text_x))
                         .pr(z(16.0))
-                        .child(self.message_media(m, cx)),
+                        .child(self.media_or_collapsed(m, cx)),
                 );
             }
             if let Some(r) = self.reactions_row(m, cx) {
@@ -713,10 +817,12 @@ impl Root {
             }
             let left: AnyElement = if grouped {
                 // まとめた行はアバターの代わりに、マウスを乗せたとき時刻を出す
-                let t = if hovered {
-                    local_dt(&m.timestamp)
-                        .map(|t| t.format("%H:%M").to_string())
-                        .unwrap_or_default()
+                let t = if hovered || always_time {
+                    self.app.bd_time(&m.timestamp, true).unwrap_or_else(|| {
+                        local_dt(&m.timestamp)
+                            .map(|t| t.format("%H:%M").to_string())
+                            .unwrap_or_default()
+                    })
                 } else {
                     String::new()
                 };
@@ -785,15 +891,25 @@ impl Root {
                                     );
                                     cx.notify();
                                 }))
-                                .child(author_name(m).to_string()),
+                                .child(shown_name.clone()),
                         )
-                        .child(text(fmt_time(&m.timestamp), 12.0, FAINT()).part(Part::MessageTime)),
+                        .children(tag_elements(&tags, &m.id))
+                        .child(
+                            text(
+                                self.app
+                                    .bd_time(&m.timestamp, false)
+                                    .unwrap_or_else(|| fmt_time(&m.timestamp)),
+                                12.0,
+                                FAINT(),
+                            )
+                            .part(Part::MessageTime),
+                        ),
                 );
             }
-            if !m.content.is_empty() {
+            if !m.content.is_empty() && !self.app.bd_hide_content(m) {
                 content = content.child(self.inline_content(m, cx));
             }
-            content = content.child(self.message_media(m, cx));
+            content = content.child(self.media_or_collapsed(m, cx));
             if let Some(r) = self.reactions_row(m, cx) {
                 content = content.child(r);
             }
@@ -1292,13 +1408,15 @@ impl Root {
         // メンションの名前（チャンネル名・ロール名）は後から変わるので毎回入れ直し、結果が変わったときだけ解析し直す
         let roles = self.guild_roles();
         let c = &self.body_cache[&m.id];
-        let content = resolve_mentions(&c.displayed, m, &self.app.channels, roles);
+        let pre = self.app.bd_pre_mentions(&c.displayed, m, roles);
+        let content = resolve_mentions(&pre, m, &self.app.channels, roles);
         let resolved = hash(&|h| content.hash(h)).max(1);
         if c.resolved == resolved {
             return c.blocks.clone();
         }
         let blocks: Rc<[md::Block]> = md::blocks(&content).into();
         drop(content);
+        drop(pre);
         let c = self.body_cache.get_mut(&m.id).unwrap();
         c.resolved = resolved;
         c.blocks = blocks.clone();
@@ -1321,8 +1439,71 @@ impl Root {
         };
         let last = blocks.len().saturating_sub(1);
         let mut items = Vec::with_capacity(blocks.len());
+        let enhance = self.app.plugins.on("enhancecodeblocks");
+        let langs = if enhance {
+            crate::app::bd_display::code_langs(&m.content)
+        } else {
+            Vec::new()
+        };
+        let mut code_ix = 0;
         for (i, block) in blocks.iter().enumerate() {
             let item = match block {
+                md::Block::Code(code) if enhance => {
+                    let lang = langs.get(code_ix).cloned().unwrap_or_default();
+                    code_ix += 1;
+                    let copy = code.clone();
+                    let lines = code.lines().count();
+                    div()
+                        .min_w_0()
+                        .my(z(2.0))
+                        .rounded(z(4.0))
+                        .border_1()
+                        .border_color(BORDER())
+                        .bg(EMBED_BG())
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .px(z(8.0))
+                                .py(z(3.0))
+                                .flex()
+                                .items_center()
+                                .gap(z(8.0))
+                                .bg(WIDGET())
+                                .child(text(
+                                    if lang.is_empty() { "text".to_string() } else { lang },
+                                    11.0,
+                                    MUTED(),
+                                ))
+                                .child(text(
+                                    tr!("{lines} 行", "{lines} lines", "{lines} 行",),
+                                    11.0,
+                                    FAINT(),
+                                ))
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("cb{}_{i}", m.id)))
+                                        .cursor_pointer()
+                                        .text_size(z(11.0))
+                                        .text_color(LINK())
+                                        .child(tr!("コピー", "Copy", "复制"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.app.clipboard_out = Some(copy.clone());
+                                            this.app.show_toast(tr!("コピーしました", "Copied", "已复制"));
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .px(z(8.0))
+                                .py(z(6.0))
+                                .font_family(mono_family())
+                                .text_size(z((fs * 0.875).round()))
+                                .part(Part::MessageCode)
+                                .child(StyledText::new(code.clone())),
+                        )
+                }
                 md::Block::Code(code) => div()
                     .min_w_0()
                     .my(z(2.0))
@@ -1346,7 +1527,7 @@ impl Root {
                                 m.content.contains(&format!("<@{}>", u.id))
                                     || m.content.contains(&format!("<@!{}>", u.id))
                             })
-                            .map(|u| format!("@{}", u.display()))
+                            .map(|u| (format!("@{}", u.display()), u.id.clone()))
                             .collect::<Vec<_>>(),
                         fs,
                         edited && i == last,
@@ -1406,7 +1587,7 @@ impl Root {
         &mut self,
         key: &str,
         spans: &[md::Span],
-        mentions: &[String],
+        mentions: &[(String, String)],
         fs: f32,
         edited: bool,
         revealed: bool,
@@ -1420,6 +1601,9 @@ impl Root {
                 animated: bool,
             },
         }
+        let clickable_mentions =
+            self.app.plugins.on("clickable-mentions") || self.app.plugins.on("better-mentions");
+        let color_codes = self.app.plugins.on("color-indicator");
         // 飾りは絵文字をまたいで続くので、記法を解いてから絵文字で切る
         let mut pieces = Vec::new();
         let mut cur = Rich::default();
@@ -1435,9 +1619,9 @@ impl Root {
                         while !rest.is_empty() && !(span.style.spoiler && !revealed) {
                             let found = mentions
                                 .iter()
-                                .filter_map(|name| rest.find(name).map(|pos| (pos, name)))
-                                .min_by_key(|(pos, name)| (*pos, std::cmp::Reverse(name.len())));
-                            let Some((pos, name)) = found else { break };
+                                .filter_map(|(name, uid)| rest.find(name.as_str()).map(|pos| (pos, name, uid)))
+                                .min_by_key(|(pos, name, _)| (*pos, std::cmp::Reverse(name.len())));
+                            let Some((pos, name, uid)) = found else { break };
                             cur.span(
                                 &md::Span {
                                     text: rest[..pos].to_string(),
@@ -1445,6 +1629,7 @@ impl Root {
                                 },
                                 revealed,
                             );
+                            let start = cur.text.len();
                             cur.push(
                                 name,
                                 Some(HighlightStyle {
@@ -1453,6 +1638,9 @@ impl Root {
                                     ..highlight(span.style).unwrap_or_default()
                                 }),
                             );
+                            if clickable_mentions {
+                                cur.links.push((start..cur.text.len(), format!("{MENTION_LINK}{uid}")));
+                            }
                             rest = &rest[pos + name.len()..];
                         }
                         cur.span(
@@ -1464,11 +1652,17 @@ impl Root {
                         );
                     }
                     Seg::Emoji { name, id, animated } => {
+                        if color_codes {
+                            cur.color_codes();
+                        }
                         pieces.push(Piece::Text(std::mem::take(&mut cur)));
                         pieces.push(Piece::Emoji { name, id, animated });
                     }
                 }
             }
+        }
+        if color_codes {
+            cur.color_codes();
         }
         if pieces.is_empty() {
             if edited {
@@ -1604,8 +1798,42 @@ impl Root {
     }
 
     /// 添付画像・スタンプ・埋め込み画像
+    /// CollapseEmbeds: 埋め込み・添付を畳めるようにする
+    fn media_or_collapsed(&mut self, m: &Message, cx: &mut Context<Self>) -> AnyElement {
+        let count = m.attachments.len() + m.embeds.iter().filter(|e| e.visible()).count();
+        if !self.app.plugins.on("collapse-embeds") || count == 0 {
+            return self.message_media(m, cx).into_any_element();
+        }
+        let default_closed = self.app.plugins.opt_bool("collapse-embeds", "collapsed");
+        let flipped = self.collapsed_media.contains(&m.id);
+        let closed = default_closed != flipped;
+        let id = m.id.clone();
+        let toggle = div()
+            .id(SharedString::from(format!("collapse{}", m.id)))
+            .cursor_pointer()
+            .text_size(z(12.0))
+            .text_color(MUTED())
+            .hover(|s| s.text_color(TEXT()))
+            .child(if closed {
+                tr!("▶ 埋め込み・添付を表示（{count}）", "▶ Show embeds and attachments ({count})", "▶ 显示嵌入和附件（{count}）",)
+            } else {
+                tr!("▼ 畳む", "▼ Collapse", "▼ 折叠").to_string()
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.collapsed_media.remove(&id) {
+                    this.collapsed_media.insert(id.clone());
+                }
+                cx.notify();
+            }));
+        let mut col = div().flex().flex_col().gap(z(2.0)).child(toggle);
+        if !closed {
+            col = col.child(self.message_media(m, cx));
+        }
+        col.into_any_element()
+    }
+
     fn message_media(&mut self, m: &Message, cx: &mut Context<Self>) -> Div {
-        let max = (420.0, 320.0);
+        let max = if self.app.opt_large_images() { (640.0, 480.0) } else { (420.0, 320.0) };
         let mut col = div().flex().flex_col().gap(z(4.0)).items_start();
         if let Some(poll) = &m.poll {
             let mut card = div()
@@ -1698,7 +1926,7 @@ impl Root {
         for (i, a) in m.attachments.iter().enumerate() {
             if a.is_image() {
                 let size = fit_size(a.width, a.height, max);
-                let src = resized(a.proxy_url.as_deref(), &a.url, size.unwrap_or(max));
+                let src = if self.app.plugins.on("uncompressed-images") { a.url.clone() } else { resized(a.proxy_url.as_deref(), &a.url, size.unwrap_or(max)) };
                 self.note_image(&src);
                 self.note_image(&a.url);
                 col = col.child(image_box(

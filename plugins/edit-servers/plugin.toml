@@ -1,0 +1,9 @@
+id = "edit-servers"
+name = "EditServers"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバーの名前を、手元でだけ変えます"
+description_en = "Locally rename servers"
+description_zh = "仅在本地重命名服务器"

@@ -1,0 +1,9 @@
+id = "complete-timestamps"
+name = "CompleteTimestamps"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージの時刻を、秒や日付まで入った自分好みの書き方にします"
+description_en = "Replaces message timestamps with your own detailed format"
+description_zh = "把消息时间改为包含秒和日期的自定义格式"

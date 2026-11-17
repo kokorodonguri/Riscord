@@ -1,0 +1,9 @@
+id = "hide-disabled-emojis"
+name = "HideDisabledEmojis"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "絵文字ピッカーから、使えない絵文字を隠します"
+description_en = "Hides emojis you can't use from the emoji picker"
+description_zh = "在表情选择器中隐藏无法使用的表情"

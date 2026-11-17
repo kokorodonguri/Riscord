@@ -1,0 +1,9 @@
+id = "user-tags"
+name = "UserTags"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ユーザーに自分だけのタグを付けて、名前の横に出します"
+description_en = "Add your own tags to users, shown next to their names"
+description_zh = "为用户添加只有你能看到的标签，显示在名称旁"

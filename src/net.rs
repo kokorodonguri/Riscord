@@ -1729,6 +1729,15 @@ fn handles(t: &str) -> bool {
 struct ReadyGuild {
     #[serde(default)]
     id: Value,
+    /// オーナー・メンバー数（StaffTag・ServerDetails などの同梱プラグイン用）
+    #[serde(default)]
+    owner_id: Value,
+    #[serde(default)]
+    member_count: Value,
+    #[serde(default)]
+    properties: Value,
+    #[serde(default)]
+    joined_at: Value,
     #[serde(default)]
     voice_states: Value,
     #[serde(default)]
@@ -1822,7 +1831,12 @@ fn dispatch_raw(
                 .into_iter()
                 .map(|g| {
                     let members: Vec<Value> = g.members.iter().filter(|m| m.is(&me)).map(member).collect();
-                    json!({ "id": g.id, "voice_states": g.voice_states, "emojis": g.emojis, "channels": ids(&g.channels), "threads": g.threads, "members": members })
+                    json!({ "id": g.id, "voice_states": g.voice_states, "emojis": g.emojis, "channels": ids(&g.channels), "threads": g.threads, "members": members,
+                        "owner_id": if g.owner_id.is_null() { g.properties["owner_id"].clone() } else { g.owner_id },
+                        "member_count": g.member_count, "joined_at": g.joined_at,
+                        "created": g.properties["id"].clone(), "description": g.properties["description"].clone(),
+                        "nsfw_level": g.properties["nsfw_level"].clone(), "premium_tier": g.properties["premium_tier"].clone(),
+                        "verification_level": g.properties["verification_level"].clone() })
                 })
                 .collect::<Vec<_>>();
             return dispatch(
@@ -1859,11 +1873,42 @@ fn parse_presence(v: &Value) -> Option<(String, Presence)> {
         Presence {
             status,
             activity: activity_text(&v["activities"]),
+            platforms: platforms(&v["client_status"]),
+            spotify: spotify(&v["activities"]),
+            game: v["activities"]
+                .as_array()
+                .and_then(|a| a.iter().find(|a| a["type"] == 0))
+                .and_then(|a| a["name"].as_str())
+                .map(str::to_owned),
         },
     ))
 }
 
 /// カスタムステータスを優先し、なければ最初のアクティビティを文にする
+/// client_status から使っている端末のビット
+fn platforms(cs: &Value) -> u8 {
+    let mut p = 0;
+    if cs["desktop"].is_string() {
+        p |= 1;
+    }
+    if cs["mobile"].is_string() {
+        p |= 2;
+    }
+    if cs["web"].is_string() {
+        p |= 4;
+    }
+    p
+}
+
+/// Spotify で聴いている曲（曲名, アーティスト）
+fn spotify(acts: &Value) -> Option<(String, String)> {
+    let a = acts.as_array()?.iter().find(|a| a["type"] == 2 && a["name"] == "Spotify")?;
+    Some((
+        a["details"].as_str()?.to_owned(),
+        a["state"].as_str().unwrap_or("").to_owned(),
+    ))
+}
+
 fn activity_text(acts: &Value) -> Option<String> {
     let acts = acts.as_array()?;
     if let Some(c) = acts.iter().find(|a| a["type"] == 4) {
@@ -1909,11 +1954,29 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                 tx.send(Event::OwnPresence(Presence {
                     status,
                     activity: activity_text(&s["activities"]),
+                    ..Default::default()
                 }));
             }
         }
         "READY" => {
             tx.send(Status("接続済み".into()));
+            let info: Vec<Value> = d["guilds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|g| {
+                    json!({
+                        "id": g["id"], "owner_id": g["owner_id"], "member_count": g["member_count"],
+                        "joined_at": g["joined_at"], "description": g["description"],
+                        "nsfw_level": g["nsfw_level"], "premium_tier": g["premium_tier"],
+                        "verification_level": g["verification_level"],
+                    })
+                })
+                .collect();
+            tx.send(Event::Gateway {
+                t: "RISCORD_GUILD_INFO".into(),
+                d: Value::Array(info),
+            });
             let mut vs = Vec::new();
             for g in d["guilds"].as_array().into_iter().flatten() {
                 let gid = g["id"].as_str();
@@ -3663,8 +3726,8 @@ mod tests {
         }
         // 確認用: READY から実際にイベントが出ている
         let [old, _] = both_paths(&json!({ "op": 0, "s": 1, "t": "READY", "d": { "guilds": [guild(json!("10"), Some(json!([vs])))], "presences": [presence] } }).to_string());
-        // Status・VoiceStates・Presences と、チャンネル→サーバーの対応（ReadyExtra）
-        assert_eq!(old.2.len(), 4, "{:?}", old.2);
+        // Status・サーバーの情報（同梱プラグイン用）・VoiceStates・Presences と、チャンネル→サーバーの対応（ReadyExtra）
+        assert_eq!(old.2.len(), 5, "{:?}", old.2);
     }
 
     /// 大きい READY（多数のサーバー・チャンネル・ロール・絵文字）と、使わない種類の処理時間

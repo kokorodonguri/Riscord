@@ -474,7 +474,11 @@ impl Root {
         let cur = self.app.current_channel().cloned();
         let (prefix, cname) = match &cur {
             Some(c) if self.app.sel_guild.is_none() => ("@", c.dm_label()),
-            Some(c) => ("#", c.name.clone().unwrap_or_default()),
+            Some(c) => (
+                "#",
+                self.app
+                    .channel_label(&c.id, c.name.as_deref().unwrap_or_default()),
+            ),
             None => ("", String::new()),
         };
         let mut col = div()

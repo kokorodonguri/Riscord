@@ -1,0 +1,9 @@
+id = "color-tooltips"
+name = "ColorTooltips"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージ中の色コードを RGB・HSL などに変換して表示します"
+description_en = "Converts color codes in a message to RGB, HSL and more"
+description_zh = "把消息中的颜色代码转换为 RGB、HSL 等格式"

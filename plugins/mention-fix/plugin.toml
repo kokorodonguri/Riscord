@@ -1,0 +1,9 @@
+id = "mention-fix"
+name = "MentionFix"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "知らないユーザーへのメンションが「不明なユーザー」になるとき、知っている名前で埋めます"
+description_en = "Fills in names for mentions that would show as an unknown user"
+description_zh = "当对陌生用户的提及显示为“未知用户”时，用已知名称补上"

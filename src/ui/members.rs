@@ -135,8 +135,13 @@ impl Root {
                 let roles = a.roles.get(&gid).map(Vec::as_slice).unwrap_or(&[]);
                 let presence = a.presences.get(&user.id);
                 let offline = presence.is_none_or(|p| p.status == "offline");
-                let color = member_role_color(member, roles).unwrap_or(TEXT());
-                let name = member.display().to_string();
+                let color = a
+                    .bd_name_color(&user.id, Some(member), Some(&gid))
+                    .or_else(|| member_role_color(member, roles))
+                    .unwrap_or(TEXT());
+                let name = a.shown_name(&user.id, member.display());
+                let mut tags = a.bd_user_tags(&user, Some(member), Some(&gid));
+                tags.retain(|t| t.text != "●");
                 let av_url = member_avatar_url(&gid, &user, Some(member));
                 let deco = decoration_for(&user, Some(member));
                 let av = with_status(
@@ -149,18 +154,22 @@ impl Root {
                     presence.map_or("offline", |p| p.status.as_str()),
                     BG(),
                 );
-                let names = match presence.and_then(|p| p.activity.clone()) {
+                let name_line = div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(z(4.0))
+                    .child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM))
+                    .children(super::message::tag_elements(&tags, &format!("m{}", user.id)));
+                let names = match presence.and_then(|p| a.bd_activity(p)) {
                     Some(act) => div()
                         .flex_1()
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM))
+                        .child(name_line)
                         .child(line(act, 12.0, MUTED())),
-                    None => div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(line(name, 16.0, color).font_weight(FontWeight::MEDIUM)),
+                    None => div().flex_1().min_w_0().child(name_line),
                 };
                 let row = div()
                     .id(("member", *mi))

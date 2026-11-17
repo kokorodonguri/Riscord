@@ -1,0 +1,9 @@
+id = "collapse-embeds"
+name = "CollapseEmbeds"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "埋め込みと添付ファイルを、押して開け閉めできるようにします"
+description_en = "Lets you collapse and expand embeds and attachments"
+description_zh = "可以点击折叠或展开嵌入和附件"

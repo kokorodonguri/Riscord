@@ -1,0 +1,9 @@
+id = "spotify-title-display"
+name = "SpotifyTitleDisplay"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メンバー一覧の Spotify のアクティビティに、曲名を出します"
+description_en = "Shows the song title for Spotify activities in the member list"
+description_zh = "在成员列表的 Spotify 活动中显示歌曲名称"

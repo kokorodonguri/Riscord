@@ -1,0 +1,9 @@
+id = "high-res-profile-images"
+name = "High-Res Profile Images"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "アバターとサーバーアイコンを、高い解像度（512px）で読み込みます"
+description_en = "Loads avatars and server icons at a higher resolution (512px)"
+description_zh = "以更高分辨率（512px）加载头像和服务器图标"

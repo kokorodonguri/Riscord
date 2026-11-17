@@ -1,0 +1,9 @@
+id = "enhancecodeblocks"
+name = "enhancecodeblocks"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "コードブロックに言語名・行数・コピーボタンを付けます"
+description_en = "Adds the language, line count and a copy button to code blocks"
+description_zh = "为代码块添加语言名、行数和复制按钮"

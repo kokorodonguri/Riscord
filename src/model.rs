@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 pub struct Presence {
     pub status: String,
     pub activity: Option<String>,
+    /// 使っている端末（1 = デスクトップ, 2 = モバイル, 4 = ウェブ）
+    pub platforms: u8,
+    /// Spotify で聴いている曲（曲名, アーティスト）
+    pub spotify: Option<(String, String)>,
+    /// ゲームなどのアクティビティ名（type 0）
+    pub game: Option<String>,
 }
 
 /// プロフィールのポップアップ用（/users/{id}/profile とサーバーのロール）
@@ -42,6 +48,9 @@ pub struct User {
     pub bot: bool,
     #[serde(default)]
     pub avatar_decoration_data: Option<AvatarDecorationData>,
+    /// バッジ（Discord スタッフ・パートナー・HypeSquad など）のビット
+    #[serde(default)]
+    pub public_flags: u64,
 }
 
 impl User {
@@ -259,6 +268,9 @@ pub fn visible_channels(
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Channel {
     pub id: String,
+    /// 年齢制限（NSFW）のチャンネル
+    #[serde(default)]
+    pub nsfw: bool,
     #[serde(rename = "type")]
     pub kind: u8,
     #[serde(default)]

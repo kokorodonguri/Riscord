@@ -1,0 +1,9 @@
+id = "better-chat-names"
+name = "BetterChatNames"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネル名の - や _ を空白にし、単語の頭を大文字にして読みやすくします"
+description_en = "Makes channel names readable by capitalizing words and removing dashes and underscores"
+description_zh = "把频道名称中的 - 和 _ 换成空格并将单词首字母大写，使其更易读"

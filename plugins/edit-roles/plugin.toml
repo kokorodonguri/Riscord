@@ -1,0 +1,9 @@
+id = "edit-roles"
+name = "EditRoles"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ロールの名前や色を、手元でだけ変えます"
+description_en = "Locally change role names and colors"
+description_zh = "仅在本地更改身份组的名称和颜色"

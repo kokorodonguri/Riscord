@@ -1,0 +1,9 @@
+id = "staff-tag"
+name = "StaffTag"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバーのオーナーに王冠を、管理者に盾の印を付けます"
+description_en = "Adds a crown to server owners and a shield to admins"
+description_zh = "为服务器所有者添加皇冠，为管理员添加盾牌标记"

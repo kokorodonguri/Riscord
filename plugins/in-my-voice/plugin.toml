@@ -1,0 +1,9 @@
+id = "in-my-voice"
+name = "InMyVoice"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "自分と同じボイスチャンネルにいる人の名前に 🔊 を付けます"
+description_en = "Marks people who are in the same voice channel as you with 🔊"
+description_zh = "在与你同一语音频道的人名旁显示 🔊"

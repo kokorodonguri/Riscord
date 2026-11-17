@@ -1,0 +1,9 @@
+id = "uncompressed-images"
+name = "Uncompressed Images"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "添付画像を、縮小・再圧縮した版ではなく元の画像で表示します"
+description_en = "Shows attached images in their original quality instead of resized previews"
+description_zh = "以原图显示附件图片，而不是缩小重压缩的预览"

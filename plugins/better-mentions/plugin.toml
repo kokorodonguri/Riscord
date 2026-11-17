@@ -1,0 +1,9 @@
+id = "better-mentions"
+name = "BetterMentions"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージ中のメンションを押すと、その人のプロフィールを開きます"
+description_en = "Click mentions in messages to open the user's profile"
+description_zh = "点击消息中的提及即可打开该用户的个人资料"

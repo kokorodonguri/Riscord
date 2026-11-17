@@ -1,0 +1,9 @@
+id = "clickable-mentions"
+name = "ClickableMentions"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージ中のメンションを押して、その人のプロフィールを開けるようにします"
+description_en = "Makes mentions in messages clickable to open the user's profile"
+description_zh = "让消息中的提及可以点击以打开该用户的个人资料"

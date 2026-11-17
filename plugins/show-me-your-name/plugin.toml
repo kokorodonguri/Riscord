@@ -1,0 +1,9 @@
+id = "show-me-your-name"
+name = "ShowMeYourName"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージとメンバー一覧で、表示名の横にユーザー名を出します"
+description_en = "Shows the username next to display names in chat and the member list"
+description_zh = "在聊天和成员列表中于显示名称旁显示用户名"

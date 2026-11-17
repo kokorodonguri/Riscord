@@ -474,12 +474,27 @@ pub fn initials(name: &str) -> String {
     }
 }
 
+/// AutoAnimate（動くアイコンを常に動かす）と High-Res Profile Images（大きい画像）。App が毎回の poll で入れる
+pub static ICON_ANIMATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static ICON_HIRES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// アイコンの拡張子と大きさ（同梱プラグインの設定を反映）
+fn icon_ext(hash: &str, size: u32) -> (&'static str, u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let ext = if hash.starts_with("a_") && ICON_ANIMATE.load(Relaxed) {
+        "gif"
+    } else {
+        "png"
+    };
+    (ext, if ICON_HIRES.load(Relaxed) { 512 } else { size })
+}
+
 pub fn user_avatar_url(u: &User) -> String {
     match &u.avatar {
-        Some(h) => format!(
-            "https://cdn.discordapp.com/avatars/{}/{}.png?size=80",
-            u.id, h
-        ),
+        Some(h) => {
+            let (ext, size) = icon_ext(h, 80);
+            format!("https://cdn.discordapp.com/avatars/{}/{}.{ext}?size={size}", u.id, h)
+        }
         None => {
             let n = u.id.parse::<u64>().map(|i| (i >> 22) % 6).unwrap_or(0);
             format!("https://cdn.discordapp.com/embed/avatars/{n}.png")
@@ -496,10 +511,13 @@ fn cdn_hash(h: &str) -> Option<&str> {
 /// サーバー別のアバター。なければユーザーのアバター（動くアバターも軽くするため静止画で取る）
 pub fn member_avatar_url(guild_id: &str, user: &User, member: Option<&Member>) -> String {
     match member.and_then(|m| m.avatar.as_deref()).and_then(cdn_hash) {
-        Some(h) => format!(
-            "https://cdn.discordapp.com/guilds/{guild_id}/users/{}/avatars/{h}.png?size=80",
-            user.id
-        ),
+        Some(h) => {
+            let (ext, size) = icon_ext(h, 80);
+            format!(
+                "https://cdn.discordapp.com/guilds/{guild_id}/users/{}/avatars/{h}.{ext}?size={size}",
+                user.id
+            )
+        }
         None => user_avatar_url(user),
     }
 }
@@ -521,10 +539,8 @@ pub fn decoration_for(user: &User, member: Option<&Member>) -> Option<String> {
 
 pub fn guild_icon_url(g: &Guild) -> Option<String> {
     g.icon.as_ref().map(|h| {
-        format!(
-            "https://cdn.discordapp.com/icons/{}/{}.png?size=96",
-            g.id, h
-        )
+        let (ext, size) = icon_ext(h, 96);
+        format!("https://cdn.discordapp.com/icons/{}/{}.{ext}?size={size}", g.id, h)
     })
 }
 
@@ -1360,6 +1376,10 @@ pub struct App {
     pub typing_sent: Option<(String, std::time::Instant)>,
     /// Incognito でアクティビティを隠しているか
     pub incognito_activity_hidden: bool,
+    /// サーバーのオーナー・メンバー数など（同梱プラグイン用）
+    pub guild_info: HashMap<String, bd_display::GuildInfo>,
+    /// ボイスチャンネルに入った時刻（AllCallTimeCounter。Riscord が見てからの時間）
+    pub voice_joined: HashMap<String, std::time::Instant>,
     /// チャンネルごとの入力中の人（ユーザー ID, 表示名, 届いた時刻）
     pub typing: HashMap<String, Vec<(String, String, std::time::Instant)>>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
@@ -3778,6 +3798,15 @@ impl App {
             self.on_typing_start(&d);
             return;
         }
+        if matches!(
+            t,
+            "RISCORD_GUILD_INFO" | "GUILD_CREATE" | "GUILD_UPDATE" | "GUILD_MEMBER_ADD" | "GUILD_MEMBER_REMOVE"
+        ) {
+            self.on_guild_info_event(t, &d);
+            if t == "RISCORD_GUILD_INFO" {
+                return;
+            }
+        }
         if t.starts_with("GUILD_ROLE_") {
             if let Some(guild_id) = d["guild_id"].as_str() {
                 self.role_admin_event(guild_id);
@@ -5626,6 +5655,7 @@ mod friends;
 pub use friends::{FriendAction, Friends};
 mod authors;
 pub mod bd_plugins;
+pub mod bd_display;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;

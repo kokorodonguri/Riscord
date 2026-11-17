@@ -1374,12 +1374,8 @@ pub struct App {
     pub clipboard_out: Option<String>,
     /// 最後に「入力中」を送ったチャンネルと時刻
     pub typing_sent: Option<(String, std::time::Instant)>,
-    /// Incognito でアクティビティを隠しているか
-    pub incognito_activity_hidden: bool,
     /// サーバーのオーナー・メンバー数など（同梱プラグイン用）
     pub guild_info: HashMap<String, bd_display::GuildInfo>,
-    /// ボイスチャンネルに入った時刻（AllCallTimeCounter。Riscord が見てからの時間）
-    pub voice_joined: HashMap<String, std::time::Instant>,
     /// JumpToTop の問い合わせ（API の番号, チャンネル）
     pub jump_top_request: Option<(u64, String)>,
     /// ChannelTabs・Tabbys のタブ（チャンネル ID）
@@ -2262,7 +2258,7 @@ impl App {
             self.repaint_after(delay);
         }
         self.sync_plugin_host();
-        self.sync_incognito();
+        self.sync_plugin_flags();
         let (actions, next) = self.plugins.tick();
         self.run_plugin_actions(actions);
         if let Some(delay) = next {
@@ -3827,9 +3823,6 @@ impl App {
         if matches!(t, "RELATIONSHIP_REMOVE" | "GUILD_DELETE") {
             self.removed_connection(t, &d);
         }
-        if t == "GUILD_CREATE" {
-            self.server_config_on_join(&d);
-        }
         if matches!(
             t,
             "RISCORD_GUILD_INFO" | "GUILD_CREATE" | "GUILD_UPDATE" | "GUILD_MEMBER_ADD" | "GUILD_MEMBER_REMOVE"
@@ -4594,11 +4587,6 @@ impl App {
             .and_then(|t| ACK_INTERVAL.checked_sub(t.elapsed()))
         {
             self.repaint_after(wait);
-            return;
-        }
-        if self.plugins.opt_bool("incognito", "no_read_ack") {
-            // Incognito: 既読は送らず、手元だけ既読にする
-            self.acked.insert(cid.clone(), last.id.clone());
             return;
         }
         let message_id = last.id.clone();
@@ -5496,9 +5484,6 @@ impl App {
     }
 
     pub fn open_profile(&mut self, user: User, anchor: Bounds<Pixels>, above: bool) {
-        if self.click_to_chat(&user) {
-            return;
-        }
         if !self.friends.loaded && self.friends.loading.is_none() {
             self.fetch_friends();
         }

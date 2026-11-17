@@ -635,11 +635,8 @@ impl Root {
                                 {
                                     f.collapsed = !f.collapsed;
                                     let opened = !f.collapsed;
-                                    // BetterFolders・ServerFolders: 開いたらほかのフォルダを閉じる
-                                    if opened
-                                        && (this.app.plugins.opt_bool("better-folders", "close_others")
-                                            || this.app.plugins.on("server-folders"))
-                                    {
+                                    // ServerFolders: 開いたらほかのフォルダを閉じる
+                                    if opened && this.app.plugins.on("server-folders") {
                                         for other in this.app.settings.guild_folders.iter_mut() {
                                             if other.id != fid {
                                                 other.collapsed = true;
@@ -1248,7 +1245,7 @@ impl Root {
                 .text_color(FAINT())
                 .child("#")
         };
-        // MessagePeek・BetterChannelList: 最後のメッセージを名前の下に。BetterNsfwTag: NSFW の札。
+        // MessagePeek: 最後のメッセージを名前の下に。BetterNsfwTag: NSFW の札。
         // ChannelsPreview: 重ねると最近のメッセージ。foreignCopyHandler: 右クリックで名前をコピー
         let peek = a.last_message_line(&c.id);
         let nsfw = c.nsfw && a.plugins.on("better-nsfw-tag");
@@ -1885,9 +1882,6 @@ fn voice_member_row(
             .unwrap_or_else(|| id.to_string())
     });
     let mut right = div().flex().items_center().gap(z(4.0));
-    if let Some(t) = extra.timer {
-        right = right.child(text(t, 11.0, FAINT()));
-    }
     if live {
         right = right.child(live_badge());
     }

@@ -1315,8 +1315,6 @@ mod tests {
         let mut p = only("chat-aliases");
         assert_eq!(send(&mut p, "brb soon"), "be right back soon");
         assert_eq!(send(&mut p, "brbx"), "brbx");
-        let mut p = only("vriska-typing-quirk");
-        assert_eq!(send(&mut p, "great job https://b.com"), "gr8 jo8 https://b.com");
         let mut p = only("unicode-emojis");
         assert_eq!(send(&mut p, "hi :) <3"), "hi 🙂 ❤️");
         let mut p = only("better-formatting-redux");
@@ -1337,9 +1335,6 @@ mod tests {
         assert!(p.command("/ts 2026-01-01 00:00 R", "1"));
         let (actions, _) = p.tick();
         assert!(matches!(&actions[0], Action::Insert(s) if s.starts_with("<t:") && s.ends_with(":R>")), "{actions:?}");
-        let mut p = only("reminder");
-        assert!(p.command("/remind 10m tea", "1"));
-        assert!(p.page("reminder").iter().any(|i| i.label.contains("tea")));
         let mut p = only("to-do-list");
         assert!(p.command("/todo !buy milk", "1"));
         assert!(p.page("to-do-list").iter().any(|i| i.label == "! buy milk"));

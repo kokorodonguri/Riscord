@@ -1,9 +1,0 @@
-id = "incognito"
-name = "Incognito"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "入力中の合図・既読・プレイ中の表示などを送らないようにして、足あとを減らします"
-description_en = "Leaves fewer traces: no typing signal, no read receipts, no activity, and more"
-description_zh = "减少痕迹：不发送正在输入、已读、游戏活动等"

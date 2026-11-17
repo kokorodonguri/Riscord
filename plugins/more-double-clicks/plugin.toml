@@ -1,9 +1,0 @@
-id = "more-double-clicks"
-name = "MoreDoubleClicks"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "ダブルクリックで返信・編集し、修飾キーと組み合わせてコピー・リアクション・引用もできます"
-description_en = "Double-click to reply or edit, with modifier keys to copy, react or quote"
-description_zh = "双击即可回复或编辑，配合修饰键可复制、添加反应或引用"

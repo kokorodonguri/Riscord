@@ -1,9 +1,0 @@
-id = "auto-silent-message"
-name = "AutoSilentMessage"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "送るメッセージをすべてサイレント（相手に通知を鳴らさない）にします"
-description_en = "Makes every message you send a silent message"
-description_zh = "让你发送的每条消息都成为静默消息（不触发通知）"

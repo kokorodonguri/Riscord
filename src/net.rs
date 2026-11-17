@@ -78,15 +78,8 @@ fn decode_frame_as<T: DeserializeOwned>(msg: &WsMsg, inflater: &mut Inflater) ->
     Ok(parsed)
 }
 
-/// Incognito: 接続時の端末情報を一般的なブラウザーにする
-pub static GENERIC_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 fn identify_properties() -> Value {
-    if GENERIC_CLIENT.load(std::sync::atomic::Ordering::Relaxed) {
-        json!({ "os": "Windows", "browser": "Chrome", "device": "" })
-    } else {
-        json!({ "os": "Linux", "browser": "Discord Client", "device": "" })
-    }
+    json!({ "os": "Linux", "browser": "Discord Client", "device": "" })
 }
 
 /// メッセージ送信の追加の指定（同梱プラグイン用）

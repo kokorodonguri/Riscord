@@ -1,9 +1,0 @@
-id = "allowed-mentions"
-name = "AllowedMentions"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "送るメッセージで通知するメンションの種類（ユーザー・ロール・@everyone・返信）を選びます"
-description_en = "Choose which mentions (users, roles, @everyone, replies) your messages notify"
-description_zh = "选择发送的消息会通知哪些提及（用户、身份组、@everyone、回复）"

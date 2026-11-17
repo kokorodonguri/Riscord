@@ -1802,12 +1802,6 @@ impl Root {
             .read(cx)
             .focus_handle(cx)
             .is_focused(window);
-        // FullscreenToggle: F11 で全画面
-        if k.key == "f11" && !m.modified() && self.app.plugins.on("fullscreen-toggle") {
-            window.toggle_fullscreen();
-            cx.stop_propagation();
-            return;
-        }
         // PasteAndSend: Ctrl+Shift+V で貼り付けてそのまま送る
         if compose_focused
             && (m.control || m.platform)

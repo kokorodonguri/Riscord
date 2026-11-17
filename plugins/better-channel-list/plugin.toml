@@ -1,9 +1,0 @@
-id = "better-channel-list"
-name = "BetterChannelList"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "チャンネル一覧に最近のメッセージを出し、見やすくします"
-description_en = "Shows the most recent message for each channel in the list"
-description_zh = "在频道列表中显示每个频道的最新消息"

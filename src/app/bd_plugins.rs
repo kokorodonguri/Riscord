@@ -73,25 +73,6 @@ pub fn send_extra(
             *content = rest.to_string();
             extra.flags |= 4096;
         }
-        if p.on("auto-silent-message") {
-            extra.flags |= 4096;
-        }
-        if p.on("allowed-mentions") {
-            let mut parse = Vec::new();
-            if !p.opt_bool("allowed-mentions", "no_users") {
-                parse.push("users");
-            }
-            if !p.opt_bool("allowed-mentions", "no_roles") {
-                parse.push("roles");
-            }
-            if !p.opt_bool("allowed-mentions", "no_everyone") {
-                parse.push("everyone");
-            }
-            extra.allowed_mentions = Some(serde_json::json!({
-                "parse": parse,
-                "replied_user": !p.opt_bool("allowed-mentions", "no_reply"),
-            }));
-        }
         if replying && p.on("no-reply-ping") {
             let am = extra
                 .allowed_mentions
@@ -130,7 +111,7 @@ impl App {
         self.plugins.on("split-large-messages")
     }
 
-    /// 入力欄に文字が打たれた。「入力中…」を 8 秒おきに送る（InvisibleTyping・Incognito が動いていれば送らない）
+    /// 入力欄に文字が打たれた。「入力中…」を 8 秒おきに送る（InvisibleTyping が動いていれば送らない）
     pub fn compose_typed(&mut self) {
         let Some(channel) = self.sel_channel.clone() else {
             return;
@@ -138,7 +119,6 @@ impl App {
         if self.input.trim().is_empty()
             || self.input.starts_with('/')
             || self.plugins.on("invisible-typing")
-            || self.plugins.opt_bool("incognito", "hide_typing")
             || self.editing.is_some()
         {
             return;
@@ -268,13 +248,6 @@ impl App {
         });
         if unchanged {
             return;
-        }
-        if old.and_then(|o| o.channel_id.as_ref()) != v.channel_id.as_ref() {
-            if v.channel_id.is_some() {
-                self.voice_joined.insert(v.user_id.clone(), std::time::Instant::now());
-            } else {
-                self.voice_joined.remove(&v.user_id);
-            }
         }
         let name = v
             .user
@@ -421,24 +394,12 @@ impl App {
         }
     }
 
-    /// Incognito のアクティビティ非表示と端末情報を、毎回の poll で反映する
-    pub fn sync_incognito(&mut self) {
-        let hide = self.plugins.opt_bool("incognito", "hide_activity");
-        if hide != self.incognito_activity_hidden {
-            self.incognito_activity_hidden = hide;
-            self.send(Cmd::SetActivity(self.settings.show_activity && !hide));
-        }
+    /// 同梱プラグインの状態を、毎回の poll で反映する
+    pub fn sync_plugin_flags(&mut self) {
         self.startup_page();
-        if self.plugins.on("all-call-time-counter") && !self.voice_joined.is_empty() {
-            self.repaint_after(std::time::Duration::from_secs(1));
-        }
         ICON_ANIMATE.store(self.plugins.on("auto-animate"), std::sync::atomic::Ordering::Relaxed);
         ICON_HIRES.store(
             self.plugins.on("high-res-profile-images"),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        net::GENERIC_CLIENT.store(
-            self.plugins.opt_bool("incognito", "generic_client"),
             std::sync::atomic::Ordering::Relaxed,
         );
     }
@@ -462,7 +423,7 @@ impl App {
         self.focus_input = true;
     }
 
-    /// メッセージの行が押された（DoubleClickToReply・BetterDoubleClickToEdit・MoreDoubleClicks・MessageUtilities）。
+    /// メッセージの行が押された（DoubleClickToReply・BetterDoubleClickToEdit・MessageUtilities）。
     /// 何かしたら true
     pub fn message_click(
         &mut self,
@@ -506,35 +467,14 @@ impl App {
         if count != 2 {
             return false;
         }
-        let more = p.on("more-double-clicks");
-        if more && (shift || ctrl || alt) {
-            if shift {
-                self.clipboard_out = Some(m.content.clone());
-                self.show_toast(tr!("テキストをコピーしました", "Text copied", "已复制文字"));
-            } else if ctrl {
-                let emoji = p.opt_str("more-double-clicks", "react");
-                let emoji = if emoji.is_empty() { "👍".to_string() } else { emoji };
-                let e = model::ReactionEmoji {
-                    id: None,
-                    name: Some(emoji),
-                    animated: false,
-                };
-                self.toggle_reaction(&m.channel_id, &m.id, &e);
-            } else if alt {
-                let quote = format!("> {}\n", m.content.replace('\n', "\n> "));
-                self.input.push_str(&quote);
-                self.focus_input = true;
-            }
-            return true;
-        }
         if shift || ctrl || alt {
             return false;
         }
-        if mine && (p.on("better-double-click-to-edit") || more) {
+        if mine && p.on("better-double-click-to-edit") {
             self.start_edit(m);
             return true;
         }
-        if !mine && (p.on("double-click-to-reply") || more) {
+        if !mine && p.on("double-click-to-reply") {
             self.start_reply(m);
             return true;
         }

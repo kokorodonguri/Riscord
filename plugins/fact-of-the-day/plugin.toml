@@ -1,9 +1,0 @@
-id = "fact-of-the-day"
-name = "FactOfTheDay"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "1 日 1 回、起動したときにちょっとした豆知識を通知します"
-description_en = "Shows a random fun fact once a day when you start Riscord"
-description_zh = "每天启动时通知一条随机小知识"

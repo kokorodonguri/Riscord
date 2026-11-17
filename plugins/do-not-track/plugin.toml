@@ -1,9 +1,0 @@
-id = "do-not-track"
-name = "DoNotTrack"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "Discord の解析・Sentry への送信を止めます（Riscord はもともと送りません）"
-description_en = "Stops Discord analytics and Sentry reporting (Riscord never sends them)"
-description_zh = "阻止 Discord 的分析和 Sentry 上报（Riscord 本来就不发送）"

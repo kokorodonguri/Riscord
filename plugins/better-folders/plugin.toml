@@ -1,9 +1,0 @@
-id = "better-folders"
-name = "BetterFolders"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "サーバーフォルダを開いたとき、ほかのフォルダを閉じられるようにします"
-description_en = "Adds folder options like closing other folders when one opens"
-description_zh = "为服务器文件夹添加功能，例如打开时关闭其他文件夹"

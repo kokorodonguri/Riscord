@@ -1,9 +1,0 @@
-id = "all-call-time-counter"
-name = "AllCallTimeCounter"
-version = "1.0.0"
-api = 1
-entry = "main.lua"
-bd = true
-description = "サーバーのボイスチャンネルにいる全員の横に、通話の経過時間を出します"
-description_en = "Shows a call timer next to everyone in server voice channels"
-description_zh = "在服务器语音频道中每个人旁边显示通话时长"

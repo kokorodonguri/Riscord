@@ -1967,36 +1967,6 @@ impl Root {
     /// CollapseEmbeds: 埋め込み・添付を畳めるようにする
     fn media_or_collapsed(&mut self, m: &Message, cx: &mut Context<Self>) -> AnyElement {
         let count = m.attachments.len() + m.embeds.iter().filter(|e| e.visible()).count();
-        // BlurNSFW: NSFW のチャンネル（と決めたチャンネル）の画像・動画は押すまで隠す
-        let reveal_key = format!("nsfw{}", m.id);
-        if count > 0 && self.app.bd_blur_media(&m.channel_id) && !self.revealed.contains(&reveal_key) {
-            return div()
-                .id(SharedString::from(format!("blur{}", m.id)))
-                .mt(z(4.0))
-                .w(z(320.0))
-                .max_w_full()
-                .h(z(120.0))
-                .rounded(z(8.0))
-                .bg(WIDGET())
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(z(6.0))
-                .cursor_pointer()
-                .child(text("🔞", 28.0, WHITE()))
-                .child(text(
-                    tr!("押すと表示します（{count} 件）", "Click to show ({count})", "点击显示（{count} 项）",),
-                    13.0,
-                    MUTED(),
-                ))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.revealed.insert(reveal_key.clone());
-                    cx.stop_propagation();
-                    cx.notify();
-                }))
-                .into_any_element();
-        }
         if !self.app.plugins.on("collapse-embeds") || count == 0 {
             return self.message_media(m, cx).into_any_element();
         }

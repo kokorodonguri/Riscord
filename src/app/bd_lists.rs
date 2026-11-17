@@ -216,9 +216,9 @@ impl App {
             .page_action("pin-dms", &format!("toggle:{channel_id}"), Default::default());
     }
 
-    /// MessagePeek・BetterChannelList: チャンネルの最後のメッセージ（読み込んでいれば）
+    /// MessagePeek: チャンネルの最後のメッセージ（読み込んでいれば）
     pub fn last_message_line(&self, channel_id: &str) -> Option<String> {
-        if !(self.plugins.on("message-peek") || self.plugins.on("better-channel-list")) {
+        if !self.plugins.on("message-peek") {
             return None;
         }
         let m = self.messages.get(channel_id)?.last()?;
@@ -336,23 +336,6 @@ impl App {
         ids.is_empty() || ids.iter().any(|c| c == channel_id)
     }
 
-    /// BlurNSFW: 画像・動画を隠すチャンネルか
-    pub fn bd_blur_media(&self, channel_id: &str) -> bool {
-        if !self.plugins.on("blur-nsfw") {
-            return false;
-        }
-        if list(&self.plugins.opt_str("blur-nsfw", "channels")).iter().any(|c| c == channel_id) {
-            return true;
-        }
-        self.plugins.opt_bool("blur-nsfw", "nsfw_channels")
-            && self
-                .channels
-                .values()
-                .chain(self.threads.values())
-                .flatten()
-                .any(|c| c.id == channel_id && c.nsfw)
-    }
-
     /// HideMutedCategories: 隠すカテゴリか（ミュートしたチャンネルを隠しているとき）
     pub fn hide_muted_category(&self, guild_id: &str, category: &Channel) -> bool {
         self.plugins.on("hide-muted-categories")
@@ -361,15 +344,6 @@ impl App {
                 .guild_settings
                 .get(guild_id)
                 .is_some_and(|s| s.muted_channels.contains(&category.id))
-    }
-
-    /// ClickToChat: プロフィールの代わりに DM を開く
-    pub fn click_to_chat(&mut self, user: &User) -> bool {
-        if !self.plugins.on("click-to-chat") || self.me.as_ref().is_some_and(|m| m.id == user.id) {
-            return false;
-        }
-        self.friend_action(FriendAction::OpenDm(user.id.clone()));
-        true
     }
 
     /// StartUpPage: 起動して一覧がそろったら一度だけ、決めた場所を開く
@@ -389,39 +363,6 @@ impl App {
         } else if !target.is_empty() && target.bytes().all(|b| b.is_ascii_digit()) {
             let guild = self.guild_of_channel(target);
             *self.notify_clicked.lock().unwrap() = Some((guild, target.to_owned()));
-        }
-    }
-
-    /// ServerConfig: 新しく入ったサーバーに決めた設定を入れる
-    pub fn server_config_on_join(&mut self, d: &serde_json::Value) {
-        if !self.plugins.on("server-config") || !self.startup_done_ready {
-            return;
-        }
-        let Some(gid) = d["id"].as_str() else { return };
-        // 参加した直後（1 分以内）のものだけ
-        let fresh = d["joined_at"]
-            .as_str()
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .is_some_and(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() < 60);
-        if !fresh {
-            return;
-        }
-        let p = &self.plugins;
-        let mute = p.opt_bool("server-config", "mute");
-        let level = p.opt_str("server-config", "notify");
-        let hide = p.opt_bool("server-config", "hide_muted");
-        let level = match level.as_str() {
-            "all" => Some(0),
-            "mentions" => Some(1),
-            "none" => Some(2),
-            _ => None,
-        };
-        let gid = gid.to_owned();
-        if mute || level.is_some() {
-            self.set_guild_settings(&gid, mute.then_some(true), level);
-        }
-        if hide && !self.settings.hide_muted_guilds.contains(&gid) {
-            self.toggle_hide_muted(&gid);
         }
     }
 

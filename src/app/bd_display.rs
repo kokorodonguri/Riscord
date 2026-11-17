@@ -15,12 +15,11 @@ pub struct GuildInfo {
     pub verification_level: u8,
 }
 
-/// ボイスの参加者の行に足すもの（EditUsers・MoreRoleColors・AllCallTimeCounter）
+/// ボイスの参加者の行に足すもの（EditUsers・MoreRoleColors）
 #[derive(Clone, Debug, Default)]
 pub struct VoiceRowInfo {
     pub name: Option<String>,
     pub color: Option<Color32>,
-    pub timer: Option<String>,
 }
 
 /// 名前の横に並べる小さなタグ
@@ -367,21 +366,6 @@ impl App {
                 }
             }
         }
-        if p.on("user-tags") {
-            let list = p.opt_str("user-tags", "tags");
-            for (k, v) in parse_map(&list) {
-                if k == user.id && !v.is_empty() {
-                    for t in v.split(',').map(str::trim).filter(|t| !t.is_empty()) {
-                        tags.push(Tag {
-                            text: t.to_owned(),
-                            color: rgb(0x00a8fc),
-                            pill: true,
-                            tip: None,
-                        });
-                    }
-                }
-            }
-        }
         if p.on("cake-day") {
             if let Some(created) = user
                 .id
@@ -581,16 +565,6 @@ impl App {
                         .bd_name_color(user_id, Some(m), Some(g))
                         .or_else(|| member_role_color(m, self.roles.get(g).map(Vec::as_slice).unwrap_or(&[])));
                 }
-            }
-        }
-        if self.plugins.on("all-call-time-counter") {
-            if let Some(t) = self.voice_joined.get(user_id) {
-                let s = t.elapsed().as_secs();
-                info.timer = Some(if s >= 3600 {
-                    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
-                } else {
-                    format!("{:02}:{:02}", s / 60, s % 60)
-                });
             }
         }
         info

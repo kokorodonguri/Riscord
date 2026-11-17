@@ -122,6 +122,41 @@ impl Root {
                 b.child(icon(name, 16.0, FAINT().gamma_multiply(0.6)))
             });
         }
+        // Hide Channels・CollapsibleUI: 一覧を畳むボタン
+        let hide_ch = a.plugins.on("hide-channels") || a.plugins.on("collapsible-ui");
+        let hide_rail = a.plugins.on("collapsible-ui");
+        if !compact && hide_rail {
+            let on = a.hide_rail;
+            left = left.child(
+                icon_button("toggle_rail", IconName::PanelLeft, 26.0)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .tooltip(tip(if on {
+                        tr!("サーバー一覧を出す", "Show server list", "显示服务器列表")
+                    } else {
+                        tr!("サーバー一覧を畳む", "Collapse server list", "折叠服务器列表")
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.hide_rail = !this.app.hide_rail;
+                        cx.notify();
+                    })),
+            );
+        }
+        if !compact && hide_ch {
+            let on = a.hide_channels;
+            left = left.child(
+                icon_button("toggle_channels", IconName::Menu, 26.0)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .tooltip(tip(if on {
+                        tr!("チャンネル一覧を出す", "Show channel list", "显示频道列表")
+                    } else {
+                        tr!("チャンネル一覧を隠す", "Hide channel list", "隐藏频道列表")
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.hide_channels = !this.app.hide_channels;
+                        cx.notify();
+                    })),
+            );
+        }
         if compact {
             let label = if a.compact_sidebar_closed {
                 tr!("チャンネル一覧を開く", "Open channel list", "打开频道列表")
@@ -201,8 +236,30 @@ impl Root {
     /// 左列（サーバーレール＋チャンネル欄。下にユーザー欄がまたがる）
     pub fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let (ch_w, _) = self.app.pane_widths();
+        let a = &self.app;
+        let rail_hidden = a.hide_rail && a.plugins.on("collapsible-ui");
+        let ch_hidden =
+            a.hide_channels && (a.plugins.on("hide-channels") || a.plugins.on("collapsible-ui"));
+        let rail_w = if rail_hidden {
+            0.0
+        } else if a.plugins.on("display-servers-as-channels") {
+            220.0
+        } else {
+            st::RAIL_W
+        };
+        let ch_w = if ch_hidden { 0.0 } else { ch_w };
+        if rail_w + ch_w <= 0.0 {
+            return div().w(z(0.0)).h_full().flex_none();
+        }
+        let mut inner = div().flex_1().min_h_0().flex().flex_row();
+        if !rail_hidden {
+            inner = inner.child(self.rail(cx));
+        }
+        if !ch_hidden {
+            inner = inner.child(self.channel_pane(window, cx));
+        }
         div()
-            .w(z(st::RAIL_W + ch_w))
+            .w(z(rail_w + ch_w))
             .h_full()
             .flex_none()
             .relative()
@@ -210,17 +267,9 @@ impl Root {
             .flex_col()
             .bg(BG())
             .part(Part::SidebarPane)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_row()
-                    .child(self.rail(cx))
-                    .child(self.channel_pane(window, cx)),
-            )
-            .child(self.userbar(cx))
-            .child(self.pane_resizer(ResizeTarget::Channels, cx))
+            .child(inner)
+            .when(!ch_hidden, |d| d.child(self.userbar(cx)))
+            .when(!ch_hidden, |d| d.child(self.pane_resizer(ResizeTarget::Channels, cx)))
     }
 
     /// round = 丸いアイコン（未読の DM の相手）。サーバーはテーマの形に従う
@@ -232,6 +281,21 @@ impl Root {
         name: &str,
         url: Option<&str>,
         round: bool,
+    ) -> Stateful<Div> {
+        Self::rail_item_tip(id, selected, unread, mentions, name, url, round, None)
+    }
+
+    /// rail_item の説明（ツールチップ）を変えられる版（BetterGuildTooltip・ServerDetails）
+    #[allow(clippy::too_many_arguments)]
+    fn rail_item_tip(
+        id: impl Into<ElementId>,
+        selected: bool,
+        unread: bool,
+        mentions: u32,
+        name: &str,
+        url: Option<&str>,
+        round: bool,
+        tip_override: Option<String>,
     ) -> Stateful<Div> {
         let bg = if selected { BLURPLE() } else { HOVER() };
         // テーマで変えられるのは形（radius）と枠。地は選択・ホバーで変わるのでそのまま
@@ -268,11 +332,42 @@ impl Root {
             .rounded_r(z(4.0))
             .bg(WHITE())
             .when(!selected, |d| d.group_hover("rail", |s| s.h(z(20.0))));
-        let tip_text = if name.is_empty() {
+        let tip_text = if let Some(t) = tip_override {
+            t
+        } else if name.is_empty() {
             tr!("ダイレクトメッセージ", "Direct Messages", "私信").to_string()
         } else {
             name.to_string()
         };
+        if WIDE_RAIL.load(std::sync::atomic::Ordering::Relaxed) {
+            // DisplayServersAsChannels: アイコンと名前を横に並べる
+            let label = if name.is_empty() {
+                tr!("ダイレクトメッセージ", "Direct Messages", "私信").to_string()
+            } else {
+                name.to_string()
+            };
+            return div()
+                .id(id)
+                .group("rail")
+                .relative()
+                .w(z(220.0))
+                .h(z(40.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(z(10.0))
+                .pl(z(12.0))
+                .pr(z(8.0))
+                .rounded(z(6.0))
+                .when(selected, |d| d.bg(SELECTED()))
+                .hover(|s| s.bg(HOVER()))
+                .cursor_pointer()
+                .tooltip(tip(tip_text))
+                .child(pill)
+                .child(div().size(z(32.0)).flex_none().overflow_hidden().child(face.size(z(32.0))))
+                .child(line(label, 14.0, if selected || unread { WHITE() } else { MUTED() }).flex_1())
+                .when(mentions > 0, |d| d.child(mention_badge(mentions)));
+        }
         div()
             .id(id)
             .group("rail")
@@ -293,10 +388,12 @@ impl Root {
     /// サーバーレール
     fn rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let a = &self.app;
+        let wide = a.plugins.on("display-servers-as-channels");
+        WIDE_RAIL.store(wide, std::sync::atomic::Ordering::Relaxed);
         let unread = a.unread_guilds();
         let mut col = div()
             .id("rail")
-            .w(z(72.0))
+            .w(z(if wide { 220.0 } else { 72.0 }))
             .h_full()
             .flex_none()
             .overflow_y_scroll()
@@ -344,6 +441,56 @@ impl Root {
                 })),
             );
         }
+        // ReadAllNotificationsButton・ServerCounter・OnlineFriendCount
+        if a.plugins.on("read-all-notifications-button") {
+            col = col.child(
+                div()
+                    .id("rail_read_all")
+                    .w(z(72.0))
+                    .h(z(28.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .tooltip(tip(tr!("すべて既読にする", "Mark everything as read", "全部标为已读")))
+                    .child(
+                        div()
+                            .px(z(8.0))
+                            .py(z(2.0))
+                            .rounded(z(8.0))
+                            .bg(HOVER())
+                            .hover(|s| s.bg(BLURPLE()))
+                            .child(text(tr!("既読", "Read", "已读"), 11.0, TEXT())),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.mark_all_read();
+                        cx.notify();
+                    })),
+            );
+        }
+        if a.plugins.on("online-friend-count") {
+            let n = a.online_friend_count();
+            col = col.child(
+                div()
+                    .w(z(72.0))
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .child(text(tr!("{n} オンライン", "{n} Online", "{n} 在线",), 10.0, MUTED())),
+            );
+        }
+        if a.plugins.on("server-counter") {
+            let n = a.guilds.len();
+            col = col.child(
+                div()
+                    .w(z(72.0))
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .child(text(tr!("{n} サーバー", "{n} Servers", "{n} 个服务器",), 10.0, MUTED())),
+            );
+        }
         col = col.child(
             div()
                 .h(z(6.0))
@@ -365,7 +512,7 @@ impl Root {
             }
         }
         let mut members = vec![Vec::new(); folders.len()];
-        for g in &a.guilds {
+        for g in a.guilds.iter().filter(|g| !a.bd_hidden_guild(&g.id)) {
             if let Some(&index) = membership.get(g.id.as_str()) {
                 members[index].push(g);
             }
@@ -373,6 +520,9 @@ impl Root {
         let mut entries = Vec::new();
         let mut seen = vec![false; folders.len()];
         for g in &a.guilds {
+            if a.bd_hidden_guild(&g.id) {
+                continue;
+            }
             if let Some(&index) = membership.get(g.id.as_str()) {
                 if !seen[index] {
                     seen[index] = true;
@@ -478,6 +628,18 @@ impl Root {
                                     .find(|f| f.id == fid)
                                 {
                                     f.collapsed = !f.collapsed;
+                                    let opened = !f.collapsed;
+                                    // BetterFolders・ServerFolders: 開いたらほかのフォルダを閉じる
+                                    if opened
+                                        && (this.app.plugins.opt_bool("better-folders", "close_others")
+                                            || this.app.plugins.on("server-folders"))
+                                    {
+                                        for other in this.app.settings.guild_folders.iter_mut() {
+                                            if other.id != fid {
+                                                other.collapsed = true;
+                                            }
+                                        }
+                                    }
                                     this.app.save_settings();
                                 }
                                 cx.notify();
@@ -513,7 +675,7 @@ impl Root {
                 url: url.clone(),
             };
             col = col.child(
-                Self::rail_item(
+                Self::rail_item_tip(
                     SharedString::from(format!("g{}", g.id)),
                     sel,
                     unread.contains(&Some(g.id.as_str())),
@@ -521,6 +683,7 @@ impl Root {
                     &a.guild_label(&g.id, &g.name),
                     url.as_deref(),
                     false,
+                    a.bd_guild_tip(g),
                 )
                 // ドラッグして別のサーバーの上で離すと、そこへ動かす（並びは settings.json に残す）
                 .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
@@ -727,13 +890,23 @@ impl Root {
                         ),
                 );
                 let q = a.dm_filter.trim().to_lowercase();
-                let shown: Vec<usize> = a
+                let mut shown: Vec<usize> = a
                     .dms
                     .iter()
                     .enumerate()
                     .filter(|(_, c)| q.is_empty() || c.dm_label().to_lowercase().contains(&q))
                     .map(|(i, _)| i)
                     .collect();
+                // PinDMs: 固定した DM を上へ（固定した順）
+                let pinned = a.pinned_dms();
+                if !pinned.is_empty() {
+                    shown.sort_by_key(|&i| {
+                        pinned
+                            .iter()
+                            .position(|p| *p == a.dms[i].id)
+                            .unwrap_or(usize::MAX)
+                    });
+                }
                 if !shown.is_empty() {
                     // DM は数百件になるので、見えている行だけ作る（行の高さは全部同じ）
                     list = list.child(
@@ -747,6 +920,8 @@ impl Root {
                                         .filter_map(|k| a.dms.get(*shown.get(k)?))
                                         .map(|c| {
                                             let sel = a.sel_channel.as_deref() == Some(&c.id);
+                                            let pin_on = a.plugins.on("pin-dms");
+                                            let is_pinned = pin_on && a.pinned_dms().contains(&c.id);
                                             let pres = c
                                                 .recipients
                                                 .first()
@@ -761,10 +936,30 @@ impl Root {
                                                         a.unread.contains_key(&c.id),
                                                         pres,
                                                     )
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.open_channel(id.clone());
-                                                        cx.notify();
-                                                    })),
+                                                    .on_click({
+                                                        let id = id.clone();
+                                                        cx.listener(move |this, _, _, cx| {
+                                                            this.open_channel(id.clone());
+                                                            cx.notify();
+                                                        })
+                                                    })
+                                                    .when(pin_on, |d| {
+                                                        d.child(
+                                                            div()
+                                                                .flex_none()
+                                                                .text_size(z(11.0))
+                                                                .text_color(if is_pinned { WHITE() } else { FAINT() })
+                                                                .child(if is_pinned { "📌" } else { "" }),
+                                                        )
+                                                        .on_mouse_down(
+                                                            MouseButton::Right,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.app.toggle_pinned_dm(&id);
+                                                                cx.stop_propagation();
+                                                                cx.notify();
+                                                            }),
+                                                        )
+                                                    }),
                                                 )
                                                 .into_any_element()
                                         })
@@ -844,6 +1039,9 @@ impl Root {
                         }
                     }
                     for cat in cats {
+                        if a.hide_muted_category(gid, cat) {
+                            continue;
+                        }
                         let cat_id = cat.id.clone();
                         let cat_gid = gid.clone();
                         let can_edit = a.may_edit_channel_permissions(gid, &cat_id);
@@ -1044,21 +1242,71 @@ impl Root {
                 .text_color(FAINT())
                 .child("#")
         };
+        // MessagePeek・BetterChannelList: 最後のメッセージを名前の下に。BetterNsfwTag: NSFW の札。
+        // ChannelsPreview: 重ねると最近のメッセージ。foreignCopyHandler: 右クリックで名前をコピー
+        let peek = a.last_message_line(&c.id);
+        let nsfw = c.nsfw && a.plugins.on("better-nsfw-tag");
+        let preview = a.channel_preview(&c.id);
+        let copy_name = a.plugins.on("foreign-copy-handler").then(|| name.clone());
+        let h = if peek.is_some() { 44.0 } else { 32.0 };
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(z(6.0))
+            .min_w_0()
+            .child(
+                line(name, 16.0, row_color(sel, unread))
+                    .font_weight(FontWeight::MEDIUM)
+                    .group_hover("row", |s| {
+                        s.text_color(if sel || unread { WHITE() } else { TEXT() })
+                    }),
+            )
+            .when(nsfw, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(z(4.0))
+                        .rounded(z(4.0))
+                        .bg(RED())
+                        .child(text("NSFW", 10.0, WHITE()).font_weight(FontWeight::BOLD)),
+                )
+            });
+        let label: AnyElement = match peek {
+            Some(p) => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(title)
+                .child(line(p, 12.0, FAINT()))
+                .into_any_element(),
+            None => title.into_any_element(),
+        };
         rows.push(
-            row_frame(SharedString::from(format!("ch{}", c.id)), 32.0, sel, unread)
+            row_frame(SharedString::from(format!("ch{}", c.id)), h, sel, unread)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.open_channel(id.clone());
                     cx.notify();
                 }))
-                .when(unread && !sel, |d| d.child(unread_pill(32.0)))
-                .child(mark)
-                .child(
-                    line(name, 16.0, row_color(sel, unread))
-                        .font_weight(FontWeight::MEDIUM)
-                        .group_hover("row", |s| {
-                            s.text_color(if sel || unread { WHITE() } else { TEXT() })
+                .when_some(preview, |d, p| d.tooltip(tip(p)))
+                .when_some(copy_name, |d, n| {
+                    d.on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(n.clone()));
+                            this.app.show_toast(tr!(
+                                "チャンネル名をコピーしました",
+                                "Channel name copied",
+                                "已复制频道名称"
+                            ));
+                            cx.stop_propagation();
+                            cx.notify();
                         }),
-                )
+                    )
+                })
+                .when(unread && !sel, |d| d.child(unread_pill(h)))
+                .child(mark)
+                .child(label)
                 .into_any_element(),
         );
         // 参加中のスレッドを親の下に
@@ -1610,6 +1858,9 @@ pub fn speaking_avatar(u: Option<&User>, fallback: &str, size: f32, speaking: bo
         .when(speaking, |d| d.border(z(w)).border_color(GREEN()))
         .child(av)
 }
+
+/// DisplayServersAsChannels: サーバーレールを名前付きの一覧にする（rail が描くたびに入れる）
+static WIDE_RAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// ボイスチャンネル内の参加者の行
 fn voice_member_row(

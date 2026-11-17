@@ -1,0 +1,9 @@
+id = "no-auto-unread"
+name = "NoAutoUnread"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネルの通知設定が勝手に「すべてのメッセージ」に変わらないようにします"
+description_en = "Stops channels' notification setting from switching to All Messages on its own"
+description_zh = "防止频道通知设置被自动改为“所有消息”"

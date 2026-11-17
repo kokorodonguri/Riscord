@@ -428,6 +428,7 @@ impl App {
             self.incognito_activity_hidden = hide;
             self.send(Cmd::SetActivity(self.settings.show_activity && !hide));
         }
+        self.startup_page();
         if self.plugins.on("all-call-time-counter") && !self.voice_joined.is_empty() {
             self.repaint_after(std::time::Duration::from_secs(1));
         }
@@ -572,6 +573,9 @@ impl App {
 
     /// 同梱プラグインが出した REST の結果なら扱って true
     pub fn bd_api_result(&mut self, id: u64, result: &Result<serde_json::Value, String>) -> bool {
+        if self.friend_code_result(id, result) {
+            return true;
+        }
         if self.jump_top_request.as_ref().is_some_and(|(r, _)| *r == id) {
             let (_, channel) = self.jump_top_request.take().unwrap();
             let first = result

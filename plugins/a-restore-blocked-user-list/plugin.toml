@@ -1,0 +1,9 @@
+id = "a-restore-blocked-user-list"
+name = "ARestoreBlockedUserList"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "フレンド一覧に、ブロックしたユーザーの一覧を出します"
+description_en = "Adds the blocked users list back to the friends page"
+description_zh = "在好友页面中恢复已屏蔽用户列表"

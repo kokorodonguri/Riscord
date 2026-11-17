@@ -1,0 +1,9 @@
+id = "display-servers-as-channels"
+name = "DisplayServersAsChannels"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバー一覧を、アイコンと名前のチャンネルのような一覧にします"
+description_en = "Displays servers as a list with names, like channels"
+description_zh = "将服务器列表显示为带名称的类似频道的列表"

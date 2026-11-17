@@ -1,0 +1,9 @@
+id = "message-peek"
+name = "MessagePeek"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネル一覧で、名前の下に最後のメッセージを出します"
+description_en = "Shows the last message under each channel name"
+description_zh = "在频道列表中于名称下方显示最后一条消息"

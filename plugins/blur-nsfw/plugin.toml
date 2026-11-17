@@ -1,0 +1,9 @@
+id = "blur-nsfw"
+name = "BlurNSFW"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めたチャンネルの画像・動画を、押すまで隠します"
+description_en = "Hides images and videos in chosen channels until clicked"
+description_zh = "在指定频道中隐藏图片和视频，点击后显示"

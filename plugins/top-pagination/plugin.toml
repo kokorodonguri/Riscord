@@ -1,0 +1,9 @@
+id = "top-pagination"
+name = "TopPagination"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "検索結果のページ切り替えを、結果の上に出します"
+description_en = "Puts search result pagination at the top"
+description_zh = "将搜索结果的翻页控件放在顶部"

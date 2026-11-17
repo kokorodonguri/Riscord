@@ -1,0 +1,9 @@
+id = "better-guild-tooltip"
+name = "BetterGuildTooltip"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバーアイコンに重ねたとき、オンライン数とメンバー数を出します"
+description_en = "Shows online and total member counts in the server tooltip"
+description_zh = "在服务器图标提示中显示在线人数和成员总数"

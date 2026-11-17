@@ -68,6 +68,28 @@ impl Root {
                 }
             });
         let this = self.this.clone();
+        // MemberCounter・MemberCount: 一覧の上に人数。DateViewer: 下に今日の日付と時刻
+        let a = &self.app;
+        let counter = (a.plugins.on("member-counter") || a.plugins.on("member-count")).then(|| {
+            let total = a.guild_info.get(&gid).and_then(|i| i.member_count);
+            let online = a.online_member_count(&gid);
+            let mut parts = Vec::new();
+            if let Some(t) = total {
+                parts.push(tr!("メンバー {t}", "Members {t}", "成员 {t}",));
+            }
+            if online > 0 && !a.plugins.opt_bool("member-counter", "hide_online") {
+                parts.push(tr!("オンライン {online}", "Online {online}", "在线 {online}",));
+            }
+            parts.join(" · ")
+        });
+        let date = a.plugins.on("date-viewer").then(|| {
+            a.repaint_after(std::time::Duration::from_secs(1));
+            let now = chrono::Local::now();
+            (
+                now.format(tr!("%Y年%-m月%-d日（%a）", "%A, %B %-d, %Y", "%Y年%-m月%-d日（%a）")).to_string(),
+                now.format("%H:%M:%S").to_string(),
+            )
+        });
         div()
             .h_full()
             .relative()
@@ -78,6 +100,14 @@ impl Root {
             .border_color(DIVIDER())
             .bg(BG())
             .part(Part::MembersPanel)
+            .when_some(counter.filter(|c| !c.is_empty()), |d, c| {
+                d.child(
+                    div()
+                        .px(z(16.0))
+                        .pt(z(12.0))
+                        .child(text(c, 12.0, MUTED()).font_weight(FontWeight::MEDIUM)),
+                )
+            })
             .child(
                 list(self.member_list.clone(), move |ix, _, cx| {
                     let Some(e) = this.upgrade() else {
@@ -88,6 +118,21 @@ impl Root {
                 .flex_1()
                 .pb(z(8.0)),
             )
+            .when_some(date, |d, (day, time)| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(z(16.0))
+                        .py(z(10.0))
+                        .border_t_1()
+                        .border_color(DIVIDER())
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child(text(time, 16.0, WHITE()).font_weight(FontWeight::MEDIUM))
+                        .child(text(day, 12.0, MUTED())),
+                )
+            })
     }
 
     fn member_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {

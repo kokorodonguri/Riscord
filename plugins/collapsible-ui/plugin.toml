@@ -1,0 +1,9 @@
+id = "collapsible-ui"
+name = "CollapsibleUI"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバー一覧とチャンネル一覧を、タイトルバーのボタンで畳めるようにします"
+description_en = "Collapse the server list and channel list with titlebar buttons"
+description_zh = "可通过标题栏按钮折叠服务器列表和频道列表"

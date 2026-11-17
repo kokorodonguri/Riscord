@@ -1,0 +1,9 @@
+id = "server-config"
+name = "ServerConfig"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "新しく入ったサーバーに、決めた設定（ミュート・通知）を自動で入れます"
+description_en = "Applies your chosen settings (mute, notifications) when joining a new server"
+description_zh = "加入新服务器时自动应用你设定的设置（静音、通知）"

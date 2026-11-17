@@ -9,6 +9,21 @@ use crate::app::{user_avatar_url, FriendAction};
 impl Root {
     pub fn friends_view(&mut self, cx: &mut Context<Self>) -> Div {
         let state = &self.app.friends;
+        // BetterFriendList: タブに人数を出す
+        let better = self.app.plugins.on("better-friend-list");
+        let count = |tab: u8| {
+            state
+                .relationships
+                .iter()
+                .filter(|r| match tab {
+                    0 => r.kind == 1,
+                    1 => r.kind == 1 && self.app.presences.get(&r.id).is_some_and(|p| p.status != "offline"),
+                    2 => r.kind == 3 || r.kind == 4,
+                    3 => r.kind == 2,
+                    _ => false,
+                })
+                .count()
+        };
         let mut tabs = div().flex().flex_wrap().gap(z(5.0));
         for (tab, label) in [
             (0, tr!("すべて", "All", "全部")),
@@ -17,6 +32,11 @@ impl Root {
             (3, tr!("ブロック", "Blocked", "已屏蔽")),
             (4, tr!("フレンドに追加", "Add Friend", "添加好友")),
         ] {
+            let label = if better && tab < 4 {
+                format!("{label} ({})", count(tab))
+            } else {
+                label.to_string()
+            };
             tabs = tabs.child(
                 fill_button(
                     format!("friends-tab-{tab}"),
@@ -150,6 +170,24 @@ impl Root {
             .cloned()
             .collect();
         rows.sort_by_cached_key(|r| r.user.display().to_lowercase());
+        if better {
+            // 上の DM 検索欄の文字で絞り込み、オンライン状態の順にも並べられる
+            let q = self.app.dm_filter.trim().to_lowercase();
+            if !q.is_empty() {
+                rows.retain(|r| {
+                    r.user.display().to_lowercase().contains(&q) || r.user.username.to_lowercase().contains(&q)
+                });
+            }
+            if self.app.plugins.opt_bool("better-friend-list", "by_status") {
+                let rank = |s: Option<&str>| match s {
+                    Some("online") => 0,
+                    Some("idle") => 1,
+                    Some("dnd") => 2,
+                    _ => 3,
+                };
+                rows.sort_by_key(|r| rank(self.app.presences.get(&r.id).map(|p| p.status.as_str())));
+            }
+        }
         if rows.is_empty() {
             let note = if state.loading.is_some() && !state.loaded {
                 tr!("読み込み中…", "Loading…", "正在加载…")

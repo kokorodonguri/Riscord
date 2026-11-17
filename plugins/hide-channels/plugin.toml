@@ -1,0 +1,9 @@
+id = "hide-channels"
+name = "Hide Channels"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "タイトルバーのボタンで、チャンネル一覧（DM 一覧も）を隠せるようにします"
+description_en = "Hide the channel list (and DM list) with a titlebar button"
+description_zh = "可通过标题栏按钮隐藏频道列表（含私信列表）"

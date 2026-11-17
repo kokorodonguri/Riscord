@@ -1,0 +1,9 @@
+id = "lazy-load-channels"
+name = "LazyLoadChannels"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネルを開いても、押すまでメッセージを読み込まないようにします"
+description_en = "Lets you choose whether to load a channel's messages"
+description_zh = "打开频道后需点击才加载消息"

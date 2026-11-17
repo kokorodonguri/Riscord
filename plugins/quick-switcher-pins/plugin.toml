@@ -1,0 +1,9 @@
+id = "quick-switcher-pins"
+name = "QuickSwitcherPins"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "クイックスイッチャーで、決めたチャンネルをいつも一番上に出します"
+description_en = "Always show chosen results at the top of the quick switcher"
+description_zh = "在快速切换器中始终把指定结果显示在最上方"

@@ -1980,6 +1980,9 @@ impl Root {
                             .child(text(item.label, 16.0, LINK()))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 // MessageLogger の記録は本体が持っているので、消すのも本体で行う
+                                if id == "friend-codes" && action == "create" {
+                                    this.app.create_friend_code();
+                                }
                                 if id == "message-logger" && action == "clear" {
                                     this.app.message_log.clear();
                                     this.app.show_toast(tr!(

@@ -367,6 +367,66 @@ impl Root {
         if self.app.settings_open {
             v.push(self.settings_modal(window, cx).into_any_element());
         }
+        if let Some((title, body)) = self.app.info_dialog.clone() {
+            let content = div()
+                .w(z(520.0))
+                .max_w(z((self.app.screen_w - 40.0).max(200.0)))
+                .max_h(z((self.pane_h - 80.0).max(200.0)))
+                .p(z(20.0))
+                .rounded(z(10.0))
+                .bg(BG())
+                .border_1()
+                .border_color(BORDER())
+                .flex()
+                .flex_col()
+                .gap(z(12.0))
+                .child(medium(title, 18.0, WHITE()))
+                .child(
+                    div()
+                        .id("info_dialog_body")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(gpui::base::SelectableText::new("info_dialog_text", body.clone())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(z(16.0))
+                        .justify_end()
+                        .child(
+                            text(tr!("コピー", "Copy", "复制"), 14.0, LINK())
+                                .id("info_dialog_copy")
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.app.clipboard_out = Some(body.clone());
+                                    this.app.show_toast(tr!("コピーしました", "Copied", "已复制"));
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            text(tr!("閉じる", "Close", "关闭"), 14.0, WHITE())
+                                .id("info_dialog_close")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.app.info_dialog = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            v.push(
+                modal(
+                    "info_dialog",
+                    content,
+                    cx.listener(|this, _, _, cx| {
+                        this.app.info_dialog = None;
+                        cx.notify();
+                    }),
+                    170,
+                )
+                .into_any_element(),
+            );
+        }
         if let Some(uri) = self.image_preview.clone() {
             let w = (self.app.screen_w - 80.0).max(0.0);
             let h = (self.pane_h - 140.0).max(0.0);
@@ -489,6 +549,9 @@ impl Root {
             .flex_col()
             .bg(CHAT())
             .relative();
+        if let Some(bar) = self.tabs_bar(cx) {
+            col = col.child(bar);
+        }
         col = col.child(self.chat_head(
             members_shown,
             narrow_members,
@@ -1161,6 +1224,137 @@ impl Root {
     }
 
     /// メッセージ一覧（仮想スクロール。見えている行だけ描く）
+    /// ChannelTabs・Tabbys: 開いたチャンネルのタブ
+    fn tabs_bar(&mut self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let a = &self.app;
+        if !(a.plugins.on("channel-tabs") || a.plugins.on("tabbys")) || a.tabs.is_empty() {
+            return None;
+        }
+        let bookmarks = a.tab_bookmarks();
+        let mut bar = div()
+            .id("tabs_bar")
+            .h(z(34.0))
+            .flex_none()
+            .flex()
+            .items_end()
+            .gap(z(2.0))
+            .px(z(8.0))
+            .border_b_1()
+            .border_color(DIVIDER())
+            .overflow_x_scroll();
+        for (i, cid) in a.tabs.iter().enumerate() {
+            let sel = a.sel_channel.as_deref() == Some(cid.as_str());
+            let unread = a.unread.contains_key(cid);
+            let pinned = bookmarks.contains(cid);
+            let open = cid.clone();
+            let close = cid.clone();
+            bar = bar.child(
+                div()
+                    .id(SharedString::from(format!("tab{i}")))
+                    .group("tab")
+                    .h(z(28.0))
+                    .max_w(z(220.0))
+                    .px(z(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(z(6.0))
+                    .rounded_t(z(6.0))
+                    .cursor_pointer()
+                    .bg(if sel { CHAT() } else { SIDEBAR() })
+                    .hover(|s| s.bg(HOVER()))
+                    .when(pinned, |d| d.child(text("📌", 10.0, MUTED())))
+                    .child(line(
+                        a.tab_label(cid),
+                        13.0,
+                        if sel || unread { WHITE() } else { MUTED() },
+                    ))
+                    .when(!pinned, |d| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("tabx{i}")))
+                                .flex_none()
+                                .text_size(z(12.0))
+                                .text_color(FAINT())
+                                .hover(|s| s.text_color(WHITE()))
+                                .child("×")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.app.tabs.retain(|t| *t != close);
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let guild = this.app.guild_of_channel(&open);
+                        this.pick_guild(guild);
+                        this.open_channel(open.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        Some(bar)
+    }
+
+    /// LazyLoadChannels・StreamingChannels: メッセージの代わりに出す画面
+    fn bd_placeholder(&mut self, cid: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.app.streaming_hidden(cid) {
+            return Some(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(text(
+                        tr!(
+                            "配信中のため、このチャンネルの中身を隠しています（StreamingChannels）",
+                            "Hidden while you're streaming (StreamingChannels)",
+                            "直播期间已隐藏此频道内容（StreamingChannels）"
+                        ),
+                        15.0,
+                        MUTED(),
+                    ))
+                    .into_any_element(),
+            );
+        }
+        if !self.app.messages.contains_key(cid) && self.app.lazy_skip(cid) {
+            let id = cid.to_string();
+            return Some(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .gap(z(12.0))
+                    .items_center()
+                    .justify_center()
+                    .child(text(
+                        tr!(
+                            "このチャンネルはまだ読み込んでいません（LazyLoadChannels）",
+                            "This channel hasn't been loaded yet (LazyLoadChannels)",
+                            "此频道尚未加载（LazyLoadChannels）"
+                        ),
+                        15.0,
+                        MUTED(),
+                    ))
+                    .child(
+                        div()
+                            .id("lazy_load")
+                            .px(z(16.0))
+                            .py(z(8.0))
+                            .rounded(z(6.0))
+                            .bg(BLURPLE())
+                            .cursor_pointer()
+                            .child(text(tr!("読み込む", "Load", "加载"), 14.0, WHITE()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.app.lazy_load(&id);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        None
+    }
+
     fn messages_view(
         &mut self,
         prefix: &'static str,
@@ -1204,6 +1398,9 @@ impl Root {
                 .child(text(hint, 16.0, MUTED()))
                 .into_any_element();
         };
+        if let Some(el) = self.bd_placeholder(&cid, cx) {
+            return el;
+        }
         if !self.app.messages.contains_key(&cid) {
             let err = self.app.message_errors.contains(&cid);
             return div()

@@ -1,0 +1,9 @@
+id = "server-hider"
+name = "ServerHider"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めたサーバーをサーバー一覧から隠します"
+description_en = "Hides chosen servers from the server list"
+description_zh = "在服务器列表中隐藏指定的服务器"

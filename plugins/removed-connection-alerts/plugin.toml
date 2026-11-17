@@ -1,0 +1,9 @@
+id = "removed-connection-alerts"
+name = "RemovedConnectionAlerts"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "フレンドから外されたり、サーバーから抜けたりしたときに知らせて記録します"
+description_en = "Notifies and keeps a log when friends or servers remove you"
+description_zh = "当被好友删除或离开服务器时通知并记录"

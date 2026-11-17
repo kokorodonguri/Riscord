@@ -70,6 +70,8 @@ pub enum Action {
     Sound(String),
     /// 読み上げ
     Speak(String),
+    /// 情報ダイアログ（見出し, 本文）
+    Info(String, String),
 }
 /// プラグインから読める本体の状態（App が更新する）
 #[derive(Default, Clone)]
@@ -308,6 +310,7 @@ impl Runtime {
             ("open_channel", 1),
             ("play_sound", 1),
             ("speak", 1),
+            ("show_info", 2),
         ] {
             let q = queue.clone();
             api.set(
@@ -330,6 +333,7 @@ impl Runtime {
                         ("insert", _) => Action::Insert(a),
                         ("open_channel", _) => Action::OpenChannel(a),
                         ("play_sound", _) => Action::Sound(a),
+                        ("show_info", _) => Action::Info(a, b.unwrap_or_default()),
                         _ => Action::Speak(a),
                     };
                     q.borrow_mut().push(action);

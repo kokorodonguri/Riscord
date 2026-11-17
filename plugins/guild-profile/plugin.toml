@@ -1,0 +1,9 @@
+id = "guild-profile"
+name = "GuildProfile"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバーの右クリックメニューに、サーバーの情報を見る項目を足します"
+description_en = "Adds a Server Info item to the server menu"
+description_zh = "在服务器右键菜单中添加查看服务器信息的项目"

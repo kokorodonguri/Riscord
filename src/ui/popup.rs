@@ -828,6 +828,52 @@ impl Root {
                 cx.notify();
             })),
         );
+        // 同梱プラグインの項目（GuildProfile・ServerHider・foreignCopyHandler）
+        if self.app.plugins.on("guild-profile") {
+            let g1 = gid.clone();
+            col = col.child(
+                item("gm_profile_info", IconName::Info, tr!("サーバーの情報", "Server Info", "服务器信息"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        close(this);
+                        this.app.info_dialog = this.app.guild_profile_text(&g1);
+                        cx.notify();
+                    })),
+            );
+        }
+        if self.app.plugins.on("server-hider") {
+            let g1 = gid.clone();
+            col = col.child(
+                item("gm_hide", IconName::EyeOff, tr!("サーバーを隠す", "Hide Server", "隐藏服务器"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        close(this);
+                        this.app.toggle_hidden_guild(&g1);
+                        this.app.show_toast(tr!(
+                            "隠しました。ServerHider のページで戻せます",
+                            "Hidden. You can bring it back on the ServerHider page",
+                            "已隐藏。可在 ServerHider 页面中恢复"
+                        ));
+                        cx.notify();
+                    })),
+            );
+        }
+        if self.app.plugins.on("foreign-copy-handler") {
+            let name = self
+                .app
+                .guilds
+                .iter()
+                .find(|g| g.id == gid)
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            col = col.child(
+                item("gm_copy_name", IconName::Copy, tr!("サーバー名をコピー", "Copy Server Name", "复制服务器名称"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        close(this);
+                        cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                        this.app.show_toast(tr!("コピーしました", "Copied", "已复制"));
+                        cx.notify();
+                    })),
+            );
+        }
         Some(col)
     }
 

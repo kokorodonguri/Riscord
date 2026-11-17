@@ -1382,6 +1382,20 @@ pub struct App {
     pub voice_joined: HashMap<String, std::time::Instant>,
     /// JumpToTop の問い合わせ（API の番号, チャンネル）
     pub jump_top_request: Option<(u64, String)>,
+    /// ChannelTabs・Tabbys のタブ（チャンネル ID）
+    pub tabs: Vec<String>,
+    /// FriendCodes の問い合わせ
+    pub friend_code_request: Option<u64>,
+    /// Hide Channels・CollapsibleUI で畳んだ一覧
+    pub hide_channels: bool,
+    pub hide_rail: bool,
+    /// 同梱プラグインが出す情報ダイアログ（見出し, 本文）
+    pub info_dialog: Option<(String, String)>,
+    /// LazyLoadChannels で読み込むことにしたチャンネル
+    pub lazy_allowed: HashSet<String>,
+    /// StartUpPage を済ませたか・READY を受け取ったか
+    pub startup_done: bool,
+    pub startup_done_ready: bool,
     /// PeekMessageLinks: 読みに行っているリンク先と、読んだもの（見つからなければ None）
     pub peek_requests: HashMap<u64, (String, String)>,
     pub peeks: HashMap<(String, String), Option<Box<Message>>>,
@@ -3810,12 +3824,19 @@ impl App {
             self.on_typing_start(&d);
             return;
         }
+        if matches!(t, "RELATIONSHIP_REMOVE" | "GUILD_DELETE") {
+            self.removed_connection(t, &d);
+        }
+        if t == "GUILD_CREATE" {
+            self.server_config_on_join(&d);
+        }
         if matches!(
             t,
             "RISCORD_GUILD_INFO" | "GUILD_CREATE" | "GUILD_UPDATE" | "GUILD_MEMBER_ADD" | "GUILD_MEMBER_REMOVE"
         ) {
             self.on_guild_info_event(t, &d);
             if t == "RISCORD_GUILD_INFO" {
+                self.startup_done_ready = true;
                 return;
             }
         }
@@ -4650,8 +4671,14 @@ impl App {
             .as_deref()
             .and_then(|g| self.find_guild_channel(g, &id))
             .is_some_and(|c| c.is_forum() || c.is_voice());
-        if !no_messages && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id)) {
+        if !no_messages
+            && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id))
+            && !self.lazy_skip(&id)
+        {
             self.load_messages(id.clone());
+        }
+        if !no_messages {
+            self.remember_tab(&id);
         }
         self.touch_channel(&id);
         let key = self.sel_guild.as_deref().unwrap_or("");
@@ -5456,6 +5483,7 @@ impl App {
                 }
                 Action::Sound(name) => crate::sound::play(&name, 1.0),
                 Action::Speak(text) => crate::sound::speak(&text),
+                Action::Info(title, body) => self.info_dialog = Some((title, body)),
             }
         }
         self.waker.wake();
@@ -5468,6 +5496,9 @@ impl App {
     }
 
     pub fn open_profile(&mut self, user: User, anchor: Bounds<Pixels>, above: bool) {
+        if self.click_to_chat(&user) {
+            return;
+        }
         if !self.friends.loaded && self.friends.loading.is_none() {
             self.fetch_friends();
         }
@@ -5672,6 +5703,7 @@ pub use friends::{FriendAction, Friends};
 mod authors;
 pub mod bd_plugins;
 pub mod bd_display;
+pub mod bd_lists;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;

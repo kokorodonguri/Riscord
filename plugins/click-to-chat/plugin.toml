@@ -1,0 +1,9 @@
+id = "click-to-chat"
+name = "ClickToChat"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ユーザーの名前やアイコンを押すと、プロフィールの代わりに DM を開きます"
+description_en = "Clicking a user opens a DM instead of their profile"
+description_zh = "点击用户时打开私信而不是个人资料"

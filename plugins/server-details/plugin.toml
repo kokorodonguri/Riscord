@@ -1,0 +1,9 @@
+id = "server-details"
+name = "ServerDetails"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバーアイコンに重ねたとき、オーナー・作成日・参加日などの詳細を出します"
+description_en = "Shows server details (owner, creation and join dates) in the server tooltip"
+description_zh = "在服务器图标提示中显示所有者、创建日期、加入日期等详情"

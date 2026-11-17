@@ -1,0 +1,9 @@
+id = "hide-muted-categories"
+name = "HideMutedCategories"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ミュートしたチャンネルを隠しているサーバーで、ミュートしたカテゴリも隠します"
+description_en = "Hides muted categories when muted channels are hidden"
+description_zh = "隐藏已静音频道时也隐藏已静音的分类"

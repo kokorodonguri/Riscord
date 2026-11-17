@@ -1,0 +1,9 @@
+id = "server-counter"
+name = "ServerCounter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバー一覧に、参加しているサーバーの数を出します"
+description_en = "Shows how many servers you're in on the server list"
+description_zh = "在服务器列表中显示已加入的服务器数量"

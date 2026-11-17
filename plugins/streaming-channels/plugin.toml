@@ -1,0 +1,9 @@
+id = "streaming-channels"
+name = "StreamingChannels"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "画面共有中は、決めたチャンネルの中身を隠します"
+description_en = "Hides chosen channels' messages while you're streaming"
+description_zh = "屏幕共享期间隐藏指定频道的内容"

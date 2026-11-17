@@ -1,0 +1,9 @@
+id = "server-folders"
+name = "ServerFolders"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバーフォルダを 1 つずつ開くようにして、整理しやすくします"
+description_en = "Opens one server folder at a time to keep things organized"
+description_zh = "一次只打开一个服务器文件夹，便于整理"

@@ -1,0 +1,9 @@
+id = "better-friend-list"
+name = "BetterFriendList"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "フレンド一覧のタブに人数を出し、検索とオンライン順の並べ替えを足します"
+description_en = "Adds counts, search and status sorting to the friends page"
+description_zh = "为好友列表添加人数、搜索和按在线状态排序"

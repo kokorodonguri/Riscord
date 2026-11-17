@@ -1,0 +1,9 @@
+id = "member-counter"
+name = "MemberCounter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メンバー一覧の上に、メンバー数とオンライン数を出します"
+description_en = "Shows member and online counts at the top of the member list"
+description_zh = "在成员列表顶部显示成员数和在线人数"

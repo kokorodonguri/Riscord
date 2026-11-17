@@ -1,0 +1,9 @@
+id = "date-viewer"
+name = "DateViewer"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メンバー一覧の下に、今日の日付・曜日・時刻を出します"
+description_en = "Shows the current date, weekday and time below the member list"
+description_zh = "在成员列表底部显示当前日期、星期和时间"

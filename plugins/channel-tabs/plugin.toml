@@ -1,0 +1,9 @@
+id = "channel-tabs"
+name = "ChannelTabs"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "開いたチャンネルをタブにして、チャット欄の上から切り替えられるようにします"
+description_en = "Adds browser-like tabs for channels above the chat"
+description_zh = "在聊天上方添加类似浏览器的频道标签页"

@@ -1,0 +1,9 @@
+id = "better-nsfw-tag"
+name = "BetterNsfwTag"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "NSFW のチャンネルに目立つ札を付けます"
+description_en = "Adds a noticeable tag to NSFW channels"
+description_zh = "为 NSFW 频道添加醒目的标签"

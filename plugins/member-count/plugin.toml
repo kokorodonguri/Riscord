@@ -1,0 +1,9 @@
+id = "member-count"
+name = "MemberCount"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メンバー一覧の上に、サーバーのメンバー数を出します"
+description_en = "Displays a server's member count at the top of the member list"
+description_zh = "在成员列表顶部显示服务器成员数"

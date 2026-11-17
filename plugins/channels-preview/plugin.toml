@@ -1,0 +1,9 @@
+id = "channels-preview"
+name = "ChannelsPreview"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネルに重ねると、移らずに最近のメッセージを見られます"
+description_en = "Hover a channel to see its recent messages without switching"
+description_zh = "悬停在频道上即可查看最近的消息而无需切换"

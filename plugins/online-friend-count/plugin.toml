@@ -1,0 +1,9 @@
+id = "online-friend-count"
+name = "OnlineFriendCount"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバー一覧に、オンラインのフレンドの数を出します"
+description_en = "Shows the number of online friends on the server list"
+description_zh = "在服务器列表中显示在线好友数量"

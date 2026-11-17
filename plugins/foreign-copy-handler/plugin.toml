@@ -1,0 +1,9 @@
+id = "foreign-copy-handler"
+name = "foreignCopyHandler"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネル・サーバーを右クリックして名前をコピーできるようにします"
+description_en = "Right-click channels or servers to copy their names"
+description_zh = "右键点击频道或服务器即可复制名称"

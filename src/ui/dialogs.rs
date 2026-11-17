@@ -86,7 +86,44 @@ impl Root {
                 }
             }
         }
-        hits.sort_by_key(|(s, _)| *s);
+        // QuickSwitcherPins: 決めたチャンネル・サーバーを、合っていれば一番上に
+        if a.plugins.on("quick-switcher-pins") {
+            let pins: Vec<String> = a
+                .plugins
+                .opt_str("quick-switcher-pins", "pins")
+                .split([',', ' ', ';'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            for (s, h) in hits.iter_mut() {
+                let id = h.target.1.as_ref().or(h.target.0.as_ref());
+                if id.is_some_and(|id| pins.contains(id)) {
+                    *s = 0;
+                    h.sub = format!("📌 {}", h.sub);
+                }
+            }
+            // 何も打っていないときもサーバーのチャンネルを出す
+            if q.is_empty() {
+                for (gid, chs) in &a.channels {
+                    for c in chs.iter().filter(|c| pins.contains(&c.id)) {
+                        hits.push((
+                            0,
+                            Hit {
+                                prefix: "#",
+                                label: c.name.clone().unwrap_or_default(),
+                                sub: format!(
+                                    "📌 {}",
+                                    a.guilds.iter().find(|g| &g.id == gid).map(|g| g.name.as_str()).unwrap_or("")
+                                ),
+                                target: (Some(gid.clone()), Some(c.id.clone())),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        hits.sort_by_key(|(s, h)| (*s, !h.sub.starts_with('📌')));
         hits.truncate(10);
         hits.into_iter().map(|(_, h)| h).collect()
     }

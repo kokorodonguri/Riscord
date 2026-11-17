@@ -1,0 +1,9 @@
+id = "start-up-page"
+name = "StartUpPage"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "起動したときに開く場所（フレンド一覧や決めたチャンネル）を選びます"
+description_en = "Choose which page opens on startup (friends or a channel)"
+description_zh = "选择启动时打开的页面（好友列表或指定频道）"

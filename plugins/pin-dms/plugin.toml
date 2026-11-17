@@ -1,0 +1,9 @@
+id = "pin-dms"
+name = "PinDMs"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "DM を一覧の上に固定します。DM を右クリックで固定・解除"
+description_en = "Pin DMs to the top of the list. Right-click a DM to pin or unpin"
+description_zh = "将私信固定在列表顶部。右键点击私信可固定或取消"

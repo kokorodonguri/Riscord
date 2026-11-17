@@ -1,0 +1,9 @@
+id = "read-all-notifications-button"
+name = "ReadAllNotificationsButton"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "サーバー一覧に、すべてを既読にするボタンを足します"
+description_en = "Adds a button to the server list that marks everything as read"
+description_zh = "在服务器列表中添加全部标为已读的按钮"

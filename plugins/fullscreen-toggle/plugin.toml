@@ -1,0 +1,9 @@
+id = "fullscreen-toggle"
+name = "FullscreenToggle"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "F11 で Riscord を全画面にしたり戻したりします"
+description_en = "Toggle fullscreen with F11"
+description_zh = "按 F11 切换 Riscord 全屏"

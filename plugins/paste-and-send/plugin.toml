@@ -1,0 +1,9 @@
+id = "paste-and-send"
+name = "PasteAndSend"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "Ctrl+Shift+V で、クリップボードの文字を貼り付けてそのまま送ります"
+description_en = "Ctrl+Shift+V pastes the clipboard text and sends it right away"
+description_zh = "按 Ctrl+Shift+V 粘贴剪贴板文字并立即发送"

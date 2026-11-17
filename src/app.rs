@@ -1380,6 +1380,11 @@ pub struct App {
     pub guild_info: HashMap<String, bd_display::GuildInfo>,
     /// ボイスチャンネルに入った時刻（AllCallTimeCounter。Riscord が見てからの時間）
     pub voice_joined: HashMap<String, std::time::Instant>,
+    /// JumpToTop の問い合わせ（API の番号, チャンネル）
+    pub jump_top_request: Option<(u64, String)>,
+    /// PeekMessageLinks: 読みに行っているリンク先と、読んだもの（見つからなければ None）
+    pub peek_requests: HashMap<u64, (String, String)>,
+    pub peeks: HashMap<(String, String), Option<Box<Message>>>,
     /// チャンネルごとの入力中の人（ユーザー ID, 表示名, 届いた時刻）
     pub typing: HashMap<String, Vec<(String, String, std::time::Instant)>>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
@@ -2043,7 +2048,7 @@ impl App {
         }
         let editing = self.editing.take();
         let reply = self.reply_to.take();
-        let mut uploads = if editing.is_none() {
+        let mut uploads = if editing.is_none() || self.plugins.on("late-attachments") {
             std::mem::take(&mut self.uploads)
         } else {
             Vec::new()
@@ -2054,6 +2059,10 @@ impl App {
                 channel_id: channel_id.clone(),
                 id: m.id.clone(),
                 content: content.clone(),
+                files: uploads
+                    .iter()
+                    .map(|u| (u.name.clone(), u.data.clone()))
+                    .collect(),
             }
         } else {
             let mut last = content.clone();
@@ -3197,6 +3206,9 @@ impl App {
         result: Result<serde_json::Value, String>,
     ) {
         use net::ApiCall as A;
+        if self.bd_api_result(id, &result) {
+            return;
+        }
         // 結果を自分で扱うもの（失敗の知らせ方もそれぞれ）
         if self.is_role_admin_request(id) {
             self.role_admin_result(id, result);
@@ -4619,6 +4631,10 @@ impl App {
 
     pub fn open_channel(&mut self, id: String) {
         self.friends.open = false;
+        // ScrollToLatest: 開いたら最新へ
+        if self.plugins.on("scroll-to-latest") && self.is_detached(&id) {
+            self.back_to_latest(&id);
+        }
         if self.sel_channel.as_deref() != Some(&id) {
             if self.editing.take().is_some() {
                 self.input.clear();

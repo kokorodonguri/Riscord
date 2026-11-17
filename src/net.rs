@@ -130,6 +130,8 @@ pub enum Cmd {
         channel_id: String,
         id: String,
         content: String,
+        /// LateAttachments: 編集で足すファイル（名前, 中身）
+        files: Vec<(String, Vec<u8>)>,
     },
     Delete {
         channel_id: String,
@@ -1130,14 +1132,20 @@ async fn run(
                     channel_id,
                     id,
                     content,
+                    files,
                 } => {
-                    let response = api
-                        .request(
-                            reqwest::Method::PATCH,
-                            &format!("/channels/{channel_id}/messages/{id}"),
-                            Some(&json!({ "content": content })),
-                        )
-                        .await;
+                    let path = format!("/channels/{channel_id}/messages/{id}");
+                    let response = if files.is_empty() {
+                        api.request(reqwest::Method::PATCH, &path, Some(&json!({ "content": content })))
+                            .await
+                    } else {
+                        // 添付は足すだけ（attachments を書かなければ今の添付は残る）
+                        let payload = json!({ "content": content }).to_string();
+                        api.request_with(reqwest::Method::PATCH, &path, |req| {
+                            req.multipart(upload_form(&payload, &files))
+                        })
+                        .await
+                    };
                     let result = match response {
                         Ok(response) => Ok(response.json::<Message>().await.ok()),
                         Err(e) => {

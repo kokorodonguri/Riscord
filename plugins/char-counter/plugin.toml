@@ -1,0 +1,9 @@
+id = "char-counter"
+name = "CharCounter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "入力欄に、いまの文字数と上限を常に表示します"
+description_en = "Always shows the character count and limit in the message input"
+description_zh = "在输入框中始终显示当前字数和上限"

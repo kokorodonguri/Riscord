@@ -1,0 +1,9 @@
+id = "jump-to-top"
+name = "JumpToTop"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネルのヘッダーに、最初のメッセージへ移るボタンを足します"
+description_en = "Adds a header button that jumps to the first message in the channel"
+description_zh = "在频道标题栏添加跳到第一条消息的按钮"

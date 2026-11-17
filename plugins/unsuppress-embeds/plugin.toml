@@ -1,0 +1,9 @@
+id = "unsuppress-embeds"
+name = "UnsuppressEmbeds"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "埋め込みを消されたメッセージに、埋め込みを戻すメニューを足します"
+description_en = "Adds a menu item to bring back suppressed embeds"
+description_zh = "添加恢复被隐藏嵌入的菜单项"

@@ -378,6 +378,49 @@ impl Root {
                 })),
             );
         }
+        // UnsuppressEmbeds: 埋め込みを消したメッセージを戻す（自分のメッセージか、メッセージの管理ができるとき）
+        if !deleted
+            && m.flags & 4 != 0
+            && self.app.plugins.on("unsuppress-embeds")
+            && (mine || self.app.can_pin(self.app.sel_guild.as_deref(), &m.channel_id))
+        {
+            let m1 = m.clone();
+            col = col.child(
+                menu_row(
+                    "mm_unsuppress",
+                    icon(IconName::Eye, 18.0, TEXT()).into_any_element(),
+                    tr!("埋め込みを表示する", "Unsuppress Embeds", "显示嵌入"),
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.unsuppress_embeds(&m1);
+                    cx.notify();
+                })),
+            );
+        }
+        // プラグインの操作
+        let actions = self.app.plugins.message_actions();
+        if !actions.is_empty() {
+            col = col.child(menu_divider());
+        }
+        for (id, index, label) in actions {
+            let message = m.clone();
+            col = col.child(
+                menu_row(
+                    SharedString::from(format!("mm_plugin_{id}_{index}")),
+                    icon(IconName::Settings, 18.0, TEXT()).into_any_element(),
+                    &label,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.plugins.message_action(&id, index, &message);
+                    this.app.waker.wake();
+                    cx.notify();
+                })),
+            );
+        }
         Some(col)
     }
 

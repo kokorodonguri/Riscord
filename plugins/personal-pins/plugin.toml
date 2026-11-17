@@ -1,0 +1,9 @@
+id = "personal-pins"
+name = "PersonalPins"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージを、自分だけのピン留めとして手元に保存します"
+description_en = "Pin messages locally, just for you"
+description_zh = "在本地将消息保存为只有你能看到的置顶"

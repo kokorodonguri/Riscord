@@ -442,3 +442,275 @@ impl App {
         );
     }
 }
+
+impl App {
+    /// 返信を始める（返信ボタンと同じ）
+    pub fn start_reply(&mut self, m: Message) {
+        if self.editing.take().is_some() {
+            self.input.clear();
+        }
+        self.reply_to = Some(m);
+        self.focus_input = true;
+    }
+
+    /// 自分のメッセージの編集を始める（編集ボタンと同じ）
+    pub fn start_edit(&mut self, m: Message) {
+        self.input = crate::emoji::shorten(&m.content).0;
+        self.editing = Some(m);
+        self.reply_to = None;
+        self.focus_input = true;
+    }
+
+    /// メッセージの行が押された（DoubleClickToReply・BetterDoubleClickToEdit・MoreDoubleClicks・MessageUtilities）。
+    /// 何かしたら true
+    pub fn message_click(
+        &mut self,
+        m: Message,
+        count: usize,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) -> bool {
+        let deleted = m.log.as_ref().is_some_and(|l| l.deleted_at.is_some());
+        if deleted {
+            return false;
+        }
+        let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
+        let p = &self.plugins;
+        if p.on("message-utilities") && count == 1 {
+            if alt && shift {
+                if self.can_pin(m.guild_id.as_deref().or(self.sel_guild.as_deref()), &m.channel_id) {
+                    let pinned = m.pinned;
+                    self.set_pinned(&m, !pinned);
+                    return true;
+                }
+            } else if ctrl && alt {
+                self.clipboard_out = Some(m.content.clone());
+                self.show_toast(tr!("テキストをコピーしました", "Text copied", "已复制文字"));
+                return true;
+            } else if ctrl && shift && mine {
+                self.send(Cmd::Delete {
+                    channel_id: m.channel_id.clone(),
+                    id: m.id.clone(),
+                });
+                return true;
+            } else if ctrl && mine {
+                self.start_edit(m);
+                return true;
+            } else if alt {
+                self.start_reply(m);
+                return true;
+            }
+        }
+        if count != 2 {
+            return false;
+        }
+        let more = p.on("more-double-clicks");
+        if more && (shift || ctrl || alt) {
+            if shift {
+                self.clipboard_out = Some(m.content.clone());
+                self.show_toast(tr!("テキストをコピーしました", "Text copied", "已复制文字"));
+            } else if ctrl {
+                let emoji = p.opt_str("more-double-clicks", "react");
+                let emoji = if emoji.is_empty() { "👍".to_string() } else { emoji };
+                let e = model::ReactionEmoji {
+                    id: None,
+                    name: Some(emoji),
+                    animated: false,
+                };
+                self.toggle_reaction(&m.channel_id, &m.id, &e);
+            } else if alt {
+                let quote = format!("> {}\n", m.content.replace('\n', "\n> "));
+                self.input.push_str(&quote);
+                self.focus_input = true;
+            }
+            return true;
+        }
+        if shift || ctrl || alt {
+            return false;
+        }
+        if mine && (p.on("better-double-click-to-edit") || more) {
+            self.start_edit(m);
+            return true;
+        }
+        if !mine && (p.on("double-click-to-reply") || more) {
+            self.start_reply(m);
+            return true;
+        }
+        false
+    }
+
+    /// MoreQuickReacts: ツールバーに並べる絵文字
+    pub fn quick_reacts(&self) -> Vec<String> {
+        if !self.plugins.on("more-quick-reacts") {
+            return Vec::new();
+        }
+        let list = self.plugins.opt_str("more-quick-reacts", "emojis");
+        list.split([',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .take(10)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// JumpToTop: チャンネルの最初のメッセージへ飛ぶ
+    pub fn jump_to_top(&mut self) {
+        let Some(channel) = self.sel_channel.clone() else {
+            return;
+        };
+        let id = self.api(net::ApiCall::GetMessages {
+            channel_id: channel.clone(),
+            before: None,
+            after: Some("0".into()),
+            around: None,
+            limit: 1,
+        });
+        self.jump_top_request = Some((id, channel));
+        self.show_toast(tr!("最初のメッセージを探しています…", "Finding the first message…", "正在查找第一条消息…"));
+    }
+
+    /// 同梱プラグインが出した REST の結果なら扱って true
+    pub fn bd_api_result(&mut self, id: u64, result: &Result<serde_json::Value, String>) -> bool {
+        if self.jump_top_request.as_ref().is_some_and(|(r, _)| *r == id) {
+            let (_, channel) = self.jump_top_request.take().unwrap();
+            let first = result
+                .as_ref()
+                .ok()
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.iter().filter_map(|m| m["id"].as_str()).min_by_key(|s| s.parse::<u64>().unwrap_or(u64::MAX)))
+                .map(str::to_owned);
+            match first {
+                Some(mid) => {
+                    let guild = self.guild_of_channel(&channel);
+                    self.jump_to_message(guild, channel, mid);
+                }
+                None => self.show_toast(tr!(
+                    "最初のメッセージを読めませんでした",
+                    "Couldn't load the first message",
+                    "无法加载第一条消息"
+                )),
+            }
+            return true;
+        }
+        if let Some(key) = self.peek_requests.remove(&id) {
+            let found = result
+                .as_ref()
+                .ok()
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.iter().find(|m| m["id"].as_str() == Some(key.1.as_str())))
+                .and_then(|m| serde_json::from_value::<Message>(m.clone()).ok());
+            self.peeks.insert(key, found.map(Box::new));
+            self.bump_msgs();
+            return true;
+        }
+        false
+    }
+
+    /// PeekMessageLinks: 本文のメッセージリンクの先（読み込んでいなければ読みに行く）
+    pub fn peek_links(&mut self, m: &Message) -> Vec<(String, String, Option<Message>)> {
+        if !self.plugins.on("peek-message-links") || !m.content.contains("/channels/") {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for part in m.content.split_whitespace() {
+            let part = part.trim_matches(|c| c == '<' || c == '>');
+            let Some(rest) = part
+                .strip_prefix("https://discord.com/channels/")
+                .or_else(|| part.strip_prefix("https://ptb.discord.com/channels/"))
+                .or_else(|| part.strip_prefix("https://canary.discord.com/channels/"))
+                .or_else(|| part.strip_prefix("https://discordapp.com/channels/"))
+            else {
+                continue;
+            };
+            let ids: Vec<&str> = rest.split('/').collect();
+            if ids.len() < 3 {
+                continue;
+            }
+            let (cid, mid) = (ids[1].to_string(), ids[2].trim_end_matches(|c: char| !c.is_ascii_digit()).to_string());
+            let key = (cid.clone(), mid.clone());
+            if let Some(found) = self.find_message(&cid, &mid) {
+                out.push((cid, mid, Some(found)));
+            } else if let Some(p) = self.peeks.get(&key) {
+                out.push((cid, mid, p.as_deref().cloned()));
+            } else if !self.peek_requests.values().any(|k| *k == key) && self.peek_requests.len() < 20 {
+                let id = self.api(net::ApiCall::GetMessages {
+                    channel_id: cid.clone(),
+                    before: None,
+                    after: None,
+                    around: Some(mid.clone()),
+                    limit: 1,
+                });
+                self.peek_requests.insert(id, key);
+            }
+            if out.len() >= 3 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// UnsuppressEmbeds: 埋め込みを出さないようにしたメッセージの埋め込みを戻す
+    pub fn unsuppress_embeds(&mut self, m: &Message) {
+        self.api(net::ApiCall::Raw {
+            method: reqwest::Method::PATCH,
+            path: format!("/channels/{}/messages/{}", m.channel_id, m.id),
+            body: Some(serde_json::json!({ "flags": m.flags & !4 })),
+        });
+    }
+}
+
+impl App {
+    /// Toggle Your Stuff: 「ctrl+alt+1=plugin-id」のキーでプラグインをオン・オフする。何かしたら true
+    pub fn toggle_hotkey(&mut self, k: &gpui::Keystroke) -> bool {
+        if !self.plugins.on("toggle-your-stuff") {
+            return false;
+        }
+        let m = &k.modifiers;
+        if !(m.control || m.alt || m.platform) {
+            return false;
+        }
+        let mut name = String::new();
+        if m.control {
+            name.push_str("ctrl+");
+        }
+        if m.alt {
+            name.push_str("alt+");
+        }
+        if m.shift {
+            name.push_str("shift+");
+        }
+        if m.platform {
+            name.push_str("super+");
+        }
+        name.push_str(&k.key.to_lowercase());
+        let binds = self.plugins.opt_str("toggle-your-stuff", "binds");
+        let targets: Vec<String> = crate::app::bd_display::parse_map(&binds)
+            .into_iter()
+            .filter(|(key, _)| key.to_lowercase().replace(' ', "") == name)
+            .flat_map(|(_, ids)| ids.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>())
+            .filter(|id| !id.is_empty() && id != "toggle-your-stuff")
+            .collect();
+        if targets.is_empty() {
+            return false;
+        }
+        for id in &targets {
+            self.plugins.toggle(id, &mut self.settings.enabled_plugins);
+            let on = self.plugins.on(id);
+            let name = self
+                .plugins
+                .entries
+                .iter()
+                .find(|p| &p.manifest.id == id)
+                .map(|p| p.manifest.name.clone())
+                .unwrap_or_else(|| id.clone());
+            self.show_toast(&if on {
+                tr!("{name} をオンにしました", "Turned on {name}", "已开启 {name}",)
+            } else {
+                tr!("{name} をオフにしました", "Turned off {name}", "已关闭 {name}",)
+            });
+        }
+        self.save_settings();
+        true
+    }
+}

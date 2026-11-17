@@ -1,0 +1,9 @@
+id = "late-attachments"
+name = "LateAttachments"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージを編集するときにも、ファイルを貼り付けて添付を足せるようにします"
+description_en = "Lets you add attachments when editing a message"
+description_zh = "编辑消息时也可以粘贴文件以添加附件"

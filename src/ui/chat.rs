@@ -778,6 +778,16 @@ impl Root {
                     })),
             );
         }
+        if a.plugins.on("jump-to-top") {
+            right = right.child(
+                toggle_icon("jump_top", IconName::ArrowUp, false)
+                    .tooltip(tip(tr!("最初のメッセージへ", "Jump to first message", "跳到第一条消息")))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.jump_to_top();
+                        cx.notify();
+                    })),
+            );
+        }
         let pins_open = a.side == crate::app::SidePanel::Pins;
         right = right.child(
             toggle_icon("pins_toggle", IconName::Pin, pins_open)
@@ -1924,7 +1934,7 @@ impl Root {
                     };
                     e.update(cx, |r, cx| {
                         let a = &r.app;
-                        if a.editing.is_some() {
+                        if a.editing.is_some() && !a.plugins.on("late-attachments") {
                             return false;
                         }
                         let handled = match item.text() {
@@ -1999,10 +2009,33 @@ impl Root {
                         .group_hover("emoji_btn", |s| s.text_color(WHITE())),
                     ),
             );
+        // PreviewMessage: 送る前に、記法を解いた見た目を出す
+        if self.app.plugins.on("preview-message") && !self.app.input.trim().is_empty() {
+            let rich = super::message::preview_rich(&self.app.input, true);
+            boxed = boxed.child(
+                div()
+                    .px(z(12.0))
+                    .pt(z(8.0))
+                    .flex()
+                    .flex_col()
+                    .gap(z(2.0))
+                    .child(text(tr!("プレビュー", "Preview", "预览"), 11.0, FAINT()))
+                    .child(
+                        div()
+                            .text_size(z(self.app.settings.font_size))
+                            .text_color(TEXT())
+                            .child(rich.element_with("compose_preview", None)),
+                    ),
+            );
+        }
         boxed = boxed.child(entry);
-        if left < 200 {
+        if left < 200 || self.app.plugins.on("char-counter") {
             boxed = boxed.child(div().flex().justify_end().child(text(
-                left.to_string(),
+                if self.app.plugins.on("char-counter") {
+                    format!("{} / {limit}", limit as i64 - left)
+                } else {
+                    left.to_string()
+                },
                 12.0,
                 if left < 0 { RED() } else { MUTED() },
             )));

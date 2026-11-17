@@ -1,0 +1,9 @@
+id = "dont-mask-pasted-urls"
+name = "DontMaskPastedURLs"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "文字を選んで URL を貼り付けたとき、[文字](URL) のリンクにせず置き換えます"
+description_en = "Pasting a URL over selected text replaces it instead of making a masked link"
+description_zh = "选中文字后粘贴 URL 时直接替换，而不是生成 [文字](URL) 链接"

@@ -1,0 +1,9 @@
+id = "better-double-click-to-edit"
+name = "BetterDoubleClickToEdit"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "自分のメッセージをダブルクリックすると、編集を始めます"
+description_en = "Double-click your own message to edit it"
+description_zh = "双击自己的消息即可开始编辑"

@@ -1,0 +1,9 @@
+id = "toggle-your-stuff"
+name = "Toggle Your Stuff"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めたキーで、プラグインをオン・オフします"
+description_en = "Toggle plugins with your own keyboard shortcuts"
+description_zh = "用自定义快捷键开启或关闭插件"

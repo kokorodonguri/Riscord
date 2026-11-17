@@ -289,6 +289,7 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     channel_id,
                     id,
                     content,
+                    ..
                 } => {
                     let result = messages
                         .get_mut(&channel_id)
@@ -352,6 +353,7 @@ mod tests {
             channel_id: "900".into(),
             id: id.clone(),
             content: "edited".into(),
+            files: vec![],
         })
         .unwrap();
         loop {

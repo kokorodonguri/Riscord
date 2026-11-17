@@ -1333,6 +1333,9 @@ impl Root {
             self.open_channel(cid);
             window.activate_window();
         }
+        if let Some(url) = crate::ui::message::PENDING_PREVIEW.lock().unwrap().take() {
+            self.image_preview = Some(url);
+        }
         // ClickableMentions: 押されたメンションの人のプロフィールを開く
         let mention = crate::ui::message::PENDING_MENTION.lock().unwrap().take();
         if let Some(uid) = mention {
@@ -1799,6 +1802,34 @@ impl Root {
             .read(cx)
             .focus_handle(cx)
             .is_focused(window);
+        // FullscreenToggle: F11 で全画面
+        if k.key == "f11" && !m.modified() && self.app.plugins.on("fullscreen-toggle") {
+            window.toggle_fullscreen();
+            cx.stop_propagation();
+            return;
+        }
+        // PasteAndSend: Ctrl+Shift+V で貼り付けてそのまま送る
+        if compose_focused
+            && (m.control || m.platform)
+            && m.shift
+            && k.key.eq_ignore_ascii_case("v")
+            && self.app.plugins.on("paste-and-send")
+        {
+            if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                self.app.input.push_str(&text);
+                sync(&self.inp.compose, &self.app.input, window, cx);
+                self.submit_input(window, cx);
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        // Toggle Your Stuff: 決めたキーでプラグインを切り替える
+        if self.app.toggle_hotkey(k) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         // Shift+L: 最新のメッセージへ。案内が出ているときだけで、入力中の文字の L は打てるようにする
         if m.shift
             && !m.control

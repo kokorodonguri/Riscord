@@ -1,0 +1,9 @@
+id = "peek-message-links"
+name = "PeekMessageLinks"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "本文のメッセージリンクの先を、チャンネルを移らずに下に表示します"
+description_en = "Shows the target of message links below the message without leaving the channel"
+description_zh = "在消息下方显示消息链接指向的内容，无需切换频道"

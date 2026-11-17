@@ -1,0 +1,9 @@
+id = "send-and-forget"
+name = "SendAndForget"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "転送したあと、転送先のチャンネルへ移らないようにします"
+description_en = "Don't follow forwarded messages after sending them"
+description_zh = "转发后不跳转到目标频道"

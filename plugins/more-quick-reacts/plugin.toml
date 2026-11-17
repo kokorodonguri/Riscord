@@ -1,0 +1,9 @@
+id = "more-quick-reacts"
+name = "MoreQuickReacts"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージのツールバーに、すぐ付けられるリアクションを並べます"
+description_en = "Adds quick reactions to the message toolbar"
+description_zh = "在消息工具栏中添加快速反应"

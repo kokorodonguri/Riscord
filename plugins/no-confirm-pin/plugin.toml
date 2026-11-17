@@ -1,0 +1,9 @@
+id = "no-confirm-pin"
+name = "NoConfirmPin"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "ピン留め・ピン留め解除の確認を出さないようにします"
+description_en = "Disables the confirmation prompt when pinning or unpinning messages"
+description_zh = "置顶或取消置顶消息时不再弹出确认"

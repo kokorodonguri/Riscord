@@ -1,0 +1,9 @@
+id = "sticker-emoji-preview"
+name = "StickerEmojiPreview"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージ中の絵文字やスタンプを押すと、大きく表示します"
+description_en = "Click emojis and stickers in messages to see them enlarged"
+description_zh = "点击消息中的表情或贴纸即可放大查看"

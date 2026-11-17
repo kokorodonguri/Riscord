@@ -1,0 +1,9 @@
+id = "show-all-message-buttons"
+name = "ShowAllMessageButtons"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "プラグインのメッセージ操作を「…」にまとめず、ツールバーに全部並べます"
+description_en = "Shows every plugin message action on the toolbar instead of under …"
+description_zh = "将所有插件消息操作直接显示在工具栏上，而不是收在 … 中"

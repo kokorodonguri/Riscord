@@ -314,6 +314,8 @@ impl Rich {
 
 /// ClickableMentions: 押せるメンションのリンク先の印（後ろはユーザー ID）
 pub const MENTION_LINK: &str = "riscord-mention:";
+/// StickerEmojiPreview: 押された絵文字の大きい画像（Root の描画で開く）
+pub static PENDING_PREVIEW: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// 押されたメンションのユーザー ID（Root の描画で開く）
 pub static PENDING_MENTION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -344,7 +346,7 @@ pub fn tag_elements(tags: &[crate::app::bd_display::Tag], key: &str) -> Vec<AnyE
 }
 
 /// 返信のプレビュー用に、本文を記法を解いた1行にする。リンクは色だけで、押せない
-fn preview_rich(content: &str, revealed: bool) -> Rich {
+pub fn preview_rich(content: &str, revealed: bool) -> Rich {
     let mut r = Rich::default();
     for block in md::blocks(content) {
         if !r.text.is_empty() {
@@ -671,6 +673,18 @@ impl Root {
                     cx.notify();
                 })
             })
+            .on_click({
+                let (cid, id) = (m.channel_id.clone(), m.id.clone());
+                cx.listener(move |this, ev: &ClickEvent, _, cx| {
+                    let mods = ev.modifiers();
+                    let Some(m) = this.app.find_message(&cid, &id) else {
+                        return;
+                    };
+                    if this.app.message_click(m, ev.click_count(), mods.shift, mods.control || mods.platform, mods.alt) {
+                        cx.notify();
+                    }
+                })
+            })
             .on_hover(cx.listener(move |this, h: &bool, _, cx| {
                 if *h && this.hover_msg.as_deref() != Some(mid.as_str()) {
                     this.hover_msg = Some(mid.clone());
@@ -909,6 +923,7 @@ impl Root {
             if !m.content.is_empty() && !self.app.bd_hide_content(m) {
                 content = content.child(self.inline_content(m, cx));
             }
+            content = content.children(self.peek_cards(m, cx));
             content = content.child(self.media_or_collapsed(m, cx));
             if let Some(r) = self.reactions_row(m, cx) {
                 content = content.child(r);
@@ -1145,6 +1160,49 @@ impl Root {
                     })),
             )
         });
+        if !deleted {
+            for (i, emoji) in self.app.quick_reacts().into_iter().enumerate() {
+                let (cid, mid) = (m.channel_id.clone(), m.id.clone());
+                let e = crate::model::ReactionEmoji {
+                    id: None,
+                    name: Some(emoji.clone()),
+                    animated: false,
+                };
+                bar = bar.child(
+                    div()
+                        .id(SharedString::from(format!("tb_qr{i}")))
+                        .size(z(28.0))
+                        .m(z(1.0))
+                        .rounded(z(6.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(SELECTED()))
+                        .text_size(z(16.0))
+                        .child(emoji)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.app.toggle_reaction(&cid, &mid, &e);
+                            cx.notify();
+                        })),
+                );
+            }
+            if self.app.plugins.on("quick-mention") {
+                let uid = m.author.id.clone();
+                bar = bar.child(
+                    btn("tb_mention", IconName::AtSign, false)
+                        .tooltip(tip(tr!("メンション", "Mention", "提及")))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.app.input.is_empty() && !this.app.input.ends_with(' ') {
+                                this.app.input.push(' ');
+                            }
+                            this.app.input.push_str(&format!("<@{uid}> "));
+                            this.app.focus_input = true;
+                            cx.notify();
+                        })),
+                );
+            }
+        }
         if mine {
             let m2 = m.clone();
             bar = bar.child(
@@ -1250,14 +1308,35 @@ impl Root {
                     })),
             );
         }
-        for (id, index, label) in self.app.plugins.message_actions() {
-            let message = m.clone();
+        let actions = self.app.plugins.message_actions();
+        if self.app.plugins.on("show-all-message-buttons") || actions.len() <= 1 {
+            for (id, index, label) in actions {
+                let message = m.clone();
+                bar = bar.child(
+                    btn(&format!("plugin-{id}-{index}"), IconName::Settings, false)
+                        .tooltip(tip(label))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.app.plugins.message_action(&id, index, &message);
+                            this.app.waker.wake();
+                            cx.notify();
+                        })),
+                );
+            }
+        } else {
+            // プラグインの操作が多いときは「…」から右クリックのメニューを開く
+            let (cid, id) = (m.channel_id.clone(), m.id.clone());
             bar = bar.child(
-                btn(&format!("plugin-{id}-{index}"), IconName::Settings, false)
-                    .tooltip(tip(label))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.app.plugins.message_action(&id, index, &message);
-                        this.app.waker.wake();
+                btn("tb_more", IconName::Ellipsis, false)
+                    .tooltip(tip(tr!("その他（プラグイン）", "More (plugins)", "更多（插件）")))
+                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                        let Some(m) = this.app.find_message(&cid, &id) else {
+                            return;
+                        };
+                        let p = ev.position();
+                        let p = if p.x == px(0.) && p.y == px(0.) { window.mouse_position() } else { p };
+                        this.menu = Some((PopMenu::Message, p));
+                        this.menu_msg = Some(m);
+                        cx.stop_propagation();
                         cx.notify();
                     })),
             );
@@ -1604,6 +1683,7 @@ impl Root {
         let clickable_mentions =
             self.app.plugins.on("clickable-mentions") || self.app.plugins.on("better-mentions");
         let color_codes = self.app.plugins.on("color-indicator");
+        let emoji_preview = self.app.plugins.on("sticker-emoji-preview");
         // 飾りは絵文字をまたいで続くので、記法を解いてから絵文字で切る
         let mut pieces = Vec::new();
         let mut cur = Rich::default();
@@ -1715,10 +1795,20 @@ impl Root {
                         ),
                         _ => div().size(z(size)),
                     };
+                    let big = format!(
+                        "https://cdn.discordapp.com/emojis/{id}.{}?size=512",
+                        if animated { "gif" } else { "png" }
+                    );
                     row = row.child(
                         face.id(SharedString::from(format!("{key}_e{i}")))
                             .tooltip(tip(format!(":{name}:")))
-                            .when(only_emoji, |d| d.mr(z(4.0))),
+                            .when(only_emoji, |d| d.mr(z(4.0)))
+                            .when(emoji_preview, |d| {
+                                d.cursor_pointer().on_click(move |_, window, _| {
+                                    *PENDING_PREVIEW.lock().unwrap() = Some(big.clone());
+                                    window.refresh();
+                                })
+                            }),
                     );
                     urls.push(url);
                 }
@@ -1798,6 +1888,54 @@ impl Root {
     }
 
     /// 添付画像・スタンプ・埋め込み画像
+    /// PeekMessageLinks: 本文のメッセージリンクの先を、引用のように下に出す
+    fn peek_cards(&mut self, m: &Message, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let peeks = self.app.peek_links(m);
+        peeks
+            .into_iter()
+            .enumerate()
+            .map(|(i, (cid, mid, found))| {
+                let body: AnyElement = match &found {
+                    Some(p) => div()
+                        .flex()
+                        .flex_col()
+                        .gap(z(2.0))
+                        .child(text(
+                            self.app.shown_name(&p.author.id, author_name(p)),
+                            13.0,
+                            WHITE(),
+                        ).font_weight(FontWeight::MEDIUM))
+                        .child(text(crate::notify::excerpt(&p.content, 300), 13.0, TEXT()))
+                        .into_any_element(),
+                    None => text(
+                        tr!("リンク先のメッセージを読み込み中か、見られません", "Loading the linked message, or it isn't available", "正在加载链接的消息，或无法查看"),
+                        12.0,
+                        MUTED(),
+                    )
+                    .into_any_element(),
+                };
+                let guild = self.app.guild_of_channel(&cid);
+                div()
+                    .id(SharedString::from(format!("peek{}_{i}", m.id)))
+                    .max_w(z(520.0))
+                    .mt(z(4.0))
+                    .p(z(8.0))
+                    .rounded(z(6.0))
+                    .border_l_4()
+                    .border_color(REPLY_LINE())
+                    .bg(EMBED_BG())
+                    .cursor_pointer()
+                    .child(body)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.app.jump_to_message(guild.clone(), cid.clone(), mid.clone());
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     /// CollapseEmbeds: 埋め込み・添付を畳めるようにする
     fn media_or_collapsed(&mut self, m: &Message, cx: &mut Context<Self>) -> AnyElement {
         let count = m.attachments.len() + m.embeds.iter().filter(|e| e.visible()).count();
@@ -2150,6 +2288,17 @@ impl Root {
                 .id(SharedString::from(format!("st{}", st.id)))
                 .size(z(BOX))
                 .tooltip(tip(st.name.clone()))
+                .when(self.app.plugins.on("sticker-emoji-preview") && st.format_type != 3, |d| {
+                    let big = format!(
+                        "https://media.discordapp.net/stickers/{}.{}?size=512",
+                        st.id,
+                        if st.format_type == 4 { "gif" } else { "png" }
+                    );
+                    d.cursor_pointer().on_click(move |_, window, _| {
+                        *PENDING_PREVIEW.lock().unwrap() = Some(big.clone());
+                        window.refresh();
+                    })
+                })
                 .child(
                     img(i.clone())
                         .id("img")

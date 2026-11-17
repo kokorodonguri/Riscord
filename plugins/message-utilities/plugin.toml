@@ -1,0 +1,9 @@
+id = "message-utilities"
+name = "MessageUtilities"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "修飾キーとクリックで、メッセージの返信・編集・削除・ピン留め・コピーをすばやく行います"
+description_en = "Quick actions for messages (reply, edit, delete, pin, copy) with modifier+click"
+description_zh = "通过修饰键+点击快速对消息执行回复、编辑、删除、置顶、复制"

@@ -1,0 +1,9 @@
+id = "preview-message"
+name = "PreviewMessage"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "送る前に、入力中のメッセージの見た目を入力欄の上に表示します"
+description_en = "Shows a preview of your message above the input before sending"
+description_zh = "发送前在输入框上方预览消息的样式"

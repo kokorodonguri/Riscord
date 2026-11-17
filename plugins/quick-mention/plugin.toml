@@ -1,0 +1,9 @@
+id = "quick-mention"
+name = "QuickMention"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージにマウスを重ねたときのツールバーに、投稿者へのメンションを入力欄に入れるボタンを足します"
+description_en = "Adds a button to the message toolbar that mentions the author in the input"
+description_zh = "在消息工具栏中添加按钮，可在输入框中提及作者"

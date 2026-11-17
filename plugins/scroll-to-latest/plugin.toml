@@ -1,0 +1,9 @@
+id = "scroll-to-latest"
+name = "ScrollToLatest"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "チャンネルを開いたとき、途中を見ていても最新のメッセージへ戻します"
+description_en = "Scrolls to the latest message when you open a channel"
+description_zh = "打开频道时滚动到最新消息"

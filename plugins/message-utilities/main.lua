@@ -1,0 +1,2 @@
+local S = settings({}, { ja = "Alt+クリック: 返信。Ctrl+クリック: 編集（自分）。Ctrl+Shift+クリック: 確認なしで削除（自分）。Alt+Shift+クリック: ピン留めの切り替え。Ctrl+Alt+クリック: 本文をコピー。", en = "Alt+click: reply. Ctrl+click: edit (yours). Ctrl+Shift+click: delete without confirmation (yours). Alt+Shift+click: toggle pin. Ctrl+Alt+click: copy text.", zh = "Alt+点击：回复。Ctrl+点击：编辑（自己的）。Ctrl+Shift+点击：直接删除（自己的）。Alt+Shift+点击：切换置顶。Ctrl+Alt+点击：复制正文。" })
+return plugin(S)

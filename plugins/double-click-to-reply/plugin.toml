@@ -1,0 +1,9 @@
+id = "double-click-to-reply"
+name = "DoubleClickToReply"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "他の人のメッセージをダブルクリックすると、返信を始めます"
+description_en = "Double-click someone else's message to start replying"
+description_zh = "双击他人的消息即可开始回复"

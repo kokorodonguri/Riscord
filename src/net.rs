@@ -78,6 +78,18 @@ fn decode_frame_as<T: DeserializeOwned>(msg: &WsMsg, inflater: &mut Inflater) ->
     Ok(parsed)
 }
 
+/// メッセージ送信の追加の指定（同梱プラグイン用）
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SendExtra {
+    /// 4096 = 通知を鳴らさない（@silent）
+    pub flags: u64,
+    /// allowed_mentions（None は Discord の既定）
+    pub allowed_mentions: Option<Value>,
+    /// 本文より前に、この順で 1 通ずつ送る（長文の分割）
+    pub before: Vec<String>,
+    pub tts: bool,
+}
+
 pub enum Cmd {
     LoadGuildChannels(String),
     /// メンバー一覧のうち、見えている範囲だけを購読する（公式クライアントと同じ op 37）。
@@ -100,6 +112,8 @@ pub enum Cmd {
         content: String,
         reply_to: Option<String>,
         files: Vec<(String, Vec<u8>)>,
+        /// プラグインが足す送り方（フラグ・メンションの扱い・分けて送る前半）
+        extra: SendExtra,
     },
     Edit {
         channel_id: String,
@@ -1044,13 +1058,33 @@ async fn run(
                     content,
                     reply_to,
                     files,
+                    extra,
                 } => {
-                    let mut body = json!({ "content": content, "nonce": nonce(), "tts": false });
+                    let path = format!("/channels/{channel_id}/messages");
+                    // 分けた前半は順番どおりに届くよう、1 通ずつ待って送る
+                    for part in &extra.before {
+                        let mut body = json!({ "content": part, "nonce": nonce(), "tts": false });
+                        if extra.flags != 0 {
+                            body["flags"] = json!(extra.flags);
+                        }
+                        if let Some(am) = &extra.allowed_mentions {
+                            body["allowed_mentions"] = am.clone();
+                        }
+                        if let Err(e) = api.request(reqwest::Method::POST, &path, Some(&body)).await {
+                            eprintln!("分割送信失敗: {e:#}");
+                        }
+                    }
+                    let mut body = json!({ "content": content, "nonce": nonce(), "tts": extra.tts });
+                    if extra.flags != 0 {
+                        body["flags"] = json!(extra.flags);
+                    }
+                    if let Some(am) = &extra.allowed_mentions {
+                        body["allowed_mentions"] = am.clone();
+                    }
                     if let Some(id) = reply_to {
                         body["message_reference"] =
                             json!({ "channel_id": channel_id, "message_id": id });
                     }
-                    let path = format!("/channels/{channel_id}/messages");
                     let response = if files.is_empty() {
                         api.request(reqwest::Method::POST, &path, Some(&body)).await
                     } else {

@@ -1,0 +1,8 @@
+id = "message-logger"
+name = "MessageLogger"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+description = "削除・編集されたメッセージを記録して表示します（同梱）"
+description_en = "Records and shows deleted and edited messages (bundled)"
+description_zh = "记录并显示被删除和编辑的消息（内置）"

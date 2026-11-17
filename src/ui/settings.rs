@@ -1755,7 +1755,7 @@ impl Root {
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.app.plugins.reload(&this.app.settings.enabled_plugins);
-                            this.plugin_inputs.clear();
+                            this.plugin_inputs.retain(|(p, _), _| p == "__filter");
                             this.app.waker.wake();
                             cx.notify();
                         })),
@@ -1792,7 +1792,7 @@ impl Root {
                         this.app
                             .plugins
                             .set_all(false, &mut this.app.settings.enabled_plugins);
-                        this.plugin_inputs.clear();
+                        this.plugin_inputs.retain(|(p, _), _| p == "__filter");
                         this.app.save_settings();
                         this.app.waker.wake();
                         cx.notify();
@@ -1806,8 +1806,76 @@ impl Root {
                 error,
             ));
         }
-        for p in &self.app.plugins.entries {
+        // 絞り込み（名前・ID・説明）と「有効なものだけ」
+        let filter_input = self
+            .plugin_inputs
+            .entry(("__filter".into(), "q".into()))
+            .or_insert_with(|| {
+                super::new_input(
+                    window,
+                    cx,
+                    tr!("プラグインを検索", "Search plugins", "搜索插件"),
+                    false,
+                )
+            })
+            .clone();
+        if self.plugin_filter_sub.is_none() {
+            self.plugin_filter_sub = Some(cx.subscribe(&filter_input, |_, _, _: &InputEvent, cx| cx.notify()));
+        }
+        let query = filter_input.read(cx).value().trim().to_lowercase();
+        let only_enabled = self.plugins_only_enabled;
+        let total = self.app.plugins.entries.len();
+        let running = self.app.plugins.entries.iter().filter(|p| p.running()).count();
+        page = page.child(
+            div()
+                .mt(z(16.0))
+                .flex()
+                .items_center()
+                .gap(z(12.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .bg(INPUT())
+                        .border_1()
+                        .border_color(BORDER())
+                        .rounded(z(8.0))
+                        .px(z(6.0))
+                        .child(Input::new(&filter_input).appearance(false).h(z(36.0))),
+                )
+                .child(text(
+                    tr!("{running} / {total} 個が有効", "{running} / {total} on", "已启用 {running} / {total} 个",),
+                    14.0,
+                    MUTED(),
+                ))
+                .child(text(tr!("有効のみ", "On only", "仅已启用"), 14.0, TEXT()))
+                .child(
+                    toggle_switch("plugins-only-enabled", only_enabled).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.plugins_only_enabled = !this.plugins_only_enabled;
+                            cx.notify();
+                        },
+                    )),
+                ),
+        );
+        let shown: Vec<usize> = self
+            .app
+            .plugins
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                (!only_enabled || p.running() || p.error.is_some())
+                    && (query.is_empty()
+                        || p.manifest.name.to_lowercase().contains(&query)
+                        || p.manifest.id.contains(&query)
+                        || p.manifest.describe().to_lowercase().contains(&query))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for index in shown {
+            let p = &self.app.plugins.entries[index];
             let id = p.manifest.id.clone();
+            let id_for_page = id.clone();
             let page_id = id.clone();
             let enabled = self.app.settings.enabled_plugins.contains(&id);
             let status = if p.running() {
@@ -1818,11 +1886,12 @@ impl Root {
                 tr!("無効", "Disabled", "已禁用")
             };
             let desc = format!(
-                "{} · {} · {}\n{}{}",
+                "{}{} · {} · {}\n{}{}",
+                if p.manifest.bd { "BetterDiscord · " } else { "" },
                 p.manifest.id,
                 p.manifest.version,
                 status,
-                p.manifest.description,
+                p.manifest.describe(),
                 p.error
                     .as_ref()
                     .map(|e| tr!("\nエラー: {e}", "\nError: {e}", "\n错误：{e}",))
@@ -1843,7 +1912,11 @@ impl Root {
                                         .cursor_pointer()
                                         .child(text(tr!("ページ", "Page", "页面"), 14.0, LINK()))
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.app.plugins.selected = Some(page_id.clone());
+                                            if this.app.plugins.selected.as_deref() == Some(page_id.as_str()) {
+                                                this.app.plugins.selected = None;
+                                            } else {
+                                                this.app.plugins.selected = Some(page_id.clone());
+                                            }
                                             cx.notify();
                                         })),
                                 )
@@ -1872,14 +1945,24 @@ impl Root {
                     )),
                 ),
             );
+                    if self.app.plugins.selected.as_deref() == Some(id_for_page.as_str()) {
+                page = page.child(self.plugin_page(id_for_page, window, cx));
+            }
         }
-        if let Some(id) = self.app.plugins.selected.clone().filter(|id| {
-            self.app
-                .plugins
-                .entries
-                .iter()
-                .any(|p| p.manifest.id == *id && p.has_page())
-        }) {
+        vec![page.into_any_element()]
+    }
+
+    /// プラグインのページ（page() の部品）。一覧の、そのプラグインの行の直下に出す
+    fn plugin_page(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let mut page = div()
+            .mx(z(12.0))
+            .px(z(16.0))
+            .pb(z(16.0))
+            .border_l_2()
+            .border_color(BLURPLE());
+        if !self.app.plugins.entries.iter().any(|p| p.manifest.id == id && p.has_page()) {
+            return page;
+        }
             page = page.child(div().mt(z(24.0)).child(medium(
                 tr!("{id} のページ", "{id} page", "{id} 页",),
                 20.0,
@@ -1984,8 +2067,7 @@ impl Root {
             if id == "message-logger" {
                 page = page.child(self.message_log_view(cx));
             }
-        }
-        vec![page.into_any_element()]
+        page
     }
 
     /// MessageLogger のログ一覧（削除・編集・ゴーストピン）。押すとそのチャンネルを開く

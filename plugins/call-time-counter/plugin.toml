@@ -1,0 +1,8 @@
+id = "call-time-counter"
+name = "CallTimeCounter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+description = "ボイス通話の経過時間を表示します（同梱）"
+description_en = "Shows elapsed time in voice calls (bundled)"
+description_zh = "显示语音通话的经过时间（内置）"

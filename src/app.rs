@@ -397,6 +397,21 @@ pub fn spawn_file_dialog(
     rx
 }
 
+/// URL を既定のアプリで開く（http(s) と steam のみ）
+pub fn open_url(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with("steam://")) {
+        return;
+    }
+    #[cfg(windows)]
+    let _ = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 /// フォルダをファイルマネージャで開く
 pub fn open_folder(path: &std::path::Path) {
     let _ = std::fs::create_dir_all(path);
@@ -1341,6 +1356,10 @@ pub struct App {
     pub toast: Option<(String, std::time::Instant)>,
     /// 次の描画でクリップボードに書くもの（gpui の cx が要るので画面側で書く）
     pub clipboard_out: Option<String>,
+    /// 最後に「入力中」を送ったチャンネルと時刻
+    pub typing_sent: Option<(String, std::time::Instant)>,
+    /// チャンネルごとの入力中の人（ユーザー ID, 表示名, 届いた時刻）
+    pub typing: HashMap<String, Vec<(String, String, std::time::Instant)>>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
     pub guild_settings: HashMap<String, GuildSettings>,
     /// 未読のメンション数（チャンネル → (サーバー, 件数)。DM はサーバーが None で、メッセージごとに数える）
@@ -1974,8 +1993,9 @@ impl App {
         } else {
             content
         };
-        if message_text_len(&content)
-            > message_text_limit(self.me.as_ref().and_then(|u| u.premium_type))
+        if !self.can_send_long()
+            && message_text_len(&content)
+                > message_text_limit(self.me.as_ref().and_then(|u| u.premium_type))
         {
             self.input = content;
             self.compose_notice = Some((
@@ -2004,14 +2024,17 @@ impl App {
                 content: content.clone(),
             }
         } else {
+            let mut last = content.clone();
+            let extra = self.plugin_send_extra(&mut last, reply.is_some());
             Cmd::Send {
                 channel_id: channel_id.clone(),
-                content: content.clone(),
+                content: last,
                 reply_to: reply.as_ref().map(|m| m.id.clone()),
                 files: uploads
                     .iter()
                     .map(|u| (u.name.clone(), u.data.clone()))
                     .collect(),
+                extra,
             }
         };
         let failed = self
@@ -2129,15 +2152,23 @@ impl App {
                                             self.me.as_ref().and_then(|u| u.premium_type),
                                         ) =>
                             {
+                                let mut last = text.clone();
+                                let extra = bd_plugins::send_extra(
+                                    &self.plugins,
+                                    self.me.as_ref().and_then(|u| u.premium_type),
+                                    &mut last,
+                                    sub.reply.is_some(),
+                                );
                                 let cmd = Cmd::Send {
                                     channel_id: channel.clone(),
-                                    content: text.clone(),
+                                    content: last,
                                     reply_to: sub.reply.as_ref().map(|m| m.id.clone()),
                                     files: sub
                                         .uploads
                                         .iter()
                                         .map(|u| (u.name.clone(), u.data.clone()))
                                         .collect(),
+                                    extra,
                                 };
                                 sub.content = text;
                                 if self
@@ -2175,17 +2206,9 @@ impl App {
         if let Some(delay) = self.message_log.save_if_due() {
             self.repaint_after(delay);
         }
+        self.sync_plugin_host();
         let (actions, next) = self.plugins.tick();
-        for action in actions {
-            match action {
-                crate::plugins::Action::Send(channel_id, content) => self.send(Cmd::Send {
-                    channel_id,
-                    content,
-                    reply_to: None,
-                    files: Vec::new(),
-                }),
-            }
-        }
+        self.run_plugin_actions(actions);
         if let Some(delay) = next {
             self.repaint_after(delay);
         }
@@ -2797,6 +2820,7 @@ impl App {
                 }
                 Event::VoiceStates(list) => {
                     for v in list {
+                        self.plugin_voice_change(&v);
                         let previous = self
                             .voice_states
                             .get(&v.user_id)
@@ -2880,6 +2904,9 @@ impl App {
                     });
                     if flips {
                         self.member_ver += 1;
+                    }
+                    if list.len() <= 20 {
+                        self.plugin_presence_changes(&list);
                     }
                     self.presences.extend(list);
                 }
@@ -3733,6 +3760,10 @@ impl App {
     }
 
     fn on_gateway_event(&mut self, t: &str, mut d: serde_json::Value) {
+        if t == "TYPING_START" {
+            self.on_typing_start(&d);
+            return;
+        }
         if t.starts_with("GUILD_ROLE_") {
             if let Some(guild_id) = d["guild_id"].as_str() {
                 self.role_admin_event(guild_id);
@@ -5293,6 +5324,79 @@ impl App {
             .filter_map(|id| self.voice_states.get(id))
     }
 
+    /// プラグインから読める本体の状態を更新する
+    pub fn sync_plugin_host(&mut self) {
+        let mut h = self.plugins.host.borrow_mut();
+        if let Some(me) = &self.me {
+            if h.me_id != me.id {
+                h.me_id = me.id.clone();
+            }
+            if h.me_name != me.display() {
+                h.me_name = me.display().to_owned();
+            }
+        }
+        if h.status != self.settings.status {
+            h.status = self.settings.status.clone();
+        }
+        let ch = self.sel_channel.clone().unwrap_or_default();
+        if h.channel_id != ch {
+            h.channel_id = ch;
+        }
+        let g = self.sel_guild.clone().unwrap_or_default();
+        if h.guild_id != g {
+            h.guild_id = g;
+        }
+    }
+
+    /// プラグインが頼んだ操作を行う
+    pub fn run_plugin_actions(&mut self, actions: Vec<crate::plugins::Action>) {
+        use crate::plugins::Action;
+        for action in actions {
+            match action {
+                Action::Send(channel_id, content) => {
+                    let content = self.plugins.transform("on_send", &content, &channel_id);
+                    self.send(Cmd::Send {
+                        channel_id,
+                        content,
+                        reply_to: None,
+                        files: Vec::new(),
+                        extra: Default::default(),
+                    })
+                }
+                Action::Notify(title, body) => {
+                    let target = (
+                        self.sel_guild.clone(),
+                        self.sel_channel.clone().unwrap_or_default(),
+                    );
+                    crate::notify::show(
+                        title,
+                        body,
+                        target,
+                        self.notify_clicked.clone(),
+                        self.waker.clone(),
+                    );
+                }
+                Action::Copy(text) => self.clipboard_out = Some(text),
+                Action::OpenUrl(url) => open_url(&url),
+                Action::SetStatus(status) => {
+                    if self.settings.status != status {
+                        self.set_status(status)
+                    }
+                }
+                Action::Insert(text) => {
+                    self.input.push_str(&text);
+                }
+                Action::OpenChannel(channel_id) => {
+                    let guild = self.guild_of_channel(&channel_id);
+                    *self.notify_clicked.lock().unwrap() = Some((guild, channel_id));
+                }
+                Action::Sound(name) => crate::sound::play(&name, 1.0),
+                Action::Speak(text) => crate::sound::speak(&text),
+            }
+        }
+        self.waker.wake();
+    }
+
     pub fn set_status(&mut self, st: String) {
         self.send(Cmd::SetStatus(st.clone()));
         self.settings.status = st;
@@ -5502,6 +5606,7 @@ pub use channel_permissions::{ChannelPermissionView, CHANNEL_PERMISSION_BITS};
 mod friends;
 pub use friends::{FriendAction, Friends};
 mod authors;
+pub mod bd_plugins;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;

@@ -19,6 +19,7 @@ mod model;
 mod net;
 mod notify;
 mod plugins;
+mod sound;
 mod profile;
 mod sticker;
 mod theme;

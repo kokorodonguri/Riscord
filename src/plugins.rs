@@ -21,10 +21,65 @@ pub struct Manifest {
     pub description: String,
     pub api: u32,
     pub entry: String,
+    /// 同梱プラグインの英語・中国語の説明（description は日本語）
+    #[serde(default)]
+    pub description_en: String,
+    #[serde(default)]
+    pub description_zh: String,
+    /// BetterDiscord のプラグインを Riscord 向けに作り直したもの
+    #[serde(default)]
+    pub bd: bool,
 }
-#[derive(Clone)]
+impl Manifest {
+    /// 表示言語に合わせた説明
+    pub fn describe(&self) -> &str {
+        let pick = match crate::i18n::code() {
+            "en" => &self.description_en,
+            "zh" => &self.description_zh,
+            _ => &self.description,
+        };
+        if pick.is_empty() {
+            &self.description
+        } else {
+            pick
+        }
+    }
+}
+mod bundled {
+    include!(concat!(env!("OUT_DIR"), "/bundled_plugins.rs"));
+}
+/// 同梱プラグインの先頭に連結する共通部品
+const LIB: &str = include_str!("../plugins/_lib.lua");
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Send(String, String),
+    /// デスクトップ通知（タイトル, 本文）
+    Notify(String, String),
+    /// クリップボードへ文字列を書く
+    Copy(String),
+    /// ブラウザなどで URL を開く
+    OpenUrl(String),
+    /// online / idle / dnd / invisible
+    SetStatus(String),
+    /// 入力欄へ文字列を差し込む
+    Insert(String),
+    /// チャンネルを開く
+    OpenChannel(String),
+    /// 効果音（"message" / "mention" / "join" / "leave" / "mute" / "key" など）
+    Sound(String),
+    /// 読み上げ
+    Speak(String),
+}
+/// プラグインから読める本体の状態（App が更新する）
+#[derive(Default, Clone)]
+pub struct HostInfo {
+    pub me_id: String,
+    pub me_name: String,
+    pub status: String,
+    pub channel_id: String,
+    pub guild_id: String,
+    pub voice_channel_id: String,
 }
 #[derive(Clone)]
 pub struct PageItem {
@@ -38,6 +93,7 @@ struct Timer {
     callback: mlua::RegistryKey,
 }
 struct Runtime {
+    has_page: bool,
     lua: Lua,
     queue: Rc<RefCell<Vec<Action>>>,
     timers: Rc<RefCell<Vec<Timer>>>,
@@ -52,6 +108,11 @@ pub struct Plugin {
 #[derive(Default)]
 pub struct Plugins {
     pub entries: Vec<Plugin>,
+    /// id → entries の位置
+    index: std::collections::HashMap<String, usize>,
+    /// options() の結果のキャッシュ
+    options_cache: RefCell<std::collections::HashMap<String, serde_json::Value>>,
+    pub host: Rc<RefCell<HostInfo>>,
     pub errors: Vec<String>,
     pub selected: Option<String>,
     pub revision: u64,
@@ -98,14 +159,51 @@ fn entry_path(dir: &Path, entry: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// Lua に渡すメッセージ
+fn message_table(lua: &Lua, m: &Message) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    t.set("id", m.id.clone())?;
+    t.set("channel_id", m.channel_id.clone())?;
+    t.set("guild_id", m.guild_id.clone())?;
+    t.set("author_id", m.author.id.clone())?;
+    t.set("author_name", m.member.as_ref().and_then(|mb| mb.nick.clone()).unwrap_or_else(|| m.author.display().to_owned()))?;
+    t.set("author_username", m.author.username.clone())?;
+    t.set("bot", m.author.bot)?;
+    t.set("content", m.content.clone())?;
+    t.set("timestamp", m.timestamp.clone())?;
+    t.set("mention_everyone", m.mention_everyone)?;
+    let mentions = lua.create_table()?;
+    for (i, u) in m.mentions.iter().enumerate() {
+        mentions.set(i + 1, u.id.clone())?;
+    }
+    t.set("mentions", mentions)?;
+    let attachments = lua.create_table()?;
+    for (i, a) in m.attachments.iter().enumerate() {
+        attachments.set(i + 1, a.url.clone())?;
+    }
+    t.set("attachments", attachments)?;
+    t.set("reply_to", m.referenced_message.as_ref().map(|r| r.id.clone()))?;
+    Ok(t)
+}
+
 impl Runtime {
+    #[cfg(test)]
     fn new(manifest: &Manifest, dir: &Path, data_dir: &Path) -> mlua::Result<Self> {
         let path =
             entry_path(dir, &manifest.entry).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         let script = read_limited(&path).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         Self::from_source(manifest, &script, data_dir)
     }
+    #[cfg(test)]
     fn from_source(manifest: &Manifest, script: &str, data_dir: &Path) -> mlua::Result<Self> {
+        Self::with_host(manifest, script, data_dir, Default::default())
+    }
+    fn with_host(
+        manifest: &Manifest,
+        script: &str,
+        data_dir: &Path,
+        host: Rc<RefCell<HostInfo>>,
+    ) -> mlua::Result<Self> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
             LuaOptions::default(),
@@ -201,6 +299,81 @@ impl Runtime {
                 std::fs::write(&data_file, bytes).map_err(mlua::Error::external)
             })?,
         )?;
+        for (name, make) in [
+            ("notify", 2usize),
+            ("copy", 1),
+            ("open_url", 1),
+            ("set_status", 1),
+            ("insert", 1),
+            ("open_channel", 1),
+            ("play_sound", 1),
+            ("speak", 1),
+        ] {
+            let q = queue.clone();
+            api.set(
+                name,
+                lua.create_function(move |_, (a, b): (String, Option<String>)| {
+                    if a.len() > 8000 || b.as_ref().is_some_and(|b| b.len() > 8000) || q.borrow().len() >= 100 {
+                        return Err(mlua::Error::runtime(tr!(
+                            "内容が長すぎるか、操作の待ちが上限です",
+                            "The content is too long, or too many actions are queued",
+                            "内容过长，或待处理操作已达上限"
+                        )));
+                    }
+                    let action = match (name, make) {
+                        ("notify", _) => Action::Notify(a, b.unwrap_or_default()),
+                        ("copy", _) => Action::Copy(a),
+                        ("open_url", _) if a.starts_with("https://") || a.starts_with("http://") || a.starts_with("steam://") => Action::OpenUrl(a),
+                        ("open_url", _) => return Err(mlua::Error::runtime("open_url: http(s):// or steam:// only")),
+                        ("set_status", _) if ["online", "idle", "dnd", "invisible"].contains(&a.as_str()) => Action::SetStatus(a),
+                        ("set_status", _) => return Err(mlua::Error::runtime("set_status: online / idle / dnd / invisible")),
+                        ("insert", _) => Action::Insert(a),
+                        ("open_channel", _) => Action::OpenChannel(a),
+                        ("play_sound", _) => Action::Sound(a),
+                        _ => Action::Speak(a),
+                    };
+                    q.borrow_mut().push(action);
+                    Ok(())
+                })?,
+            )?;
+        }
+        api.set(
+            "now",
+            lua.create_function(|_, ()| Ok(chrono::Utc::now().timestamp_millis()))?,
+        )?;
+        // chrono の書式で日時を作る（秒。省略時は今）。utc=true で UTC
+        api.set(
+            "date",
+            lua.create_function(|_, (fmt, secs, utc): (String, Option<f64>, Option<bool>)| {
+                use std::fmt::Write;
+                let secs = secs.unwrap_or_else(|| chrono::Utc::now().timestamp() as f64);
+                let Some(t) = chrono::DateTime::from_timestamp(secs as i64, 0) else {
+                    return Ok(String::new());
+                };
+                let mut out = String::new();
+                let ok = if utc.unwrap_or(false) {
+                    write!(out, "{}", t.format(&fmt)).is_ok()
+                } else {
+                    write!(out, "{}", t.with_timezone(&chrono::Local).format(&fmt)).is_ok()
+                };
+                Ok(if ok { out } else { String::new() })
+            })?,
+        )?;
+        let h = host.clone();
+        api.set(
+            "me",
+            lua.create_function(move |lua, ()| {
+                let h = h.borrow();
+                let t = lua.create_table()?;
+                t.set("id", h.me_id.clone())?;
+                t.set("name", h.me_name.clone())?;
+                t.set("status", h.status.clone())?;
+                t.set("channel_id", h.channel_id.clone())?;
+                t.set("guild_id", h.guild_id.clone())?;
+                t.set("voice_channel_id", h.voice_channel_id.clone())?;
+                Ok(t)
+            })?,
+        )?;
         api.set("api_version", API_VERSION)?;
         // 表示言語（"ja" / "en" / "zh"）。設定で切り替えられるので、表示を作るたびに呼ぶ
         api.set(
@@ -209,8 +382,9 @@ impl Runtime {
         )?;
         lua.globals().set("riscord", api)?;
         let callbacks: Table = lua.load(script).set_name(&manifest.entry).eval()?;
-        lua.globals().set("__plugin", callbacks)?;
-        let runtime = Self { lua, queue, timers };
+        lua.globals().set("__plugin", callbacks.clone())?;
+        let has_page = callbacks.raw_get::<Value>("page").is_ok_and(|v| matches!(v, Value::Function(_)));
+        let runtime = Self { has_page, lua, queue, timers };
         runtime.call("start", ())?;
         Ok(runtime)
     }
@@ -243,12 +417,8 @@ impl Runtime {
         self.message_with(name, m, None)
     }
     fn message_with(&self, name: &str, m: &Message, extra: Option<&str>) -> mlua::Result<Value> {
-        let t = self.lua.create_table()?;
-        t.set("id", m.id.clone())?;
-        t.set("channel_id", m.channel_id.clone())?;
-        t.set("guild_id", m.guild_id.clone())?;
-        t.set("author_id", m.author.id.clone())?;
-        t.set("content", m.content.clone())?;
+        self.reset_budget();
+        let t = message_table(&self.lua, m)?;
         self.call(name, (t, extra))
     }
 }
@@ -262,78 +432,29 @@ impl Plugins {
         self.entries.clear();
         self.errors.clear();
         self.selected = None;
-        let manifest = Manifest {
-            id: "call-time-counter".into(),
-            name: "CallTimeCounter".into(),
-            version: "1.0.0".into(),
-            description: tr!(
-                "ボイス通話の経過時間を表示します（同梱）",
-                "Shows elapsed time in voice calls (bundled)",
-                "显示语音通话的经过时间（内置）"
-            )
-            .into(),
-            api: API_VERSION,
-            entry: "main.lua".into(),
-        };
-        let mut bundled = Plugin {
-            manifest,
-            error: None,
-            runtime: None,
-            path: PathBuf::new(),
-            bundled_source: Some(include_str!("../plugins/call-time-counter/main.lua")),
-        };
-        if enabled.contains(&bundled.manifest.id) {
-            bundled.start(&self.data_root);
+        self.options_cache.borrow_mut().clear();
+        let mut seen = std::collections::HashSet::new();
+        for (toml_text, source) in bundled::BUNDLED {
+            let manifest: Manifest = match toml::from_str(toml_text) {
+                Ok(m) => m,
+                Err(e) => {
+                    self.errors.push(format!("bundled: {e}"));
+                    continue;
+                }
+            };
+            seen.insert(manifest.id.clone());
+            let mut bundled = Plugin {
+                manifest,
+                error: None,
+                runtime: None,
+                path: PathBuf::new(),
+                bundled_source: Some(source),
+            };
+            if enabled.contains(&bundled.manifest.id) {
+                bundled.start(&self.data_root, &self.host);
+            }
+            self.entries.push(bundled);
         }
-        self.entries.push(bundled);
-        let manifest = Manifest {
-            id: "translator".into(),
-            name: "Translator".into(),
-            version: "1.0.0".into(),
-            description: tr!(
-                "メッセージを Google 翻訳へ送信して翻訳します（同梱）",
-                "Translates messages by sending them to Google Translate (bundled)",
-                "将消息发送到 Google 翻译进行翻译（内置）"
-            )
-            .into(),
-            api: API_VERSION,
-            entry: "main.lua".into(),
-        };
-        let mut bundled = Plugin {
-            manifest,
-            error: None,
-            runtime: None,
-            path: PathBuf::new(),
-            bundled_source: Some(include_str!("../plugins/translator/main.lua")),
-        };
-        if enabled.contains(&bundled.manifest.id) {
-            bundled.start(&self.data_root);
-        }
-        self.entries.push(bundled);
-        let manifest = Manifest {
-            id: "message-logger".into(),
-            name: "MessageLogger".into(),
-            version: "1.0.0".into(),
-            description: tr!(
-                "削除・編集されたメッセージを記録して表示します（同梱）",
-                "Records and shows deleted and edited messages (bundled)",
-                "记录并显示被删除和编辑的消息（内置）"
-            )
-            .into(),
-            api: API_VERSION,
-            entry: "main.lua".into(),
-        };
-        let mut bundled = Plugin {
-            manifest,
-            error: None,
-            runtime: None,
-            path: PathBuf::new(),
-            bundled_source: Some(include_str!("../plugins/message-logger/main.lua")),
-        };
-        if enabled.contains(&bundled.manifest.id) {
-            bundled.start(&self.data_root);
-        }
-        self.entries.push(bundled);
         let dir = directory();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             self.errors.push(e.to_string());
@@ -348,11 +469,6 @@ impl Plugins {
             .filter(|p| p.is_dir())
             .collect();
         paths.sort();
-        let mut seen = std::collections::HashSet::from([
-            "call-time-counter".to_string(),
-            "translator".to_string(),
-            "message-logger".to_string(),
-        ]);
         for path in paths {
             let result = (|| -> anyhow::Result<Manifest> {
                 let text = read_limited(&entry_path(&path, "plugin.toml")?)?;
@@ -394,16 +510,23 @@ impl Plugins {
                         bundled_source: None,
                     };
                     if enabled.contains(&p.manifest.id) {
-                        p.start(&self.data_root);
+                        p.start(&self.data_root, &self.host);
                     }
                     self.entries.push(p);
                 }
                 Err(e) => self.errors.push(format!("{}: {e:#}", path.display())),
             }
         }
+        self.index = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.manifest.id.clone(), i))
+            .collect();
     }
     /// Set all discovered plugins at once without restarting those already running.
     pub fn set_all(&mut self, on: bool, enabled: &mut Vec<String>) {
+        self.dirty();
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         if on {
@@ -412,7 +535,7 @@ impl Plugins {
                     enabled.push(plugin.manifest.id.clone());
                 }
                 if !plugin.running() {
-                    plugin.start(&self.data_root);
+                    plugin.start(&self.data_root, &self.host);
                 }
             }
         } else {
@@ -424,6 +547,7 @@ impl Plugins {
         }
     }
     pub fn toggle(&mut self, id: &str, enabled: &mut Vec<String>) {
+        self.dirty();
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         if let Some(p) = self.entries.iter_mut().find(|p| p.manifest.id == id) {
@@ -432,11 +556,12 @@ impl Plugins {
                 p.stop();
             } else {
                 enabled.push(id.to_owned());
-                p.start(&self.data_root);
+                p.start(&self.data_root, &self.host);
             }
         }
     }
     pub fn command(&mut self, content: &str, channel: &str) -> bool {
+        self.dirty();
         let Some(line) = content.strip_prefix('/') else {
             return false;
         };
@@ -501,6 +626,7 @@ impl Plugins {
         all
     }
     pub fn message_action(&mut self, id: &str, index: usize, m: &Message) {
+        self.dirty();
         self.revision = self.revision.wrapping_add(1);
         if let Some(p) = self.entries.iter_mut().find(|p| p.manifest.id == id) {
             let result = p.runtime.as_ref().map(|r| -> mlua::Result<Value> {
@@ -509,22 +635,101 @@ impl Plugins {
                 let actions: Table = callbacks.get("message_actions")?;
                 let item: Table = actions.get(index)?;
                 let f: Function = item.get("run")?;
-                let message = r.lua.create_table()?;
-                message.set("id", m.id.clone())?;
-                message.set("channel_id", m.channel_id.clone())?;
-                message.set("guild_id", m.guild_id.clone())?;
-                message.set("author_id", m.author.id.clone())?;
-                message.set("content", m.content.clone())?;
+                let message = message_table(&r.lua, m)?;
                 f.call(message)
             });
             p.check(result);
         }
     }
-    /// Text supplied by plugins for the active voice connection panel.
-    pub fn translator_enabled(&self) -> bool {
-        self.entries
+    /// id のプラグインが動いているか（同梱プラグインの本体側の機能を切り替える）
+    pub fn on(&self, id: &str) -> bool {
+        match self.index.get(id) {
+            Some(&i) => self.entries.get(i).is_some_and(|p| p.manifest.id == id && p.running()),
+            None => self.entries.iter().any(|p| p.manifest.id == id && p.running()),
+        }
+    }
+    /// 動いているプラグインの options()（_lib.lua の settings の値）。止まっていれば Null
+    pub fn options(&self, id: &str) -> serde_json::Value {
+        if !self.on(id) {
+            return serde_json::Value::Null;
+        }
+        if let Some(v) = self.options_cache.borrow().get(id) {
+            return v.clone();
+        }
+        let v = self
+            .entries
             .iter()
-            .any(|p| p.manifest.id == "translator" && p.running())
+            .find(|p| p.manifest.id == id)
+            .and_then(|p| p.runtime.as_ref())
+            .and_then(|r| r.call("options", ()).ok())
+            .and_then(|v| {
+                let r = self.entries.iter().find(|p| p.manifest.id == id)?.runtime.as_ref()?;
+                r.lua.from_value::<serde_json::Value>(v).ok()
+            })
+            .unwrap_or(serde_json::Value::Null);
+        self.options_cache.borrow_mut().insert(id.to_owned(), v.clone());
+        v
+    }
+    /// 動いていれば options の key（真偽）。止まっていれば false
+    pub fn opt_bool(&self, id: &str, key: &str) -> bool {
+        self.options(id).get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+    pub fn opt_str(&self, id: &str, key: &str) -> String {
+        match self.options(id).get(key) {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            _ => String::new(),
+        }
+    }
+    pub fn opt_f64(&self, id: &str, key: &str) -> Option<f64> {
+        match self.options(id).get(key)? {
+            serde_json::Value::Number(n) => n.as_f64(),
+            serde_json::Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    }
+    fn dirty(&self) {
+        self.options_cache.borrow_mut().clear();
+    }
+    /// 任意のフック（on_typing / on_presence / on_voice など）を、動いている全プラグインへ知らせる
+    pub fn hook(&mut self, name: &str, args: &[serde_json::Value]) {
+        for p in &mut self.entries {
+            let result = p.runtime.as_ref().map(|r| -> mlua::Result<Value> {
+                let callbacks: Table = r.lua.globals().get("__plugin")?;
+                if !matches!(callbacks.raw_get::<Value>(name)?, Value::Function(_)) {
+                    return Ok(Value::Nil);
+                }
+                let values = args
+                    .iter()
+                    .map(|a| r.lua.to_value(a))
+                    .collect::<mlua::Result<Vec<_>>>()?;
+                r.call(name, mlua::MultiValue::from_vec(values))
+            });
+            p.check(result);
+        }
+    }
+    /// プラグインの関数を呼んで JSON で受け取る（id のプラグインだけ）。動いていなければ None
+    pub fn query(&mut self, id: &str, name: &str, args: &[serde_json::Value]) -> Option<serde_json::Value> {
+        let p = self.entries.iter_mut().find(|p| p.manifest.id == id)?;
+        let r = p.runtime.as_ref()?;
+        let result = (|| -> mlua::Result<serde_json::Value> {
+            let values = args
+                .iter()
+                .map(|a| r.lua.to_value(a))
+                .collect::<mlua::Result<Vec<_>>>()?;
+            let v = r.call(name, mlua::MultiValue::from_vec(values))?;
+            r.lua.from_value(v)
+        })();
+        match result {
+            Ok(v) => Some(v),
+            Err(e) => {
+                p.fail(e.to_string());
+                None
+            }
+        }
+    }
+    pub fn translator_enabled(&self) -> bool {
+        self.on("translator")
     }
     pub fn translation_outgoing(&mut self) -> Result<Option<String>, String> {
         let p = self
@@ -632,6 +837,7 @@ impl Plugins {
         labels
     }
     pub fn event(&mut self, m: &Message) {
+        self.dirty();
         if self.entries.iter().any(Plugin::running) {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -667,9 +873,7 @@ impl Plugins {
         }
     }
     pub fn logger_enabled(&self) -> bool {
-        self.entries
-            .iter()
-            .any(|p| p.manifest.id == "message-logger" && p.running())
+        self.on("message-logger")
     }
     pub fn transform(&mut self, name: &str, content: &str, channel: &str) -> String {
         let mut content = content.to_owned();
@@ -724,6 +928,7 @@ impl Plugins {
         action: &str,
         values: std::collections::HashMap<String, String>,
     ) {
+        self.dirty();
         self.revision = self.revision.wrapping_add(1);
         if let Some(p) = self.entries.iter_mut().find(|p| p.manifest.id == id) {
             let result = p.runtime.as_ref().map(|r| {
@@ -757,6 +962,7 @@ impl Plugins {
             let mut error = None;
             if !due.is_empty() {
                 self.revision = self.revision.wrapping_add(1);
+                self.options_cache.borrow_mut().clear();
             }
             for timer in due {
                 r.reset_budget();
@@ -790,11 +996,21 @@ impl Drop for Plugins {
     }
 }
 impl Plugin {
-    fn start(&mut self, data_dir: &Path) {
+    fn start(&mut self, data_dir: &Path, host: &Rc<RefCell<HostInfo>>) {
         self.error = None;
         let runtime = match self.bundled_source {
-            Some(source) => Runtime::from_source(&self.manifest, source, data_dir),
-            None => Runtime::new(&self.manifest, &self.path, data_dir),
+            Some(source) => Runtime::with_host(
+                &self.manifest,
+                &format!("{LIB}\n{source}"),
+                data_dir,
+                host.clone(),
+            ),
+            None => entry_path(&self.path, &self.manifest.entry)
+                .and_then(|path| read_limited(&path))
+                .map_err(|e| mlua::Error::runtime(e.to_string()))
+                .and_then(|script| {
+                    Runtime::with_host(&self.manifest, &script, data_dir, host.clone())
+                }),
         };
         match runtime {
             Ok(r) => self.runtime = Some(r),
@@ -816,14 +1032,7 @@ impl Plugin {
         }
     }
     pub fn has_page(&self) -> bool {
-        self.runtime.as_ref().is_some_and(|runtime| {
-            runtime
-                .lua
-                .globals()
-                .raw_get::<Table>("__plugin")
-                .and_then(|callbacks| callbacks.raw_get::<Value>("page"))
-                .is_ok_and(|value| matches!(value, Value::Function(_)))
-        })
+        self.runtime.as_ref().is_some_and(|runtime| runtime.has_page)
     }
     pub fn running(&self) -> bool {
         self.runtime.is_some()
@@ -850,6 +1059,9 @@ mod tests {
             description: String::new(),
             api: 1,
             entry: "main.lua".into(),
+            description_en: String::new(),
+            description_zh: String::new(),
+            bd: false,
         };
         (Runtime::new(&m, &dir, &dir).unwrap(), dir)
     }
@@ -907,6 +1119,9 @@ mod tests {
                 description: String::new(),
                 api: 1,
                 entry: "main.lua".into(),
+                description_en: String::new(),
+                description_zh: String::new(),
+                bd: false,
             };
             plugins.entries.push(Plugin { manifest, error: None, runtime: None, path: PathBuf::new(), bundled_source: Some("local count = 0; return {start=function() count=count+1 end, page=function() return count end}") });
         }
@@ -935,6 +1150,9 @@ mod tests {
             description: String::new(),
             api: 1,
             entry: "main.lua".into(),
+            description_en: String::new(),
+            description_zh: String::new(),
+            bd: false,
         };
         let mut plugins = Plugins::default();
         plugins.entries.push(Plugin {
@@ -978,6 +1196,9 @@ mod tests {
                 description: String::new(),
                 api: 1,
                 entry: "main.lua".into(),
+                description_en: String::new(),
+                description_zh: String::new(),
+                bd: false,
             };
             let runtime = Runtime::from_source(&manifest, source, Path::new("")).unwrap();
             plugins.entries.push(Plugin {
@@ -992,6 +1213,46 @@ mod tests {
         assert!(plugins.entries[0].error.is_some());
         assert!(!plugins.entries[0].running());
         assert!(plugins.entries[1].running());
+    }
+    /// 同梱プラグインをすべて読み込み、ページを作り、主なフックを呼んでも止まらない
+    #[test]
+    fn every_bundled_plugin_starts_and_builds_page() {
+        let dir = std::env::temp_dir().join(format!("riscord-bundled-test-{}", std::process::id()));
+        let mut plugins = Plugins::default();
+        plugins.data_root = dir.clone();
+        plugins.reload(&[]);
+        let ids: Vec<String> = plugins.entries.iter().filter(|p| p.bundled_source.is_some()).map(|p| p.manifest.id.clone()).collect();
+        assert!(ids.len() >= 3);
+        let mut enabled = Vec::new();
+        plugins.set_all(true, &mut enabled);
+        for p in plugins.entries.iter().filter(|p| p.bundled_source.is_some()) {
+            assert!(p.running(), "{}: {:?}", p.manifest.id, p.error);
+            assert!(!p.manifest.description_en.is_empty(), "{}", p.manifest.id);
+            assert!(!p.manifest.description_zh.is_empty(), "{}", p.manifest.id);
+        }
+        for id in &ids {
+            let _ = plugins.page(id);
+            let _ = plugins.options(id);
+        }
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1", "channel_id": "2", "author": {"id": "3", "username": "u"},
+            "content": "hello https://example.com/?utm_source=x", "timestamp": "2026-01-01T00:00:00+00:00"
+        }))
+        .unwrap();
+        plugins.event(&m);
+        plugins.message_hook("on_delete", &m, None);
+        plugins.message_hook("on_edit", &m, Some("edited"));
+        let _ = plugins.transform("on_send", "hello world", "2");
+        let _ = plugins.transform("on_display", "hello world", "2");
+        plugins.hook("on_typing", &["2".into(), "3".into(), "u".into()]);
+        plugins.hook("on_presence", &["3".into(), "offline".into(), "online".into(), "".into(), "u".into()]);
+        plugins.hook("on_voice", &["3".into(), "".into(), "9".into(), "".into(), false.into(), false.into(), "u".into()]);
+        let _ = plugins.message_actions();
+        let _ = plugins.tick();
+        for p in plugins.entries.iter().filter(|p| p.bundled_source.is_some()) {
+            assert!(p.running(), "{}: {:?}", p.manifest.id, p.error);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn rejects_paths_outside_plugin() {

@@ -26,4 +26,30 @@ fn main() {
         .or_else(|| git(&["rev-parse", "HEAD"]))
         .unwrap_or_default();
     println!("cargo:rustc-env=RISCORD_GIT_SHA={sha}");
+    bundled_plugins();
+}
+
+/// plugins/<フォルダ>/plugin.toml と Lua を同梱プラグインの表（OUT_DIR/bundled_plugins.rs）にする
+fn bundled_plugins() {
+    let root = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("plugins");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let mut dirs: Vec<_> = std::fs::read_dir(&root)
+        .map(|it| it.flatten().map(|e| e.path()).filter(|p| p.join("plugin.toml").is_file()).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    let mut out = String::from("pub static BUNDLED: &[(&str, &str)] = &[\n");
+    for dir in dirs {
+        println!("cargo:rerun-if-changed={}", dir.display());
+        for f in ["plugin.toml", "main.lua"] {
+            println!("cargo:rerun-if-changed={}", dir.join(f).display());
+        }
+        out.push_str(&format!(
+            "    (include_str!({:?}), include_str!({:?})),\n",
+            dir.join("plugin.toml"),
+            dir.join("main.lua")
+        ));
+    }
+    out.push_str("];\n");
+    let dest = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundled_plugins.rs");
+    std::fs::write(dest, out).unwrap();
 }

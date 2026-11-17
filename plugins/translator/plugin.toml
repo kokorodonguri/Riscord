@@ -1,0 +1,8 @@
+id = "translator"
+name = "Translator"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+description = "メッセージを Google 翻訳へ送信して翻訳します（同梱）"
+description_en = "Translates messages by sending them to Google Translate (bundled)"
+description_zh = "将消息发送到 Google 翻译进行翻译（内置）"

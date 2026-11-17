@@ -332,6 +332,7 @@ mod tests {
             content: "first".into(),
             reply_to: None,
             files: vec![],
+            extra: Default::default(),
         })
         .unwrap();
         let id = loop {
@@ -391,6 +392,7 @@ mod tests {
             content: "before load".into(),
             reply_to: None,
             files: vec![],
+            extra: Default::default(),
         })
         .unwrap();
         while !matches!(receive(), Event::ComposeResult { .. }) {}

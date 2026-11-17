@@ -378,6 +378,9 @@ pub struct Root {
     /// 設定 → テーマの色ごとの入力欄
     pub color_inputs: HashMap<&'static str, Entity<InputState>>,
     pub plugin_inputs: HashMap<(String, String), Entity<InputState>>,
+    /// プラグイン一覧の絞り込み欄の購読と「有効のみ」
+    pub plugin_filter_sub: Option<Subscription>,
+    pub plugins_only_enabled: bool,
     /// MessageLogger のログ一覧で選んでいる種類（0 = 削除、1 = 編集、2 = ゴーストピン）
     pub log_tab: usize,
     /// 「別のアカウント」で削除を押したプロファイル（もう一度押すと消す）
@@ -954,7 +957,13 @@ impl Root {
             window,
             |this: &mut Root, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
-                    this.app.input = state.read(cx).value().to_string();
+                    let value = state.read(cx).value().to_string();
+                    let grew = value.len() > this.app.input.len();
+                    this.app.input = value;
+                    if grew {
+                        this.app.compose_typed();
+                        this.app.compose_key();
+                    }
                     cx.notify();
                 }
                 InputEvent::PressEnter { shift: false, .. } => {
@@ -1101,6 +1110,8 @@ impl Root {
             sliders: HashMap::new(),
             color_inputs: HashMap::new(),
             plugin_inputs: HashMap::new(),
+            plugin_filter_sub: None,
+            plugins_only_enabled: false,
             log_tab: 0,
             confirm_profile_delete: None,
             settings_scroll: ScrollHandle::new(),
@@ -1510,7 +1521,7 @@ impl Root {
         a.input = self.inp.compose.read(cx).value().to_string();
         let limit = st::message_text_limit(a.me.as_ref().and_then(|u| u.premium_type));
         let len = st::message_text_len(&a.input);
-        if len > limit {
+        if len > limit && !a.can_send_long() {
             // 送っても Discord に断られるので、送らずに入力を残して知らせる
             a.compose_notice = Some((tr!("本文は{limit}文字までです（いま{len}文字）。{}文字減らすか、分けて送ってください。", "Messages can be up to {limit} characters (currently {len}). Remove {} characters or split it into several messages.", "正文最多 {limit} 个字符（当前 {len} 个）。请删减 {} 个字符，或分成多条发送。", len - limit), Instant::now()));
             a.repaint_after(st::COMPOSE_NOTICE_TTL);

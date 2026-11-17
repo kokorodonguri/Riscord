@@ -78,6 +78,17 @@ fn decode_frame_as<T: DeserializeOwned>(msg: &WsMsg, inflater: &mut Inflater) ->
     Ok(parsed)
 }
 
+/// Incognito: 接続時の端末情報を一般的なブラウザーにする
+pub static GENERIC_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn identify_properties() -> Value {
+    if GENERIC_CLIENT.load(std::sync::atomic::Ordering::Relaxed) {
+        json!({ "os": "Windows", "browser": "Chrome", "device": "" })
+    } else {
+        json!({ "os": "Linux", "browser": "Discord Client", "device": "" })
+    }
+}
+
 /// メッセージ送信の追加の指定（同梱プラグイン用）
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SendExtra {
@@ -1604,7 +1615,7 @@ async fn gateway_once_at(
             "op": 2,
             "d": {
                 "token": token,
-                "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
+                "properties": identify_properties(),
                 "presence": presence_data(&status.lock().unwrap()),
                 "compress": false
             }
@@ -3064,7 +3075,7 @@ mod tests {
                 _ => inf.out.len(),
             };
             if !identified {
-                let identify = json!({ "op": 2, "d": { "token": token, "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
+                let identify = json!({ "op": 2, "d": { "token": token, "properties": identify_properties(),
                     "presence": { "status": "invisible", "since": 0, "activities": [], "afk": false }, "compress": false } });
                 write
                     .send(WsMsg::Text(identify.to_string().into()))
@@ -3740,7 +3751,7 @@ mod tests {
                         };
                         texts.push(text);
                         if !identified {
-                            let identify = json!({ "op": 2, "d": { "token": token, "properties": { "os": "Linux", "browser": "Discord Client", "device": "" },
+                            let identify = json!({ "op": 2, "d": { "token": token, "properties": identify_properties(),
                                 "presence": { "status": "invisible", "since": 0, "activities": [], "afk": false }, "compress": false } });
                             write.send(WsMsg::Text(identify.to_string().into())).await.unwrap();
                             identified = true;

@@ -875,6 +875,25 @@ impl Plugins {
     pub fn logger_enabled(&self) -> bool {
         self.on("message-logger")
     }
+    /// before_send: 送る前に止める理由（文字列）を返したプラグインがあれば、その理由
+    pub fn check_send(&mut self, content: &str, channel: &str) -> Option<String> {
+        for p in &mut self.entries {
+            let result = p
+                .runtime
+                .as_ref()
+                .map(|r| r.call("before_send", (content.to_owned(), channel.to_owned())));
+            match result {
+                Some(Ok(Value::String(s))) => {
+                    if let Ok(s) = s.to_str() {
+                        return Some(s.to_owned());
+                    }
+                }
+                Some(Err(e)) => p.fail(e.to_string()),
+                _ => (),
+            }
+        }
+        None
+    }
     pub fn transform(&mut self, name: &str, content: &str, channel: &str) -> String {
         let mut content = content.to_owned();
         for p in &mut self.entries {
@@ -1253,6 +1272,68 @@ mod tests {
             assert!(p.running(), "{}: {:?}", p.manifest.id, p.error);
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+    /// 同梱プラグインを 1 つだけ動かす（保存先は一時フォルダ）
+    fn only(id: &str) -> Plugins {
+        let dir = std::env::temp_dir().join(format!(
+            "riscord-only-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut plugins = Plugins::default();
+        plugins.data_root = dir;
+        plugins.reload(&[id.to_string()]);
+        assert!(plugins.on(id), "{id}: {:?}", plugins.entries.iter().find(|p| p.manifest.id == id).map(|p| &p.error));
+        plugins
+    }
+    fn send(p: &mut Plugins, s: &str) -> String {
+        p.transform("on_send", s, "1")
+    }
+    #[test]
+    fn bundled_send_transforms() {
+        let mut p = only("link-cleaner");
+        assert_eq!(
+            send(&mut p, "see https://example.com/a?utm_source=x&id=3&fbclid=y#top ok"),
+            "see https://example.com/a?id=3#top ok"
+        );
+        assert_eq!(send(&mut p, "https://youtu.be/abc?si=zzz"), "https://youtu.be/abc");
+        let mut p = only("link-converter");
+        assert_eq!(send(&mut p, "https://x.com/a/status/1"), "https://fxtwitter.com/a/status/1");
+        assert_eq!(send(&mut p, "https://instagram.com/p/1"), "https://instagram.com/p/1");
+        let mut p = only("write-uppercase");
+        assert_eq!(send(&mut p, "hello. world? yes"), "Hello. World? Yes");
+        assert_eq!(send(&mut p, "/cmd x"), "/cmd x");
+        let mut p = only("chat-aliases");
+        assert_eq!(send(&mut p, "brb soon"), "be right back soon");
+        assert_eq!(send(&mut p, "brbx"), "brbx");
+        let mut p = only("vriska-typing-quirk");
+        assert_eq!(send(&mut p, "great job https://b.com"), "gr8 jo8 https://b.com");
+        let mut p = only("unicode-emojis");
+        assert_eq!(send(&mut p, "hi :) <3"), "hi 🙂 ❤️");
+        let mut p = only("better-formatting-redux");
+        assert_eq!(send(&mut p, "a [fw]ab[/fw] [up]ab[/up]"), "a ａｂ qɐ");
+        let mut p = only("chat-filter");
+        p.page_action("chat-filter", "__save", [("censor".to_string(), "bad".to_string())].into());
+        assert_eq!(p.transform("on_display", "so BAD", "1"), "so ***");
+        let mut p = only("hold-your-tongue");
+        p.page_action("hold-your-tongue", "__save", [("keywords".to_string(), "secret".to_string())].into());
+        assert!(p.check_send("a secret", "1").is_some());
+        assert!(p.check_send("a secret", "1").is_none());
+        assert!(p.check_send("fine", "1").is_none());
+        let mut p = only("replace-timestamps");
+        let out = send(&mut p, "meet at 18:30 ok");
+        assert!(out.starts_with("meet at <t:") && out.ends_with(":t> ok"), "{out}");
+        assert_eq!(send(&mut p, "score 2:1"), "score 2:1");
+        let mut p = only("insert-timestamps");
+        assert!(p.command("/ts 2026-01-01 00:00 R", "1"));
+        let (actions, _) = p.tick();
+        assert!(matches!(&actions[0], Action::Insert(s) if s.starts_with("<t:") && s.ends_with(":R>")), "{actions:?}");
+        let mut p = only("reminder");
+        assert!(p.command("/remind 10m tea", "1"));
+        assert!(p.page("reminder").iter().any(|i| i.label.contains("tea")));
+        let mut p = only("to-do-list");
+        assert!(p.command("/todo !buy milk", "1"));
+        assert!(p.page("to-do-list").iter().any(|i| i.label == "! buy milk"));
     }
     #[test]
     fn rejects_paths_outside_plugin() {

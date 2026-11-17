@@ -1,0 +1,9 @@
+id = "link-cleaner"
+name = "LinkCleaner"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "送信する URL から追跡用のパラメーター（utm_ や fbclid など）を取り除きます"
+description_en = "Removes tracking parameters (utm_, fbclid, etc.) from URLs you send"
+description_zh = "从发送的 URL 中删除跟踪参数（utm_、fbclid 等）"

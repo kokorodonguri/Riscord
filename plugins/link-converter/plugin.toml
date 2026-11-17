@@ -1,0 +1,9 @@
+id = "link-converter"
+name = "LinkConverter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "SNS のリンクを、埋め込みがきれいに出るサービス（fxtwitter など）のリンクに変えて送ります"
+description_en = "Converts social media links to embed-friendly ones (fxtwitter etc.) when sending"
+description_zh = "发送时把社交媒体链接转换为嵌入效果更好的链接（fxtwitter 等）"

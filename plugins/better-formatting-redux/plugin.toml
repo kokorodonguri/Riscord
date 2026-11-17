@@ -1,0 +1,9 @@
+id = "better-formatting-redux"
+name = "BetterFormattingRedux"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "全角・小型大文字・上下反転・leet・交互の大文字などの書式で送れます"
+description_en = "Send text in fullwidth, small caps, upside down, leet, alternating case and more"
+description_zh = "可用全角、小型大写、上下颠倒、leet、大小写交替等格式发送"

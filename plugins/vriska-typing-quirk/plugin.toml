@@ -1,0 +1,9 @@
+id = "vriska-typing-quirk"
+name = "Vriska'sTypingQuirk"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "Vriska 風の書き方（b を 8 に、ate を 8 に など）に変えて送ります。URL は変えません"
+description_en = "Sends messages in Vriska's typing quirk (b to 8, ate to 8, etc.). URLs are protected"
+description_zh = "以 Vriska 的打字习惯发送（b 变 8、ate 变 8 等），不更改 URL"

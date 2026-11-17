@@ -116,3 +116,71 @@ local function plugin(base, hooks)
   return p
 end
 
+-- 日付の計算（os が使えないため）。y-m-d を 1970-01-01 からの日数にする
+local function days_from_civil(y, m, d)
+  if m <= 2 then y = y - 1 end
+  local era = (y >= 0 and y or y - 399) // 400
+  local yoe = y - era * 400
+  local mp = (m + 9) % 12
+  local doy = (153 * mp + 2) // 5 + d - 1
+  local doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+  return era * 146097 + doe - 719468
+end
+
+-- いまの地域の UTC からのずれ（秒）
+local function local_offset()
+  local sign, hh, mm = riscord.date("%z"):match("([+-])(%d%d)(%d%d)")
+  if not sign then return 0 end
+  local off = tonumber(hh) * 3600 + tonumber(mm) * 60
+  return sign == "-" and -off or off
+end
+
+-- 地域の日時を Unix 時刻（秒）にする
+local function local_unix(y, m, d, h, mi, s)
+  return days_from_civil(y, m, d) * 86400 + (h or 0) * 3600 + (mi or 0) * 60 + (s or 0) - local_offset()
+end
+
+-- 今日の年・月・日（地域の時刻）
+local function today()
+  local y, m, d = riscord.date("%Y-%m-%d"):match("(%d+)-(%d+)-(%d+)")
+  return tonumber(y), tonumber(m), tonumber(d)
+end
+
+-- "10m" "1h30m" "2d" "45s" を秒にする（読めなければ nil）
+local function duration(s)
+  if not s or not s:match("^%d+[smhdw]") then return nil end
+  local total = 0
+  local units = { s = 1, m = 60, h = 3600, d = 86400, w = 604800 }
+  local rest = s:gsub("(%d+)([smhdw])", function(n, u)
+    total = total + tonumber(n) * units[u]
+    return ""
+  end)
+  if rest ~= "" then return nil end
+  return total
+end
+
+-- 時刻の書き方を読む: "18:30" "2026-12-01 18:30" "2026-12-01" "+10m"。
+-- 戻り値は Unix 秒と、読んだ部分のあとの残り
+local function parse_when(text)
+  text = trim(text or "")
+  local rel, rest = text:match("^%+?(%d+[smhdw%d]*)%s*(.*)$")
+  local secs = rel and duration(rel)
+  if secs then return riscord.now() // 1000 + secs, rest end
+  local y, mo, d, h, mi, rest2 = text:match("^(%d%d%d%d)[-/](%d%d?)[-/](%d%d?)%s+(%d%d?):(%d%d)%s*(.*)$")
+  if y then return local_unix(tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi)), rest2 end
+  y, mo, d, rest2 = text:match("^(%d%d%d%d)[-/](%d%d?)[-/](%d%d?)%s*(.*)$")
+  if y then return local_unix(tonumber(y), tonumber(mo), tonumber(d), 0, 0), rest2 end
+  local hh, mm, ampm, rest3 = text:match("^(%d%d?):(%d%d)%s*([aApP]?[mM]?)%s*(.*)$")
+  if hh then
+    hh = tonumber(hh)
+    ampm = ampm:lower()
+    if ampm == "pm" and hh < 12 then hh = hh + 12 end
+    if ampm == "am" and hh == 12 then hh = 0 end
+    local ty, tm, td = today()
+    local at = local_unix(ty, tm, td, hh, tonumber(mm))
+    if at < riscord.now() // 1000 then at = at + 86400 end
+    return at, rest3
+  end
+  return nil, text
+end
+

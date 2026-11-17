@@ -1,0 +1,9 @@
+id = "reminder"
+name = "Reminder"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "/remind で決めた時刻に通知と音で知らせます。一覧と削除はページから"
+description_en = "Reminds you with a notification and sound at a set time via /remind; manage them on the page"
+description_zh = "用 /remind 在指定时间通过通知和声音提醒你；可在页面中查看和删除"

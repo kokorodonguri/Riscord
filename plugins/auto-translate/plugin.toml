@@ -1,0 +1,9 @@
+id = "auto-translate"
+name = "AutoTranslate"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "届いたメッセージを自動で翻訳して、原文の下に表示します（Translator が必要）"
+description_en = "Automatically translates incoming messages and shows them below the original (needs Translator)"
+description_zh = "自动翻译收到的消息并显示在原文下方（需要 Translator）"

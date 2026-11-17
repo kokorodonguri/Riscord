@@ -1,0 +1,9 @@
+id = "keyword-ping"
+name = "KeywordPing"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めた言葉を含むメッセージが届いたら、通知と音で知らせます"
+description_en = "Notifies you with a notification and sound when messages match your keywords"
+description_zh = "收到包含指定关键词的消息时，用通知和声音提醒你"

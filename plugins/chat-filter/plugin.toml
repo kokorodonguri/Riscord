@@ -1,0 +1,9 @@
+id = "chat-filter"
+name = "ChatFilter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めた言葉を伏せ字にしたり、その言葉を含むメッセージを隠したりします"
+description_en = "Censors chosen words or hides messages that contain them"
+description_zh = "将指定词语打码，或隐藏包含它们的消息"

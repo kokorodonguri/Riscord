@@ -1,0 +1,9 @@
+id = "copier"
+name = "Copier"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージの本文・リンク・投稿者 ID・引用形式などを、いろいろな形でコピーします"
+description_en = "Copies a message's text, link, author ID, quote form and more"
+description_zh = "以多种形式复制消息的正文、链接、作者 ID、引用格式等"

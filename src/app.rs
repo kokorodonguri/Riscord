@@ -1358,6 +1358,8 @@ pub struct App {
     pub clipboard_out: Option<String>,
     /// 最後に「入力中」を送ったチャンネルと時刻
     pub typing_sent: Option<(String, std::time::Instant)>,
+    /// Incognito でアクティビティを隠しているか
+    pub incognito_activity_hidden: bool,
     /// チャンネルごとの入力中の人（ユーザー ID, 表示名, 届いた時刻）
     pub typing: HashMap<String, Vec<(String, String, std::time::Instant)>>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
@@ -1837,7 +1839,8 @@ impl App {
 
     /// いま送れるカスタム絵文字を、サーバーごとに（開いているサーバーが先頭、あとはサーバーの並び順）
     pub fn usable_emojis(&self) -> Vec<(&str, Vec<&crate::model::Emoji>)> {
-        let nitro = self.has_nitro();
+        // FreeEmojis: 使えない絵文字もリンクにして送れるので、全部出す
+        let nitro = self.has_nitro() || self.plugins.on("free-emojis");
         let current = self.sel_guild.as_deref();
         let mut out = Vec::new();
         let ids = current.into_iter().chain(
@@ -1988,8 +1991,16 @@ impl App {
                 return;
             }
         }
+        if self.editing.is_none() {
+            if let Some(reason) = self.plugins.check_send(&content, &channel_id) {
+                self.input = content;
+                self.set_compose_notice(reason);
+                return;
+            }
+        }
         let content = if self.editing.is_none() {
-            self.plugins.transform("on_send", &content, &channel_id)
+            let content = self.plugins.transform("on_send", &content, &channel_id);
+            self.free_emoji_links(&content)
         } else {
             content
         };
@@ -2012,11 +2023,12 @@ impl App {
         }
         let editing = self.editing.take();
         let reply = self.reply_to.take();
-        let uploads = if editing.is_none() {
+        let mut uploads = if editing.is_none() {
             std::mem::take(&mut self.uploads)
         } else {
             Vec::new()
         };
+        self.randomize_upload_names(&mut uploads);
         let cmd = if let Some(m) = &editing {
             Cmd::Edit {
                 channel_id: channel_id.clone(),
@@ -2207,6 +2219,7 @@ impl App {
             self.repaint_after(delay);
         }
         self.sync_plugin_host();
+        self.sync_incognito();
         let (actions, next) = self.plugins.tick();
         self.run_plugin_actions(actions);
         if let Some(delay) = next {
@@ -2680,6 +2693,7 @@ impl App {
                 }
                 Event::MessageCreate(m) => {
                     self.plugins.event(&m);
+                    self.on_plugin_message(&m);
                     if self.plugins.logger_enabled() {
                         self.message_log.remember(&m);
                     }
@@ -4518,6 +4532,11 @@ impl App {
             .and_then(|t| ACK_INTERVAL.checked_sub(t.elapsed()))
         {
             self.repaint_after(wait);
+            return;
+        }
+        if self.plugins.opt_bool("incognito", "no_read_ack") {
+            // Incognito: 既読は送らず、手元だけ既読にする
+            self.acked.insert(cid.clone(), last.id.clone());
             return;
         }
         let message_id = last.id.clone();

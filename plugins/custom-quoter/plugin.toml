@@ -1,0 +1,9 @@
+id = "custom-quoter"
+name = "CustomQuoter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージを、自分で決めた書式の引用として入力欄に差し込みます"
+description_en = "Quotes a message into the input using your own format"
+description_zh = "按自定义格式把消息作为引用插入输入框"

@@ -1,0 +1,9 @@
+id = "hold-your-tongue"
+name = "HoldYourTongue"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めた言葉を含むメッセージを送る前に止めます。もう一度送ると送信します"
+description_en = "Stops messages containing chosen words before sending. Send again to confirm"
+description_zh = "发送包含指定词语的消息前先拦截，再次发送即可确认"

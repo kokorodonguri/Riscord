@@ -1,0 +1,9 @@
+id = "insert-timestamps"
+name = "InsertTimestamps"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "/ts コマンドで、Discord のタイムスタンプ（<t:…>）を入力欄に差し込みます"
+description_en = "Inserts Discord timestamp markup (<t:…>) into the input with the /ts command"
+description_zh = "用 /ts 命令把 Discord 时间戳（<t:…>）插入输入框"

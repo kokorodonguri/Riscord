@@ -1,0 +1,9 @@
+id = "free-emojis"
+name = "FreeEmojis"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "Nitro がなくても、他のサーバーの絵文字やアニメ絵文字を画像リンクとして送れます"
+description_en = "Send emojis from other servers and animated emojis as image links without Nitro"
+description_zh = "没有 Nitro 也能以图片链接发送其他服务器的表情和动态表情"

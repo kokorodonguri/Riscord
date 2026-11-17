@@ -1,0 +1,9 @@
+id = "emote-replacer"
+name = "EmoteReplacer"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "決めた名前の言葉を、エモート画像のリンクに置き換えて送ります"
+description_en = "Replaces words matching your emote names with emote image links"
+description_zh = "把与表情名称一致的词替换为表情图片链接"

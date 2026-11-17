@@ -1,0 +1,9 @@
+id = "no-reply-ping"
+name = "NoReplyPing"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "返信するときに、返信先の人へメンション通知を飛ばさないようにします"
+description_en = "Replies no longer ping the person you reply to"
+description_zh = "回复时不再提及（通知）被回复的人"

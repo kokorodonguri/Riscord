@@ -1,0 +1,9 @@
+id = "invisible-typing"
+name = "InvisibleTyping"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "文字を打っていても、相手に「入力中…」を見せません"
+description_en = "Hides your typing indicator from others"
+description_zh = "输入时不向他人显示“正在输入…”"

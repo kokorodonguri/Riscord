@@ -1,0 +1,9 @@
+id = "file-name-randomization"
+name = "FileNameRandomization"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "アップロードするファイルの名前を、ランダムな文字列や時刻に変えます"
+description_en = "Renames uploaded files to a random string or a timestamp"
+description_zh = "将上传文件的名称改为随机字符串或时间戳"

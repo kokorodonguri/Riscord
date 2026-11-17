@@ -1,0 +1,9 @@
+id = "write-uppercase"
+name = "WriteUppercase"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "送信するメッセージの文頭の英字を大文字にします"
+description_en = "Capitalizes the first letter of each sentence in messages you send"
+description_zh = "将发送消息中每个句子的首字母大写"

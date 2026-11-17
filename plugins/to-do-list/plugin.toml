@@ -1,0 +1,9 @@
+id = "to-do-list"
+name = "ToDoList"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "やることリスト。ページで追加・完了・削除し、/todo でも追加できます"
+description_en = "A to-do list. Add, complete and delete tasks on the page, or add with /todo"
+description_zh = "待办清单。可在页面中添加、完成、删除，也可用 /todo 添加"

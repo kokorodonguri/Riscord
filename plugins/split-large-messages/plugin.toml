@@ -1,0 +1,9 @@
+id = "split-large-messages"
+name = "SplitLargeMessages"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "文字数の上限を超えるメッセージを、自動で複数のメッセージに分けて送ります"
+description_en = "Automatically splits messages over the character limit into several messages"
+description_zh = "自动将超出字数上限的消息拆分为多条发送"

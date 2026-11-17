@@ -1,0 +1,9 @@
+id = "unicode-emojis"
+name = "UnicodeEmojis"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "送信する :名前: や顔文字（:) など）を Unicode の絵文字に置き換えます"
+description_en = "Replaces :names: and emoticons like :) with Unicode emoji when sending"
+description_zh = "发送时把 :名称: 和 :) 等表情符号替换为 Unicode 表情"

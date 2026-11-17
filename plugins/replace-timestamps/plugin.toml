@@ -1,0 +1,9 @@
+id = "replace-timestamps"
+name = "ReplaceTimestamps"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "送るメッセージの「18:30」「2026-12-01 18:30」などを、相手の時刻で表示される Discord のタイムスタンプに変えます"
+description_en = "Turns plain times like 18:30 or 2026-12-01 18:30 into Discord timestamps shown in each reader's time zone"
+description_zh = "把消息中的 18:30、2026-12-01 18:30 等时间转换为按读者时区显示的 Discord 时间戳"

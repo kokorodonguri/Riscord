@@ -1,0 +1,9 @@
+id = "chat-aliases"
+name = "ChatAliases"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "自分で決めた短い言葉（エイリアス）を、送信時に長い文へ置き換えます"
+description_en = "Replaces your own aliases with their expansions when sending"
+description_zh = "发送时把自定义的别名替换为对应的文字"

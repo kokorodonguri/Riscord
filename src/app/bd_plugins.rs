@@ -290,3 +290,140 @@ impl App {
         );
     }
 }
+
+impl App {
+    /// FreeEmojis: 自分では使えないサーバーの絵文字・アニメ絵文字を画像の URL に置き換える
+    pub fn free_emoji_links(&self, content: &str) -> String {
+        if !self.plugins.on("free-emojis") || self.has_nitro() || !content.contains("<") {
+            return content.to_string();
+        }
+        let size = self
+            .plugins
+            .opt_f64("free-emojis", "size")
+            .unwrap_or(48.0)
+            .clamp(16.0, 128.0) as u32;
+        let current: Vec<&str> = self
+            .sel_guild
+            .as_deref()
+            .and_then(|g| self.guild_emojis.get(g))
+            .into_iter()
+            .flatten()
+            .filter(|e| e.available && !e.animated)
+            .map(|e| e.id.as_str())
+            .collect();
+        let mut out = String::new();
+        let mut rest = content;
+        while let Some(start) = rest.find('<') {
+            out.push_str(&rest[..start]);
+            let tail = &rest[start..];
+            let parsed = tail.find('>').and_then(|end| {
+                let inner = &tail[1..end];
+                let (animated, inner) = match inner.strip_prefix("a:") {
+                    Some(r) => (true, r),
+                    None => (false, inner.strip_prefix(':')?),
+                };
+                let (name, id) = inner.split_once(':')?;
+                (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some((end, animated, name, id))
+            });
+            match parsed {
+                Some((end, animated, name, id)) if animated || !current.contains(&id) => {
+                    let ext = if animated { "gif" } else { "webp" };
+                    out.push_str(&format!(
+                        "https://cdn.discordapp.com/emojis/{id}.{ext}?size={size}&quality=lossless&name={name}"
+                    ));
+                    rest = &tail[end + 1..];
+                }
+                Some((end, ..)) => {
+                    out.push_str(&tail[..=end]);
+                    rest = &tail[end + 1..];
+                }
+                None => {
+                    out.push('<');
+                    rest = &tail[1..];
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// FileNameRandomization: アップロードの名前を変える（拡張子は残す）
+    pub fn randomize_upload_names(&self, uploads: &mut [crate::clip::Upload]) {
+        if !self.plugins.on("file-name-randomization") {
+            return;
+        }
+        use rand::Rng;
+        let mode = self.plugins.opt_str("file-name-randomization", "mode");
+        let len = self
+            .plugins
+            .opt_f64("file-name-randomization", "length")
+            .unwrap_or(12.0)
+            .clamp(4.0, 64.0) as usize;
+        let mut rng = rand::thread_rng();
+        for (i, u) in uploads.iter_mut().enumerate() {
+            let (stem, ext) = match u.name.rsplit_once('.') {
+                Some((s, e)) if !s.is_empty() && e.len() <= 10 => (s.to_string(), format!(".{e}")),
+                _ => (u.name.clone(), String::new()),
+            };
+            let random: String = (0..len)
+                .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+                .collect();
+            let name = match mode.as_str() {
+                "timestamp" => format!("{}{}", chrono::Utc::now().timestamp_millis() + i as i64, ext),
+                "suffix" => format!("{stem}_{}{ext}", &random[..random.len().min(6)]),
+                _ => format!("{random}{ext}"),
+            };
+            // SPOILER_ は残す
+            u.name = if u.name.starts_with("SPOILER_") {
+                format!("SPOILER_{name}")
+            } else {
+                name
+            };
+        }
+    }
+
+    /// 新着メッセージで本体が行うプラグインの処理（AutoTranslate など）
+    pub fn on_plugin_message(&mut self, m: &Message) {
+        let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
+        if !mine
+            && !m.content.trim().is_empty()
+            && self.plugins.on("auto-translate")
+            && self.plugins.translator_enabled()
+        {
+            let ok = self
+                .plugins
+                .query(
+                    "auto-translate",
+                    "should_translate",
+                    &[m.channel_id.clone().into(), m.author.id.clone().into()],
+                )
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if ok {
+                let language = self.plugins.translation_target();
+                let target = crate::translator::Target::Message {
+                    channel: m.channel_id.clone(),
+                    id: m.id.clone(),
+                    original: m.content.clone(),
+                    generation: self.plugins.generation,
+                };
+                let _ = self
+                    .translator
+                    .request(target, m.content.clone(), language, self.waker.clone());
+            }
+        }
+    }
+
+    /// Incognito のアクティビティ非表示と端末情報を、毎回の poll で反映する
+    pub fn sync_incognito(&mut self) {
+        let hide = self.plugins.opt_bool("incognito", "hide_activity");
+        if hide != self.incognito_activity_hidden {
+            self.incognito_activity_hidden = hide;
+            self.send(Cmd::SetActivity(self.settings.show_activity && !hide));
+        }
+        net::GENERIC_CLIENT.store(
+            self.plugins.opt_bool("incognito", "generic_client"),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}

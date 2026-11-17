@@ -1,0 +1,9 @@
+id = "quoter"
+name = "Quoter"
+version = "1.0.0"
+api = 1
+entry = "main.lua"
+bd = true
+description = "メッセージを「“本文” — 名前（日時）」の形の引用にして入力欄に差し込みます"
+description_en = "Quotes a message as “text” — name (date) into the input"
+description_zh = "把消息以“正文”— 名称（日期）的形式作为引用插入输入框"

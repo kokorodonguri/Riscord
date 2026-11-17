@@ -114,7 +114,11 @@ impl Root {
                                 label: c.name.clone().unwrap_or_default(),
                                 sub: format!(
                                     "📌 {}",
-                                    a.guilds.iter().find(|g| &g.id == gid).map(|g| g.name.as_str()).unwrap_or("")
+                                    a.guilds
+                                        .iter()
+                                        .find(|g| &g.id == gid)
+                                        .map(|g| g.name.as_str())
+                                        .unwrap_or("")
                                 ),
                                 target: (Some(gid.clone()), Some(c.id.clone())),
                             },

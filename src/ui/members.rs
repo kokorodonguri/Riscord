@@ -78,7 +78,11 @@ impl Root {
                 parts.push(tr!("メンバー {t}", "Members {t}", "成员 {t}",));
             }
             if online > 0 && !a.plugins.opt_bool("member-counter", "hide_online") {
-                parts.push(tr!("オンライン {online}", "Online {online}", "在线 {online}",));
+                parts.push(tr!(
+                    "オンライン {online}",
+                    "Online {online}",
+                    "在线 {online}",
+                ));
             }
             parts.join(" · ")
         });
@@ -86,7 +90,12 @@ impl Root {
             a.repaint_after(std::time::Duration::from_secs(1));
             let now = chrono::Local::now();
             (
-                now.format(tr!("%Y年%-m月%-d日（%a）", "%A, %B %-d, %Y", "%Y年%-m月%-d日（%a）")).to_string(),
+                now.format(tr!(
+                    "%Y年%-m月%-d日（%a）",
+                    "%A, %B %-d, %Y",
+                    "%Y年%-m月%-d日（%a）"
+                ))
+                .to_string(),
                 now.format("%H:%M:%S").to_string(),
             )
         });
@@ -219,7 +228,10 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap(z(4.0))
-                            .children(super::message::tag_elements(&tags, &format!("m{}", user.id))),
+                            .children(super::message::tag_elements(
+                                &tags,
+                                &format!("m{}", user.id),
+                            )),
                     );
                 let names = match presence.and_then(|p| a.bd_activity(p)) {
                     Some(act) => div()

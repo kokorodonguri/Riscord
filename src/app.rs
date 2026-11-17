@@ -493,7 +493,10 @@ pub fn user_avatar_url(u: &User) -> String {
     match &u.avatar {
         Some(h) => {
             let (ext, size) = icon_ext(h, 80);
-            format!("https://cdn.discordapp.com/avatars/{}/{}.{ext}?size={size}", u.id, h)
+            format!(
+                "https://cdn.discordapp.com/avatars/{}/{}.{ext}?size={size}",
+                u.id, h
+            )
         }
         None => {
             let n = u.id.parse::<u64>().map(|i| (i >> 22) % 6).unwrap_or(0);
@@ -540,7 +543,10 @@ pub fn decoration_for(user: &User, member: Option<&Member>) -> Option<String> {
 pub fn guild_icon_url(g: &Guild) -> Option<String> {
     g.icon.as_ref().map(|h| {
         let (ext, size) = icon_ext(h, 96);
-        format!("https://cdn.discordapp.com/icons/{}/{}.{ext}?size={size}", g.id, h)
+        format!(
+            "https://cdn.discordapp.com/icons/{}/{}.{ext}?size={size}",
+            g.id, h
+        )
     })
 }
 
@@ -3825,7 +3831,11 @@ impl App {
         }
         if matches!(
             t,
-            "RISCORD_GUILD_INFO" | "GUILD_CREATE" | "GUILD_UPDATE" | "GUILD_MEMBER_ADD" | "GUILD_MEMBER_REMOVE"
+            "RISCORD_GUILD_INFO"
+                | "GUILD_CREATE"
+                | "GUILD_UPDATE"
+                | "GUILD_MEMBER_ADD"
+                | "GUILD_MEMBER_REMOVE"
         ) {
             self.on_guild_info_event(t, &d);
             if t == "RISCORD_GUILD_INFO" {
@@ -5686,9 +5696,9 @@ pub use channel_permissions::{ChannelPermissionView, CHANNEL_PERMISSION_BITS};
 mod friends;
 pub use friends::{FriendAction, Friends};
 mod authors;
-pub mod bd_plugins;
 pub mod bd_display;
 pub mod bd_lists;
+pub mod bd_plugins;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;

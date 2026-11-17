@@ -382,7 +382,10 @@ impl Root {
         if !deleted
             && m.flags & 4 != 0
             && self.app.plugins.on("unsuppress-embeds")
-            && (mine || self.app.can_pin(self.app.sel_guild.as_deref(), &m.channel_id))
+            && (mine
+                || self
+                    .app
+                    .can_pin(self.app.sel_guild.as_deref(), &m.channel_id))
         {
             let m1 = m.clone();
             col = col.child(
@@ -832,28 +835,36 @@ impl Root {
         if self.app.plugins.on("guild-profile") {
             let g1 = gid.clone();
             col = col.child(
-                item("gm_profile_info", IconName::Info, tr!("サーバーの情報", "Server Info", "服务器信息"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        close(this);
-                        this.app.info_dialog = this.app.guild_profile_text(&g1);
-                        cx.notify();
-                    })),
+                item(
+                    "gm_profile_info",
+                    IconName::Info,
+                    tr!("サーバーの情報", "Server Info", "服务器信息"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.info_dialog = this.app.guild_profile_text(&g1);
+                    cx.notify();
+                })),
             );
         }
         if self.app.plugins.on("server-hider") {
             let g1 = gid.clone();
             col = col.child(
-                item("gm_hide", IconName::EyeOff, tr!("サーバーを隠す", "Hide Server", "隐藏服务器"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        close(this);
-                        this.app.toggle_hidden_guild(&g1);
-                        this.app.show_toast(tr!(
-                            "隠しました。ServerHider のページで戻せます",
-                            "Hidden. You can bring it back on the ServerHider page",
-                            "已隐藏。可在 ServerHider 页面中恢复"
-                        ));
-                        cx.notify();
-                    })),
+                item(
+                    "gm_hide",
+                    IconName::EyeOff,
+                    tr!("サーバーを隠す", "Hide Server", "隐藏服务器"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    this.app.toggle_hidden_guild(&g1);
+                    this.app.show_toast(tr!(
+                        "隠しました。ServerHider のページで戻せます",
+                        "Hidden. You can bring it back on the ServerHider page",
+                        "已隐藏。可在 ServerHider 页面中恢复"
+                    ));
+                    cx.notify();
+                })),
             );
         }
         if self.app.plugins.on("foreign-copy-handler") {
@@ -865,13 +876,18 @@ impl Root {
                 .map(|g| g.name.clone())
                 .unwrap_or_default();
             col = col.child(
-                item("gm_copy_name", IconName::Copy, tr!("サーバー名をコピー", "Copy Server Name", "复制服务器名称"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        close(this);
-                        cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
-                        this.app.show_toast(tr!("コピーしました", "Copied", "已复制"));
-                        cx.notify();
-                    })),
+                item(
+                    "gm_copy_name",
+                    IconName::Copy,
+                    tr!("サーバー名をコピー", "Copy Server Name", "复制服务器名称"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    close(this);
+                    cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                    this.app
+                        .show_toast(tr!("コピーしました", "Copied", "已复制"));
+                    cx.notify();
+                })),
             );
         }
         Some(col)

@@ -114,8 +114,9 @@ pub fn code_langs(content: &str) -> Vec<String> {
             .map(|(first, _)| first.trim())
             .filter(|f| {
                 !f.is_empty()
-                    && f.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '#' | '.' | '_'))
+                    && f.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '#' | '.' | '_')
+                    })
             })
             .unwrap_or("");
         out.push(lang.to_string());
@@ -126,18 +127,82 @@ pub fn code_langs(content: &str) -> Vec<String> {
 
 /// 公開バッジ（public_flags のビット, 印, 名前）
 const BADGES: &[(u64, &str, crate::i18n::Tr)] = &[
-    (1 << 0, "⚙", trc!("Discord スタッフ", "Discord Staff", "Discord 员工")),
-    (1 << 1, "∞", trc!("パートナー", "Partnered Server Owner", "合作伙伴")),
-    (1 << 2, "◆", trc!("HypeSquad イベント", "HypeSquad Events", "HypeSquad 活动")),
+    (
+        1 << 0,
+        "⚙",
+        trc!("Discord スタッフ", "Discord Staff", "Discord 员工"),
+    ),
+    (
+        1 << 1,
+        "∞",
+        trc!("パートナー", "Partnered Server Owner", "合作伙伴"),
+    ),
+    (
+        1 << 2,
+        "◆",
+        trc!("HypeSquad イベント", "HypeSquad Events", "HypeSquad 活动"),
+    ),
     (1 << 3, "🐛", trc!("バグハンター", "Bug Hunter", "漏洞猎人")),
-    (1 << 6, "🟪", trc!("HypeSquad Bravery", "HypeSquad Bravery", "HypeSquad Bravery")),
-    (1 << 7, "🟥", trc!("HypeSquad Brilliance", "HypeSquad Brilliance", "HypeSquad Brilliance")),
-    (1 << 8, "🟩", trc!("HypeSquad Balance", "HypeSquad Balance", "HypeSquad Balance")),
-    (1 << 9, "★", trc!("アーリーサポーター", "Early Supporter", "早期支持者")),
-    (1 << 14, "🐞", trc!("バグハンター（ゴールド）", "Bug Hunter Gold", "金牌漏洞猎人")),
-    (1 << 17, "⌘", trc!("認証済み Bot 開発者", "Verified Bot Developer", "认证机器人开发者")),
-    (1 << 18, "🛡", trc!("モデレーター卒業生", "Moderator Alumni", "版主校友")),
-    (1 << 22, "</>", trc!("アクティブ開発者", "Active Developer", "活跃开发者")),
+    (
+        1 << 6,
+        "🟪",
+        trc!(
+            "HypeSquad Bravery",
+            "HypeSquad Bravery",
+            "HypeSquad Bravery"
+        ),
+    ),
+    (
+        1 << 7,
+        "🟥",
+        trc!(
+            "HypeSquad Brilliance",
+            "HypeSquad Brilliance",
+            "HypeSquad Brilliance"
+        ),
+    ),
+    (
+        1 << 8,
+        "🟩",
+        trc!(
+            "HypeSquad Balance",
+            "HypeSquad Balance",
+            "HypeSquad Balance"
+        ),
+    ),
+    (
+        1 << 9,
+        "★",
+        trc!("アーリーサポーター", "Early Supporter", "早期支持者"),
+    ),
+    (
+        1 << 14,
+        "🐞",
+        trc!(
+            "バグハンター（ゴールド）",
+            "Bug Hunter Gold",
+            "金牌漏洞猎人"
+        ),
+    ),
+    (
+        1 << 17,
+        "⌘",
+        trc!(
+            "認証済み Bot 開発者",
+            "Verified Bot Developer",
+            "认证机器人开发者"
+        ),
+    ),
+    (
+        1 << 18,
+        "🛡",
+        trc!("モデレーター卒業生", "Moderator Alumni", "版主校友"),
+    ),
+    (
+        1 << 22,
+        "</>",
+        trc!("アクティブ開発者", "Active Developer", "活跃开发者"),
+    ),
 ];
 
 impl App {
@@ -186,7 +251,10 @@ impl App {
                 }
             }
             "GUILD_MEMBER_ADD" | "GUILD_MEMBER_REMOVE" => {
-                if let Some(info) = d["guild_id"].as_str().and_then(|g| self.guild_info.get_mut(g)) {
+                if let Some(info) = d["guild_id"]
+                    .as_str()
+                    .and_then(|g| self.guild_info.get_mut(g))
+                {
                     if let Some(n) = info.member_count.as_mut() {
                         if t == "GUILD_MEMBER_ADD" {
                             *n += 1;
@@ -244,7 +312,11 @@ impl App {
                 let color = parse_color(&color)
                     .map(|c| ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | c.b() as u32)
                     .unwrap_or(role.color);
-                let name = if name.is_empty() { role.name.clone() } else { name };
+                let name = if name.is_empty() {
+                    role.name.clone()
+                } else {
+                    name
+                };
                 return (name, color);
             }
         }
@@ -261,7 +333,12 @@ impl App {
     }
 
     /// 名前の色（EditUsers → EditRoles → ロールの色）
-    pub fn bd_name_color(&self, user_id: &str, member: Option<&Member>, guild: Option<&str>) -> Option<Color32> {
+    pub fn bd_name_color(
+        &self,
+        user_id: &str,
+        member: Option<&Member>,
+        guild: Option<&str>,
+    ) -> Option<Color32> {
         if let Some(c) = self.bd_user_color(user_id) {
             return Some(c);
         }
@@ -279,7 +356,12 @@ impl App {
     }
 
     /// ユーザーの横に並べるタグ（メッセージとメンバー一覧で共通）
-    pub fn bd_user_tags(&self, user: &User, member: Option<&Member>, guild: Option<&str>) -> Vec<Tag> {
+    pub fn bd_user_tags(
+        &self,
+        user: &User,
+        member: Option<&Member>,
+        guild: Option<&str>,
+    ) -> Vec<Tag> {
         let p = &self.plugins;
         let mut tags = Vec::new();
         if p.on("status-everywhere") {
@@ -298,10 +380,7 @@ impl App {
         }
         if p.on("staff-tag") {
             if let Some(g) = guild {
-                let owner = self
-                    .guild_info
-                    .get(g)
-                    .and_then(|i| i.owner_id.as_deref())
+                let owner = self.guild_info.get(g).and_then(|i| i.owner_id.as_deref())
                     == Some(user.id.as_str());
                 if owner {
                     tags.push(tag(
@@ -329,12 +408,20 @@ impl App {
         if p.on("show-badges-in-chat") && user.public_flags != 0 {
             for (bit, mark, name) in BADGES {
                 if user.public_flags & bit != 0 {
-                    tags.push(tag(*mark, rgb(0xb5bac1), Some(crate::i18n::pick(name.0, name.1, name.2).into())));
+                    tags.push(tag(
+                        *mark,
+                        rgb(0xb5bac1),
+                        Some(crate::i18n::pick(name.0, name.1, name.2).into()),
+                    ));
                 }
             }
         }
         if p.on("platform-indicators") || p.on("mobile-for-all") {
-            let bits = self.presences.get(&user.id).map(|p| p.platforms).unwrap_or(0);
+            let bits = self
+                .presences
+                .get(&user.id)
+                .map(|p| p.platforms)
+                .unwrap_or(0);
             let mobile_first = p.on("mobile-for-all");
             for (bit, mark, name) in [
                 (2u8, "📱", tr!("モバイル", "Mobile", "移动端")),
@@ -367,16 +454,16 @@ impl App {
             }
         }
         if p.on("cake-day") {
-            if let Some(created) = user
-                .id
-                .parse::<u64>()
-                .ok()
-                .and_then(|i| chrono::DateTime::from_timestamp_millis(((i >> 22) + 1_420_070_400_000) as i64))
-            {
+            if let Some(created) = user.id.parse::<u64>().ok().and_then(|i| {
+                chrono::DateTime::from_timestamp_millis(((i >> 22) + 1_420_070_400_000) as i64)
+            }) {
                 let created = created.with_timezone(&Local);
                 let now = Local::now();
                 use chrono::Datelike;
-                if created.month() == now.month() && created.day() == now.day() && created.year() < now.year() {
+                if created.month() == now.month()
+                    && created.day() == now.day()
+                    && created.year() < now.year()
+                {
                     tags.push(tag(
                         "🎂",
                         rgb(0xeb459e),
@@ -401,7 +488,14 @@ impl App {
                     tags.push(tag(
                         "🔊",
                         rgb(0x23a55a),
-                        Some(tr!("同じボイスチャンネルにいます", "In your voice channel", "在你的语音频道中").into()),
+                        Some(
+                            tr!(
+                                "同じボイスチャンネルにいます",
+                                "In your voice channel",
+                                "在你的语音频道中"
+                            )
+                            .into(),
+                        ),
                     ));
                 }
             }
@@ -446,7 +540,11 @@ impl App {
         let key = if compact { "compact" } else { "format" };
         let mut fmt = self.plugins.opt_str("complete-timestamps", key);
         if fmt.is_empty() {
-            fmt = if compact { "%H:%M:%S".into() } else { "%Y-%m-%d %H:%M:%S".into() };
+            fmt = if compact {
+                "%H:%M:%S".into()
+            } else {
+                "%Y-%m-%d %H:%M:%S".into()
+            };
         }
         let t = local_dt(ts)?;
         use std::fmt::Write;
@@ -491,7 +589,12 @@ impl App {
     }
 
     /// MentionFix（知らないユーザーのメンションを手元の名前で埋める）と RoleMentionIcons（ロールのメンションに印）
-    pub fn bd_pre_mentions<'a>(&self, content: &'a str, m: &Message, roles: &[Role]) -> std::borrow::Cow<'a, str> {
+    pub fn bd_pre_mentions<'a>(
+        &self,
+        content: &'a str,
+        m: &Message,
+        roles: &[Role],
+    ) -> std::borrow::Cow<'a, str> {
         let fix = self.plugins.on("mention-fix");
         let icons = self.plugins.on("role-mention-icons");
         if (!fix && !icons) || !content.contains("<@") {
@@ -535,7 +638,11 @@ impl App {
         if !self.plugins.on("hide-embed-link") || !m.embeds.iter().any(|e| e.visible()) {
             return false;
         }
-        let c = m.content.trim().trim_start_matches('<').trim_end_matches('>');
+        let c = m
+            .content
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>');
         (c.starts_with("https://") || c.starts_with("http://")) && !c.contains(char::is_whitespace)
     }
 
@@ -545,7 +652,12 @@ impl App {
     }
 
     /// ボイスの参加者の行の名前・色・経過時間
-    pub fn voice_row_info(&self, guild: Option<&str>, user_id: &str, _user: Option<&User>) -> VoiceRowInfo {
+    pub fn voice_row_info(
+        &self,
+        guild: Option<&str>,
+        user_id: &str,
+        _user: Option<&User>,
+    ) -> VoiceRowInfo {
         let mut info = VoiceRowInfo {
             name: self.bd_user_name(user_id),
             ..Default::default()
@@ -561,9 +673,9 @@ impl App {
                     .flatten()
                     .find(|m| m.user.as_ref().is_some_and(|u| u.id == user_id));
                 if let Some(m) = member {
-                    info.color = self
-                        .bd_name_color(user_id, Some(m), Some(g))
-                        .or_else(|| member_role_color(m, self.roles.get(g).map(Vec::as_slice).unwrap_or(&[])));
+                    info.color = self.bd_name_color(user_id, Some(m), Some(g)).or_else(|| {
+                        member_role_color(m, self.roles.get(g).map(Vec::as_slice).unwrap_or(&[]))
+                    });
                 }
             }
         }
@@ -590,11 +702,17 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert_eq!(better_channel_name("general-chat_room"), "General Chat Room");
+        assert_eq!(
+            better_channel_name("general-chat_room"),
+            "General Chat Room"
+        );
         assert_eq!(parse_offset("+9"), Some(9 * 3600));
         assert_eq!(parse_offset("-5:30"), Some(-(5 * 3600 + 30 * 60)));
         assert_eq!(parse_offset("UTC+0530"), Some(5 * 3600 + 30 * 60));
-        assert_eq!(parse_map("1=a; 2 = b ;bad"), vec![("1".into(), "a".into()), ("2".into(), "b".into())]);
+        assert_eq!(
+            parse_map("1=a; 2 = b ;bad"),
+            vec![("1".into(), "a".into()), ("2".into(), "b".into())]
+        );
         assert!(parse_color("#ff0000").is_some());
         assert!(parse_color("red").is_none());
     }

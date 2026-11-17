@@ -133,7 +133,11 @@ impl Root {
                     .tooltip(tip(if on {
                         tr!("サーバー一覧を出す", "Show server list", "显示服务器列表")
                     } else {
-                        tr!("サーバー一覧を畳む", "Collapse server list", "折叠服务器列表")
+                        tr!(
+                            "サーバー一覧を畳む",
+                            "Collapse server list",
+                            "折叠服务器列表"
+                        )
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.hide_rail = !this.app.hide_rail;
@@ -269,7 +273,9 @@ impl Root {
             .part(Part::SidebarPane)
             .child(inner)
             .when(!ch_hidden, |d| d.child(self.userbar(cx)))
-            .when(!ch_hidden, |d| d.child(self.pane_resizer(ResizeTarget::Channels, cx)))
+            .when(!ch_hidden, |d| {
+                d.child(self.pane_resizer(ResizeTarget::Channels, cx))
+            })
     }
 
     /// round = 丸いアイコン（未読の DM の相手）。サーバーはテーマの形に従う
@@ -364,8 +370,21 @@ impl Root {
                 .cursor_pointer()
                 .tooltip(tip(tip_text))
                 .child(pill)
-                .child(div().size(z(32.0)).flex_none().overflow_hidden().child(face.size(z(32.0))))
-                .child(line(label, 14.0, if selected || unread { WHITE() } else { MUTED() }).flex_1())
+                .child(
+                    div()
+                        .size(z(32.0))
+                        .flex_none()
+                        .overflow_hidden()
+                        .child(face.size(z(32.0))),
+                )
+                .child(
+                    line(
+                        label,
+                        14.0,
+                        if selected || unread { WHITE() } else { MUTED() },
+                    )
+                    .flex_1(),
+                )
                 .when(mentions > 0, |d| d.child(mention_badge(mentions)));
         }
         div()
@@ -453,7 +472,11 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .tooltip(tip(tr!("すべて既読にする", "Mark everything as read", "全部标为已读")))
+                    .tooltip(tip(tr!(
+                        "すべて既読にする",
+                        "Mark everything as read",
+                        "全部标为已读"
+                    )))
                     .child(
                         div()
                             .px(z(8.0))
@@ -924,7 +947,8 @@ impl Root {
                                         .map(|c| {
                                             let sel = a.sel_channel.as_deref() == Some(&c.id);
                                             let pin_on = a.plugins.on("pin-dms");
-                                            let is_pinned = pin_on && a.pinned_dms().contains(&c.id);
+                                            let is_pinned =
+                                                pin_on && a.pinned_dms().contains(&c.id);
                                             let pres = c
                                                 .recipients
                                                 .first()
@@ -951,8 +975,16 @@ impl Root {
                                                             div()
                                                                 .flex_none()
                                                                 .text_size(z(11.0))
-                                                                .text_color(if is_pinned { WHITE() } else { FAINT() })
-                                                                .child(if is_pinned { "📌" } else { "" }),
+                                                                .text_color(if is_pinned {
+                                                                    WHITE()
+                                                                } else {
+                                                                    FAINT()
+                                                                })
+                                                                .child(if is_pinned {
+                                                                    "📌"
+                                                                } else {
+                                                                    ""
+                                                                }),
                                                         )
                                                         .on_mouse_down(
                                                             MouseButton::Right,
@@ -1528,13 +1560,11 @@ impl Root {
             }
             // プラグインの行。いくつ動いていても 1 行ずつに収める
             for label in labels {
-                card = card.child(
-                    div()
-                        .pl(z(22.0))
-                        .pb(z(4.0))
-                        .min_w_0()
-                        .child(line(label, 12.0, MUTED())),
-                );
+                card = card.child(div().pl(z(22.0)).pb(z(4.0)).min_w_0().child(line(
+                    label,
+                    12.0,
+                    MUTED(),
+                )));
             }
             card = card.child(div().my(z(6.0)).child(hline(DIVIDER())));
         } else if let Some((gid, cid, msg)) = a.voice_view.error.clone() {

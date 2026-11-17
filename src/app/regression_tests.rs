@@ -88,7 +88,8 @@ fn member_chunks_preserve_order_and_latest_updates() {
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
     let member = |id: &str, name: &str| Member {
-        user: Some(User { public_flags: 0,
+        user: Some(User {
+            public_flags: 0,
             id: id.into(),
             username: name.into(),
             global_name: None,
@@ -140,7 +141,8 @@ fn member_index_reuses_then_expires_and_handles_interleaved_guilds() {
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
     let member = |id: &str, name: &str| Member {
-        user: Some(User { public_flags: 0,
+        user: Some(User {
+            public_flags: 0,
             id: id.into(),
             username: name.into(),
             global_name: None,
@@ -892,7 +894,8 @@ fn server_member_list_headers_use_group_counts() {
     ));
     let members: Vec<Member> = (0..2)
         .map(|i| Member {
-            user: Some(User { public_flags: 0,
+            user: Some(User {
+                public_flags: 0,
                 id: format!("m{i}"),
                 username: format!("u{i}"),
                 global_name: None,
@@ -938,7 +941,8 @@ fn status_notice_keeps_gateway_state_and_dms_loaded_is_tracked() {
 fn snapshot_restores_recent_conversation_and_refreshes_it() {
     let mut app = bench_app(80);
     app.token_owner = Some("1".into());
-    app.me = Some(User { public_flags: 0,
+    app.me = Some(User {
+        public_flags: 0,
         id: "1".into(),
         username: "me".into(),
         global_name: None,
@@ -995,7 +999,8 @@ fn snapshot_restores_recent_conversation_and_refreshes_it() {
 #[test]
 fn login_failure_with_snapshot_keeps_view_and_retries() {
     let mut app = bench_app(3);
-    app.me = Some(User { public_flags: 0,
+    app.me = Some(User {
+        public_flags: 0,
         id: "1".into(),
         username: "me".into(),
         global_name: None,
@@ -1037,7 +1042,8 @@ fn snapshot_is_tied_to_account() {
     );
     assert_eq!(cache::token_owner("not a token"), None);
     let mut app = bench_app(2);
-    app.me = Some(User { public_flags: 0,
+    app.me = Some(User {
+        public_flags: 0,
         id: "123456789012345678".into(),
         username: "me".into(),
         global_name: None,
@@ -1106,7 +1112,8 @@ fn home_is_shown_while_connecting() {
 #[test]
 fn own_presence_is_stored_under_my_id() {
     let mut app = App::default();
-    app.me = Some(User { public_flags: 0,
+    app.me = Some(User {
+        public_flags: 0,
         id: "1".into(),
         username: "me".into(),
         global_name: None,
@@ -1176,7 +1183,8 @@ fn mentions_are_counted_per_server() {
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
-    app.me = Some(User { public_flags: 0,
+    app.me = Some(User {
+        public_flags: 0,
         id: "me".into(),
         username: "me".into(),
         global_name: None,

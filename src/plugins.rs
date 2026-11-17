@@ -168,7 +168,13 @@ fn message_table(lua: &Lua, m: &Message) -> mlua::Result<Table> {
     t.set("channel_id", m.channel_id.clone())?;
     t.set("guild_id", m.guild_id.clone())?;
     t.set("author_id", m.author.id.clone())?;
-    t.set("author_name", m.member.as_ref().and_then(|mb| mb.nick.clone()).unwrap_or_else(|| m.author.display().to_owned()))?;
+    t.set(
+        "author_name",
+        m.member
+            .as_ref()
+            .and_then(|mb| mb.nick.clone())
+            .unwrap_or_else(|| m.author.display().to_owned()),
+    )?;
     t.set("author_username", m.author.username.clone())?;
     t.set("bot", m.author.bot)?;
     t.set("content", m.content.clone())?;
@@ -184,7 +190,10 @@ fn message_table(lua: &Lua, m: &Message) -> mlua::Result<Table> {
         attachments.set(i + 1, a.url.clone())?;
     }
     t.set("attachments", attachments)?;
-    t.set("reply_to", m.referenced_message.as_ref().map(|r| r.id.clone()))?;
+    t.set(
+        "reply_to",
+        m.referenced_message.as_ref().map(|r| r.id.clone()),
+    )?;
     Ok(t)
 }
 
@@ -316,7 +325,10 @@ impl Runtime {
             api.set(
                 name,
                 lua.create_function(move |_, (a, b): (String, Option<String>)| {
-                    if a.len() > 8000 || b.as_ref().is_some_and(|b| b.len() > 8000) || q.borrow().len() >= 100 {
+                    if a.len() > 8000
+                        || b.as_ref().is_some_and(|b| b.len() > 8000)
+                        || q.borrow().len() >= 100
+                    {
                         return Err(mlua::Error::runtime(tr!(
                             "内容が長すぎるか、操作の待ちが上限です",
                             "The content is too long, or too many actions are queued",
@@ -326,10 +338,28 @@ impl Runtime {
                     let action = match (name, make) {
                         ("notify", _) => Action::Notify(a, b.unwrap_or_default()),
                         ("copy", _) => Action::Copy(a),
-                        ("open_url", _) if a.starts_with("https://") || a.starts_with("http://") || a.starts_with("steam://") => Action::OpenUrl(a),
-                        ("open_url", _) => return Err(mlua::Error::runtime("open_url: http(s):// or steam:// only")),
-                        ("set_status", _) if ["online", "idle", "dnd", "invisible"].contains(&a.as_str()) => Action::SetStatus(a),
-                        ("set_status", _) => return Err(mlua::Error::runtime("set_status: online / idle / dnd / invisible")),
+                        ("open_url", _)
+                            if a.starts_with("https://")
+                                || a.starts_with("http://")
+                                || a.starts_with("steam://") =>
+                        {
+                            Action::OpenUrl(a)
+                        }
+                        ("open_url", _) => {
+                            return Err(mlua::Error::runtime(
+                                "open_url: http(s):// or steam:// only",
+                            ))
+                        }
+                        ("set_status", _)
+                            if ["online", "idle", "dnd", "invisible"].contains(&a.as_str()) =>
+                        {
+                            Action::SetStatus(a)
+                        }
+                        ("set_status", _) => {
+                            return Err(mlua::Error::runtime(
+                                "set_status: online / idle / dnd / invisible",
+                            ))
+                        }
                         ("insert", _) => Action::Insert(a),
                         ("open_channel", _) => Action::OpenChannel(a),
                         ("play_sound", _) => Action::Sound(a),
@@ -387,8 +417,15 @@ impl Runtime {
         lua.globals().set("riscord", api)?;
         let callbacks: Table = lua.load(script).set_name(&manifest.entry).eval()?;
         lua.globals().set("__plugin", callbacks.clone())?;
-        let has_page = callbacks.raw_get::<Value>("page").is_ok_and(|v| matches!(v, Value::Function(_)));
-        let runtime = Self { has_page, lua, queue, timers };
+        let has_page = callbacks
+            .raw_get::<Value>("page")
+            .is_ok_and(|v| matches!(v, Value::Function(_)));
+        let runtime = Self {
+            has_page,
+            lua,
+            queue,
+            timers,
+        };
         runtime.call("start", ())?;
         Ok(runtime)
     }
@@ -601,27 +638,27 @@ impl Plugins {
     pub fn message_actions(&mut self) -> Vec<(String, usize, String, Option<String>)> {
         let mut all = Vec::new();
         for p in &mut self.entries {
-            let result = p
-                .runtime
-                .as_ref()
-                .map(|r| -> mlua::Result<Vec<(usize, String, Option<String>)>> {
-                    r.reset_budget();
-                    let callbacks: Table = r.lua.globals().get("__plugin")?;
-                    let actions: Option<Table> = callbacks.get("message_actions")?;
-                    let Some(actions) = actions else {
-                        return Ok(vec![]);
-                    };
-                    let mut items = Vec::new();
-                    for (i, item) in actions.sequence_values::<Table>().take(20).enumerate() {
-                        let item = item?;
-                        items.push((
-                            i + 1,
-                            item.get::<String>("label")?,
-                            item.get::<Option<String>>("icon")?,
-                        ));
-                    }
-                    Ok(items)
-                });
+            let result =
+                p.runtime
+                    .as_ref()
+                    .map(|r| -> mlua::Result<Vec<(usize, String, Option<String>)>> {
+                        r.reset_budget();
+                        let callbacks: Table = r.lua.globals().get("__plugin")?;
+                        let actions: Option<Table> = callbacks.get("message_actions")?;
+                        let Some(actions) = actions else {
+                            return Ok(vec![]);
+                        };
+                        let mut items = Vec::new();
+                        for (i, item) in actions.sequence_values::<Table>().take(20).enumerate() {
+                            let item = item?;
+                            items.push((
+                                i + 1,
+                                item.get::<String>("label")?,
+                                item.get::<Option<String>>("icon")?,
+                            ));
+                        }
+                        Ok(items)
+                    });
             match result {
                 Some(Ok(items)) => all.extend(
                     items
@@ -653,8 +690,14 @@ impl Plugins {
     /// id のプラグインが動いているか（同梱プラグインの本体側の機能を切り替える）
     pub fn on(&self, id: &str) -> bool {
         match self.index.get(id) {
-            Some(&i) => self.entries.get(i).is_some_and(|p| p.manifest.id == id && p.running()),
-            None => self.entries.iter().any(|p| p.manifest.id == id && p.running()),
+            Some(&i) => self
+                .entries
+                .get(i)
+                .is_some_and(|p| p.manifest.id == id && p.running()),
+            None => self
+                .entries
+                .iter()
+                .any(|p| p.manifest.id == id && p.running()),
         }
     }
     /// 動いているプラグインの options()（_lib.lua の settings の値）。止まっていれば Null
@@ -672,16 +715,26 @@ impl Plugins {
             .and_then(|p| p.runtime.as_ref())
             .and_then(|r| r.call("options", ()).ok())
             .and_then(|v| {
-                let r = self.entries.iter().find(|p| p.manifest.id == id)?.runtime.as_ref()?;
+                let r = self
+                    .entries
+                    .iter()
+                    .find(|p| p.manifest.id == id)?
+                    .runtime
+                    .as_ref()?;
                 r.lua.from_value::<serde_json::Value>(v).ok()
             })
             .unwrap_or(serde_json::Value::Null);
-        self.options_cache.borrow_mut().insert(id.to_owned(), v.clone());
+        self.options_cache
+            .borrow_mut()
+            .insert(id.to_owned(), v.clone());
         v
     }
     /// 動いていれば options の key（真偽）。止まっていれば false
     pub fn opt_bool(&self, id: &str, key: &str) -> bool {
-        self.options(id).get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+        self.options(id)
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
     pub fn opt_str(&self, id: &str, key: &str) -> String {
         match self.options(id).get(key) {
@@ -718,7 +771,12 @@ impl Plugins {
         }
     }
     /// プラグインの関数を呼んで JSON で受け取る（id のプラグインだけ）。動いていなければ None
-    pub fn query(&mut self, id: &str, name: &str, args: &[serde_json::Value]) -> Option<serde_json::Value> {
+    pub fn query(
+        &mut self,
+        id: &str,
+        name: &str,
+        args: &[serde_json::Value],
+    ) -> Option<serde_json::Value> {
         let p = self.entries.iter_mut().find(|p| p.manifest.id == id)?;
         let r = p.runtime.as_ref()?;
         let result = (|| -> mlua::Result<serde_json::Value> {
@@ -1060,7 +1118,9 @@ impl Plugin {
         }
     }
     pub fn has_page(&self) -> bool {
-        self.runtime.as_ref().is_some_and(|runtime| runtime.has_page)
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_page)
     }
     pub fn running(&self) -> bool {
         self.runtime.is_some()
@@ -1249,11 +1309,20 @@ mod tests {
         let mut plugins = Plugins::default();
         plugins.data_root = dir.clone();
         plugins.reload(&[]);
-        let ids: Vec<String> = plugins.entries.iter().filter(|p| p.bundled_source.is_some()).map(|p| p.manifest.id.clone()).collect();
+        let ids: Vec<String> = plugins
+            .entries
+            .iter()
+            .filter(|p| p.bundled_source.is_some())
+            .map(|p| p.manifest.id.clone())
+            .collect();
         assert!(ids.len() >= 3);
         let mut enabled = Vec::new();
         plugins.set_all(true, &mut enabled);
-        for p in plugins.entries.iter().filter(|p| p.bundled_source.is_some()) {
+        for p in plugins
+            .entries
+            .iter()
+            .filter(|p| p.bundled_source.is_some())
+        {
             assert!(p.running(), "{}: {:?}", p.manifest.id, p.error);
             assert!(!p.manifest.description_en.is_empty(), "{}", p.manifest.id);
             assert!(!p.manifest.description_zh.is_empty(), "{}", p.manifest.id);
@@ -1273,11 +1342,35 @@ mod tests {
         let _ = plugins.transform("on_send", "hello world", "2");
         let _ = plugins.transform("on_display", "hello world", "2");
         plugins.hook("on_typing", &["2".into(), "3".into(), "u".into()]);
-        plugins.hook("on_presence", &["3".into(), "offline".into(), "online".into(), "".into(), "u".into()]);
-        plugins.hook("on_voice", &["3".into(), "".into(), "9".into(), "".into(), false.into(), false.into(), "u".into()]);
+        plugins.hook(
+            "on_presence",
+            &[
+                "3".into(),
+                "offline".into(),
+                "online".into(),
+                "".into(),
+                "u".into(),
+            ],
+        );
+        plugins.hook(
+            "on_voice",
+            &[
+                "3".into(),
+                "".into(),
+                "9".into(),
+                "".into(),
+                false.into(),
+                false.into(),
+                "u".into(),
+            ],
+        );
         let _ = plugins.message_actions();
         let _ = plugins.tick();
-        for p in plugins.entries.iter().filter(|p| p.bundled_source.is_some()) {
+        for p in plugins
+            .entries
+            .iter()
+            .filter(|p| p.bundled_source.is_some())
+        {
             assert!(p.running(), "{}: {:?}", p.manifest.id, p.error);
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -1292,7 +1385,15 @@ mod tests {
         let mut plugins = Plugins::default();
         plugins.data_root = dir;
         plugins.reload(&[id.to_string()]);
-        assert!(plugins.on(id), "{id}: {:?}", plugins.entries.iter().find(|p| p.manifest.id == id).map(|p| &p.error));
+        assert!(
+            plugins.on(id),
+            "{id}: {:?}",
+            plugins
+                .entries
+                .iter()
+                .find(|p| p.manifest.id == id)
+                .map(|p| &p.error)
+        );
         plugins
     }
     fn send(p: &mut Plugins, s: &str) -> String {
@@ -1302,13 +1403,25 @@ mod tests {
     fn bundled_send_transforms() {
         let mut p = only("link-cleaner");
         assert_eq!(
-            send(&mut p, "see https://example.com/a?utm_source=x&id=3&fbclid=y#top ok"),
+            send(
+                &mut p,
+                "see https://example.com/a?utm_source=x&id=3&fbclid=y#top ok"
+            ),
             "see https://example.com/a?id=3#top ok"
         );
-        assert_eq!(send(&mut p, "https://youtu.be/abc?si=zzz"), "https://youtu.be/abc");
+        assert_eq!(
+            send(&mut p, "https://youtu.be/abc?si=zzz"),
+            "https://youtu.be/abc"
+        );
         let mut p = only("link-converter");
-        assert_eq!(send(&mut p, "https://x.com/a/status/1"), "https://fxtwitter.com/a/status/1");
-        assert_eq!(send(&mut p, "https://instagram.com/p/1"), "https://instagram.com/p/1");
+        assert_eq!(
+            send(&mut p, "https://x.com/a/status/1"),
+            "https://fxtwitter.com/a/status/1"
+        );
+        assert_eq!(
+            send(&mut p, "https://instagram.com/p/1"),
+            "https://instagram.com/p/1"
+        );
         let mut p = only("write-uppercase");
         assert_eq!(send(&mut p, "hello. world? yes"), "Hello. World? Yes");
         assert_eq!(send(&mut p, "/cmd x"), "/cmd x");
@@ -1320,21 +1433,35 @@ mod tests {
         let mut p = only("better-formatting-redux");
         assert_eq!(send(&mut p, "a [fw]ab[/fw] [up]ab[/up]"), "a ａｂ qɐ");
         let mut p = only("chat-filter");
-        p.page_action("chat-filter", "__save", [("censor".to_string(), "bad".to_string())].into());
+        p.page_action(
+            "chat-filter",
+            "__save",
+            [("censor".to_string(), "bad".to_string())].into(),
+        );
         assert_eq!(p.transform("on_display", "so BAD", "1"), "so ***");
         let mut p = only("hold-your-tongue");
-        p.page_action("hold-your-tongue", "__save", [("keywords".to_string(), "secret".to_string())].into());
+        p.page_action(
+            "hold-your-tongue",
+            "__save",
+            [("keywords".to_string(), "secret".to_string())].into(),
+        );
         assert!(p.check_send("a secret", "1").is_some());
         assert!(p.check_send("a secret", "1").is_none());
         assert!(p.check_send("fine", "1").is_none());
         let mut p = only("replace-timestamps");
         let out = send(&mut p, "meet at 18:30 ok");
-        assert!(out.starts_with("meet at <t:") && out.ends_with(":t> ok"), "{out}");
+        assert!(
+            out.starts_with("meet at <t:") && out.ends_with(":t> ok"),
+            "{out}"
+        );
         assert_eq!(send(&mut p, "score 2:1"), "score 2:1");
         let mut p = only("insert-timestamps");
         assert!(p.command("/ts 2026-01-01 00:00 R", "1"));
         let (actions, _) = p.tick();
-        assert!(matches!(&actions[0], Action::Insert(s) if s.starts_with("<t:") && s.ends_with(":R>")), "{actions:?}");
+        assert!(
+            matches!(&actions[0], Action::Insert(s) if s.starts_with("<t:") && s.ends_with(":R>")),
+            "{actions:?}"
+        );
         let mut p = only("to-do-list");
         assert!(p.command("/todo !buy milk", "1"));
         assert!(p.page("to-do-list").iter().any(|i| i.label == "! buy milk"));

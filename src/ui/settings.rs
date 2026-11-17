@@ -1723,7 +1723,12 @@ impl Root {
         pages
     }
 
-    fn plugins_page(&mut self, col_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn plugins_page(
+        &mut self,
+        col_w: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let path = crate::plugins::directory();
         let mut page = section(0, tr!("プラグイン", "Plugins", "插件"))
             .child(text(
@@ -1822,12 +1827,19 @@ impl Root {
             })
             .clone();
         if self.plugin_filter_sub.is_none() {
-            self.plugin_filter_sub = Some(cx.subscribe(&filter_input, |_, _, _: &InputEvent, cx| cx.notify()));
+            self.plugin_filter_sub =
+                Some(cx.subscribe(&filter_input, |_, _, _: &InputEvent, cx| cx.notify()));
         }
         let query = filter_input.read(cx).value().trim().to_lowercase();
         let only_enabled = self.plugins_only_enabled;
         let total = self.app.plugins.entries.len();
-        let running = self.app.plugins.entries.iter().filter(|p| p.running()).count();
+        let running = self
+            .app
+            .plugins
+            .entries
+            .iter()
+            .filter(|p| p.running())
+            .count();
         page = page.child(
             div()
                 .mt(z(16.0))
@@ -1845,7 +1857,11 @@ impl Root {
                         .child(Input::new(&filter_input).appearance(false).h(z(36.0))),
                 )
                 .child(text(
-                    tr!("{running} / {total} 個が有効", "{running} / {total} on", "已启用 {running} / {total} 个",),
+                    tr!(
+                        "{running} / {total} 個が有効",
+                        "{running} / {total} on",
+                        "已启用 {running} / {total} 个",
+                    ),
                     14.0,
                     MUTED(),
                 ))
@@ -1917,7 +1933,11 @@ impl Root {
         };
         let meta = format!(
             "{}{} · {} · {}",
-            if p.manifest.bd { "BetterDiscord · " } else { "" },
+            if p.manifest.bd {
+                "BetterDiscord · "
+            } else {
+                ""
+            },
             p.manifest.id,
             p.manifest.version,
             status,
@@ -1928,20 +1948,28 @@ impl Root {
             .flex()
             .items_center()
             .gap(z(8.0))
-            .child(line(p.manifest.name.clone(), 16.0, WHITE()).font_weight(FontWeight::SEMIBOLD).flex_1())
+            .child(
+                line(p.manifest.name.clone(), 16.0, WHITE())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex_1(),
+            )
             .when(has_page, |d| {
                 d.child(
-                    icon_button(SharedString::from(format!("plugin-page-{id}")), IconName::Settings, 32.0)
-                        .tooltip(tip(tr!("設定", "Settings", "设置")))
-                        .when(selected, |b| b.bg(SELECTED()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.app.plugins.selected.as_deref() == Some(page_id.as_str()) {
-                                this.app.plugins.selected = None;
-                            } else {
-                                this.app.plugins.selected = Some(page_id.clone());
-                            }
-                            cx.notify();
-                        })),
+                    icon_button(
+                        SharedString::from(format!("plugin-page-{id}")),
+                        IconName::Settings,
+                        32.0,
+                    )
+                    .tooltip(tip(tr!("設定", "Settings", "设置")))
+                    .when(selected, |b| b.bg(SELECTED()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.app.plugins.selected.as_deref() == Some(page_id.as_str()) {
+                            this.app.plugins.selected = None;
+                        } else {
+                            this.app.plugins.selected = Some(page_id.clone());
+                        }
+                        cx.notify();
+                    })),
                 )
             })
             .child(
@@ -1952,24 +1980,36 @@ impl Root {
                         tr!("有効にする", "Enable", "启用")
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.app.plugins.toggle(&id, &mut this.app.settings.enabled_plugins);
+                        this.app
+                            .plugins
+                            .toggle(&id, &mut this.app.settings.enabled_plugins);
                         this.app.save_settings();
                         this.app.waker.wake();
                         cx.notify();
                     })),
             );
-        settings_card(if error.is_some() { Some(RED()) } else if selected { Some(BLURPLE()) } else { None })
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(z(6.0))
-            .child(header)
-            .child(text(p.manifest.describe().to_string(), 14.0, MUTED()))
-            .child(line(meta, 12.0, FAINT()))
-            .when_some(error, |d, e| {
-                d.child(text(tr!("エラー: {e}", "Error: {e}", "错误：{e}",), 13.0, RED()))
-            })
+        settings_card(if error.is_some() {
+            Some(RED())
+        } else if selected {
+            Some(BLURPLE())
+        } else {
+            None
+        })
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(z(6.0))
+        .child(header)
+        .child(text(p.manifest.describe().to_string(), 14.0, MUTED()))
+        .child(line(meta, 12.0, FAINT()))
+        .when_some(error, |d, e| {
+            d.child(text(
+                tr!("エラー: {e}", "Error: {e}", "错误：{e}",),
+                13.0,
+                RED(),
+            ))
+        })
     }
 
     /// プラグインのページ（page() の部品）。一覧の、そのプラグインの行の直下に出す
@@ -1980,116 +2020,122 @@ impl Root {
             .pb(z(16.0))
             .border_l_2()
             .border_color(BLURPLE());
-        if !self.app.plugins.entries.iter().any(|p| p.manifest.id == id && p.has_page()) {
+        if !self
+            .app
+            .plugins
+            .entries
+            .iter()
+            .any(|p| p.manifest.id == id && p.has_page())
+        {
             return page;
         }
-            page = page.child(div().mt(z(24.0)).child(medium(
-                tr!("{id} のページ", "{id} page", "{id} 页",),
-                20.0,
-                WHITE(),
-            )));
-            for (index, item) in self.app.plugins.page(&id).into_iter().enumerate() {
-                if item.kind == "button" {
-                    let id = id.clone();
-                    let action = item.action;
-                    page = page.child(
-                        div()
-                            .id(SharedString::from(format!("plugin-action-{index}")))
-                            .mt(z(10.0))
-                            .cursor_pointer()
-                            .child(text(item.label, 16.0, LINK()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                // MessageLogger の記録は本体が持っているので、消すのも本体で行う
-                                if id == "friend-codes" && action == "create" {
-                                    this.app.create_friend_code();
-                                }
-                                if id == "message-logger" && action == "clear" {
-                                    this.app.message_log.clear();
-                                    this.app.show_toast(tr!(
-                                        "メッセージの記録を消しました",
-                                        "Message log cleared",
-                                        "已清除消息记录"
-                                    ));
-                                }
-                                let values = this
-                                    .plugin_inputs
-                                    .iter()
-                                    .filter(|((plugin, _), _)| plugin == &id)
-                                    .map(|((_, key), input)| {
-                                        (key.clone(), input.read(cx).value().to_string())
-                                    })
-                                    .collect();
-                                this.app.plugins.page_action(&id, &action, values);
-                                this.app.waker.wake();
-                                cx.notify();
-                            })),
-                    );
-                } else if item.kind == "switch" {
-                    let plugin_id = id.clone();
-                    let action = item.action;
-                    page = page.child(
-                        div()
-                            .mt(z(10.0))
-                            .flex()
-                            .items_center()
-                            .gap(z(12.0))
-                            .child(text(item.label, 16.0, TEXT()).flex_1())
-                            .child(
-                                toggle_switch(
-                                    SharedString::from(format!("plugin-switch-{index}")),
-                                    item.enabled,
-                                )
-                                .tooltip(tip(if item.enabled {
-                                    tr!("オフにする", "Turn Off", "关闭")
-                                } else {
-                                    tr!("オンにする", "Turn On", "开启")
-                                }))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        let values = this
-                                            .plugin_inputs
-                                            .iter()
-                                            .filter(|((plugin, _), _)| plugin == &plugin_id)
-                                            .map(|((_, key), input)| {
-                                                (key.clone(), input.read(cx).value().to_string())
-                                            })
-                                            .collect();
-                                        this.app.plugins.page_action(&plugin_id, &action, values);
-                                        this.app.waker.wake();
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                    );
-                } else if item.kind == "text" {
-                    page = page.child(div().mt(z(10.0)).child(text(item.label, 16.0, TEXT())));
-                } else if item.kind == "input" && !item.action.is_empty() {
-                    let key = (id.clone(), item.action.clone());
-                    let input = self
-                        .plugin_inputs
-                        .entry(key)
-                        .or_insert_with(|| super::new_input(window, cx, &item.label, false))
-                        .clone();
-                    page = page.child(
-                        div()
-                            .mt(z(10.0))
-                            .child(text(item.label, 14.0, TEXT()))
-                            .child(
-                                div()
-                                    .mt(z(6.0))
-                                    .bg(INPUT())
-                                    .border_1()
-                                    .border_color(BORDER())
-                                    .rounded(z(8.0))
-                                    .px(z(6.0))
-                                    .child(Input::new(&input).appearance(false).h(z(36.0))),
-                            ),
-                    );
-                }
+        page = page.child(div().mt(z(24.0)).child(medium(
+            tr!("{id} のページ", "{id} page", "{id} 页",),
+            20.0,
+            WHITE(),
+        )));
+        for (index, item) in self.app.plugins.page(&id).into_iter().enumerate() {
+            if item.kind == "button" {
+                let id = id.clone();
+                let action = item.action;
+                page = page.child(
+                    div()
+                        .id(SharedString::from(format!("plugin-action-{index}")))
+                        .mt(z(10.0))
+                        .cursor_pointer()
+                        .child(text(item.label, 16.0, LINK()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // MessageLogger の記録は本体が持っているので、消すのも本体で行う
+                            if id == "friend-codes" && action == "create" {
+                                this.app.create_friend_code();
+                            }
+                            if id == "message-logger" && action == "clear" {
+                                this.app.message_log.clear();
+                                this.app.show_toast(tr!(
+                                    "メッセージの記録を消しました",
+                                    "Message log cleared",
+                                    "已清除消息记录"
+                                ));
+                            }
+                            let values = this
+                                .plugin_inputs
+                                .iter()
+                                .filter(|((plugin, _), _)| plugin == &id)
+                                .map(|((_, key), input)| {
+                                    (key.clone(), input.read(cx).value().to_string())
+                                })
+                                .collect();
+                            this.app.plugins.page_action(&id, &action, values);
+                            this.app.waker.wake();
+                            cx.notify();
+                        })),
+                );
+            } else if item.kind == "switch" {
+                let plugin_id = id.clone();
+                let action = item.action;
+                page = page.child(
+                    div()
+                        .mt(z(10.0))
+                        .flex()
+                        .items_center()
+                        .gap(z(12.0))
+                        .child(text(item.label, 16.0, TEXT()).flex_1())
+                        .child(
+                            toggle_switch(
+                                SharedString::from(format!("plugin-switch-{index}")),
+                                item.enabled,
+                            )
+                            .tooltip(tip(if item.enabled {
+                                tr!("オフにする", "Turn Off", "关闭")
+                            } else {
+                                tr!("オンにする", "Turn On", "开启")
+                            }))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    let values = this
+                                        .plugin_inputs
+                                        .iter()
+                                        .filter(|((plugin, _), _)| plugin == &plugin_id)
+                                        .map(|((_, key), input)| {
+                                            (key.clone(), input.read(cx).value().to_string())
+                                        })
+                                        .collect();
+                                    this.app.plugins.page_action(&plugin_id, &action, values);
+                                    this.app.waker.wake();
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                );
+            } else if item.kind == "text" {
+                page = page.child(div().mt(z(10.0)).child(text(item.label, 16.0, TEXT())));
+            } else if item.kind == "input" && !item.action.is_empty() {
+                let key = (id.clone(), item.action.clone());
+                let input = self
+                    .plugin_inputs
+                    .entry(key)
+                    .or_insert_with(|| super::new_input(window, cx, &item.label, false))
+                    .clone();
+                page = page.child(
+                    div()
+                        .mt(z(10.0))
+                        .child(text(item.label, 14.0, TEXT()))
+                        .child(
+                            div()
+                                .mt(z(6.0))
+                                .bg(INPUT())
+                                .border_1()
+                                .border_color(BORDER())
+                                .rounded(z(8.0))
+                                .px(z(6.0))
+                                .child(Input::new(&input).appearance(false).h(z(36.0))),
+                        ),
+                );
             }
-            if id == "message-logger" {
-                page = page.child(self.message_log_view(cx));
-            }
+        }
+        if id == "message-logger" {
+            page = page.child(self.message_log_view(cx));
+        }
         page
     }
 

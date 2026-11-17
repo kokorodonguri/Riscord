@@ -14,7 +14,9 @@ impl App {
     /// ServerHider: 隠すサーバーか
     pub fn bd_hidden_guild(&self, guild_id: &str) -> bool {
         self.plugins.on("server-hider")
-            && list(&self.plugins.opt_str("server-hider", "hidden")).iter().any(|g| g == guild_id)
+            && list(&self.plugins.opt_str("server-hider", "hidden"))
+                .iter()
+                .any(|g| g == guild_id)
             && self.sel_guild.as_deref() != Some(guild_id)
     }
 
@@ -74,9 +76,11 @@ impl App {
                 "在线 {online} / 成员 {total}",
             )),
             Some(total) => lines.push(tr!("メンバー {total}", "{total} members", "成员 {total}",)),
-            None if online > 0 => {
-                lines.push(tr!("オンライン {online}", "{online} online", "在线 {online}",))
-            }
+            None if online > 0 => lines.push(tr!(
+                "オンライン {online}",
+                "{online} online",
+                "在线 {online}",
+            )),
             None => {}
         }
         if details {
@@ -99,9 +103,16 @@ impl App {
                 ));
             }
             if let Some(tier) = info.map(|i| i.premium_tier).filter(|t| *t > 0) {
-                lines.push(tr!("ブーストレベル {tier}", "Boost level {tier}", "助力等级 {tier}",));
+                lines.push(tr!(
+                    "ブーストレベル {tier}",
+                    "Boost level {tier}",
+                    "助力等级 {tier}",
+                ));
             }
-            if let Some(d) = info.and_then(|i| i.description.as_deref()).filter(|d| !d.is_empty()) {
+            if let Some(d) = info
+                .and_then(|i| i.description.as_deref())
+                .filter(|d| !d.is_empty())
+            {
                 lines.push(crate::notify::excerpt(d, 120));
             }
         }
@@ -158,11 +169,24 @@ impl App {
             let name = self.user_name(owner).unwrap_or_else(|| owner.to_owned());
             lines.push(tr!("オーナー: {name}", "Owner: {name}", "所有者：{name}",));
         }
-        lines.push(tr!("作成: {}", "Created: {}", "创建于：{}", snowflake_date(&g.id)));
+        lines.push(tr!(
+            "作成: {}",
+            "Created: {}",
+            "创建于：{}",
+            snowflake_date(&g.id)
+        ));
         if let Some(j) = info.and_then(|i| i.joined_at.as_deref()).and_then(local_dt) {
-            lines.push(tr!("参加: {}", "Joined: {}", "加入于：{}", j.format("%Y-%m-%d")));
+            lines.push(tr!(
+                "参加: {}",
+                "Joined: {}",
+                "加入于：{}",
+                j.format("%Y-%m-%d")
+            ));
         }
-        if let Some(d) = info.and_then(|i| i.description.as_deref()).filter(|d| !d.is_empty()) {
+        if let Some(d) = info
+            .and_then(|i| i.description.as_deref())
+            .filter(|d| !d.is_empty())
+        {
             lines.push(d.to_owned());
         }
         lines.join("\n")
@@ -199,7 +223,11 @@ impl App {
         }
         self.unread.clear();
         self.mention_counts.clear();
-        self.show_toast(tr!("すべて既読にしました", "Marked everything as read", "已全部标为已读"));
+        self.show_toast(tr!(
+            "すべて既読にしました",
+            "Marked everything as read",
+            "已全部标为已读"
+        ));
     }
 
     /// PinDMs: 上に固定する DM のチャンネル ID
@@ -212,8 +240,11 @@ impl App {
 
     /// PinDMs に頼んで DM を固定・解除する
     pub fn toggle_pinned_dm(&mut self, channel_id: &str) {
-        self.plugins
-            .page_action("pin-dms", &format!("toggle:{channel_id}"), Default::default());
+        self.plugins.page_action(
+            "pin-dms",
+            &format!("toggle:{channel_id}"),
+            Default::default(),
+        );
     }
 
     /// MessagePeek: チャンネルの最後のメッセージ（読み込んでいれば）
@@ -276,7 +307,11 @@ impl App {
             while self.tabs.len() > max {
                 // 固定（ブックマーク）していないものから消す
                 let bookmarks = self.tab_bookmarks();
-                match self.tabs.iter().position(|t| !bookmarks.contains(t) && t != channel_id) {
+                match self
+                    .tabs
+                    .iter()
+                    .position(|t| !bookmarks.contains(t) && t != channel_id)
+                {
                     Some(i) => {
                         self.tabs.remove(i);
                     }
@@ -298,13 +333,15 @@ impl App {
         }
         for (g, chs) in self.channels.iter().chain(self.threads.iter()) {
             if let Some(c) = chs.iter().find(|c| c.id == channel_id) {
-                return format!("#{}", self.channel_label(&c.id, c.name.as_deref().unwrap_or_default()))
-                    + &self
-                        .guilds
-                        .iter()
-                        .find(|x| &x.id == g)
-                        .map(|x| format!(" · {}", self.guild_label(&x.id, &x.name)))
-                        .unwrap_or_default();
+                return format!(
+                    "#{}",
+                    self.channel_label(&c.id, c.name.as_deref().unwrap_or_default())
+                ) + &self
+                    .guilds
+                    .iter()
+                    .find(|x| &x.id == g)
+                    .map(|x| format!(" · {}", self.guild_label(&x.id, &x.name)))
+                    .unwrap_or_default();
             }
         }
         channel_id.to_owned()
@@ -314,7 +351,9 @@ impl App {
     pub fn lazy_skip(&self, channel_id: &str) -> bool {
         self.plugins.on("lazy-load-channels")
             && !self.lazy_allowed.contains(channel_id)
-            && !list(&self.plugins.opt_str("lazy-load-channels", "always")).iter().any(|c| c == channel_id)
+            && !list(&self.plugins.opt_str("lazy-load-channels", "always"))
+                .iter()
+                .any(|c| c == channel_id)
     }
 
     /// LazyLoadChannels: 読み込むことにした
@@ -370,7 +409,9 @@ impl App {
     pub fn removed_connection(&mut self, t: &str, d: &serde_json::Value) {
         let (kind, id) = match t {
             "RELATIONSHIP_REMOVE" => ("friend", d["id"].as_str()),
-            "GUILD_DELETE" if !d["unavailable"].as_bool().unwrap_or(false) => ("guild", d["id"].as_str()),
+            "GUILD_DELETE" if !d["unavailable"].as_bool().unwrap_or(false) => {
+                ("guild", d["id"].as_str())
+            }
             _ => return,
         };
         let Some(id) = id else { return };
@@ -389,10 +430,8 @@ impl App {
                 .map(|g| g.name.clone()),
         };
         let Some(label) = label else { return };
-        self.plugins.hook(
-            "on_removed",
-            &[kind.into(), id.into(), label.into()],
-        );
+        self.plugins
+            .hook("on_removed", &[kind.into(), id.into(), label.into()]);
     }
 }
 
@@ -408,7 +447,11 @@ impl App {
     }
 
     /// FriendCodes の結果
-    pub fn friend_code_result(&mut self, id: u64, result: &Result<serde_json::Value, String>) -> bool {
+    pub fn friend_code_result(
+        &mut self,
+        id: u64,
+        result: &Result<serde_json::Value, String>,
+    ) -> bool {
         if self.friend_code_request != Some(id) {
             return false;
         }

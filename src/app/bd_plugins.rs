@@ -39,7 +39,10 @@ pub fn split_message(text: &str, limit: usize) -> Vec<String> {
         let mut part = rest[..at].trim_end_matches('\n').to_string();
         let tail = rest[at..].to_string();
         // ``` の数が奇数ならコードブロックの途中
-        let fences: Vec<&str> = part.lines().filter(|l| l.trim_start().starts_with("```")).collect();
+        let fences: Vec<&str> = part
+            .lines()
+            .filter(|l| l.trim_start().starts_with("```"))
+            .collect();
         if fences.len() % 2 == 1 {
             let open = fences.last().unwrap().trim().to_string();
             part.push_str("\n```");
@@ -57,7 +60,12 @@ impl App {
     /// 送信前に、同梱プラグインの指定（分割・@silent・メンションの扱い）を集める。
     /// 分割したときは content を最後の部分にし、前の部分を extra.before に入れる
     pub fn plugin_send_extra(&self, content: &mut String, replying: bool) -> net::SendExtra {
-        send_extra(&self.plugins, self.me.as_ref().and_then(|u| u.premium_type), content, replying)
+        send_extra(
+            &self.plugins,
+            self.me.as_ref().and_then(|u| u.premium_type),
+            content,
+            replying,
+        )
     }
 }
 
@@ -74,9 +82,9 @@ pub fn send_extra(
             extra.flags |= 4096;
         }
         if replying && p.on("no-reply-ping") {
-            let am = extra
-                .allowed_mentions
-                .get_or_insert_with(|| serde_json::json!({ "parse": ["users", "roles", "everyone"] }));
+            let am = extra.allowed_mentions.get_or_insert_with(
+                || serde_json::json!({ "parse": ["users", "roles", "everyone"] }),
+            );
             am["replied_user"] = serde_json::json!(false);
         }
         if p.on("split-large-messages") {
@@ -101,7 +109,11 @@ impl App {
                 "3" => "key3",
                 _ => "key",
             };
-            let volume = self.plugins.opt_f64("extended-typing-sounds", "volume").unwrap_or(60.0) as f32 / 100.0;
+            let volume = self
+                .plugins
+                .opt_f64("extended-typing-sounds", "volume")
+                .unwrap_or(60.0) as f32
+                / 100.0;
             crate::sound::play(name, volume);
         }
     }
@@ -142,7 +154,10 @@ mod tests {
 
     #[test]
     fn split_respects_limit_and_lines() {
-        let text = (0..300).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text = (0..300)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let parts = split_message(&text, 2000);
         assert!(parts.len() > 1);
         assert!(parts.iter().all(|p| message_text_len(p) <= 2000));
@@ -183,10 +198,8 @@ impl App {
         list.retain(|(u, _, t)| u != user && now.duration_since(*t).as_secs() < 10);
         list.push((user.to_owned(), name.clone(), now));
         self.repaint_after(std::time::Duration::from_secs(10));
-        self.plugins.hook(
-            "on_typing",
-            &[channel.into(), user.into(), name.into()],
-        );
+        self.plugins
+            .hook("on_typing", &[channel.into(), user.into(), name.into()]);
     }
 
     /// いま入力中の人（10 秒以内）
@@ -203,7 +216,12 @@ impl App {
 
     /// ユーザーの表示名（知っていれば）
     pub fn user_name(&self, user_id: &str) -> Option<String> {
-        if let Some(f) = self.friends.relationships.iter().find(|f| f.user.id == user_id) {
+        if let Some(f) = self
+            .friends
+            .relationships
+            .iter()
+            .find(|f| f.user.id == user_id)
+        {
             return Some(f.user.display().to_owned());
         }
         self.members
@@ -303,7 +321,8 @@ impl App {
                     None => (false, inner.strip_prefix(':')?),
                 };
                 let (name, id) = inner.split_once(':')?;
-                (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some((end, animated, name, id))
+                (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                    .then_some((end, animated, name, id))
             });
             match parsed {
                 Some((end, animated, name, id)) if animated || !current.contains(&id) => {
@@ -349,7 +368,11 @@ impl App {
                 .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
                 .collect();
             let name = match mode.as_str() {
-                "timestamp" => format!("{}{}", chrono::Utc::now().timestamp_millis() + i as i64, ext),
+                "timestamp" => format!(
+                    "{}{}",
+                    chrono::Utc::now().timestamp_millis() + i as i64,
+                    ext
+                ),
                 "suffix" => format!("{stem}_{}{ext}", &random[..random.len().min(6)]),
                 _ => format!("{random}{ext}"),
             };
@@ -387,9 +410,12 @@ impl App {
                     original: m.content.clone(),
                     generation: self.plugins.generation,
                 };
-                let _ = self
-                    .translator
-                    .request(target, m.content.clone(), language, self.waker.clone());
+                let _ = self.translator.request(
+                    target,
+                    m.content.clone(),
+                    language,
+                    self.waker.clone(),
+                );
             }
         }
     }
@@ -397,7 +423,10 @@ impl App {
     /// 同梱プラグインの状態を、毎回の poll で反映する
     pub fn sync_plugin_flags(&mut self) {
         self.startup_page();
-        ICON_ANIMATE.store(self.plugins.on("auto-animate"), std::sync::atomic::Ordering::Relaxed);
+        ICON_ANIMATE.store(
+            self.plugins.on("auto-animate"),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         ICON_HIRES.store(
             self.plugins.on("high-res-profile-images"),
             std::sync::atomic::Ordering::Relaxed,
@@ -441,7 +470,10 @@ impl App {
         let p = &self.plugins;
         if p.on("message-utilities") && count == 1 {
             if alt && shift {
-                if self.can_pin(m.guild_id.as_deref().or(self.sel_guild.as_deref()), &m.channel_id) {
+                if self.can_pin(
+                    m.guild_id.as_deref().or(self.sel_guild.as_deref()),
+                    &m.channel_id,
+                ) {
                     let pinned = m.pinned;
                     self.set_pinned(&m, !pinned);
                     return true;
@@ -508,7 +540,11 @@ impl App {
             limit: 1,
         });
         self.jump_top_request = Some((id, channel));
-        self.show_toast(tr!("最初のメッセージを探しています…", "Finding the first message…", "正在查找第一条消息…"));
+        self.show_toast(tr!(
+            "最初のメッセージを探しています…",
+            "Finding the first message…",
+            "正在查找第一条消息…"
+        ));
     }
 
     /// 同梱プラグインが出した REST の結果なら扱って true
@@ -516,13 +552,21 @@ impl App {
         if self.friend_code_result(id, result) {
             return true;
         }
-        if self.jump_top_request.as_ref().is_some_and(|(r, _)| *r == id) {
+        if self
+            .jump_top_request
+            .as_ref()
+            .is_some_and(|(r, _)| *r == id)
+        {
             let (_, channel) = self.jump_top_request.take().unwrap();
             let first = result
                 .as_ref()
                 .ok()
                 .and_then(|v| v.as_array())
-                .and_then(|a| a.iter().filter_map(|m| m["id"].as_str()).min_by_key(|s| s.parse::<u64>().unwrap_or(u64::MAX)))
+                .and_then(|a| {
+                    a.iter()
+                        .filter_map(|m| m["id"].as_str())
+                        .min_by_key(|s| s.parse::<u64>().unwrap_or(u64::MAX))
+                })
                 .map(str::to_owned);
             match first {
                 Some(mid) => {
@@ -571,13 +615,20 @@ impl App {
             if ids.len() < 3 {
                 continue;
             }
-            let (cid, mid) = (ids[1].to_string(), ids[2].trim_end_matches(|c: char| !c.is_ascii_digit()).to_string());
+            let (cid, mid) = (
+                ids[1].to_string(),
+                ids[2]
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .to_string(),
+            );
             let key = (cid.clone(), mid.clone());
             if let Some(found) = self.find_message(&cid, &mid) {
                 out.push((cid, mid, Some(found)));
             } else if let Some(p) = self.peeks.get(&key) {
                 out.push((cid, mid, p.as_deref().cloned()));
-            } else if !self.peek_requests.values().any(|k| *k == key) && self.peek_requests.len() < 20 {
+            } else if !self.peek_requests.values().any(|k| *k == key)
+                && self.peek_requests.len() < 20
+            {
                 let id = self.api(net::ApiCall::GetMessages {
                     channel_id: cid.clone(),
                     before: None,
@@ -632,7 +683,11 @@ impl App {
         let targets: Vec<String> = crate::app::bd_display::parse_map(&binds)
             .into_iter()
             .filter(|(key, _)| key.to_lowercase().replace(' ', "") == name)
-            .flat_map(|(_, ids)| ids.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>())
+            .flat_map(|(_, ids)| {
+                ids.split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect::<Vec<_>>()
+            })
             .filter(|id| !id.is_empty() && id != "toggle-your-stuff")
             .collect();
         if targets.is_empty() {
@@ -649,9 +704,17 @@ impl App {
                 .map(|p| p.manifest.name.clone())
                 .unwrap_or_else(|| id.clone());
             self.show_toast(&if on {
-                tr!("{name} をオンにしました", "Turned on {name}", "已开启 {name}",)
+                tr!(
+                    "{name} をオンにしました",
+                    "Turned on {name}",
+                    "已开启 {name}",
+                )
             } else {
-                tr!("{name} をオフにしました", "Turned off {name}", "已关闭 {name}",)
+                tr!(
+                    "{name} をオフにしました",
+                    "Turned off {name}",
+                    "已关闭 {name}",
+                )
             });
         }
         self.save_settings();

@@ -391,7 +391,10 @@ impl Root {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
-                        .child(gpui::base::SelectableText::new("info_dialog_text", body.clone())),
+                        .child(gpui::base::SelectableText::new(
+                            "info_dialog_text",
+                            body.clone(),
+                        )),
                 )
                 .child(
                     div()
@@ -404,7 +407,8 @@ impl Root {
                                 .cursor_pointer()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.app.clipboard_out = Some(body.clone());
-                                    this.app.show_toast(tr!("コピーしました", "Copied", "已复制"));
+                                    this.app
+                                        .show_toast(tr!("コピーしました", "Copied", "已复制"));
                                     cx.notify();
                                 })),
                         )
@@ -848,7 +852,11 @@ impl Root {
         if a.plugins.on("jump-to-top") {
             right = right.child(
                 toggle_icon("jump_top", IconName::ArrowUp, false)
-                    .tooltip(tip(tr!("最初のメッセージへ", "Jump to first message", "跳到第一条消息")))
+                    .tooltip(tip(tr!(
+                        "最初のメッセージへ",
+                        "Jump to first message",
+                        "跳到第一条消息"
+                    )))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.jump_to_top();
                         cx.notify();

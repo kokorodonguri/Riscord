@@ -132,7 +132,12 @@ fn load_custom(name: &str, rate: f32) -> Option<Vec<f32>> {
         hint.with_extension(ext);
     }
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .ok()?;
     let mut format = probed.format;
     let track = format.default_track()?;
@@ -166,7 +171,11 @@ fn load_custom(name: &str, rate: f32) -> Option<Vec<f32>> {
     }
     let step = src_rate / rate;
     let n = (mono.len() as f32 / step) as usize;
-    Some((0..n).map(|i| mono[((i as f32 * step) as usize).min(mono.len() - 1)]).collect())
+    Some(
+        (0..n)
+            .map(|i| mono[((i as f32 * step) as usize).min(mono.len() - 1)])
+            .collect(),
+    )
 }
 
 /// 文字列を読み上げる（Linux は spd-say、macOS は say、Windows は SAPI）
@@ -179,7 +188,10 @@ pub fn speak(text: &str) {
         return;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
-    let r = std::process::Command::new("spd-say").arg("--").arg(&text).spawn();
+    let r = std::process::Command::new("spd-say")
+        .arg("--")
+        .arg(&text)
+        .spawn();
     #[cfg(target_os = "macos")]
     let r = std::process::Command::new("say").arg(&text).spawn();
     #[cfg(windows)]

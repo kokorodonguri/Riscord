@@ -17,7 +17,14 @@ impl Root {
                 .iter()
                 .filter(|r| match tab {
                     0 => r.kind == 1,
-                    1 => r.kind == 1 && self.app.presences.get(&r.id).is_some_and(|p| p.status != "offline"),
+                    1 => {
+                        r.kind == 1
+                            && self
+                                .app
+                                .presences
+                                .get(&r.id)
+                                .is_some_and(|p| p.status != "offline")
+                    }
                     2 => r.kind == 3 || r.kind == 4,
                     3 => r.kind == 2,
                     _ => false,
@@ -175,7 +182,8 @@ impl Root {
             let q = self.app.dm_filter.trim().to_lowercase();
             if !q.is_empty() {
                 rows.retain(|r| {
-                    r.user.display().to_lowercase().contains(&q) || r.user.username.to_lowercase().contains(&q)
+                    r.user.display().to_lowercase().contains(&q)
+                        || r.user.username.to_lowercase().contains(&q)
                 });
             }
             if self.app.plugins.opt_bool("better-friend-list", "by_status") {
@@ -185,7 +193,9 @@ impl Root {
                     Some("dnd") => 2,
                     _ => 3,
                 };
-                rows.sort_by_key(|r| rank(self.app.presences.get(&r.id).map(|p| p.status.as_str())));
+                rows.sort_by_key(|r| {
+                    rank(self.app.presences.get(&r.id).map(|p| p.status.as_str()))
+                });
             }
         }
         if rows.is_empty() {

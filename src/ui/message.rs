@@ -617,7 +617,11 @@ impl Root {
         // ロールは行ごとに複製せず、色を決める間だけ借りる（ロールの多いサーバーで見えている行の数だけ Vec を作っていた）
         let name_col = self
             .app
-            .bd_name_color(&m.author.id, m.member.as_ref(), self.app.sel_guild.as_deref())
+            .bd_name_color(
+                &m.author.id,
+                m.member.as_ref(),
+                self.app.sel_guild.as_deref(),
+            )
             .or_else(|| {
                 m.member
                     .as_ref()
@@ -682,7 +686,13 @@ impl Root {
                     let Some(m) = this.app.find_message(&cid, &id) else {
                         return;
                     };
-                    if this.app.message_click(m, ev.click_count(), mods.shift, mods.control || mods.platform, mods.alt) {
+                    if this.app.message_click(
+                        m,
+                        ev.click_count(),
+                        mods.shift,
+                        mods.control || mods.platform,
+                        mods.alt,
+                    ) {
                         cx.notify();
                     }
                 })
@@ -1323,7 +1333,11 @@ impl Root {
         // 全部並べるときも、ツールバーが長くなりすぎないよう 6 個までにして残りは「…」へ
         const MAX_INLINE: usize = 6;
         let inline = if self.app.plugins.on("show-all-message-buttons") {
-            if actions.len() <= MAX_INLINE + 1 { actions.len() } else { MAX_INLINE }
+            if actions.len() <= MAX_INLINE + 1 {
+                actions.len()
+            } else {
+                MAX_INLINE
+            }
         } else if actions.len() <= 1 {
             actions.len()
         } else {
@@ -1355,13 +1369,21 @@ impl Root {
             let (cid, id) = (m.channel_id.clone(), m.id.clone());
             bar = bar.child(
                 btn("tb_more", IconName::Ellipsis, false)
-                    .tooltip(tip(tr!("その他（プラグイン）", "More (plugins)", "更多（插件）")))
+                    .tooltip(tip(tr!(
+                        "その他（プラグイン）",
+                        "More (plugins)",
+                        "更多（插件）"
+                    )))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         let Some(m) = this.app.find_message(&cid, &id) else {
                             return;
                         };
                         let p = ev.position();
-                        let p = if p.x == px(0.) && p.y == px(0.) { window.mouse_position() } else { p };
+                        let p = if p.x == px(0.) && p.y == px(0.) {
+                            window.mouse_position()
+                        } else {
+                            p
+                        };
                         this.menu = Some((PopMenu::Message, p));
                         this.menu_msg = Some(m);
                         cx.stop_propagation();
@@ -1577,7 +1599,11 @@ impl Root {
                                 .gap(z(8.0))
                                 .bg(WIDGET())
                                 .child(text(
-                                    if lang.is_empty() { "text".to_string() } else { lang },
+                                    if lang.is_empty() {
+                                        "text".to_string()
+                                    } else {
+                                        lang
+                                    },
                                     11.0,
                                     MUTED(),
                                 ))
@@ -1596,7 +1622,11 @@ impl Root {
                                         .child(tr!("コピー", "Copy", "复制"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.app.clipboard_out = Some(copy.clone());
-                                            this.app.show_toast(tr!("コピーしました", "Copied", "已复制"));
+                                            this.app.show_toast(tr!(
+                                                "コピーしました",
+                                                "Copied",
+                                                "已复制"
+                                            ));
                                             cx.notify();
                                         })),
                                 ),
@@ -1727,7 +1757,9 @@ impl Root {
                         while !rest.is_empty() && !(span.style.spoiler && !revealed) {
                             let found = mentions
                                 .iter()
-                                .filter_map(|(name, uid)| rest.find(name.as_str()).map(|pos| (pos, name, uid)))
+                                .filter_map(|(name, uid)| {
+                                    rest.find(name.as_str()).map(|pos| (pos, name, uid))
+                                })
                                 .min_by_key(|(pos, name, _)| (*pos, std::cmp::Reverse(name.len())));
                             let Some((pos, name, uid)) = found else { break };
                             cur.span(
@@ -1747,7 +1779,8 @@ impl Root {
                                 }),
                             );
                             if clickable_mentions {
-                                cur.links.push((start..cur.text.len(), format!("{MENTION_LINK}{uid}")));
+                                cur.links
+                                    .push((start..cur.text.len(), format!("{MENTION_LINK}{uid}")));
                             }
                             rest = &rest[pos + name.len()..];
                         }
@@ -1928,15 +1961,22 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap(z(2.0))
-                        .child(text(
-                            self.app.shown_name(&p.author.id, author_name(p)),
-                            13.0,
-                            WHITE(),
-                        ).font_weight(FontWeight::MEDIUM))
+                        .child(
+                            text(
+                                self.app.shown_name(&p.author.id, author_name(p)),
+                                13.0,
+                                WHITE(),
+                            )
+                            .font_weight(FontWeight::MEDIUM),
+                        )
                         .child(text(crate::notify::excerpt(&p.content, 300), 13.0, TEXT()))
                         .into_any_element(),
                     None => text(
-                        tr!("リンク先のメッセージを読み込み中か、見られません", "Loading the linked message, or it isn't available", "正在加载链接的消息，或无法查看"),
+                        tr!(
+                            "リンク先のメッセージを読み込み中か、見られません",
+                            "Loading the linked message, or it isn't available",
+                            "正在加载链接的消息，或无法查看"
+                        ),
                         12.0,
                         MUTED(),
                     )
@@ -1955,7 +1995,8 @@ impl Root {
                     .cursor_pointer()
                     .child(body)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.app.jump_to_message(guild.clone(), cid.clone(), mid.clone());
+                        this.app
+                            .jump_to_message(guild.clone(), cid.clone(), mid.clone());
                         cx.stop_propagation();
                         cx.notify();
                     }))
@@ -1981,7 +2022,11 @@ impl Root {
             .text_color(MUTED())
             .hover(|s| s.text_color(TEXT()))
             .child(if closed {
-                tr!("▶ 埋め込み・添付を表示（{count}）", "▶ Show embeds and attachments ({count})", "▶ 显示嵌入和附件（{count}）",)
+                tr!(
+                    "▶ 埋め込み・添付を表示（{count}）",
+                    "▶ Show embeds and attachments ({count})",
+                    "▶ 显示嵌入和附件（{count}）",
+                )
             } else {
                 tr!("▼ 畳む", "▼ Collapse", "▼ 折叠").to_string()
             })
@@ -1999,7 +2044,11 @@ impl Root {
     }
 
     fn message_media(&mut self, m: &Message, cx: &mut Context<Self>) -> Div {
-        let max = if self.app.opt_large_images() { (640.0, 480.0) } else { (420.0, 320.0) };
+        let max = if self.app.opt_large_images() {
+            (640.0, 480.0)
+        } else {
+            (420.0, 320.0)
+        };
         let mut col = div().flex().flex_col().gap(z(4.0)).items_start();
         if let Some(poll) = &m.poll {
             let mut card = div()
@@ -2092,7 +2141,11 @@ impl Root {
         for (i, a) in m.attachments.iter().enumerate() {
             if a.is_image() {
                 let size = fit_size(a.width, a.height, max);
-                let src = if self.app.plugins.on("uncompressed-images") { a.url.clone() } else { resized(a.proxy_url.as_deref(), &a.url, size.unwrap_or(max)) };
+                let src = if self.app.plugins.on("uncompressed-images") {
+                    a.url.clone()
+                } else {
+                    resized(a.proxy_url.as_deref(), &a.url, size.unwrap_or(max))
+                };
                 self.note_image(&src);
                 self.note_image(&a.url);
                 col = col.child(image_box(
@@ -2316,17 +2369,20 @@ impl Root {
                 .id(SharedString::from(format!("st{}", st.id)))
                 .size(z(BOX))
                 .tooltip(tip(st.name.clone()))
-                .when(self.app.plugins.on("sticker-emoji-preview") && st.format_type != 3, |d| {
-                    let big = format!(
-                        "https://media.discordapp.net/stickers/{}.{}?size=512",
-                        st.id,
-                        if st.format_type == 4 { "gif" } else { "png" }
-                    );
-                    d.cursor_pointer().on_click(move |_, window, _| {
-                        *PENDING_PREVIEW.lock().unwrap() = Some(big.clone());
-                        window.refresh();
-                    })
-                })
+                .when(
+                    self.app.plugins.on("sticker-emoji-preview") && st.format_type != 3,
+                    |d| {
+                        let big = format!(
+                            "https://media.discordapp.net/stickers/{}.{}?size=512",
+                            st.id,
+                            if st.format_type == 4 { "gif" } else { "png" }
+                        );
+                        d.cursor_pointer().on_click(move |_, window, _| {
+                            *PENDING_PREVIEW.lock().unwrap() = Some(big.clone());
+                            window.refresh();
+                        })
+                    },
+                )
                 .child(
                     img(i.clone())
                         .id("img")

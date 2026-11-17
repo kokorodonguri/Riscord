@@ -1076,11 +1076,13 @@ async fn run(
                         if let Some(am) = &extra.allowed_mentions {
                             body["allowed_mentions"] = am.clone();
                         }
-                        if let Err(e) = api.request(reqwest::Method::POST, &path, Some(&body)).await {
+                        if let Err(e) = api.request(reqwest::Method::POST, &path, Some(&body)).await
+                        {
                             eprintln!("分割送信失敗: {e:#}");
                         }
                     }
-                    let mut body = json!({ "content": content, "nonce": nonce(), "tts": extra.tts });
+                    let mut body =
+                        json!({ "content": content, "nonce": nonce(), "tts": extra.tts });
                     if extra.flags != 0 {
                         body["flags"] = json!(extra.flags);
                     }
@@ -1129,8 +1131,12 @@ async fn run(
                 } => {
                     let path = format!("/channels/{channel_id}/messages/{id}");
                     let response = if files.is_empty() {
-                        api.request(reqwest::Method::PATCH, &path, Some(&json!({ "content": content })))
-                            .await
+                        api.request(
+                            reqwest::Method::PATCH,
+                            &path,
+                            Some(&json!({ "content": content })),
+                        )
+                        .await
                     } else {
                         // 添付は足すだけ（attachments を書かなければ今の添付は残る）
                         let payload = json!({ "content": content }).to_string();
@@ -1903,7 +1909,10 @@ fn platforms(cs: &Value) -> u8 {
 
 /// Spotify で聴いている曲（曲名, アーティスト）
 fn spotify(acts: &Value) -> Option<(String, String)> {
-    let a = acts.as_array()?.iter().find(|a| a["type"] == 2 && a["name"] == "Spotify")?;
+    let a = acts
+        .as_array()?
+        .iter()
+        .find(|a| a["type"] == 2 && a["name"] == "Spotify")?;
     Some((
         a["details"].as_str()?.to_owned(),
         a["state"].as_str().unwrap_or("").to_owned(),

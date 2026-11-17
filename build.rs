@@ -34,7 +34,12 @@ fn bundled_plugins() {
     let root = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("plugins");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut dirs: Vec<_> = std::fs::read_dir(&root)
-        .map(|it| it.flatten().map(|e| e.path()).filter(|p| p.join("plugin.toml").is_file()).collect())
+        .map(|it| {
+            it.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.join("plugin.toml").is_file())
+                .collect()
+        })
         .unwrap_or_default();
     dirs.sort();
     let mut out = String::from("pub static BUNDLED: &[(&str, &str)] = &[\n");

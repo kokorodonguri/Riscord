@@ -1,7 +1,7 @@
 //! Mobile transport. Owns credentials, reconnects the gateway, and reuses desktop REST routes.
-use crate::{inflate::Inflater, login::LoginEvent, rest::ApiCall};
+use crate::{login::LoginEvent, rest::ApiCall};
 use anyhow::{bail, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -50,26 +50,7 @@ impl std::fmt::Display for AuthExpired {
 }
 impl std::error::Error for AuthExpired {}
 
-/// Gateway が close フレームで切った（コード付き）
-#[derive(Debug)]
-struct GatewayClosed(u16);
-impl std::fmt::Display for GatewayClosed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "gateway close {}", self.0)
-    }
-}
-impl std::error::Error for GatewayClosed {}
-/// 再接続しても直らない close コード（認証失敗・intents 不正など）
-fn fatal_close(code: u16) -> bool {
-    code == 4004 || (4010..=4014).contains(&code)
-}
-
-#[derive(Default)]
-struct GatewaySession {
-    id: String,
-    seq: Value,
-    resume_url: Option<String>,
-}
+use crate::gateway::{close_action, CloseAction, GatewayClosed, GatewaySession};
 
 pub struct Client {
     token: Mutex<String>,
@@ -349,7 +330,10 @@ impl Client {
                 .await;
             if let Err(e) = &result {
                 if let Some(GatewayClosed(code)) = e.downcast_ref::<GatewayClosed>() {
-                    if fatal_close(*code) {
+                    if close_action(*code) == CloseAction::Reidentify {
+                        session = GatewaySession::default();
+                    }
+                    if close_action(*code) == CloseAction::Fatal {
                         if *code == 4004 {
                             self.push(json!({"t":"AUTH_EXPIRED","d":{}}));
                         }
@@ -373,78 +357,54 @@ impl Client {
         let base = session
             .resume_url
             .as_deref()
-            .filter(|_| !session.id.is_empty())
+            .filter(|_| session.resumable().is_some())
             .unwrap_or(GATEWAY)
             .trim_end_matches('/')
             .to_owned();
-        let (mut ws, _) =
-            tokio_tungstenite::connect_async(format!("{base}{GATEWAY_QUERY}")).await?;
-        let mut inflater = Inflater::new();
-        let mut hb = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(40),
-            Duration::from_secs(40),
-        );
-        let mut ack = true;
-        // READY / RESUMED までは送らずに溜めておく（認証前に送ると 4003 で切られる）
-        let mut ready = false;
-        loop {
-            tokio::select! {
-                command = commands.recv(), if ready => {
-                    let Some(command)=command else { bail!("終了しました") };
-                    ws.send(Message::Text(command.to_string().into())).await?;
-                },
-                _ = hb.tick() => {
-                    if !ack { bail!("heartbeat timeout"); }
-                    ws.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await?;
-                    ack = false;
-                },
-                frame = ws.next() => {
-                    let Some(frame) = frame else { bail!("切断されました") };
-                    let v: Value = match frame? {
-                        Message::Close(close) => return Err(GatewayClosed(close.map(|c| u16::from(c.code)).unwrap_or(1000)).into()),
-                        Message::Text(text) => serde_json::from_str(text.as_str())?,
-                        Message::Binary(data) => match inflater.push(&data)? { Some(text) => serde_json::from_str(text)?, None => continue },
-                        _ => continue,
-                    };
-                    if !v["s"].is_null() { session.seq = v["s"].clone(); }
-                    match v["op"].as_u64() {
-                        Some(10) => {
-                            let ms = v["d"]["heartbeat_interval"].as_u64().unwrap_or(41250).max(1000);
-                            hb = tokio::time::interval_at(tokio::time::Instant::now()+Duration::from_millis(ms), Duration::from_millis(ms));
-                            let token = self.token.lock().unwrap().clone();
-                            let status = self.status.lock().unwrap().clone();
-                            let identify = if session.id.is_empty() {
-                                json!({"op":2,"d":{"token":token,"properties":{"os":"Android","browser":"Discord Client","device":""},"compress":false,"presence":{"status":status,"activities":[],"since":0,"afk":false}}})
-                            } else { json!({"op":6,"d":{"token":token,"session_id":session.id,"seq":session.seq}}) };
-                            ws.send(Message::Text(identify.to_string().into())).await?;
-                        },
-                        Some(11) => ack = true,
-                        Some(1) => { ws.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await?; },
-                        Some(7) => bail!("reconnect requested"),
-                        Some(9) => { if v["d"] != true { *session = GatewaySession::default(); } bail!("invalid session"); },
-                        Some(0) => {
-                            let t = v["t"].as_str().unwrap_or_default();
-                            if t == "READY" {
-                                session.id = v["d"]["session_id"].as_str().unwrap_or_default().into();
-                                session.resume_url = v["d"]["resume_gateway_url"].as_str().map(str::to_owned);
-                            }
-                            if t == "READY" || t == "RESUMED" {
-                                *delay = 1;
-                                ready = true;
-                                self.push(json!({"t":"CONNECTION","d":{"status":"接続済み"}}));
-                            }
-                            #[cfg(target_os = "android")]
-                            match t {
-                                "VOICE_STATE_UPDATE"=>{let _=self.voice(crate::mobile_voice::Command::State(v["d"].clone()));},
-                                "VOICE_SERVER_UPDATE"=>{let _=self.voice(crate::mobile_voice::Command::Server(v["d"].clone()));},
-                                _=>{}
-                            }
-                            if let Some(event) = slim_event(v) { self.push(event); }
-                        },
-                        _ => {},
-                    }
+        let (mut ws, inflater, period) =
+            crate::gateway::connect_and_hello(&format!("{base}{GATEWAY_QUERY}")).await?;
+        let token = self.token.lock().unwrap().clone();
+        let status = self.status.lock().unwrap().clone();
+        let identify = if session.resumable().is_none() {
+            json!({"op":2,"d":{"token":token,"properties":{"os":"Android","browser":"Discord Client","device":""},"compress":false,"presence":{"status":status,"activities":[],"since":0,"afk":false}}})
+        } else {
+            json!({"op":6,"d":{"token":token,"session_id":session.id,"seq":session.seq}})
+        };
+        ws.send(Message::Text(identify.to_string().into())).await?;
+        let end =
+            crate::gateway::run_session(ws, inflater, period, session, commands, true, |frame| {
+                let t = frame.t.as_str().unwrap_or_default();
+                if t == "READY" || t == "RESUMED" {
+                    *delay = 1;
+                    self.push(json!({"t":"CONNECTION","d":{"status":"接続済み"}}));
                 }
+                let data: Value = frame
+                    .d
+                    .as_deref()
+                    .and_then(|d| serde_json::from_str(d.get()).ok())
+                    .unwrap_or(Value::Null);
+                #[cfg(target_os = "android")]
+                match t {
+                    "VOICE_STATE_UPDATE" => {
+                        let _ = self.voice(crate::mobile_voice::Command::State(data.clone()));
+                    }
+                    "VOICE_SERVER_UPDATE" => {
+                        let _ = self.voice(crate::mobile_voice::Command::Server(data.clone()));
+                    }
+                    _ => {}
+                }
+                if let Some(event) = slim_event(json!({"t": t, "d": data})) {
+                    self.push(event);
+                }
+            })
+            .await?;
+        match end {
+            crate::gateway::SessionEnd::Resume => bail!("Gateway reconnect requested"),
+            crate::gateway::SessionEnd::Reidentify => {
+                *session = GatewaySession::default();
+                bail!("Gateway session invalid");
             }
+            crate::gateway::SessionEnd::Closed(code) => Err(GatewayClosed(code).into()),
         }
     }
 }
@@ -593,7 +553,10 @@ mod tests {
             slim_event(json!({"op":0,"s":3,"t":"MESSAGE_CREATE","d":{"id":"5"}})),
             Some(json!({"t":"MESSAGE_CREATE","d":{"id":"5"}}))
         );
-        assert!(fatal_close(4004) && fatal_close(4014) && !fatal_close(4000) && !fatal_close(1000));
+        assert_eq!(close_action(4004), CloseAction::Fatal);
+        assert_eq!(close_action(4014), CloseAction::Fatal);
+        assert_eq!(close_action(4000), CloseAction::Resume);
+        assert_eq!(close_action(1000), CloseAction::Resume);
     }
     #[tokio::test]
     async fn upload_rejects_files_over_the_limit_before_sending() {

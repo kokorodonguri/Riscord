@@ -186,7 +186,11 @@ impl App {
             if let Some(list) = self.channels.get_mut(&gid) {
                 list.retain(|c| c.id != id);
             }
+            self.read_state.unread.remove(id);
+            self.read_state.mention_counts.remove(id);
+            self.read_state.hidden_read_marks.remove(id);
             if self.sel_channel.as_deref() == Some(id) && self.sel_guild.as_deref() == Some(&gid) {
+                self.leave_channel();
                 self.sel_channel = None;
             }
             return;
@@ -204,6 +208,7 @@ impl App {
                     if self.sel_guild.as_deref() == Some(&gid)
                         && self.sel_channel.as_deref() == Some(&c.id)
                     {
+                        self.leave_channel();
                         self.sel_channel = None;
                     }
                     return;

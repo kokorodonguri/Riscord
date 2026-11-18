@@ -9,6 +9,31 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Check nesting iteratively before serde recursively walks plugin-provided tables.
+fn json_value(lua: &Lua, value: Value) -> mlua::Result<serde_json::Value> {
+    let mut pending = vec![(value.clone(), 0usize)];
+    let mut nodes = 0usize;
+    while let Some((value, depth)) = pending.pop() {
+        nodes += 1;
+        if depth > 32 || nodes > 10_000 {
+            return Err(mlua::Error::runtime(
+                "plugin value exceeds nesting or size limit",
+            ));
+        }
+        if let Value::Table(table) = value {
+            for entry in table.pairs::<Value, Value>() {
+                let (key, value) = entry?;
+                pending.push((key, depth + 1));
+                pending.push((value, depth + 1));
+                if pending.len() + nodes > 10_000 {
+                    return Err(mlua::Error::runtime("plugin value exceeds size limit"));
+                }
+            }
+        }
+    }
+    lua.from_value(value)
+}
+
 const API_VERSION: u32 = 1;
 const MAX_SCRIPT: u64 = 1024 * 1024;
 /// 画面に出すプラグインの文字列の上限（文字数）。長くても画面を押しつぶさないように切る
@@ -327,7 +352,7 @@ impl Runtime {
         api.set(
             "save",
             lua.create_function(move |lua, value: Value| {
-                let v: serde_json::Value = lua.from_value(value)?;
+                let v: serde_json::Value = json_value(lua, value)?;
                 let bytes = serde_json::to_vec(&v).map_err(mlua::Error::external)?;
                 if bytes.len() > MAX_SCRIPT as usize {
                     return Err(mlua::Error::runtime(tr!(
@@ -773,7 +798,7 @@ impl Plugins {
                     .find(|p| p.manifest.id == id)?
                     .runtime
                     .as_ref()?;
-                r.lua.from_value::<serde_json::Value>(v).ok()
+                json_value(&r.lua, v).ok()
             })
             .unwrap_or(serde_json::Value::Null);
         self.options_cache
@@ -871,7 +896,7 @@ impl Plugins {
                 .map(|a| r.lua.to_value(a))
                 .collect::<mlua::Result<Vec<_>>>()?;
             let v = r.call(name, mlua::MultiValue::from_vec(values))?;
-            r.lua.from_value(v)
+            json_value(&r.lua, v)
         })();
         match result {
             Ok(v) => Some(v),
@@ -1008,7 +1033,7 @@ impl Plugins {
                 }
                 let options = || -> mlua::Result<serde_json::Value> {
                     let v = r.call("options", ())?;
-                    Ok(r.lua.from_value(v).unwrap_or(serde_json::Value::Null))
+                    Ok(json_value(&r.lua, v).unwrap_or(serde_json::Value::Null))
                 };
                 let before = options()?;
                 r.message("on_message", m)?;
@@ -1275,6 +1300,41 @@ impl Plugin {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lua_string_native_work_is_bounded() {
+        let lua = mlua::Lua::new();
+        assert_eq!(
+            lua.load("return string.rep('', 9223372036854775807)")
+                .eval::<String>()
+                .unwrap(),
+            ""
+        );
+        assert!(lua
+            .load("return string.rep('x', 1000001)")
+            .eval::<String>()
+            .is_err());
+        assert!(lua
+            .load("return string.match(string.rep('a', 100), 'a*a*a*a*a*a*a*a*b')")
+            .eval::<mlua::Value>()
+            .is_err());
+    }
+
+    #[test]
+    fn rejects_deep_or_recursive_plugin_values() {
+        let lua = mlua::Lua::new();
+        let root = lua.create_table().unwrap();
+        let mut current = root.clone();
+        for _ in 0..40 {
+            let next = lua.create_table().unwrap();
+            current.set("next", next.clone()).unwrap();
+            current = next;
+        }
+        assert!(super::json_value(&lua, mlua::Value::Table(root)).is_err());
+        let cycle = lua.create_table().unwrap();
+        cycle.set("self", cycle.clone()).unwrap();
+        assert!(super::json_value(&lua, mlua::Value::Table(cycle)).is_err());
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);

@@ -10,8 +10,11 @@ mod commits;
 mod demo;
 mod download;
 mod emoji;
+mod gateway;
 mod golive;
 mod images;
+#[path = "net/inflate.rs"]
+mod inflate;
 mod login;
 mod markdown;
 mod message_log;

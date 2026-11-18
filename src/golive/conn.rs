@@ -382,6 +382,7 @@ pub async fn run(
     let mut packetizer = Packetizer::new(video_ssrc);
     let mut rtcp_out = Packetizer::new(ssrc);
     let mut depack = rtp::Depacketizer::default();
+    let mut reorder = rtp::Reorder::default();
     let mut streamer_video: Option<u32> = None;
     let mut got_key = false;
     let mut last_pli = Instant::now() - Duration::from_secs(10);
@@ -431,19 +432,34 @@ pub async fn run(
         handle_json(&mut ws, &mut dave, &v, &mut role, &mut streamer_video).await?;
     }
 
+    let mut reorder_tick = interval(Duration::from_millis(10));
+    reorder_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut heartbeat = interval(hb_every);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut tick = interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut keepalive = Instant::now();
+    let mut heartbeat_pending = false;
     let started = Instant::now();
 
     loop {
         tokio::select! {
             _ = &mut stop => break,
             _ = heartbeat.tick() => {
+                if heartbeat_pending {
+                    bail!("Stream server heartbeat acknowledgement timed out");
+                }
+                heartbeat_pending = true;
                 let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                 send_json(&mut ws, 3, json!({ "t": t, "seq_ack": seq_ack })).await?;
+            }
+            _ = reorder_tick.tick(), if matches!(&role, Role::Watch { .. }) => {
+                if let Role::Watch { streamer, decoder } = &role {
+                    let packets = reorder.flush(std::time::Instant::now());
+                    if consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats, &mut live) {
+                        report(Report::Live);
+                    }
+                }
             }
             _ = tick.tick() => {
                 if keepalive.elapsed() > Duration::from_secs(5) {
@@ -491,6 +507,9 @@ pub async fn run(
                         if let Some(s) = v["seq"].as_i64() {
                             seq_ack = s;
                         }
+                        if v["op"].as_u64() == Some(6) {
+                            heartbeat_pending = false;
+                        }
                         handle_json(&mut ws, &mut dave, &v, &mut role, &mut streamer_video).await?;
                     }
                     WsMsg::Binary(b) => handle_binary(&mut ws, &mut dave, &b, &mut seq_ack).await?,
@@ -529,38 +548,9 @@ pub async fn run(
                             stats.transport_fail += 1;
                             continue;
                         };
-                        match depack.push(r.seq, r.timestamp, r.marker, &payload) {
-                            Push::Frame(au) => {
-                                stats.frames += 1;
-                                let data = if dave.version != 0 {
-                                    match dave.session.as_mut().map(|s| s.decrypt(*streamer, MediaType::VIDEO, &au.data)) {
-                                        Some(Ok(d)) => d,
-                                        _ => {
-                                            stats.dave_fail += 1;
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    au.data
-                                };
-                                if !got_key {
-                                    if !au.keyframe {
-                                        stats.no_key += 1;
-                                        continue;
-                                    }
-                                    got_key = true;
-                                }
-                                decoder.push(data);
-                                if !live {
-                                    live = true;
-                                    report(Report::Live);
-                                }
-                            }
-                            Push::Lost => {
-                                // 欠けたら次のキーフレームまで待つ（崩れた画を出さない）
-                                got_key = false;
-                            }
-                            Push::None => {}
+                        let packets = reorder.push(rtp::VideoPacket { seq: r.seq, timestamp: r.timestamp, marker: r.marker, payload }, std::time::Instant::now());
+                        if consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats, &mut live) {
+                            report(Report::Live);
                         }
                     }
                 }
@@ -603,6 +593,56 @@ pub(super) fn debug(args: std::fmt::Arguments<'_>) {
     if *ON.get_or_init(|| std::env::var_os("RISCORD_DEBUG_STREAM").is_some()) {
         eprintln!("[golive] {args}");
     }
+}
+
+fn consume_watch_packets(
+    packets: Vec<rtp::VideoPacket>,
+    depack: &mut rtp::Depacketizer,
+    dave: &mut Dave,
+    streamer: u64,
+    decoder: &Decoder,
+    got_key: &mut bool,
+    stats: &mut WatchStats,
+    live: &mut bool,
+) -> bool {
+    let mut became_live = false;
+    for packet in packets {
+        match depack.push(packet.seq, packet.timestamp, packet.marker, &packet.payload) {
+            Push::Frame(au) => {
+                stats.frames += 1;
+                let data = if dave.version != 0 {
+                    match dave
+                        .session
+                        .as_mut()
+                        .map(|s| s.decrypt(streamer, MediaType::VIDEO, &au.data))
+                    {
+                        Some(Ok(data)) => data,
+                        _ => {
+                            stats.dave_fail += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    au.data
+                };
+                if !*got_key {
+                    if !au.keyframe {
+                        stats.no_key += 1;
+                        continue;
+                    }
+                    *got_key = true;
+                }
+                decoder.push(data);
+                if !*live {
+                    *live = true;
+                    became_live = true;
+                }
+            }
+            Push::Lost => *got_key = false,
+            Push::None => {}
+        }
+    }
+    became_live
 }
 
 /// 視聴で受け取ったものの数（映らないときに、どこで止まっているかを知らせる）

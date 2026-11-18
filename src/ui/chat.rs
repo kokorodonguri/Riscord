@@ -1303,7 +1303,7 @@ impl Root {
             .overflow_x_scroll();
         for (i, cid) in a.tabs.iter().enumerate() {
             let sel = a.sel_channel.as_deref() == Some(cid.as_str());
-            let unread = a.unread.contains_key(cid);
+            let unread = a.read_state.unread.contains_key(cid);
             let pinned = bookmarks.contains(cid);
             let open = cid.clone();
             let close = cid.clone();
@@ -1695,6 +1695,21 @@ impl Root {
                     ),
                     20.0,
                     WHITE(),
+                ))
+            } else if self
+                .app
+                .messages
+                .get(cid)
+                .is_some_and(|messages| messages.len() >= MAX_HISTORY)
+            {
+                d.child(text(
+                    tr!(
+                        "表示できる履歴の上限です",
+                        "History display limit reached",
+                        "已达到历史记录显示上限"
+                    ),
+                    16.0,
+                    MUTED(),
                 ))
             } else {
                 d.justify_center()

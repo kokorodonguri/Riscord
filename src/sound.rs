@@ -193,16 +193,19 @@ pub fn speak(text: &str) {
         .arg(&text)
         .spawn();
     #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("say").arg(&text).spawn();
+    let r = std::process::Command::new("say")
+        .arg("--")
+        .arg(&text)
+        .spawn();
     #[cfg(windows)]
     let r = {
-        let escaped = text.replace('\'', "''");
         std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
-                &format!("Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{escaped}')"),
+                "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak($env:RISCORD_SPEECH_TEXT)",
             ])
+            .env("RISCORD_SPEECH_TEXT", &text)
             .spawn()
     };
     if r.is_err() {

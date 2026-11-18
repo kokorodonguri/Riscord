@@ -3,7 +3,7 @@
 //! 差し替えたら OS の通知と、画面上部の帯（banner）で知らせる。
 //!
 //! - releases/latest はプレリリースと下書きを返さないので、正式リリースだけが対象になる
-//! - 差し替えの前に、サイズと SHA-256（GitHub が asset に付ける digest）を確かめる
+//! - 差し替えの前に、埋め込まれた公開鍵で署名を確認する
 //! - debug ビルドと、target/ の下から動かしている開発中のバイナリは触らない
 //! - 環境変数 RISCORD_NO_UPDATE を設定すると確認もしない
 
@@ -234,6 +234,48 @@ struct Asset {
     digest: Option<String>,
 }
 
+const UPDATE_KEY: Option<&str> = option_env!("RISCORD_UPDATE_PUBLIC_KEY");
+const MAX_UPDATE_BYTES: u64 = 512 * 1024 * 1024;
+
+fn signed_update_message(version: &str, name: &str, digest: &str) -> String {
+    format!("riscord-update-v1\n{version}\n{name}\n{digest}\n")
+}
+
+fn verify_update(
+    key: &str,
+    version: &str,
+    name: &str,
+    digest: &str,
+    signature: &[u8],
+) -> Result<()> {
+    if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("Invalid update verification key");
+    }
+    let public_key = (0..32)
+        .map(|i| u8::from_str_radix(&key[i * 2..i * 2 + 2], 16))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key)
+        .verify(
+            signed_update_message(version, name, digest).as_bytes(),
+            signature,
+        )
+        .map_err(|_| anyhow!("Update signature verification failed"))
+}
+
+async fn bounded_body(mut response: reqwest::Response, limit: u64) -> Result<Vec<u8>> {
+    if response.content_length().is_some_and(|size| size > limit) {
+        bail!("Download exceeds size limit");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if (body.len() as u64).saturating_add(chunk.len() as u64) > limit {
+            bail!("Download exceeds size limit");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// 新しい版に差し替えたらその版を返す。最新なら None
 async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>> {
     let http = reqwest::Client::builder()
@@ -284,15 +326,39 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
         })?
         .to_ascii_lowercase();
 
+    let key = UPDATE_KEY.ok_or_else(|| anyhow!("Update verification key is not configured"))?;
+    if asset.size == 0 || asset.size > MAX_UPDATE_BYTES {
+        bail!("Update asset exceeds size limit");
+    }
+    let signature_name = format!("{name}.sig");
+    let signature_asset = rel
+        .assets
+        .iter()
+        .find(|a| a.name == signature_name)
+        .ok_or_else(|| anyhow!("Update signature is missing"))?;
+    if signature_asset.size != 64 {
+        bail!("Invalid update signature size");
+    }
+    let signature_response = http
+        .get(&signature_asset.browser_download_url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await?
+        .error_for_status()?;
+    let signature = bounded_body(signature_response, 64).await?;
+    if signature.len() != 64 {
+        bail!("Invalid update signature size");
+    }
+    verify_update(key, &version, name, &want, &signature)?;
+
     set(Status::Downloading(version.clone()), waker);
-    let bytes = http
+    let response = http
         .get(&asset.browser_download_url)
         .timeout(Duration::from_secs(600))
         .send()
         .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+        .error_for_status()?;
+    let bytes = bounded_body(response, asset.size).await?;
     if bytes.len() as u64 != asset.size {
         bail!(
             "{}",
@@ -394,6 +460,54 @@ fn notify_ready(version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signature_binds_version_name_and_digest() {
+        use ring::signature::KeyPair;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let key: String = pair
+            .public_key()
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let message = signed_update_message("v1.2.3", "riscord-linux-x64", "abc");
+        let signature = pair.sign(message.as_bytes());
+        assert!(verify_update(
+            &key,
+            "v1.2.3",
+            "riscord-linux-x64",
+            "abc",
+            signature.as_ref()
+        )
+        .is_ok());
+        assert!(verify_update(
+            &key,
+            "v1.2.4",
+            "riscord-linux-x64",
+            "abc",
+            signature.as_ref()
+        )
+        .is_err());
+        assert!(verify_update(
+            &key,
+            "v1.2.3",
+            "riscord-linux-arm64",
+            "abc",
+            signature.as_ref()
+        )
+        .is_err());
+        assert!(verify_update(
+            &key,
+            "v1.2.3",
+            "riscord-linux-x64",
+            "def",
+            signature.as_ref()
+        )
+        .is_err());
+    }
 
     #[test]
     fn banner_shows_after_replacing_until_closed() {

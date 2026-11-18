@@ -43,6 +43,7 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 # QR コードでのログイン（src/login.rs）。Remote Auth の鍵は RSA-OAEP(SHA-256)、QR は自前で描くので画像出力は使わない
 rsa = { version = "0.9", features = ["sha2"] }
 sha2 = "0.10"
+ring = "0.17"
 base64 = "0.22"
 rand = "0.8"
 qrcode = { version = "0.14", default-features = false }
@@ -70,6 +71,8 @@ strip = true
 # gpui の wgpu 描画を、draw の first_instance に頼らない形に直したもの（Adreno などで文字や画像が消えるため）。
 # 中身は gpui-pre-wgpu 0.3.11 と同じで、src/wgpu_renderer.rs の record_frame だけ変えてある
 [patch.crates-io]
+# Lua 5.4 string operations have bounded work for plugin sandboxing.
+lua-src = { path = "vendor/lua-src" }
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 # Rust 1.93 より前でもビルドできるよう、slice::as_array を使わない版。
 gpui-pre-util = { path = "vendor/gpui-pre-util" }

@@ -960,7 +960,7 @@ impl Root {
                                                     dm_row(
                                                         c,
                                                         sel,
-                                                        a.unread.contains_key(&c.id),
+                                                        a.read_state.unread.contains_key(&c.id),
                                                         pres,
                                                     )
                                                     .on_click({
@@ -1034,6 +1034,8 @@ impl Root {
                 None => list = list.child(div().flex().justify_center().child(spinner(20.0))),
                 Some(chs) => {
                     let cur_voice = a.voice_channel().map(|(_, c, _)| c.clone());
+                    // Build the thread index once per sidebar, not once per channel row.
+                    let threads_by_parent = a.sidebar_threads(gid);
                     // chs は受信時に表示順へ並べ済み。親ごとに1回の走査で振り分ける
                     let mut top: Vec<&Channel> = Vec::new();
                     let mut by_parent: HashMap<&str, Vec<&Channel>> = HashMap::new();
@@ -1070,7 +1072,14 @@ impl Root {
                     }
                     for c in top {
                         if !a.hidden_as_muted(gid, c, cur_voice.as_deref()) {
-                            self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                            self.channel_rows(
+                                c,
+                                gid,
+                                cur_voice.as_deref(),
+                                threads_by_parent.get(c.id.as_str()).map(Vec::as_slice),
+                                &mut rows,
+                                cx,
+                            );
                         }
                     }
                     for cat in cats {
@@ -1165,7 +1174,14 @@ impl Root {
                                     ))
                                     && !a.hidden_as_muted(gid, c, cur_voice.as_deref())
                                 {
-                                    self.channel_rows(c, gid, cur_voice.as_deref(), &mut rows, cx);
+                                    self.channel_rows(
+                                        c,
+                                        gid,
+                                        cur_voice.as_deref(),
+                                        threads_by_parent.get(c.id.as_str()).map(Vec::as_slice),
+                                        &mut rows,
+                                        cx,
+                                    );
                                 }
                             }
                         }
@@ -1196,6 +1212,7 @@ impl Root {
         c: &Channel,
         gid: &str,
         cur_voice: Option<&str>,
+        threads: Option<&[&Channel]>,
         rows: &mut Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) {
@@ -1261,7 +1278,7 @@ impl Root {
             return;
         }
         let sel = a.sel_channel.as_deref() == Some(&c.id);
-        let unread = a.unread.contains_key(&c.id);
+        let unread = a.read_state.unread.contains_key(&c.id);
         let mark = if c.is_forum() {
             div()
                 .w(z(30.0))
@@ -1345,10 +1362,10 @@ impl Root {
                 .into_any_element(),
         );
         // 参加中のスレッドを親の下に
-        if let Some(threads) = a.sidebar_threads(gid).remove(c.id.as_str()) {
+        if let Some(threads) = threads {
             for t in threads {
                 let sel = a.sel_channel.as_deref() == Some(&t.id);
-                let unread = a.unread.contains_key(&t.id);
+                let unread = a.read_state.unread.contains_key(&t.id);
                 let id = t.id.clone();
                 rows.push(
                     row_frame(SharedString::from(format!("th{}", t.id)), 28.0, sel, unread)

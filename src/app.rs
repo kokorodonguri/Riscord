@@ -1295,8 +1295,65 @@ pub struct Acked {
 /// 開いたときに隠した未読の印（unread の値, mention_counts の値）
 pub type HiddenReadMarks = (Option<Option<String>>, Option<(Option<String>, u32)>);
 
+/// Channel read markers, acknowledgements and retry state.
+#[derive(Default)]
+pub struct ReadState {
+    /// 未読チャンネルと所属サーバー（DM は None）
+    pub unread: HashMap<String, Option<String>>,
+    /// 最後に既読を送ったメッセージと成功状態
+    pub acked: HashMap<String, Acked>,
+    /// 開いたときに隠した印。既読失敗時は復元する
+    pub hidden_read_marks: HashMap<String, HiddenReadMarks>,
+    /// API エラー後の再試行時刻
+    pub ack_retry_at: HashMap<String, std::time::Instant>,
+    /// 既読通知の送信間隔を制限するための時刻
+    pub last_ack: Option<std::time::Instant>,
+    /// チャンネルごとのメンション数と所属サーバー
+    pub mention_counts: HashMap<String, (Option<String>, u32)>,
+    /// 公式クライアントから取得した既読位置
+    pub channel_read_rank: HashMap<String, (u64, u64)>,
+}
+
+impl ReadState {
+    /// 開いたチャンネルの未読とメンションの印を先に消す。既読通知が失敗したら restore_read_marks で戻す。
+    /// フォーラムやボイス、過去を表示中のチャンネルなど、すぐには既読通知を送れない場合も印は消える
+    fn hide_read_marks(&mut self, channel_id: &str) {
+        let unread = self.unread.remove(channel_id);
+        let mention = self.mention_counts.remove(channel_id);
+        if unread.is_none() && mention.is_none() {
+            return;
+        }
+        let e = self
+            .hidden_read_marks
+            .entry(channel_id.to_string())
+            .or_default();
+        if e.0.is_none() {
+            e.0 = unread;
+        }
+        if e.1.is_none() {
+            e.1 = mention;
+        }
+    }
+
+    fn restore_read_marks(&mut self, channel_id: &str) {
+        let Some((unread, mention)) = self.hidden_read_marks.remove(channel_id) else {
+            return;
+        };
+        if let Some(u) = unread {
+            self.unread.entry(channel_id.to_string()).or_insert(u);
+        }
+        if let Some(m) = mention {
+            self.mention_counts
+                .entry(channel_id.to_string())
+                .or_insert(m);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct App {
+    pub read_state: ReadState,
+
     pub plugins: crate::plugins::Plugins,
     pub translator: crate::translator::Translator,
     /// MessageLogger の記録（削除・編集）
@@ -1351,8 +1408,6 @@ pub struct App {
     pub pending_poll_votes: HashSet<(String, String)>,
     /// チャンネルごとに表示した添付・埋め込み画像の URI。チャンネルを捨てるときに画像キャッシュも解放する
     pub channel_images: HashMap<String, HashSet<String>>,
-    /// 未読チャンネル → 所属サーバー（DMならNone）
-    pub unread: HashMap<String, Option<String>>,
     /// DM 一覧の絞り込み
     pub dm_search: bool,
     pub dm_filter: String,
@@ -1388,18 +1443,9 @@ pub struct App {
     pub uploads: Vec<clip::Upload>,
     /// 添付や文字数の上限についてのお知らせ（入力欄の上に出す）
     pub compose_notice: Option<(String, std::time::Instant)>,
-    /// チャンネルごとに、最後に既読として Discord に送ったメッセージIDと、それが成功したか
-    pub acked: HashMap<String, Acked>,
-    /// チャンネルを開いたときに先に消した未読とメンションの印（unread, mention_counts の値）。
-    /// 既読通知が失敗したら戻し、成功したら捨てる
-    pub hidden_read_marks: HashMap<String, HiddenReadMarks>,
     /// 新しいセッションになった時点で読み込み中だったチャンネル。
     /// その応答は切断中の変更を含まないかもしれないので、届いたら読み直す
     pub reload_after_ready: HashSet<String>,
-    /// API エラー後に再試行できる時刻（チャンネルごと）
-    pub ack_retry_at: HashMap<String, std::time::Instant>,
-    /// 最後に既読を送った時刻（送りすぎて制限されないよう間を空ける）
-    pub last_ack: Option<std::time::Instant>,
     /// 今使っている見た目（テーマ＋上書き）。変わったときだけ適用し直す
     pub theme_applied: Option<theme::Resolved>,
     pub theme_error: Option<String>,
@@ -1451,11 +1497,6 @@ pub struct App {
     pub typing: HashMap<String, Vec<(String, String, std::time::Instant)>>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
     pub guild_settings: HashMap<String, GuildSettings>,
-    /// 未読のメンション数（チャンネル → (サーバー, 件数)。DM はサーバーが None で、メッセージごとに数える）
-    pub mention_counts: HashMap<String, (Option<String>, u32)>,
-    /// READY の read_state と MESSAGE_ACK から得たチャンネルごとの既読位置（last_viewed, last_message_id）。
-    /// 初めて開くサーバーで、公式クライアントで最後に見ていたチャンネルを選ぶのに使う
-    pub channel_read_rank: HashMap<String, (u64, u64)>,
     /// サーバーごとの自分のロール（ロールへのメンションを見分ける）
     pub my_roles: HashMap<String, Vec<String>>,
     /// ウィンドウにフォーカスがあるか（見ているチャンネルの通知は出さない）
@@ -2423,8 +2464,8 @@ impl App {
                     let rs = &d["read_state"];
                     if let Some(entries) = rs["entries"].as_array().or(rs.as_array()) {
                         let cg = &d["channel_guild"];
-                        self.mention_counts.clear();
-                        self.channel_read_rank.clear();
+                        self.read_state.mention_counts.clear();
+                        self.read_state.channel_read_rank.clear();
                         for e in entries {
                             // read_state_type が 0（チャンネル）以外は通知の既読などなので数えない
                             if e["read_state_type"].as_u64().unwrap_or(0) != 0 {
@@ -2437,7 +2478,8 @@ impl App {
                                     .and_then(|s| s.parse::<u64>().ok())
                                     .unwrap_or(0);
                                 if viewed > 0 || last > 0 {
-                                    self.channel_read_rank
+                                    self.read_state
+                                        .channel_read_rank
                                         .insert(cid.to_string(), (viewed, last));
                                 }
                             }
@@ -2448,7 +2490,9 @@ impl App {
                             };
                             if n > 0 {
                                 let gid = cg[cid].as_str().map(String::from);
-                                self.mention_counts.insert(cid.to_string(), (gid, n as u32));
+                                self.read_state
+                                    .mention_counts
+                                    .insert(cid.to_string(), (gid, n as u32));
                             }
                         }
                     }
@@ -2466,18 +2510,19 @@ impl App {
                     message_id,
                 } => {
                     if let Some(a) = self
+                        .read_state
                         .acked
                         .get_mut(&channel_id)
                         .filter(|a| a.message_id == message_id)
                     {
                         a.succeeded = true;
-                        self.hidden_read_marks.remove(&channel_id);
+                        self.read_state.hidden_read_marks.remove(&channel_id);
                         if self
                             .latest_live_message(&channel_id)
                             .is_some_and(|m| m.id == message_id)
                         {
-                            self.unread.remove(&channel_id);
-                            self.mention_counts.remove(&channel_id);
+                            self.read_state.unread.remove(&channel_id);
+                            self.read_state.mention_counts.remove(&channel_id);
                         }
                     }
                 }
@@ -2487,13 +2532,15 @@ impl App {
                 } => {
                     // より新しい ACK を既に出していれば古い失敗は無視する。
                     if self
+                        .read_state
                         .acked
                         .get(&channel_id)
                         .is_some_and(|a| a.message_id == message_id)
                     {
-                        self.acked.remove(&channel_id);
-                        self.restore_read_marks(&channel_id);
-                        self.ack_retry_at
+                        self.read_state.acked.remove(&channel_id);
+                        self.read_state.restore_read_marks(&channel_id);
+                        self.read_state
+                            .ack_retry_at
                             .insert(channel_id, std::time::Instant::now() + ACK_RETRY_DELAY);
                         self.repaint_after(ACK_RETRY_DELAY);
                     }
@@ -2865,7 +2912,9 @@ impl App {
                     }
                     let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
                     if !mine && self.sel_channel.as_deref() != Some(&m.channel_id) {
-                        self.unread.insert(m.channel_id.clone(), m.guild_id.clone());
+                        self.read_state
+                            .unread
+                            .insert(m.channel_id.clone(), m.guild_id.clone());
                     }
                     if !mine {
                         self.on_new_message(&m);
@@ -4140,33 +4189,38 @@ impl App {
             "MESSAGE_ACK" => {
                 if let Some(cid) = d["channel_id"].as_str() {
                     // サーバーの既読位置が変わったので、開いたときに隠した印はもう戻さない
-                    self.hidden_read_marks.remove(cid);
+                    self.read_state.hidden_read_marks.remove(cid);
                     if d["manual"] == true {
                         // 別端末の未読指定で以前の ACK は無効になる。
-                        self.acked.remove(cid);
+                        self.read_state.acked.remove(cid);
                         let guild = self.channels.iter().find_map(|(gid, channels)| {
                             channels.iter().any(|c| c.id == cid).then(|| gid.clone())
                         });
-                        self.unread.insert(cid.to_string(), guild);
+                        self.read_state.unread.insert(cid.to_string(), guild);
                     } else {
-                        self.unread.remove(cid);
+                        self.read_state.unread.remove(cid);
                         if let Some(mid) = d["message_id"].as_str().and_then(|s| s.parse().ok()) {
-                            let e = self.channel_read_rank.entry(cid.to_string()).or_default();
+                            let e = self
+                                .read_state
+                                .channel_read_rank
+                                .entry(cid.to_string())
+                                .or_default();
                             e.1 = e.1.max(mid);
                         }
                     }
                     match d["mention_count"].as_u64() {
                         Some(n) if n > 0 => {
-                            if let Some(e) = self.mention_counts.get_mut(cid) {
+                            if let Some(e) = self.read_state.mention_counts.get_mut(cid) {
                                 e.1 = n as u32;
                             } else if d["manual"] == true {
-                                let guild = self.unread.get(cid).cloned().flatten();
-                                self.mention_counts
+                                let guild = self.read_state.unread.get(cid).cloned().flatten();
+                                self.read_state
+                                    .mention_counts
                                     .insert(cid.to_string(), (guild, n as u32));
                             }
                         }
                         _ => {
-                            self.mention_counts.remove(cid);
+                            self.read_state.mention_counts.remove(cid);
                         }
                     }
                 }
@@ -4412,9 +4466,15 @@ impl App {
         if self.settings.last_channels.remove(gid).is_some() {
             self.save_settings();
         }
+        if self.sel_guild.as_deref() == Some(gid) {
+            self.leave_channel();
+        }
         self.channels.remove(gid);
-        self.unread.retain(|_, g| g.as_deref() != Some(gid));
-        self.mention_counts
+        self.read_state
+            .unread
+            .retain(|_, g| g.as_deref() != Some(gid));
+        self.read_state
+            .mention_counts
             .retain(|_, (g, _)| g.as_deref() != Some(gid));
         self.my_roles.remove(gid);
         self.guild_settings.remove(gid);
@@ -4430,10 +4490,13 @@ impl App {
 
     /// サーバーのチャンネルをすべて既読にする
     pub fn mark_guild_read(&mut self, gid: &str) {
-        self.unread.retain(|_, g| g.as_deref() != Some(gid));
-        self.mention_counts
+        self.read_state
+            .unread
+            .retain(|_, g| g.as_deref() != Some(gid));
+        self.read_state
+            .mention_counts
             .retain(|_, (g, _)| g.as_deref() != Some(gid));
-        self.hidden_read_marks.retain(|_, (u, m)| {
+        self.read_state.hidden_read_marks.retain(|_, (u, m)| {
             u.as_ref().is_none_or(|g| g.as_deref() != Some(gid))
                 && m.as_ref().is_none_or(|(g, _)| g.as_deref() != Some(gid))
         });
@@ -4454,7 +4517,8 @@ impl App {
 
     /// サーバー（None なら DM）の未読メンション数の合計
     pub fn mention_count(&self, gid: Option<&str>) -> u32 {
-        self.mention_counts
+        self.read_state
+            .mention_counts
             .values()
             .filter(|(g, _)| g.as_deref() == gid)
             .map(|(_, n)| n)
@@ -4465,7 +4529,7 @@ impl App {
     pub fn unread_dms(&self) -> Vec<(&Channel, u32)> {
         self.dms
             .iter()
-            .filter_map(|c| match self.mention_counts.get(&c.id) {
+            .filter_map(|c| match self.read_state.mention_counts.get(&c.id) {
                 Some((None, n)) if *n > 0 => Some((c, *n)),
                 _ => None,
             })
@@ -4480,6 +4544,7 @@ impl App {
         // DM はすべてがメンション扱い（公式と同じ）
         if !viewing && (mentioned || m.guild_id.is_none()) {
             let e = self
+                .read_state
                 .mention_counts
                 .entry(m.channel_id.clone())
                 .or_insert((m.guild_id.clone(), 0));
@@ -4492,6 +4557,15 @@ impl App {
             return;
         }
         let set = self.guild_settings.get(gid).cloned().unwrap_or_default();
+        if set.muted_channels.contains(&m.channel_id)
+            || self
+                .channels
+                .get(gid)
+                .and_then(|channels| channels.iter().find(|c| c.id == m.channel_id))
+                .is_some_and(|channel| self.is_channel_muted(gid, channel))
+        {
+            return;
+        }
         let wanted = match set.notifications {
             _ if set.muted => false,
             2 => false,
@@ -4730,19 +4804,25 @@ impl App {
         }
         let Some(last_id) = self.latest_live_message(&cid).map(|m| m.id.clone()) else {
             if !self.pending_message_loads.contains_key(&cid) {
-                self.unread.remove(&cid);
-                self.mention_counts.remove(&cid);
+                self.read_state.unread.remove(&cid);
+                self.read_state.mention_counts.remove(&cid);
             }
             return;
         };
-        if let Some(a) = self.acked.get(&cid).filter(|a| a.message_id == last_id) {
+        if let Some(a) = self
+            .read_state
+            .acked
+            .get(&cid)
+            .filter(|a| a.message_id == last_id)
+        {
             if a.succeeded {
-                self.unread.remove(&cid);
-                self.mention_counts.remove(&cid);
+                self.read_state.unread.remove(&cid);
+                self.read_state.mention_counts.remove(&cid);
             }
             return;
         }
         if let Some(wait) = self
+            .read_state
             .ack_retry_at
             .get(&cid)
             .and_then(|t| t.checked_duration_since(std::time::Instant::now()))
@@ -4751,6 +4831,7 @@ impl App {
             return;
         }
         if let Some(wait) = self
+            .read_state
             .last_ack
             .and_then(|t| ACK_INTERVAL.checked_sub(t.elapsed()))
         {
@@ -4772,15 +4853,15 @@ impl App {
             self.repaint_after(ACK_INTERVAL);
             return;
         }
-        self.ack_retry_at.remove(&cid);
-        self.acked.insert(
+        self.read_state.ack_retry_at.remove(&cid);
+        self.read_state.acked.insert(
             cid.clone(),
             Acked {
                 message_id,
                 succeeded: false,
             },
         );
-        self.last_ack = Some(std::time::Instant::now());
+        self.read_state.last_ack = Some(std::time::Instant::now());
     }
 
     /// 既読の位置に使う最新のメッセージ。
@@ -4791,40 +4872,6 @@ impl App {
             .iter()
             .rev()
             .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
-    }
-
-    /// 開いたチャンネルの未読とメンションの印を先に消す。既読通知が失敗したら restore_read_marks で戻す。
-    /// フォーラムやボイス、過去を表示中のチャンネルなど、すぐには既読通知を送れない場合も印は消える
-    fn hide_read_marks(&mut self, channel_id: &str) {
-        let unread = self.unread.remove(channel_id);
-        let mention = self.mention_counts.remove(channel_id);
-        if unread.is_none() && mention.is_none() {
-            return;
-        }
-        let e = self
-            .hidden_read_marks
-            .entry(channel_id.to_string())
-            .or_default();
-        if e.0.is_none() {
-            e.0 = unread;
-        }
-        if e.1.is_none() {
-            e.1 = mention;
-        }
-    }
-
-    fn restore_read_marks(&mut self, channel_id: &str) {
-        let Some((unread, mention)) = self.hidden_read_marks.remove(channel_id) else {
-            return;
-        };
-        if let Some(u) = unread {
-            self.unread.entry(channel_id.to_string()).or_insert(u);
-        }
-        if let Some(m) = mention {
-            self.mention_counts
-                .entry(channel_id.to_string())
-                .or_insert(m);
-        }
     }
 
     pub fn clear_message_error_status(&mut self, channel_id: &str) {
@@ -4854,6 +4901,20 @@ impl App {
         }
     }
 
+    /// Leave the current channel through the same cleanup path for every navigation method.
+    fn leave_channel(&mut self) {
+        let Some(old) = self.sel_channel.clone() else {
+            return;
+        };
+        if self.pending_message_loads.contains_key(&old) {
+            self.read_state.restore_read_marks(&old);
+        }
+        if self.editing.take().is_some() {
+            self.input.clear();
+        }
+        self.reply_to = None;
+    }
+
     pub fn open_channel(&mut self, id: String) {
         self.friends.open = false;
         // ScrollToLatest: 開いたら最新へ
@@ -4861,15 +4922,7 @@ impl App {
             self.back_to_latest(&id);
         }
         if self.sel_channel.as_deref() != Some(&id) {
-            if let Some(old) = self.sel_channel.clone() {
-                if self.pending_message_loads.contains_key(&old) {
-                    self.restore_read_marks(&old);
-                }
-            }
-            if self.editing.take().is_some() {
-                self.input.clear();
-            }
-            self.reply_to = None;
+            self.leave_channel();
         }
         // フォーラムにはメッセージが無い（投稿の一覧は ensure_forum が読む）。
         // ボイスチャンネルは専用の画面を出し、チャットは読まない
@@ -4887,7 +4940,7 @@ impl App {
         if !no_messages {
             self.remember_tab(&id);
         }
-        self.hide_read_marks(&id);
+        self.read_state.hide_read_marks(&id);
         self.touch_channel(&id);
         let key = self.sel_guild.as_deref().unwrap_or("");
         if self.settings.last_channels.get(key) != Some(&id) {
@@ -4923,8 +4976,8 @@ impl App {
             self.stale_channels.remove(&old);
             self.no_access.remove(&old);
             self.message_errors.remove(&old);
-            self.acked.remove(&old);
-            self.ack_retry_at.remove(&old);
+            self.read_state.acked.remove(&old);
+            self.read_state.ack_retry_at.remove(&old);
             evicted = true;
             // そのチャンネルでしか使っていない画像は、デコード済みの画像・テクスチャごと解放する
             if let Some(uris) = self.channel_images.remove(&old) {
@@ -4960,7 +5013,11 @@ impl App {
 
     /// 未読チャンネルを持つサーバー（DM は None）。サーバーごとに未読全体をなめないよう1回で集める
     pub fn unread_guilds(&self) -> HashSet<Option<&str>> {
-        self.unread.values().map(|g| g.as_deref()).collect()
+        self.read_state
+            .unread
+            .values()
+            .map(|g| g.as_deref())
+            .collect()
     }
 
     /// 開いているテキストチャンネルのメンバー一覧を、見えている範囲だけ購読する（公式と同じく全員は取らない）。
@@ -5103,7 +5160,7 @@ impl App {
         cur_voice: Option<&str>,
     ) -> bool {
         self.sel_channel.as_deref() == Some(c.id.as_str())
-            || self.unread.contains_key(&c.id)
+            || self.read_state.unread.contains_key(&c.id)
             || (c.is_voice()
                 && (cur_voice == Some(c.id.as_str()) || self.voice_members(&c.id).next().is_some()))
     }
@@ -5123,7 +5180,8 @@ impl App {
             .iter()
             .filter(|c| c.is_text())
             .filter_map(|c| {
-                self.channel_read_rank
+                self.read_state
+                    .channel_read_rank
                     .get(&c.id)
                     .copied()
                     .filter(|&r| r > (0, 0))
@@ -5157,6 +5215,7 @@ impl App {
             return;
         }
         if self.sel_guild != guild {
+            self.leave_channel();
             self.sel_guild = guild.clone();
             self.cache_dirty = true;
             self.sel_channel = None;
@@ -5300,6 +5359,9 @@ impl App {
         self.friends.open = false;
         if let Some(gid) = &guild {
             self.ensure_guild_channels(gid);
+        }
+        if self.sel_channel != channel || self.sel_guild != guild {
+            self.leave_channel();
         }
         self.sel_guild = guild;
         self.sel_channel = None;

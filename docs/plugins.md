@@ -8,8 +8,12 @@ Riscord プラグイン API 1 は Lua 5.4 を使います。`examples/plugins/he
 
 - `start()` / `stop()`: 有効化時 / 無効化・再読み込み時。
 - `voice_panel(call)`: ボイス接続中、左下の接続欄に表示する文字列か `nil` を返します。`call` には `channel_id`、`guild_id`（DM は `nil`）、接続確立からの整数秒 `elapsed_seconds` が入ります。表示更新時に呼ばれるため、副作用を起こさないでください。
-- `on_message(message)`: 新着メッセージ。`message` は `id`, `channel_id`, `guild_id`, `author_id`, `content` を持つテーブルです。履歴の読み込みでは呼ばれません。
+- `on_message(message)`: 新着メッセージ。`message` は `id`, `channel_id`, `guild_id`, `author_id`, `author_name`, `author_username`, `bot`, `content`, `timestamp`, `mention_everyone`, `mentions`（ユーザー ID の配列）, `attachments`（URL の配列）, `reply_to` を持つテーブルです。履歴の読み込みでは呼ばれません。
+- `before_send(content, channel_id)`: 送信を止める理由の文字列を返せます。`nil` は送信を続行します。
 - `on_send(content, channel_id)` / `on_display(content, channel_id)`: 文字列を返すと本文を変更し、`nil` を返すと変更しません。表示加工は表示時に繰り返し呼ばれるため、副作用を起こさないでください。送信加工は手入力の新規メッセージに適用されます。
+- `on_typing(channel_id, user_id, name)`: ユーザーの入力開始。
+- `on_presence(user_id, previous_status, status, activity, name)`: プレゼンスの変化。
+- `on_voice(user_id, previous_channel_id, channel_id, guild_id, muted, deafened, name)`: ボイス状態の変化。存在しない ID や名前は空文字です。
 - `on_delete(message)`: メッセージが削除されたとき。`message` は削除前の内容で、`on_message` と同じ項目を持ちます。本文が分かっているメッセージ（受信済み・読み込み済み）だけが対象です。
 - `on_edit(message, new_content)`: 本文が編集されたとき。`message` は編集前の内容、`new_content` は編集後の本文です。
 - `commands = { 名前 = function(args, channel_id) ... end }`: チャット欄に `/名前 引数` と入力すると実行します。同名の場合はフォルダ順で先に読み込まれたものが使われます。
@@ -22,10 +26,17 @@ Riscord プラグイン API 1 は Lua 5.4 を使います。`examples/plugins/he
 - `riscord.api_version`: API バージョン（1）。
 - `riscord.language()`: Riscord の表示言語（`"ja"`・`"en"`・`"zh"` のどれか。`"zh"` は簡体字中国語）。設定で切り替えられるので、ページや表示を作るたびに呼んでください。
 - `riscord.send_message(channel_id, content)`: メッセージを送信待ちに追加します。自動送信にも使えるので、信頼できるプラグインのみ有効にしてください。送信結果の通知は現在ありません。
+- `riscord.notify(title, body)` / `riscord.show_info(title, body)`: 通知または情報画面を表示します。
+- `riscord.copy(text)` / `riscord.insert(text)`: クリップボードにコピー、または入力欄に挿入します。
+- `riscord.open_url(url)`: `http://`・`https://`・`steam://` の URL を開きます。
+- `riscord.open_channel(id)` / `riscord.set_status(status)`: チャンネルを開くか、`online`・`idle`・`dnd`・`invisible` に状態を変更します。
+- `riscord.play_sound(name)` / `riscord.speak(text)`: サウンドを再生、またはテキストを読み上げます。
+- `riscord.now()`: Unix 時刻のミリ秒を返します。`riscord.date(format, seconds, utc)` は指定時刻（秒、省略時は現在）を整形します。
+- `riscord.me()`: `id`, `name`, `status`, `channel_id`, `guild_id`, `voice_channel_id` を含む現在の状態を返します。
 - `riscord.set_timeout(milliseconds, function() ... end)`: 一度だけ実行するタイマー。最短 100 ミリ秒、最長 24 時間、プラグインあたり最大 100 個です。
 - `riscord.load()` / `riscord.save(value)`: プラグインごとに JSON としてデータを読み書きします。値は JSON で表せるテーブル、文字列、数値、真偽値などにしてください。データ上限は 1 MiB です。
 
-Lua ごとにメモリと命令数を制限します。ファイル・ネットワーク・OS コマンドへの直接アクセス、モジュール読み込み、トークン取得は提供しません。プラグインには受信メッセージの内容や送信機能が公開されるため、コードの出所を確認してから有効化してください。
+Lua ごとにメモリと Lua 命令数を制限します。文字列の繰り返しとパターン照合にも、入力の長さと処理量の上限があります。ファイル・ネットワーク・OS コマンドへの直接アクセス、モジュール読み込み、トークン取得は提供しません。プラグインには受信メッセージの内容や送信機能が公開されるため、コードの出所を確認してから有効化してください。
 
 同梱の CallTimeCounter はプラグイン一覧から有効にできます。通話中に有効化しても、現在の接続が確立してからの経過時間を表示します。切断・再接続や別チャンネルへの移動でカウンターはリセットされます。
 

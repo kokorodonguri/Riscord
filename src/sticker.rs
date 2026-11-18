@@ -4,7 +4,8 @@ use std::io::Cursor;
 
 use anyhow::{bail, Result};
 use image::{
-    codecs::gif::GifDecoder, codecs::png::PngDecoder, AnimationDecoder, DynamicImage, RgbaImage,
+    codecs::gif::GifDecoder, codecs::png::PngDecoder, AnimationDecoder, DynamicImage, ImageDecoder,
+    RgbaImage,
 };
 use velato::{model::fixed, Composition, RenderSink, Renderer};
 use vello_cpu::kurbo::{Affine, BezPath, Shape};
@@ -37,9 +38,16 @@ pub fn url(id: &str, format: u8) -> String {
 pub fn decode(format: u8, bytes: &[u8]) -> Result<Frames> {
     match format {
         LOTTIE => decode_lottie(bytes),
-        GIF => from_anim(GifDecoder::new(Cursor::new(bytes))?.into_frames()),
+        GIF => {
+            let dec = GifDecoder::new(Cursor::new(bytes))?;
+            let (w, h) = dec.dimensions();
+            crate::images::check_decode_dimensions(w, h).map_err(anyhow::Error::msg)?;
+            from_anim(dec.into_frames())
+        }
         _ => {
             let dec = PngDecoder::new(Cursor::new(bytes))?;
+            let (w, h) = dec.dimensions();
+            crate::images::check_decode_dimensions(w, h).map_err(anyhow::Error::msg)?;
             if dec.is_apng()? {
                 from_anim(dec.apng()?.into_frames())
             } else {
@@ -189,6 +197,12 @@ fn decode_lottie(bytes: &[u8]) -> Result<Frames> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_oversized_gif_canvas() {
+        let gif = b"GIF89a\xff\xff\xff\xff\x00\x00\x00;";
+        assert!(super::decode(super::GIF, gif).is_err());
+    }
+
     use super::*;
 
     #[test]

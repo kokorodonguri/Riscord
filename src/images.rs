@@ -30,6 +30,7 @@ fn decoders() -> usize {
 const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 const DOWNLOADS: usize = 4;
 const MAX_CACHE_ENTRIES: usize = 256;
+const MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
@@ -173,7 +174,37 @@ fn get_variant(uri: &str, preview: bool) -> Img {
         }
         match result {
             Ok(frames) => {
-                cache.insert(key, Entry::Ready(Arc::new(RenderImage::new(frames))));
+                cache.insert(
+                    key.clone(),
+                    Entry::Ready(Arc::new(RenderImage::new(frames))),
+                );
+                let mut order = s.order.lock().unwrap();
+                let mut total: usize = cache
+                    .values()
+                    .map(|entry| match entry {
+                        Entry::Ready(image) => (0..image.frame_count())
+                            .filter_map(|i| image.as_bytes(i))
+                            .map(|bytes| bytes.len())
+                            .sum(),
+                        _ => 0,
+                    })
+                    .sum();
+                while total > MAX_CACHE_BYTES && order.len() > 1 {
+                    let Some(old) = order.pop_front() else { break };
+                    if old == key {
+                        order.push_back(old);
+                        continue;
+                    }
+                    if let Some(Entry::Ready(image)) = cache.remove(&old) {
+                        total = total.saturating_sub(
+                            (0..image.frame_count())
+                                .filter_map(|i| image.as_bytes(i))
+                                .map(|bytes| bytes.len())
+                                .sum(),
+                        );
+                        s.dropped.lock().unwrap().push(image);
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("画像の読み込み失敗 {uri}: {e}");
@@ -359,17 +390,28 @@ fn is_webp(b: &[u8]) -> bool {
     b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP"
 }
 
+/// Reject images before allocating a full-size decoded canvas.
+pub(crate) fn check_decode_dimensions(w: u32, h: u32) -> Result<(), String> {
+    const MAX_DECODE_PIXELS: u64 = 16 * 1024 * 1024;
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_DECODE_PIXELS {
+        return Err("image dimensions exceed decode limit".into());
+    }
+    Ok(())
+}
+
 /// 全フレームをデコードする。メモリの上限を超えそうなら、表示時間を足し合わせながらフレームを間引く
 pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
     let (frames, (w, h)): (image::Frames<'_>, (u32, u32)) = if is_gif(bytes) {
         let d =
             GifDecoder::new(Cursor::new(bytes)).map_err(|e| format!("GIF decode failure ({e})"))?;
         let dims = d.dimensions();
+        check_decode_dimensions(dims.0, dims.1)?;
         (d.into_frames(), dims)
     } else if is_webp(bytes) {
         let mut d = WebPDecoder::new(Cursor::new(bytes))
             .map_err(|e| format!("WebP decode failure ({e})"))?;
         let dims = d.dimensions();
+        check_decode_dimensions(dims.0, dims.1)?;
         if !d.has_animation() {
             let img = image::DynamicImage::from_decoder(d)
                 .map_err(|e| format!("WebP decode failure ({e})"))?
@@ -380,7 +422,15 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
             .map_err(|e| format!("WebP decode failure ({e})"))?;
         (d.into_frames(), dims)
     } else {
-        let img = image::load_from_memory(bytes)
+        let reader = image::ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| format!("decode failure ({e})"))?;
+        let decoder = reader
+            .into_decoder()
+            .map_err(|e| format!("decode failure ({e})"))?;
+        let (w, h) = decoder.dimensions();
+        check_decode_dimensions(w, h)?;
+        let img = image::DynamicImage::from_decoder(decoder)
             .map_err(|e| format!("decode failure ({e})"))?
             .to_rgba8();
         return Ok(vec![bgra_frame(shrink(img, max_pixels), Duration::ZERO)]);
@@ -423,6 +473,12 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_oversized_gif_canvas_before_decoding() {
+        let gif = b"GIF89a\xff\xff\xff\xff\x00\x00\x00;";
+        assert!(decode(gif, MAX_FRAME_PIXELS).is_err());
+    }
 
     #[test]
     fn preview_uses_separate_cache_and_is_removed_on_close() {

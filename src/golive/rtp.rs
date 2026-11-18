@@ -336,6 +336,77 @@ pub fn rtcp_wants_keyframe(cipher: &Cipher, packet: &[u8]) -> bool {
     false
 }
 
+/// A bounded jitter buffer for decrypted video RTP packets.
+pub struct VideoPacket {
+    pub seq: u16,
+    pub timestamp: u32,
+    pub marker: bool,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Default)]
+pub struct Reorder {
+    next: Option<u16>,
+    pending: Vec<(std::time::Instant, VideoPacket)>,
+    bytes: usize,
+}
+
+impl Reorder {
+    const MAX_PACKETS: usize = 64;
+    const MAX_BYTES: usize = 1024 * 1024;
+    const WAIT: std::time::Duration = std::time::Duration::from_millis(40);
+
+    pub fn push(&mut self, packet: VideoPacket, now: std::time::Instant) -> Vec<VideoPacket> {
+        let next = *self.next.get_or_insert(packet.seq);
+        let delta = packet.seq.wrapping_sub(next);
+        if delta >= 0x8000 || self.pending.iter().any(|(_, p)| p.seq == packet.seq) {
+            return Vec::new();
+        }
+        self.bytes = self.bytes.saturating_add(packet.payload.len());
+        self.pending.push((now, packet));
+        self.drain(now, delta as usize >= Self::MAX_PACKETS)
+    }
+
+    pub fn flush(&mut self, now: std::time::Instant) -> Vec<VideoPacket> {
+        self.drain(now, false)
+    }
+
+    fn drain(&mut self, now: std::time::Instant, mut force: bool) -> Vec<VideoPacket> {
+        let mut out = Vec::new();
+        while !self.pending.is_empty() {
+            let next = self.next.unwrap();
+            let index = self
+                .pending
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (_, p))| p.seq.wrapping_sub(next))
+                .unwrap()
+                .0;
+            let (_, packet) = &self.pending[index];
+            if packet.seq != next {
+                let expired = self
+                    .pending
+                    .iter()
+                    .any(|(at, _)| now.saturating_duration_since(*at) >= Self::WAIT);
+                if !force
+                    && !expired
+                    && self.pending.len() <= Self::MAX_PACKETS
+                    && self.bytes <= Self::MAX_BYTES
+                {
+                    break;
+                }
+                self.next = Some(packet.seq);
+            }
+            let (_, packet) = self.pending.swap_remove(index);
+            self.bytes -= packet.payload.len();
+            self.next = Some(packet.seq.wrapping_add(1));
+            out.push(packet);
+            force = false;
+        }
+        out
+    }
+}
+
 /// RTP の H264 を、アクセスユニット（Annex B）に組み立てる
 #[derive(Default)]
 pub struct Depacketizer {
@@ -387,7 +458,23 @@ impl Depacketizer {
             // 欠けたパケットがこのフレームの先頭かもしれない。
             self.broken = lost;
         }
-        if !payload.is_empty() {
+        // STAP-A can add at most two extra bytes per payload byte, plus a start code.
+        // Stop accumulating immediately and discard the rest of this access unit.
+        const MAX_ACCESS_UNIT: usize = 16 * 1024 * 1024;
+        if !self.broken
+            && self
+                .frame
+                .len()
+                .saturating_add(payload.len().saturating_mul(3))
+                .saturating_add(4)
+                > MAX_ACCESS_UNIT
+        {
+            self.frame.clear();
+            self.broken = true;
+            self.in_fu = false;
+            return Push::Lost;
+        }
+        if !self.broken && !payload.is_empty() {
             let kind = payload[0] & 0x1F;
             match kind {
                 1..=23 => {
@@ -400,16 +487,23 @@ impl Depacketizer {
                     while p.len() >= 2 {
                         let n = u16::from_be_bytes([p[0], p[1]]) as usize;
                         if n == 0 || p.len() < 2 + n {
+                            self.broken = true;
                             break;
                         }
                         self.frame.extend_from_slice(&[0, 0, 0, 1]);
                         self.frame.extend_from_slice(&p[2..2 + n]);
                         p = &p[2 + n..];
                     }
+                    if !p.is_empty() {
+                        self.broken = true;
+                    }
                 }
                 28 if payload.len() >= 2 => {
                     let start = payload[1] & 0x80 != 0;
                     if start {
+                        if self.in_fu {
+                            self.broken = true;
+                        }
                         self.frame.extend_from_slice(&[0, 0, 0, 1]);
                         self.frame.push((payload[0] & 0xE0) | (payload[1] & 0x1F));
                         self.in_fu = true;
@@ -428,7 +522,8 @@ impl Depacketizer {
             let data = std::mem::take(&mut self.frame);
             let broken = std::mem::take(&mut self.broken);
             self.timestamp = None;
-            if broken || data.is_empty() {
+            if broken || self.in_fu || data.is_empty() {
+                self.in_fu = false;
                 return Push::Lost;
             }
             let keyframe = split_annexb(&data)
@@ -447,6 +542,111 @@ impl Depacketizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reorder_handles_gap_wrap_duplicates_and_timeout() {
+        let mut r = Reorder::default();
+        let t = std::time::Instant::now();
+        let packet = |seq| VideoPacket {
+            seq,
+            timestamp: 1,
+            marker: false,
+            payload: vec![1],
+        };
+        assert_eq!(r.push(packet(65534), t).len(), 1);
+        assert!(r.push(packet(0), t).is_empty());
+        assert!(r.push(packet(0), t).is_empty());
+        let ordered = r.push(packet(65535), t);
+        assert_eq!(
+            ordered.iter().map(|p| p.seq).collect::<Vec<_>>(),
+            [65535, 0]
+        );
+        assert!(r.push(packet(2), t).is_empty());
+        assert!(r.flush(t + std::time::Duration::from_millis(39)).is_empty());
+        assert_eq!(r.flush(t + std::time::Duration::from_millis(40))[0].seq, 2);
+        assert!(r.push(packet(1), t).is_empty());
+    }
+
+    #[test]
+    fn reorder_bounds_memory_and_reports_sequence_gap() {
+        let mut reorder = Reorder::default();
+        let mut depack = Depacketizer::default();
+        let now = std::time::Instant::now();
+        let packet = |seq, size| VideoPacket {
+            seq,
+            timestamp: 1,
+            marker: false,
+            payload: vec![0x41; size],
+        };
+        let first = reorder.push(packet(1, 1), now).pop().unwrap();
+        assert!(matches!(
+            depack.push(first.seq, 1, false, &first.payload),
+            Push::None
+        ));
+        assert!(reorder
+            .push(packet(3, Reorder::MAX_BYTES / 2), now)
+            .is_empty());
+        let released = reorder.push(packet(4, Reorder::MAX_BYTES / 2 + 1), now);
+        assert!(!released.is_empty());
+        assert!(reorder.bytes <= Reorder::MAX_BYTES);
+        assert!(matches!(
+            depack.push(released[0].seq, 1, false, &released[0].payload),
+            Push::Lost
+        ));
+    }
+
+    #[test]
+    fn reordering_reassembles_fragmented_frame_without_loss() {
+        let t = std::time::Instant::now();
+        let mut reorder = Reorder::default();
+        let mut depack = Depacketizer::default();
+        let packet = |seq, marker, payload: &[u8]| VideoPacket {
+            seq,
+            timestamp: 10,
+            marker,
+            payload: payload.to_vec(),
+        };
+        let first = reorder.push(packet(10, false, &[0x7c, 0x85, 1]), t);
+        assert!(matches!(
+            depack.push(first[0].seq, 10, false, &first[0].payload),
+            Push::None
+        ));
+        assert!(reorder
+            .push(packet(12, true, &[0x7c, 0x45, 3]), t)
+            .is_empty());
+        let ordered = reorder.push(packet(11, false, &[0x7c, 0x05, 2]), t);
+        assert_eq!(ordered.len(), 2);
+        assert!(matches!(
+            depack.push(ordered[0].seq, 10, false, &ordered[0].payload),
+            Push::None
+        ));
+        match depack.push(ordered[1].seq, 10, true, &ordered[1].payload) {
+            Push::Frame(frame) => assert_eq!(frame.data, [0, 0, 0, 1, 0x65, 1, 2, 3]),
+            _ => panic!("expected complete frame"),
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_malformed_nalus() {
+        let mut d = Depacketizer::default();
+        assert!(matches!(d.push(1, 1, true, &[0x7c, 0x85, 42]), Push::Lost));
+        assert!(matches!(d.push(2, 2, true, &[24, 0, 4, 0x65]), Push::Lost));
+        assert!(matches!(d.push(3, 3, true, &[0x65, 1]), Push::Frame(_)));
+    }
+
+    #[test]
+    fn oversized_access_unit_is_discarded_and_next_frame_recovers() {
+        let mut d = Depacketizer::default();
+        let payload = vec![0x41; 1024 * 1024];
+        let mut lost = false;
+        for seq in 0..20 {
+            lost |= matches!(d.push(seq, 1, false, &payload), Push::Lost);
+        }
+        assert!(lost);
+        assert!(d.frame.len() <= 16 * 1024 * 1024);
+        assert!(matches!(d.push(20, 1, true, &[0x41]), Push::Lost));
+        assert!(matches!(d.push(21, 2, true, &[0x65, 1]), Push::Frame(_)));
+    }
 
     #[test]
     fn lost_whole_packet_frame_requests_keyframe() {

@@ -1301,69 +1301,76 @@ impl Root {
         let q = filter.read(cx).value().to_lowercase();
         let cur = self.app.settings.font.clone();
         let names = self.font_names.clone().unwrap_or_default();
-        let mut l = div()
-            .id("fontlist")
-            .max_h(z(240.0))
-            .overflow_y_scroll()
-            .bg(RAIL())
-            .rounded(z(8.0))
-            .p(z(4.0))
-            .flex()
-            .flex_col();
         let auto = tr!(
             "自動（テーマか既定のフォント）",
             "Automatic (theme or default font)",
             "自动（主题或默认字体）"
         );
-        let rows = std::iter::once((String::new(), SharedString::from(auto)))
-            .filter(|_| q.is_empty())
-            .chain(
-                names
-                    .iter()
-                    .filter(|n| q.is_empty() || n.to_lowercase().contains(&q))
-                    .map(|n| (n.to_string(), n.clone())),
-            );
-        let mut any = false;
-        for (i, (value, label)) in rows.enumerate() {
-            any = true;
-            let on = cur == value;
-            l = l.child(
-                div()
-                    .id(("fontrow", i))
-                    .flex_none()
-                    .h(z(32.0))
-                    .px(z(8.0))
-                    .rounded(z(6.0))
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .when(on, |x| x.bg(SELECTED()))
-                    .hover(|s| s.bg(if on { SELECTED() } else { HOVER() }))
-                    .child(line(label, 14.0, if on { WHITE() } else { TEXT() }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.app.settings.font != value {
-                            this.app.settings.font = value.clone();
-                            this.app.font_dirty = true;
-                            this.app.save_settings();
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        if !any {
-            l = l.child(
-                div()
-                    .h(z(32.0))
-                    .px(z(8.0))
-                    .flex()
-                    .items_center()
-                    .child(text(
-                        tr!("見つかりません", "No fonts found", "未找到字体"),
-                        14.0,
-                        MUTED(),
-                    )),
-            );
-        }
+        let rows: std::rc::Rc<Vec<(String, SharedString)>> = std::rc::Rc::new(
+            std::iter::once((String::new(), SharedString::from(auto)))
+                .filter(|_| q.is_empty())
+                .chain(
+                    names
+                        .iter()
+                        .filter(|n| q.is_empty() || n.to_lowercase().contains(&q))
+                        .map(|n| (n.to_string(), n.clone())),
+                )
+                .collect(),
+        );
+        let selected_font = cur.clone();
+        let l = if rows.is_empty() {
+            div()
+                .h(z(40.0))
+                .px(z(12.0))
+                .flex()
+                .items_center()
+                .bg(RAIL())
+                .rounded(z(8.0))
+                .child(text(
+                    tr!("見つかりません", "No fonts found", "未找到字体"),
+                    14.0,
+                    MUTED(),
+                ))
+                .into_any_element()
+        } else {
+            let height = (rows.len() as f32 * 32.0).min(240.0);
+            uniform_list(
+                "fontlist",
+                rows.len(),
+                cx.processor(move |_: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                    range
+                        .filter_map(|i| rows.get(i).map(|row| (i, row)))
+                        .map(|(i, (value, label))| {
+                            let value = value.clone();
+                            let on = selected_font == value;
+                            div()
+                                .id(("fontrow", i))
+                                .h(z(32.0))
+                                .px(z(8.0))
+                                .rounded(z(6.0))
+                                .flex()
+                                .items_center()
+                                .cursor_pointer()
+                                .when(on, |x| x.bg(SELECTED()))
+                                .hover(|s| s.bg(if on { SELECTED() } else { HOVER() }))
+                                .child(line(label.clone(), 14.0, if on { WHITE() } else { TEXT() }))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.app.settings.font != value {
+                                        this.app.settings.font = value.clone();
+                                        this.app.font_dirty = true;
+                                        this.app.save_settings();
+                                    }
+                                    cx.notify();
+                                }))
+                        })
+                        .collect()
+                }),
+            )
+            .h(z(height))
+            .bg(RAIL())
+            .rounded(z(8.0))
+            .into_any_element()
+        };
         let missing = !cur.is_empty() && self.user_font.is_none();
         let desc = if missing {
             tr!(
@@ -2177,50 +2184,29 @@ impl Root {
         let pings = log.deleted.values().filter(|d| ping(&d.message)).count();
         let counts = [log.deleted.len(), log.edited.len(), pings];
         let tab = self.log_tab.min(2);
-        // (並べ替えの時刻, メッセージ, 本文の行)
-        let mut entries: Vec<(String, &crate::model::Message, Vec<(String, Color32)>)> = match tab {
-            1 => log
-                .edited
-                .values()
-                .map(|e| {
-                    let mut lines: Vec<(String, Color32)> = e
-                        .history
-                        .iter()
-                        .map(|h| {
-                            (
-                                tr!("編集前: {}", "Before edit: {}", "编辑前：{}", h.content),
-                                FAINT(),
-                            )
-                        })
-                        .collect();
-                    lines.push((
-                        tr!("現在: {}", "Now: {}", "当前：{}", e.message.content),
-                        TEXT(),
-                    ));
-                    (
-                        e.history.last().map(|h| h.at.clone()).unwrap_or_default(),
-                        &e.message,
-                        lines,
-                    )
-                })
-                .collect(),
+        // Sort borrowed records first; only format the rows actually displayed.
+        enum LogEntry<'a> {
+            Deleted(&'a crate::message_log::Deleted),
+            Edited(&'a crate::message_log::Edited),
+        }
+        impl LogEntry<'_> {
+            fn at(&self) -> &str {
+                match self {
+                    Self::Deleted(d) => &d.at,
+                    Self::Edited(e) => e.history.last().map_or("", |h| h.at.as_str()),
+                }
+            }
+        }
+        let mut entries: Vec<LogEntry<'_>> = match tab {
+            1 => log.edited.values().map(LogEntry::Edited).collect(),
             _ => log
                 .deleted
                 .values()
                 .filter(|d| tab == 0 || ping(&d.message))
-                .map(|d| {
-                    let mut lines = vec![(d.message.content.clone(), TEXT())];
-                    for f in &d.message.attachments {
-                        lines.push((
-                            tr!("添付: {}", "Attachments: {}", "附件：{}", f.filename),
-                            FAINT(),
-                        ));
-                    }
-                    (d.at.clone(), &d.message, lines)
-                })
+                .map(LogEntry::Deleted)
                 .collect(),
         };
-        entries.sort_by(|x, y| y.0.cmp(&x.0));
+        entries.sort_by(|x, y| y.at().cmp(x.at()));
         let total = entries.len();
         let mut tabs = div()
             .mt(z(24.0))
@@ -2264,7 +2250,37 @@ impl Root {
                 MUTED(),
             )));
         }
-        for (n, (at, m, lines)) in entries.into_iter().take(SHOWN).enumerate() {
+        for (n, entry) in entries.into_iter().take(SHOWN).enumerate() {
+            let at = entry.at();
+            let (m, lines) = match &entry {
+                LogEntry::Edited(e) => {
+                    let mut lines: Vec<(String, Color32)> = e
+                        .history
+                        .iter()
+                        .map(|h| {
+                            (
+                                tr!("編集前: {}", "Before edit: {}", "编辑前：{}", h.content),
+                                FAINT(),
+                            )
+                        })
+                        .collect();
+                    lines.push((
+                        tr!("現在: {}", "Now: {}", "当前：{}", e.message.content),
+                        TEXT(),
+                    ));
+                    (&e.message, lines)
+                }
+                LogEntry::Deleted(d) => {
+                    let mut lines = vec![(d.message.content.clone(), TEXT())];
+                    lines.extend(d.message.attachments.iter().map(|f| {
+                        (
+                            tr!("添付: {}", "Attachments: {}", "附件：{}", f.filename),
+                            FAINT(),
+                        )
+                    }));
+                    (&d.message, lines)
+                }
+            };
             // 開くときに使うサーバー（REST で読んだメッセージには guild_id が無いので、チャンネル一覧から探す）
             let guild = a
                 .channels
@@ -2299,7 +2315,7 @@ impl Root {
                         tr!("ダイレクトメッセージ", "Direct Messages", "私信").into()
                     }),
             };
-            let when = crate::app::local_dt(&at)
+            let when = crate::app::local_dt(at)
                 .map(|t| t.format("%Y/%-m/%-d %H:%M").to_string())
                 .unwrap_or_default();
             let head = format!("{} · {place} · {when}", crate::app::author_name(m));

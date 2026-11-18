@@ -543,6 +543,7 @@ impl Root {
         let from_header = self.menu_from_header;
         let unread = self
             .app
+            .read_state
             .unread
             .values()
             .any(|x| x.as_deref() == Some(gid.as_str()));

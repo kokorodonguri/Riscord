@@ -489,12 +489,12 @@ fn voice_index_matches_states_across_mixed_updates() {
 #[test]
 fn unread_guilds_matches_per_guild_scan() {
     let mut app = App::default();
-    app.unread.insert("a".into(), Some("g1".into()));
-    app.unread.insert("b".into(), None);
-    app.unread.insert("c".into(), Some("g1".into()));
+    app.read_state.unread.insert("a".into(), Some("g1".into()));
+    app.read_state.unread.insert("b".into(), None);
+    app.read_state.unread.insert("c".into(), Some("g1".into()));
     let set = app.unread_guilds();
     assert!(set.contains(&Some("g1")) && set.contains(&None) && !set.contains(&Some("g2")));
-    app.unread.remove("b");
+    app.read_state.unread.remove("b");
     assert!(!app.unread_guilds().contains(&None));
 }
 
@@ -762,15 +762,15 @@ fn reset_forgets_cached_channel_images() {
 #[test]
 fn read_ack_is_retried_if_command_channel_is_closed() {
     let mut app = bench_app(1);
-    app.unread.insert("c".into(), None);
+    app.read_state.unread.insert("c".into(), None);
     let (cmd, rx) = tokio::sync::mpsc::unbounded_channel();
     drop(rx);
     let (_events, ev) = std::sync::mpsc::channel();
     app.backend = Some(Backend { cmd, ev });
     app.sync_read_state(true);
-    assert!(!app.acked.contains_key("c"));
-    assert!(app.unread.contains_key("c"));
-    assert!(app.last_ack.is_none());
+    assert!(!app.read_state.acked.contains_key("c"));
+    assert!(app.read_state.unread.contains_key("c"));
+    assert!(app.read_state.last_ack.is_none());
     let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let (_events, ev) = std::sync::mpsc::channel();
     app.backend = Some(Backend { cmd, ev });
@@ -779,10 +779,10 @@ fn read_ack_is_retried_if_command_channel_is_closed() {
         matches!(rx.try_recv(), Ok(Cmd::Ack { channel_id, message_id }) if channel_id == "c" && message_id == "100000")
     );
     assert_eq!(
-        app.acked.get("c").map(|a| a.message_id.as_str()),
+        app.read_state.acked.get("c").map(|a| a.message_id.as_str()),
         Some("100000")
     );
-    assert!(app.unread.contains_key("c"));
+    assert!(app.read_state.unread.contains_key("c"));
     app.sync_read_state(true);
     assert!(rx.try_recv().is_err());
 }
@@ -817,7 +817,7 @@ fn viewing_channel_acks_latest_message() {
     app.poll();
     app.sync_read_state(true);
     assert!(acks(&mut rx).is_empty(), "間隔を空ける");
-    app.last_ack = Some(std::time::Instant::now() - ACK_INTERVAL);
+    app.read_state.last_ack = Some(std::time::Instant::now() - ACK_INTERVAL);
     app.sync_read_state(false);
     assert!(
         acks(&mut rx).is_empty(),
@@ -843,7 +843,7 @@ fn failed_read_ack_can_retry_without_overwriting_newer_ack() {
         .unwrap();
     app.poll();
     assert_eq!(
-        app.acked.get("c").map(|a| a.message_id.as_str()),
+        app.read_state.acked.get("c").map(|a| a.message_id.as_str()),
         Some("100000")
     );
     events
@@ -853,11 +853,11 @@ fn failed_read_ack_can_retry_without_overwriting_newer_ack() {
         })
         .unwrap();
     app.poll();
-    assert!(!app.acked.contains_key("c"));
-    app.last_ack = Some(std::time::Instant::now() - ACK_INTERVAL);
+    assert!(!app.read_state.acked.contains_key("c"));
+    app.read_state.last_ack = Some(std::time::Instant::now() - ACK_INTERVAL);
     app.sync_read_state(true);
     assert!(rx.try_recv().is_err(), "API 失敗後は連続して再試行しない");
-    app.ack_retry_at.insert(
+    app.read_state.ack_retry_at.insert(
         "c".into(),
         std::time::Instant::now() - std::time::Duration::from_secs(1),
     );
@@ -1486,13 +1486,14 @@ fn unread_dms_lists_only_dms_with_counts_in_dm_order_until_opened() {
         serde_json::from_value(serde_json::json!({ "id": id, "type": 1, "recipients": [{ "id": format!("u{id}"), "username": "u" }] })).unwrap()
     };
     app.dms = vec![dm("3"), dm("2"), dm("1")];
-    app.mention_counts.insert("1".into(), (None, 2));
-    app.mention_counts.insert("2".into(), (None, 0));
-    app.mention_counts.insert("3".into(), (None, 5));
+    app.read_state.mention_counts.insert("1".into(), (None, 2));
+    app.read_state.mention_counts.insert("2".into(), (None, 0));
+    app.read_state.mention_counts.insert("3".into(), (None, 5));
     // サーバーのチャンネルと、一覧にない DM は並べない
-    app.mention_counts
+    app.read_state
+        .mention_counts
         .insert("g".into(), (Some("100".into()), 4));
-    app.mention_counts.insert("9".into(), (None, 1));
+    app.read_state.mention_counts.insert("9".into(), (None, 1));
     let list: Vec<(&str, u32)> = app
         .unread_dms()
         .into_iter()
@@ -1517,41 +1518,57 @@ fn unread_marks_remain_until_ack_succeeds() {
     app.backend = Some(Backend { cmd, ev });
     app.sync_read_state(true);
     assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { .. })));
-    app.mention_counts.insert("c".into(), (None, 1));
-    app.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 1));
+    app.read_state.unread.insert("c".into(), None);
     app.sync_read_state(false);
-    assert!(app.mention_counts.contains_key("c"), "見ていない間は残す");
+    assert!(
+        app.read_state.mention_counts.contains_key("c"),
+        "見ていない間は残す"
+    );
     app.sync_read_state(true);
-    assert!(app.mention_counts.contains_key("c") && app.unread.contains_key("c"));
+    assert!(
+        app.read_state.mention_counts.contains_key("c") && app.read_state.unread.contains_key("c")
+    );
     tx.send(Event::AckSucceeded {
         channel_id: "c".into(),
         message_id: "100000".into(),
     })
     .unwrap();
     app.poll();
-    assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
+    assert!(
+        !app.read_state.mention_counts.contains_key("c")
+            && !app.read_state.unread.contains_key("c")
+    );
     assert!(rx.try_recv().is_err(), "既読は送り直さない");
     // 成功後に READY などで件数が再び入っても、同じ最新位置なら消せる。
-    app.mention_counts.insert("c".into(), (None, 1));
-    app.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 1));
+    app.read_state.unread.insert("c".into(), None);
     app.sync_read_state(true);
-    assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
+    assert!(
+        !app.read_state.mention_counts.contains_key("c")
+            && !app.read_state.unread.contains_key("c")
+    );
     assert!(rx.try_recv().is_err());
 }
 
 #[test]
 fn empty_loaded_channel_clears_unread_only_after_loading() {
     let mut app = bench_app(0);
-    app.unread.insert("c".into(), None);
-    app.mention_counts.insert("c".into(), (None, 1));
+    app.read_state.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 1));
     app.pending_message_loads.insert("c".into(), Vec::new());
     app.sync_read_state(true);
-    assert!(app.unread.contains_key("c") && app.mention_counts.contains_key("c"));
+    assert!(
+        app.read_state.unread.contains_key("c") && app.read_state.mention_counts.contains_key("c")
+    );
     app.pending_message_loads.remove("c");
     app.sync_read_state(false);
-    assert!(app.unread.contains_key("c"));
+    assert!(app.read_state.unread.contains_key("c"));
     app.sync_read_state(true);
-    assert!(!app.unread.contains_key("c") && !app.mention_counts.contains_key("c"));
+    assert!(
+        !app.read_state.unread.contains_key("c")
+            && !app.read_state.mention_counts.contains_key("c")
+    );
 }
 
 #[test]
@@ -1916,7 +1933,7 @@ fn category_collapse_hides_normal_channels_and_keeps_selected_or_unread() {
     // 選択中・未読あり・人がいるボイスチャンネルは閉じていても出す
     app.sel_channel = Some("c1".into());
     assert!(app.channel_visible_in_collapsed_category(&c1, None));
-    app.unread.insert("c2".into(), None);
+    app.read_state.unread.insert("c2".into(), None);
     assert!(app.channel_visible_in_collapsed_category(&c2, None));
     assert_eq!(app.sidebar_order(), ["c1", "c2"]);
     assert!(app.channel_visible_in_collapsed_category(&v1, Some("v1")));
@@ -1937,6 +1954,41 @@ fn category_collapse_hides_normal_channels_and_keeps_selected_or_unread() {
     app.toggle_category("cat1");
     assert!(!app.is_category_collapsed("cat1"));
     let _ = std::fs::remove_dir_all(crate::profile::account_dir(Some(profile)));
+}
+
+#[test]
+fn selecting_same_channel_preserves_editing() {
+    let mut app = bench_app(1);
+    app.editing = Some(app.messages["c"][0].clone());
+    app.input = "draft edit".into();
+    app.select(None, Some("c".into()));
+    assert!(app.editing.is_some());
+    assert_eq!(app.input, "draft edit");
+}
+
+#[test]
+fn navigation_restores_read_marks_and_clears_editing() {
+    for via_guild in [false, true] {
+        let mut app = bench_app(1);
+        let message = app.messages["c"][0].clone();
+        app.editing = Some(message.clone());
+        app.reply_to = Some(message);
+        app.input = "old draft".into();
+        app.pending_message_loads.insert("c".into(), Vec::new());
+        app.read_state
+            .hidden_read_marks
+            .insert("c".into(), (Some(None), Some((None, 2))));
+        if via_guild {
+            app.pick_guild(Some("other".into()));
+        } else {
+            app.select(None, None);
+        }
+        assert!(app.read_state.unread.contains_key("c"));
+        assert_eq!(app.read_state.mention_counts.get("c").map(|x| x.1), Some(2));
+        assert!(app.editing.is_none());
+        assert!(app.reply_to.is_none());
+        assert!(app.input.is_empty());
+    }
 }
 
 #[test]
@@ -2263,10 +2315,13 @@ fn opened_channel_hides_marks_and_restores_them_if_ack_fails() {
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
-    app.unread.insert("c".into(), None);
-    app.mention_counts.insert("c".into(), (None, 2));
+    app.read_state.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 2));
     app.open_channel("c".into());
-    assert!(!app.unread.contains_key("c") && !app.mention_counts.contains_key("c"));
+    assert!(
+        !app.read_state.unread.contains_key("c")
+            && !app.read_state.mention_counts.contains_key("c")
+    );
     app.sync_read_state(true);
     assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { .. })));
     tx.send(Event::AckFailed {
@@ -2275,19 +2330,22 @@ fn opened_channel_hides_marks_and_restores_them_if_ack_fails() {
     })
     .unwrap();
     app.poll();
-    assert!(app.unread.contains_key("c"));
-    assert_eq!(app.mention_counts.get("c"), Some(&(None, 2)));
+    assert!(app.read_state.unread.contains_key("c"));
+    assert_eq!(app.read_state.mention_counts.get("c"), Some(&(None, 2)));
 }
 
 #[test]
 fn opening_channel_without_messages_clears_marks() {
     // フォーラムやボイス、読み込みに失敗したチャンネルは既読通知を送れないが、開けば印は消える
     let mut app = App::default();
-    app.unread.insert("v".into(), None);
-    app.mention_counts.insert("v".into(), (None, 1));
+    app.read_state.unread.insert("v".into(), None);
+    app.read_state.mention_counts.insert("v".into(), (None, 1));
     app.open_channel("v".into());
     app.sync_read_state(true);
-    assert!(!app.unread.contains_key("v") && !app.mention_counts.contains_key("v"));
+    assert!(
+        !app.read_state.unread.contains_key("v")
+            && !app.read_state.mention_counts.contains_key("v")
+    );
 }
 
 #[test]
@@ -2308,9 +2366,9 @@ fn manual_mark_unread_elsewhere_is_acked_when_viewed() {
         "MESSAGE_ACK",
         serde_json::json!({ "channel_id": "c", "message_id": "99999", "manual": true, "mention_count": 1 }),
     );
-    assert!(app.unread.contains_key("c"));
-    assert_eq!(app.mention_counts.get("c"), Some(&(None, 1)));
-    app.last_ack = None;
+    assert!(app.read_state.unread.contains_key("c"));
+    assert_eq!(app.read_state.mention_counts.get("c"), Some(&(None, 1)));
+    app.read_state.last_ack = None;
     app.sync_read_state(true);
     assert!(
         matches!(rx.try_recv(), Ok(Cmd::Ack { channel_id, message_id }) if channel_id == "c" && message_id == "100000")
@@ -2323,13 +2381,13 @@ fn switching_away_during_load_restores_unread_marks() {
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     let (_tx, ev) = std::sync::mpsc::channel();
     app.backend = Some(Backend { cmd, ev });
-    app.unread.insert("c".into(), None);
-    app.mention_counts.insert("c".into(), (None, 1));
+    app.read_state.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 1));
     app.open_channel("c".into());
     assert!(app.pending_message_loads.contains_key("c"));
     app.open_channel("other".into());
-    assert!(app.unread.contains_key("c"));
-    assert_eq!(app.mention_counts.get("c"), Some(&(None, 1)));
+    assert!(app.read_state.unread.contains_key("c"));
+    assert_eq!(app.read_state.mention_counts.get("c"), Some(&(None, 1)));
 }
 
 #[test]

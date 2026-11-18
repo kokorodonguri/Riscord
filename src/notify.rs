@@ -19,6 +19,8 @@ pub fn show(
         return;
     }
     std::thread::spawn(move || {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let body = escape_markup(&body);
         let mut n = notify_rust::Notification::new();
         n.appname("Riscord").summary(&title).body(&body);
         #[cfg(all(unix, not(target_os = "macos")))]
@@ -49,6 +51,13 @@ pub fn show(
     });
 }
 
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+fn escape_markup(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// 通知の本文を短くする（1行・長すぎない）
 pub fn excerpt(s: &str, max: usize) -> String {
     let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -63,6 +72,14 @@ pub fn excerpt(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn escapes_markup_in_notification_body() {
+        assert_eq!(
+            super::escape_markup("<a href='x'>&"),
+            "&lt;a href='x'&gt;&amp;"
+        );
+    }
+
     #[test]
     fn excerpt_shortens() {
         assert_eq!(super::excerpt("a\n b", 10), "a b");

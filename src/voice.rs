@@ -338,23 +338,36 @@ impl AudioIo {
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         let thread = std::thread::spawn(move || {
+            let mut input = None;
+            let mut output = None;
             while !stop2.load(Relaxed) {
-                ctl.restart.store(false, Relaxed);
-                let streams = open_streams(&ctl, &mic, out.as_ref());
-                if let Err(e) = &streams {
-                    eprintln!("audio: {e:#}");
+                if ctl.restart.swap(false, Relaxed) {
+                    input = None;
+                    output = None;
                 }
-                let retry = streams
-                    .as_ref()
-                    .map_or(true, |s| s.len() < if out.is_some() { 2 } else { 1 });
+                if input.is_none() || (out.is_some() && output.is_none()) {
+                    let (new_input, new_output) = open_streams(
+                        &ctl,
+                        &mic,
+                        out.as_ref().filter(|_| output.is_none()),
+                        input.is_none(),
+                    );
+                    if input.is_none() {
+                        input = new_input;
+                    }
+                    if output.is_none() {
+                        output = new_output;
+                    }
+                }
                 let opened = Instant::now();
                 while !stop2.load(Relaxed) && !ctl.restart.load(Relaxed) {
-                    if retry && opened.elapsed() >= Duration::from_secs(5) {
+                    if (input.is_none() || (out.is_some() && output.is_none()))
+                        && opened.elapsed() >= Duration::from_secs(5)
+                    {
                         break;
                     }
                     std::thread::park_timeout(Duration::from_millis(200));
                 }
-                drop(streams);
             }
             f32_store(&ctl.level, 0.0);
             ctl.vad_open.store(false, Relaxed);
@@ -370,105 +383,109 @@ fn open_streams(
     ctl: &Arc<VoiceCtl>,
     mic: &Arc<Ring>,
     out: Option<&Arc<Ring>>,
-) -> Result<Vec<cpal::Stream>> {
-    let mut streams = Vec::new();
+    open_input: bool,
+) -> (Option<cpal::Stream>, Option<cpal::Stream>) {
+    let mut input_stream = None;
+    let mut output_stream = None;
 
     // 一方のデバイスが使えなくても、もう一方を開く。
-    let input = (|| -> Result<cpal::Stream> {
-        let in_name = ctl.input_device.lock().unwrap().clone();
-        let dev = find_device(true, in_name.as_deref()).ok_or_else(|| {
-            anyhow!(
-                "{}",
-                tr!(
-                    "入力デバイスがありません",
-                    "No input device",
-                    "没有输入设备",
-                )
-            )
-        })?;
-        let cfg = dev.default_input_config()?;
-        let ch = cfg.channels() as usize;
-        let fmt = cfg.sample_format();
-        let config: cpal::StreamConfig = cfg.into();
-        let mut rs = Resampler::new(config.sample_rate, RATE, 2);
-        let (ctl2, mic2) = (ctl.clone(), mic.clone());
-        let mut last_loud = Instant::now() - VAD_HANG;
-        let mut st = Vec::new();
-        let mut rsd = Vec::new();
-        let mut denoised = Vec::new();
-        let mut denoiser: Option<Denoiser> = None;
-        let mut on_input = move |data: &[f32]| {
-            let gain = f32_load(&ctl2.in_gain);
-            st.clear();
-            to_stereo(data, ch, &mut st);
-            st.iter_mut()
-                .for_each(|s| *s = (*s * gain).clamp(-1.0, 1.0));
-            rsd.clear();
-            rs.run(&st, &mut rsd);
-            // 雑音を消してから音量を測る（雑音で音声検出が開かないように）
-            if ctl2.noise_suppression.load(Relaxed) {
-                denoiser
-                    .get_or_insert_with(Denoiser::new)
-                    .run(&rsd, &mut denoised);
-                std::mem::swap(&mut rsd, &mut denoised);
-            } else {
-                denoiser = None;
-            }
-            let rms = if rsd.is_empty() {
-                0.0
-            } else {
-                (rsd.iter().map(|s| s * s).sum::<f32>() / rsd.len() as f32).sqrt()
-            };
-            let prev = f32_load(&ctl2.level);
-            f32_store(&ctl2.level, rms.max(prev * 0.85));
-            if rms >= f32_load(&ctl2.vad_threshold) {
-                last_loud = Instant::now();
-            }
-            let open = last_loud.elapsed() < VAD_HANG;
-            if ctl2.vad_open.swap(open, Relaxed) != open {
-                ctl2.repaint();
-            }
-            mic2.push(&rsd, MIC_MAX);
-        };
-        let restart = ctl.clone();
-        let err = move |e| {
-            eprintln!("audio input: {e}");
-            restart.restart.store(true, Relaxed);
-        };
-        let s = match fmt {
-            cpal::SampleFormat::F32 => {
-                dev.build_input_stream::<f32, _, _>(config, move |d, _| on_input(d), err, None)?
-            }
-            cpal::SampleFormat::I16 => {
-                let mut tmp = Vec::new();
-                dev.build_input_stream::<i16, _, _>(
-                    config,
-                    move |d, _| {
-                        tmp.clear();
-                        tmp.extend(d.iter().map(|&s| s as f32 / 32768.0));
-                        on_input(&tmp)
-                    },
-                    err,
-                    None,
-                )?
-            }
-            f => {
-                return Err(anyhow!(
+    if open_input {
+        let input = (|| -> Result<cpal::Stream> {
+            let in_name = ctl.input_device.lock().unwrap().clone();
+            let dev = find_device(true, in_name.as_deref()).ok_or_else(|| {
+                anyhow!(
                     "{}",
                     tr!(
-                        "未対応の入力形式 {f:?}",
-                        "Unsupported input format {f:?}",
-                        "不支持的输入格式 {f:?}",
+                        "入力デバイスがありません",
+                        "No input device",
+                        "没有输入设备",
                     )
-                ))
-            }
-        };
-        s.play()?;
-        Ok(s)
-    })();
-    match input {
-        Ok(s) => streams.push(s),
-        Err(e) => eprintln!("audio input: {e:#}"),
+                )
+            })?;
+            let cfg = dev.default_input_config()?;
+            let ch = cfg.channels() as usize;
+            let fmt = cfg.sample_format();
+            let config: cpal::StreamConfig = cfg.into();
+            let mut rs = Resampler::new(config.sample_rate, RATE, 2);
+            let (ctl2, mic2) = (ctl.clone(), mic.clone());
+            let mut last_loud = Instant::now() - VAD_HANG;
+            let mut st = Vec::new();
+            let mut rsd = Vec::new();
+            let mut denoised = Vec::new();
+            let mut denoiser: Option<Denoiser> = None;
+            let mut on_input = move |data: &[f32]| {
+                let gain = f32_load(&ctl2.in_gain);
+                st.clear();
+                to_stereo(data, ch, &mut st);
+                st.iter_mut()
+                    .for_each(|s| *s = (*s * gain).clamp(-1.0, 1.0));
+                rsd.clear();
+                rs.run(&st, &mut rsd);
+                // 雑音を消してから音量を測る（雑音で音声検出が開かないように）
+                if ctl2.noise_suppression.load(Relaxed) {
+                    denoiser
+                        .get_or_insert_with(Denoiser::new)
+                        .run(&rsd, &mut denoised);
+                    std::mem::swap(&mut rsd, &mut denoised);
+                } else {
+                    denoiser = None;
+                }
+                let rms = if rsd.is_empty() {
+                    0.0
+                } else {
+                    (rsd.iter().map(|s| s * s).sum::<f32>() / rsd.len() as f32).sqrt()
+                };
+                let prev = f32_load(&ctl2.level);
+                f32_store(&ctl2.level, rms.max(prev * 0.85));
+                if rms >= f32_load(&ctl2.vad_threshold) {
+                    last_loud = Instant::now();
+                }
+                let open = last_loud.elapsed() < VAD_HANG;
+                if ctl2.vad_open.swap(open, Relaxed) != open {
+                    ctl2.repaint();
+                }
+                mic2.push(&rsd, MIC_MAX);
+            };
+            let restart = ctl.clone();
+            let err = move |e| {
+                eprintln!("audio input: {e}");
+                restart.restart.store(true, Relaxed);
+            };
+            let s = match fmt {
+                cpal::SampleFormat::F32 => {
+                    dev.build_input_stream::<f32, _, _>(config, move |d, _| on_input(d), err, None)?
+                }
+                cpal::SampleFormat::I16 => {
+                    let mut tmp = Vec::new();
+                    dev.build_input_stream::<i16, _, _>(
+                        config,
+                        move |d, _| {
+                            tmp.clear();
+                            tmp.extend(d.iter().map(|&s| s as f32 / 32768.0));
+                            on_input(&tmp)
+                        },
+                        err,
+                        None,
+                    )?
+                }
+                f => {
+                    return Err(anyhow!(
+                        "{}",
+                        tr!(
+                            "未対応の入力形式 {f:?}",
+                            "Unsupported input format {f:?}",
+                            "不支持的输入格式 {f:?}",
+                        )
+                    ))
+                }
+            };
+            s.play()?;
+            Ok(s)
+        })();
+        match input {
+            Ok(s) => input_stream = Some(s),
+            Err(e) => eprintln!("audio input: {e:#}"),
+        }
     }
 
     // スピーカー
@@ -566,11 +583,11 @@ fn open_streams(
             Ok(s)
         })();
         match output {
-            Ok(s) => streams.push(s),
+            Ok(s) => output_stream = Some(s),
             Err(e) => eprintln!("audio output: {e:#}"),
         }
     }
-    Ok(streams)
+    (input_stream, output_stream)
 }
 
 /// 設定画面のマイクテスト。持っている間だけマイクを開いてレベルを測る

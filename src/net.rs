@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
+#[cfg(test)]
+use futures_util::StreamExt;
 use reqwest::{header::AUTHORIZATION, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -15,9 +17,9 @@ use crate::voice::{VoiceCtl, VoiceSession};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-mod inflate;
 mod rest;
-use inflate::Inflater;
+#[cfg(test)]
+use crate::inflate::Inflater;
 #[allow(unused_imports)]
 pub use rest::encode;
 pub use rest::ApiCall;
@@ -45,38 +47,13 @@ const API: &str = "https://discord.com/api/v10";
 const GATEWAY: &str = "wss://gateway.discord.gg/?v=10&encoding=json&compress=zlib-stream";
 
 /// テキスト・圧縮バイナリのどちらで届いても JSON にする。まだ途中なら None
+#[cfg(test)]
 fn decode_frame(msg: &WsMsg, inflater: &mut Inflater) -> Result<Option<Value>> {
     decode_frame_as(msg, inflater)
 }
 
-/// ゲートウェイの1件。op・s・t は従来どおり Value で読み、d は文字列のまま持って
-/// 使う種類のときだけ解析する（入力中・リアクションなど使わない種類は木を作らない）
-#[derive(serde::Deserialize)]
-struct GatewayFrame {
-    #[serde(default)]
-    op: Value,
-    #[serde(default)]
-    s: Value,
-    #[serde(default)]
-    t: Value,
-    d: Option<Box<serde_json::value::RawValue>>,
-}
-
-fn decode_frame_as<T: DeserializeOwned>(msg: &WsMsg, inflater: &mut Inflater) -> Result<Option<T>> {
-    let text = match msg {
-        WsMsg::Text(t) => t.as_str(),
-        WsMsg::Binary(b) => match inflater.push(b)? {
-            Some(t) => t,
-            None => return Ok(None),
-        },
-        _ => return Ok(None),
-    };
-    let parsed = serde_json::from_str(text).ok();
-    if inflater.out.capacity() > Inflater::KEEP {
-        inflater.out = Vec::new();
-    }
-    Ok(parsed)
-}
+#[cfg(test)]
+use crate::gateway::{decode_frame_as, GatewayFrame};
 
 fn identify_properties() -> Value {
     json!({ "os": "Linux", "browser": "Discord Client", "device": "" })
@@ -806,6 +783,33 @@ fn api_client(connect_timeout: Duration, read_timeout: Duration) -> Result<reqwe
         .build()?)
 }
 
+#[derive(Default)]
+struct GuildLoads(HashMap<String, u64>);
+
+impl GuildLoads {
+    // Returns true only when a worker must be started.
+    fn request(&mut self, guild: &str) -> bool {
+        if let Some(revision) = self.0.get_mut(guild) {
+            *revision = revision.wrapping_add(1);
+            false
+        } else {
+            self.0.insert(guild.to_owned(), 0);
+            true
+        }
+    }
+    fn revision(&self, guild: &str) -> u64 {
+        self.0.get(guild).copied().unwrap_or_default()
+    }
+    fn finish(&mut self, guild: &str, revision: u64) -> bool {
+        if self.0.get(guild) == Some(&revision) {
+            self.0.remove(guild);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 async fn run(
     token: String,
     status: MyPresence,
@@ -887,7 +891,35 @@ async fn run(
         });
     }
 
+    // One worker per guild coalesces bursts and repeats if another request arrives
+    // while the previous snapshot is in flight.
+    let guild_loads = Arc::new(Mutex::new(GuildLoads::default()));
     while let Some(cmd) = cmd_rx.recv().await {
+        if let Cmd::LoadGuildChannels(gid) = &cmd {
+            if !guild_loads.lock().unwrap().request(gid) {
+                continue;
+            }
+            let (api, tx, me, gid, loads) = (
+                api.clone(),
+                tx.clone(),
+                me_id.clone(),
+                gid.clone(),
+                guild_loads.clone(),
+            );
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let revision = loads.lock().unwrap().revision(&gid);
+                    if let Err(e) = load_guild_channels(&api, &tx, &me, gid.clone()).await {
+                        tx.send(Event::Error(format!("{e:#}")));
+                    }
+                    if loads.lock().unwrap().finish(&gid, revision) {
+                        break;
+                    }
+                }
+            });
+            continue;
+        }
         if let Cmd::SetActivity(on) = &cmd {
             let payload = {
                 let mut p = status.lock().unwrap();
@@ -947,47 +979,10 @@ async fn run(
             let _ = v_tx.send(m);
             continue;
         }
-        let (api, tx, me) = (api.clone(), tx.clone(), me_id.clone());
+        let (api, tx) = (api.clone(), tx.clone());
         tokio::spawn(async move {
             let res = match cmd {
-                Cmd::LoadGuildChannels(gid) => {
-                    let channel_path = format!("/guilds/{gid}/channels");
-                    let role_path = format!("/guilds/{gid}/roles");
-                    let member_path = format!("/guilds/{gid}/members/{me}");
-                    let (channels, roles, member) = tokio::join!(
-                        api.get::<Vec<Channel>>(&channel_path),
-                        api.get::<Vec<Role>>(&role_path),
-                        api.get::<Member>(&member_path),
-                    );
-                    // 見る権限のないチャンネルは本家と同じく出さない（開くと 403 になる）。
-                    // 自分のロールが分からないときは絞らない（見えるはずのものを隠さないため）
-                    let filter = match (&roles, &member) {
-                        (Ok(roles), Ok(member)) => {
-                            api.guild_perms.lock().unwrap().get(&gid).map(|owner| {
-                                let base = if *owner == u64::MAX {
-                                    u64::MAX
-                                } else {
-                                    model::base_permissions(&gid, roles, &member.roles)
-                                };
-                                (base, member.roles.clone())
-                            })
-                        }
-                        _ => None,
-                    };
-                    if let Ok(roles) = roles {
-                        api.store_roles(&gid, &roles);
-                        tx.send(Event::GuildRoles(gid.clone(), roles));
-                    }
-                    channels.map(|c| {
-                        let c = match filter {
-                            Some((base, my_roles)) => {
-                                model::visible_channels(c, &gid, base, &my_roles, &me)
-                            }
-                            None => c,
-                        };
-                        tx.send(Event::GuildChannels(gid, c))
-                    })
-                }
+                Cmd::LoadGuildChannels(_) => unreachable!("handled before spawning"),
                 Cmd::LoadMessages(cid) => match api
                     .get::<Vec<Message>>(&format!("/channels/{cid}/messages?limit={HISTORY_PAGE}"))
                     .await
@@ -1208,6 +1203,41 @@ async fn run(
             }
         });
     }
+}
+
+async fn load_guild_channels(api: &Api, tx: &Tx, me: &str, gid: String) -> Result<()> {
+    let channel_path = format!("/guilds/{gid}/channels");
+    let role_path = format!("/guilds/{gid}/roles");
+    let member_path = format!("/guilds/{gid}/members/{me}");
+    let (channels, roles, member) = tokio::join!(
+        api.get::<Vec<Channel>>(&channel_path),
+        api.get::<Vec<Role>>(&role_path),
+        api.get::<Member>(&member_path),
+    );
+    // 見る権限のないチャンネルは本家と同じく出さない（開くと 403 になる）。
+    // 自分のロールが分からないときは絞らない（見えるはずのものを隠さないため）
+    let filter = match (&roles, &member) {
+        (Ok(roles), Ok(member)) => api.guild_perms.lock().unwrap().get(&gid).map(|owner| {
+            let base = if *owner == u64::MAX {
+                u64::MAX
+            } else {
+                model::base_permissions(&gid, roles, &member.roles)
+            };
+            (base, member.roles.clone())
+        }),
+        _ => None,
+    };
+    if let Ok(roles) = roles {
+        api.store_roles(&gid, &roles);
+        tx.send(Event::GuildRoles(gid.clone(), roles));
+    }
+    channels.map(|c| {
+        let c = match filter {
+            Some((base, my_roles)) => model::visible_channels(c, &gid, base, &my_roles, me),
+            None => c,
+        };
+        tx.send(Event::GuildChannels(gid.clone(), c))
+    })
 }
 
 async fn delete_message(api: &Api, tx: &Tx, channel_id: String, id: String) -> Result<()> {
@@ -1502,14 +1532,7 @@ async fn gateway_loop(
     }
 }
 
-/// 再開（RESUME）に使う、前の接続の情報
-#[derive(Default)]
-struct GatewaySession {
-    id: Option<String>,
-    seq: Option<i64>,
-    /// READY の resume_gateway_url（再開はここにつなぐ）
-    resume_url: Option<String>,
-}
+use crate::gateway::GatewaySession;
 
 /// 1回の接続がどう終わったか
 #[derive(Debug, PartialEq)]
@@ -1530,8 +1553,8 @@ fn reconnect_delay(failures: u32) -> Duration {
 
 /// 切断コードごとの扱い（https://discord.com/developers/docs/topics/opcodes-and-status-codes）
 fn close_action(code: u16) -> GatewayEnd {
-    match code {
-        4004 => GatewayEnd::Fatal(
+    match crate::gateway::close_action(code) {
+        crate::gateway::CloseAction::Fatal if code == 4004 => GatewayEnd::Fatal(
             tr!(
                 "トークンが無効です。ログインし直してください。",
                 "Your token is invalid. Please log in again.",
@@ -1539,23 +1562,15 @@ fn close_action(code: u16) -> GatewayEnd {
             )
             .into(),
         ),
-        4010..=4014 => GatewayEnd::Fatal(tr!(
+        crate::gateway::CloseAction::Fatal => GatewayEnd::Fatal(tr!(
             "Discord に接続を断られました（{code}）。再接続を止めました。",
             "Discord refused the connection ({code}). Stopped reconnecting.",
             "Discord 拒绝了连接（{code}）。已停止重新连接。",
         )),
         // 連番が合わない・セッションの期限切れ: 再開はできない
-        4007 | 4009 => GatewayEnd::Reidentify,
-        _ => GatewayEnd::Resume,
+        crate::gateway::CloseAction::Reidentify => GatewayEnd::Reidentify,
+        crate::gateway::CloseAction::Resume => GatewayEnd::Resume,
     }
-}
-
-#[derive(serde::Deserialize)]
-struct ReadySession {
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default)]
-    resume_gateway_url: Option<String>,
 }
 
 use Event::Status;
@@ -1586,7 +1601,7 @@ async fn gateway_once_at(
     ready: &mut bool,
 ) -> Result<GatewayEnd> {
     // 再開できるときは READY で教わった接続先へ（同じ接続の設定を付ける）
-    let resume = session.id.clone().zip(session.seq);
+    let resume = session.resumable().map(|(id, seq)| (id.to_owned(), seq));
     let url = match (&resume, &session.resume_url) {
         (Some(_), Some(base)) => format!(
             "{}/?{}",
@@ -1595,69 +1610,18 @@ async fn gateway_once_at(
         ),
         _ => gateway.to_string(),
     };
-    let (ws, _) = tokio::time::timeout(
-        Duration::from_secs(30),
-        tokio_tungstenite::connect_async(url.as_str()),
-    )
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "{}",
-            tr!(
-                "Gateway 接続がタイムアウトしました",
-                "Gateway connection timed out",
-                "Gateway 连接超时",
-            )
-        )
-    })??;
-    let (mut write, mut read) = ws.split();
-    let mut inflater = Inflater::new();
-
-    let hello = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match read.next().await {
-                Some(Ok(m @ (WsMsg::Text(_) | WsMsg::Binary(_)))) => {
-                    match decode_frame(&m, &mut inflater)? {
-                        Some(v) => break Ok(v),
-                        None => continue,
-                    }
+    let (mut ws, inflater, period) = match crate::gateway::connect_and_hello(&url).await {
+        Ok(connection) => connection,
+        Err(error) => {
+            if let Some(crate::gateway::GatewayClosed(code)) = error.downcast_ref() {
+                if *code == 4004 {
+                    tx.send(Event::AuthFailed);
                 }
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => return Err(e.into()),
-                None => bail!(
-                    "{}",
-                    tr!(
-                        "helloを受信する前に切断",
-                        "Disconnected before receiving hello",
-                        "在收到 hello 前断开",
-                    )
-                ),
+                return Ok(close_action(*code));
             }
+            return Err(error);
         }
-    })
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "{}",
-            tr!(
-                "Gateway Hello の受信がタイムアウトしました",
-                "Timed out waiting for Gateway Hello",
-                "等待 Gateway Hello 超时",
-            )
-        )
-    })??;
-    let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41_250);
-    if interval_ms == 0 {
-        bail!(
-            "{}",
-            tr!(
-                "無効な heartbeat interval",
-                "Invalid heartbeat interval",
-                "无效的 heartbeat interval",
-            )
-        );
-    }
-
+    };
     let first = match &resume {
         // 途中から再開する（切れていた間のイベントは Discord が送り直す）
         Some((id, seq)) => {
@@ -1673,74 +1637,34 @@ async fn gateway_once_at(
             }
         }),
     };
-    write.send(WsMsg::Text(first.to_string().into())).await?;
+    ws.send(WsMsg::Text(first.to_string().into())).await?;
 
-    let period = Duration::from_millis(interval_ms);
-    let mut hb = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-    let mut acked = true;
-
-    loop {
-        tokio::select! {
-            Some(v) = out.recv() => {
-                write.send(WsMsg::Text(v.to_string().into())).await?;
+    let end = crate::gateway::run_session(ws, inflater, period, session, out, false, |frame| {
+        let t = frame.t.as_str().unwrap_or("");
+        match t {
+            "READY" => {
+                *ready = true;
+                tx.send(Event::GatewayReady);
             }
-            _ = hb.tick() => {
-                if !acked { bail!("{}", tr!("heartbeat ACKなし", "No heartbeat ACK", "没有 heartbeat ACK",)); }
-                acked = false;
-                write.send(WsMsg::Text(json!({"op": 1, "d": session.seq}).to_string().into())).await?;
+            "RESUMED" => {
+                *ready = true;
+                tx.send(Status("接続済み".into()));
             }
-            msg = read.next() => {
-                let m = match msg {
-                    Some(Ok(m @ (WsMsg::Text(_) | WsMsg::Binary(_)))) => m,
-                    Some(Ok(WsMsg::Close(f))) => {
-                        if let Some(f) = &f {
-                            let code: u16 = f.code.into();
-                            if code == 4004 { tx.send(Event::AuthFailed); }
-                            eprintln!("ゲートウェイが閉じられた: {code} {}", f.reason);
-                            return Ok(close_action(code));
-                        }
-                        return Ok(GatewayEnd::Resume);
-                    }
-                    Some(Ok(_)) => continue,
-                    Some(Err(e)) => return Err(e.into()),
-                    None => bail!("{}", tr!("切断", "Disconnected", "已断开",)),
-                };
-                let Some(f) = decode_frame_as::<GatewayFrame>(&m, &mut inflater)? else { continue };
-                if let Some(s) = f.s.as_i64() { session.seq = Some(s); }
-                match f.op.as_u64() {
-                    Some(0) => {
-                        let t = f.t.as_str().unwrap_or("");
-                        match t {
-                            "READY" => {
-                                if let Some(r) = f.d.as_deref().and_then(|raw| serde_json::from_str::<ReadySession>(raw.get()).ok()) {
-                                    session.id = r.session_id;
-                                    session.resume_url = r.resume_gateway_url;
-                                }
-                                *ready = true;
-                                tx.send(Event::GatewayReady);
-                            }
-                            "RESUMED" => {
-                                *ready = true;
-                                tx.send(Status("接続済み".into()));
-                            }
-                            _ => {}
-                        }
-                        dispatch_raw(t, f.d.as_deref(), tx, v_tx);
-                    }
-                    Some(1) => write.send(WsMsg::Text(json!({"op": 1, "d": session.seq}).to_string().into())).await?,
-                    // 再接続を頼まれた: 再開する
-                    Some(7) => return Ok(GatewayEnd::Resume),
-                    // セッションが無効: d が true なら再開でき、false なら一からログインし直す
-                    Some(9) => {
-                        let resumable = f.d.as_deref().is_some_and(|d| d.get().trim() == "true");
-                        return Ok(if resumable { GatewayEnd::Resume } else { GatewayEnd::Reidentify });
-                    }
-                    Some(11) => acked = true,
-                    _ => {}
-                }
-            }
+            _ => {}
         }
-    }
+        dispatch_raw(t, frame.d.as_deref(), tx, v_tx);
+    })
+    .await?;
+    Ok(match end {
+        crate::gateway::SessionEnd::Resume => GatewayEnd::Resume,
+        crate::gateway::SessionEnd::Reidentify => GatewayEnd::Reidentify,
+        crate::gateway::SessionEnd::Closed(code) => {
+            if code == 4004 {
+                tx.send(Event::AuthFailed);
+            }
+            close_action(code)
+        }
+    })
 }
 
 /// ディスパッチ (op 0) を種類 t と本体 d に分ける。
@@ -2553,6 +2477,20 @@ async fn voice_task(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guild_loads_coalesce_and_retry_changes_during_flight() {
+        let mut loads = super::GuildLoads::default();
+        assert!(loads.request("a"));
+        assert!(!loads.request("a"));
+        assert!(loads.request("b"));
+        let revision = loads.revision("a");
+        assert!(!loads.request("a"));
+        assert!(!loads.finish("a", revision));
+        assert!(loads.finish("a", loads.revision("a")));
+        assert!(loads.request("a"));
+        assert!(loads.finish("b", loads.revision("b")));
+    }
+
     use super::*;
 
     #[tokio::test]

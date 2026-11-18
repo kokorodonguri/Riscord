@@ -139,7 +139,11 @@ impl App {
         }
         let mut list = list;
         self.fill_message_members(&channel_id, &mut list);
-        let latest = self.channel_last_message(&channel_id);
+        let latest = self
+            .channel_last_message(&channel_id)
+            .into_iter()
+            .chain(self.latest_live_message(&channel_id).map(|m| m.id.clone()))
+            .max_by(|a, b| id_order(a, b));
         let newer = match (&latest, list.last()) {
             (Some(l), Some(last)) => id_order(&last.id, l).is_lt(),
             // 最新の ID が分からなければ、つながっていない扱いにする（「最新へ」で戻れる）

@@ -205,6 +205,7 @@ impl App {
         }
         // DM は最後のメッセージまで既読にする
         let dms: Vec<(String, String)> = self
+            .read_state
             .unread
             .iter()
             .filter(|(_, g)| g.is_none())
@@ -221,8 +222,8 @@ impl App {
         if !dms.is_empty() {
             self.api(net::ApiCall::AckBulk(dms));
         }
-        self.unread.clear();
-        self.mention_counts.clear();
+        self.read_state.unread.clear();
+        self.read_state.mention_counts.clear();
         self.show_toast(tr!(
             "すべて既読にしました",
             "Marked everything as read",

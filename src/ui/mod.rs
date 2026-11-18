@@ -1711,6 +1711,14 @@ impl Root {
             cx.stop_propagation();
             return;
         }
+        if self.app.settings_open {
+            if k.key == "escape" {
+                self.settings_escape();
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
         let m = &k.modifiers;
         // Ctrl / Cmd+F: メッセージ検索
         if cmd_or_ctrl(m) && !m.alt && !m.shift && k.key == "f" && self.app.sel_channel.is_some() {
@@ -1733,14 +1741,6 @@ impl Root {
             }
             cx.stop_propagation();
             cx.notify();
-            return;
-        }
-        if self.app.settings_open {
-            if k.key == "escape" {
-                self.settings_escape();
-                cx.stop_propagation();
-                cx.notify();
-            }
             return;
         }
         if self.app.switcher.is_some() {

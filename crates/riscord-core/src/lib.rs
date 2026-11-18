@@ -10,6 +10,8 @@ pub mod model;
 pub mod wake;
 
 mod android;
+#[path = "../../../src/gateway.rs"]
+mod gateway;
 #[path = "../../../src/net/inflate.rs"]
 mod inflate;
 pub mod mobile;

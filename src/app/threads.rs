@@ -190,9 +190,13 @@ impl App {
             "THREAD_DELETE" => {
                 let Some(id) = d["id"].as_str() else { return };
                 self.remove_thread(&gid, id);
+                self.read_state.unread.remove(id);
+                self.read_state.mention_counts.remove(id);
+                self.read_state.hidden_read_marks.remove(id);
                 // 開いていたら親のチャンネルへ戻る
                 if self.sel_channel.as_deref() == Some(id) {
                     let parent = d["parent_id"].as_str().map(String::from);
+                    self.leave_channel();
                     self.sel_channel = None;
                     if let Some(p) = parent {
                         self.pending_open = Some(p);

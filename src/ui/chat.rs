@@ -438,7 +438,7 @@ impl Root {
         if let Some(uri) = self.image_preview.clone() {
             let w = (self.app.screen_w - 80.0).max(0.0);
             let h = (self.pane_h - 140.0).max(0.0);
-            let picture = match crate::images::get(&uri) {
+            let picture = match crate::images::get_preview(&uri) {
                 crate::images::Img::Ready(image) => div()
                     .w(z(w))
                     .h(z(h))
@@ -507,7 +507,7 @@ impl Root {
                                 .id("preview_close")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.image_preview = None;
+                                    this.close_image_preview();
                                     cx.notify();
                                 })),
                         ),
@@ -517,7 +517,7 @@ impl Root {
                     "image_preview",
                     content,
                     cx.listener(|this, _, _, cx| {
-                        this.image_preview = None;
+                        this.close_image_preview();
                         cx.notify();
                     }),
                     220,

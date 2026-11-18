@@ -696,13 +696,16 @@ impl App {
         if g.owner {
             return Some(u64::MAX);
         }
-        let p = match g.permissions.as_deref().and_then(|p| p.parse().ok()) {
-            Some(p) => p,
-            None => model::base_permissions(
-                guild_id,
-                self.roles.get(guild_id)?,
-                self.my_roles.get(guild_id)?,
-            ),
+        let p = match (self.roles.get(guild_id), self.my_roles.get(guild_id)) {
+            (Some(roles), Some(my_roles))
+                if roles.iter().any(|role| role.id == guild_id)
+                    && my_roles
+                        .iter()
+                        .all(|id| roles.iter().any(|role| &role.id == id)) =>
+            {
+                model::base_permissions(guild_id, roles, my_roles)
+            }
+            _ => g.permissions.as_deref()?.parse().ok()?,
         };
         Some(if p & ADMINISTRATOR != 0 { u64::MAX } else { p })
     }

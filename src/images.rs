@@ -7,10 +7,10 @@ use image::{
     codecs::gif::GifDecoder, codecs::webp::WebPDecoder, AnimationDecoder as _, Delay, Frame,
     ImageDecoder as _, RgbaImage,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::wake::Waker;
 
@@ -29,6 +29,8 @@ fn decoders() -> usize {
 }
 const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 const DOWNLOADS: usize = 4;
+const MAX_CACHE_ENTRIES: usize = 256;
+const RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub enum Img {
@@ -40,7 +42,7 @@ pub enum Img {
 enum Entry {
     Pending(Arc<()>),
     Ready(Arc<RenderImage>),
-    Failed,
+    Failed(Instant),
 }
 
 // 同じ URI を捨てて再取得した場合、古い非同期処理は新しい要求を完了できない。
@@ -50,6 +52,7 @@ fn is_current_request(entry: Option<&Entry>, request: &Arc<()>) -> bool {
 
 struct Store {
     cache: Mutex<HashMap<String, Entry>>,
+    order: Mutex<VecDeque<String>>,
     /// 捨てた画像。描画側で GPU のテクスチャも解放する
     dropped: Mutex<Vec<Arc<RenderImage>>>,
     waker: Mutex<Waker>,
@@ -63,6 +66,7 @@ fn store() -> &'static Store {
     static S: OnceLock<Store> = OnceLock::new();
     S.get_or_init(|| Store {
         cache: Mutex::new(HashMap::new()),
+        order: Mutex::new(VecDeque::new()),
         dropped: Mutex::new(Vec::new()),
         waker: Mutex::new(Waker::default()),
         // 待ち時間がほとんどなので少数のスレッドで足りる
@@ -93,16 +97,46 @@ pub fn set_waker(w: Waker) {
 
 /// 画像を返す。まだなら読み込みを始めて Pending
 pub fn get(uri: &str) -> Img {
+    get_variant(uri, false)
+}
+
+/// Full-screen images use a separate, higher-resolution cache entry.
+pub fn get_preview(uri: &str) -> Img {
+    get_variant(uri, true)
+}
+
+fn preview_key(uri: &str) -> String {
+    format!("preview:{uri}")
+}
+
+fn get_variant(uri: &str, preview: bool) -> Img {
     let s = store();
+    let key = if preview {
+        preview_key(uri)
+    } else {
+        uri.to_string()
+    };
     let mut cache = s.cache.lock().unwrap();
-    match cache.get(uri) {
+    let mut order = s.order.lock().unwrap();
+    order.retain(|k| k != &key);
+    order.push_back(key.clone());
+    while order.len() > MAX_CACHE_ENTRIES {
+        if let Some(old) = order.pop_front() {
+            if let Some(Entry::Ready(image)) = cache.remove(&old) {
+                s.dropped.lock().unwrap().push(image);
+            }
+        }
+    }
+    drop(order);
+    match cache.get(&key) {
         Some(Entry::Ready(i)) => return Img::Ready(i.clone()),
         Some(Entry::Pending(_)) => return Img::Pending,
-        Some(Entry::Failed) => return Img::Failed,
+        Some(Entry::Failed(at)) if at.elapsed() < RETRY_DELAY => return Img::Failed,
+        Some(Entry::Failed(_)) => {}
         None => {}
     }
     let request = Arc::new(());
-    cache.insert(uri.to_string(), Entry::Pending(request.clone()));
+    cache.insert(key.clone(), Entry::Pending(request.clone()));
     drop(cache);
     let uri = uri.to_string();
     s.rt.spawn(async move {
@@ -111,7 +145,7 @@ pub fn get(uri: &str) -> Img {
             return;
         };
         // キューで待っている間に破棄された要求は通信を開始しない。
-        if !is_current_request(s.cache.lock().unwrap().get(&uri), &request) {
+        if !is_current_request(s.cache.lock().unwrap().get(&key), &request) {
             return;
         }
         let bytes = load_bytes(&s.http, &uri).await;
@@ -119,10 +153,10 @@ pub fn get(uri: &str) -> Img {
             Ok(b) => {
                 let _permit = s.decode.clone().acquire_owned().await;
                 // 待っている間に捨てられた（チャンネルを閉じた等）ならデコードしない
-                if !is_current_request(s.cache.lock().unwrap().get(&uri), &request) {
+                if !is_current_request(s.cache.lock().unwrap().get(&key), &request) {
                     return;
                 }
-                let max = if uri.starts_with("file://") {
+                let max = if preview || uri.starts_with("file://") {
                     MAX_BACKGROUND_PIXELS
                 } else {
                     MAX_FRAME_PIXELS
@@ -134,16 +168,17 @@ pub fn get(uri: &str) -> Img {
             Err(e) => Err(e),
         };
         let mut cache = s.cache.lock().unwrap();
-        if !is_current_request(cache.get(&uri), &request) {
+        if !is_current_request(cache.get(&key), &request) {
             return;
         }
         match result {
             Ok(frames) => {
-                cache.insert(uri, Entry::Ready(Arc::new(RenderImage::new(frames))));
+                cache.insert(key, Entry::Ready(Arc::new(RenderImage::new(frames))));
             }
             Err(e) => {
                 eprintln!("画像の読み込み失敗 {uri}: {e}");
-                cache.insert(uri, Entry::Failed);
+                cache.insert(key, Entry::Failed(Instant::now()));
+                s.waker.lock().unwrap().wake_after(RETRY_DELAY);
             }
         }
         drop(cache);
@@ -158,7 +193,7 @@ pub fn peek(uri: &str) -> Img {
     match store().cache.lock().unwrap().get(uri) {
         Some(Entry::Ready(i)) => Img::Ready(i.clone()),
         Some(Entry::Pending(_)) => Img::Pending,
-        Some(Entry::Failed) => Img::Failed,
+        Some(Entry::Failed(_)) => Img::Failed,
         None => Img::Pending,
     }
 }
@@ -166,9 +201,15 @@ pub fn peek(uri: &str) -> Img {
 /// キャッシュから捨てる（次に get したら読み直す）
 pub fn forget(uri: &str) {
     let s = store();
-    if let Some(Entry::Ready(i)) = s.cache.lock().unwrap().remove(uri) {
+    let mut cache = s.cache.lock().unwrap();
+    s.order.lock().unwrap().retain(|key| key != uri);
+    if let Some(Entry::Ready(i)) = cache.remove(uri) {
         s.dropped.lock().unwrap().push(i);
     }
+}
+
+pub fn forget_preview(uri: &str) {
+    forget(&preview_key(uri));
 }
 
 /// キャッシュの外で作った画像（スタンプなど）を捨てる。描画側で GPU のテクスチャも解放する
@@ -383,6 +424,31 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn preview_uses_separate_cache_and_is_removed_on_close() {
+        let uri = "https://example.invalid/preview-cache-test.png";
+        let request = Arc::new(());
+        let mut cache = store().cache.lock().unwrap();
+        cache.insert(uri.into(), Entry::Pending(request.clone()));
+        cache.insert(preview_key(uri), Entry::Pending(request));
+        drop(cache);
+
+        forget_preview(uri);
+        let mut cache = store().cache.lock().unwrap();
+        assert!(cache.contains_key(uri));
+        assert!(!cache.contains_key(&preview_key(uri)));
+        cache.remove(uri);
+    }
+
+    #[test]
+    fn preview_pixel_budget_preserves_more_detail_than_thumbnail() {
+        let original = RgbaImage::new(1600, 1200);
+        let thumbnail = shrink(original.clone(), MAX_FRAME_PIXELS);
+        let preview = shrink(original, MAX_BACKGROUND_PIXELS);
+        assert!(thumbnail.width() < preview.width());
+        assert_eq!(preview.dimensions(), (1600, 1200));
+    }
+
     /// 同時デコード数ごとの所要時間（GIF の多いチャンネルを開いたときの代わり）。
     /// `cargo test --release bench_decode_concurrency -- --ignored --nocapture`
     #[test]
@@ -562,7 +628,7 @@ mod request_tests {
         cache.insert("image", Entry::Pending(new.clone()));
         assert!(!is_current_request(cache.get("image"), &old));
         assert!(is_current_request(cache.get("image"), &new));
-        cache.insert("image", Entry::Failed);
+        cache.insert("image", Entry::Failed(Instant::now()));
         assert!(!is_current_request(cache.get("image"), &new));
     }
 }

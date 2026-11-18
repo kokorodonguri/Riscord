@@ -384,7 +384,8 @@ impl Depacketizer {
             self.timestamp = Some(timestamp);
             self.frame.clear();
             self.in_fu = false;
-            self.broken = false;
+            // 欠けたパケットがこのフレームの先頭かもしれない。
+            self.broken = lost;
         }
         if !payload.is_empty() {
             let kind = payload[0] & 0x1F;
@@ -446,6 +447,14 @@ impl Depacketizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lost_whole_packet_frame_requests_keyframe() {
+        let mut d = Depacketizer::default();
+        assert!(matches!(d.push(1, 1, true, &[0x65, 1]), Push::Frame(_)));
+        assert!(matches!(d.push(3, 3, true, &[0x41, 2]), Push::Lost));
+        assert!(matches!(d.push(4, 4, true, &[0x65, 3]), Push::Frame(_)));
+    }
 
     fn cipher(mode: &str) -> Cipher {
         Cipher::new(mode, &[7u8; 32]).unwrap()

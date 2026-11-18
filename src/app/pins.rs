@@ -100,16 +100,12 @@ impl App {
     /// このチャンネルでの自分の権限。DM・まだ分からないときは None
     pub fn channel_perms(&self, guild_id: Option<&str>, channel_id: &str) -> Option<u64> {
         let gid = guild_id?;
-        let g = self.guilds.iter().find(|g| g.id == gid)?;
-        if g.owner {
+        if self.guilds.iter().any(|g| g.id == gid && g.owner) {
             return Some(u64::MAX);
         }
         let me = self.me.as_ref()?.id.as_str();
         let my_roles = self.my_roles.get(gid)?;
-        let base = match g.permissions.as_deref().and_then(|p| p.parse().ok()) {
-            Some(b) => b,
-            None => model::base_permissions(gid, self.roles.get(gid)?, my_roles),
-        };
+        let base = self.guild_perms(gid)?;
         let ch = self.find_guild_channel(gid, channel_id)?;
         // スレッドは親チャンネルの権限に従う
         let ch = match ch.kind {

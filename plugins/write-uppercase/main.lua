@@ -10,7 +10,9 @@ local function capitalize(text)
   if text:match("^%s*[/!$]") or text:find("```", 1, true) or text:find("`", 1, true) then return nil end
   local function transform(source, pattern)
     return (source:gsub(pattern, function(prefix, pos, c)
-      if source:sub(pos):match("^https?://") then return prefix .. c end
+      local word = source:sub(pos):match("^%S+")
+      -- URL やドメイン（www.example.com、example.com/path）は大文字小文字を区別することがあるので変えない
+      if word:find("://", 1, true) or word:match("^[%w%-]+%.[%w%-]*%a[%w%-]*") then return prefix .. c end
       return prefix .. c:upper()
     end))
   end

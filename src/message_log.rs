@@ -4,6 +4,7 @@ use crate::model::{LogMark, Message, PastEdit};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -74,12 +75,37 @@ pub fn snowflake_cmp(a: &str, b: &str) -> Ordering {
 }
 
 impl MessageLog {
+    /// ログアウト時にメモリとディスクの記録を破棄する。
+    pub fn discard(&mut self) -> std::io::Result<()> {
+        let path = self.path.clone();
+        self.dirty_since = None;
+        *self = Self::default();
+        self.path = path.clone();
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        for file in [path.clone(), path.with_extension("json.tmp")] {
+            match std::fs::remove_file(file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
     /// 初めて使うときにファイルから読む
     pub fn ensure_loaded(&mut self) {
         if self.loaded {
             return;
         }
         self.loaded = true;
+        #[cfg(unix)]
+        if let Ok(file) = std::fs::File::open(&self.path) {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                eprintln!("メッセージの記録の権限を変更できませんでした: {e}");
+            }
+        }
         let Some(stored) = std::fs::read(&self.path)
             .ok()
             .and_then(|b| serde_json::from_slice::<Stored>(&b).ok())
@@ -253,7 +279,25 @@ impl MessageLog {
         }
         // 書きかけで落ちても前の記録を壊さない
         let tmp = p.with_extension("json.tmp");
-        if let Err(e) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &p)) {
+        let save = || -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&tmp)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            file.set_len(0)?;
+            file.write_all(&bytes)?;
+            std::fs::rename(&tmp, &p)
+        };
+        if let Err(e) = save() {
             eprintln!("メッセージの記録を保存できませんでした: {e}");
         }
     }
@@ -330,5 +374,45 @@ mod tests {
     fn snowflakes_compare_numerically() {
         assert_eq!(snowflake_cmp("9", "10"), Ordering::Less);
         assert_eq!(snowflake_cmp("100", "99"), Ordering::Greater);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_log_restricts_existing_temporary_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("riscord-log-permissions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("message-log.json");
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, "old").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut log = log();
+        log.path = path.clone();
+        log.on_delete(&msg("1", "private"));
+        log.flush();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn discard_removes_pending_and_saved_records() {
+        let dir = std::env::temp_dir().join(format!("riscord-log-discard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("message-log.json");
+        let mut log = log();
+        log.path = path.clone();
+        log.on_delete(&msg("1", "private"));
+        log.flush();
+        log.on_delete(&msg("2", "pending"));
+        log.discard().unwrap();
+        assert!(!path.exists());
+        assert!(log.deleted.is_empty());
+        drop(log);
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

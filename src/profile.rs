@@ -196,7 +196,19 @@ pub fn is_running(name: Option<&str>) -> bool {
 
 /// そのプロファイルのウィンドウを新しく開く
 pub fn launch(name: Option<&str>) -> std::io::Result<()> {
-    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    let exe = std::env::current_exe()?;
+    #[cfg(target_os = "linux")]
+    let exe = {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = exe.as_os_str().as_bytes();
+        match bytes.strip_suffix(b" (deleted)") {
+            Some(path) if !exe.exists() => {
+                PathBuf::from(std::ffi::OsString::from_vec(path.to_vec()))
+            }
+            _ => exe,
+        }
+    };
+    let mut cmd = std::process::Command::new(exe);
     if let Some(n) = name {
         cmd.arg("--profile").arg(n);
     }

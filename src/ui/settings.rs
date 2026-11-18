@@ -2371,7 +2371,11 @@ impl Root {
             .unwrap_or_default();
         sync(&self.inp.bg_image, &bg_text, window, cx);
         let dir = themes_dir();
-        let files = theme::list_files(&dir);
+        let files = self
+            .app
+            .theme_files
+            .get_or_insert_with(|| theme::list_files(&dir))
+            .clone();
         let mut pages = Vec::new();
 
         let mut s0 = div().flex().flex_col().child(notice(
@@ -2473,6 +2477,7 @@ impl Root {
                                             // 書き出した色はファイルに入ったので、上書きは消す
                                             this.app.settings.color_overrides.clear();
                                             this.app.save_settings();
+                                            this.app.theme_files = None;
                                             this.app.apply_theme(false);
                                         }
                                         Err(e) => {

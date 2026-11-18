@@ -192,6 +192,23 @@ impl App {
             return;
         }
         if let Ok(c) = serde_json::from_value::<Channel>(d.clone()) {
+            if let (Some(base), Some(roles), Some(me)) = (
+                self.guild_perms(&gid),
+                self.my_roles.get(&gid),
+                self.me.as_ref(),
+            ) {
+                if !crate::model::can_view(&c, &gid, base, roles, &me.id) {
+                    if let Some(list) = self.channels.get_mut(&gid) {
+                        list.retain(|old| old.id != c.id);
+                    }
+                    if self.sel_guild.as_deref() == Some(&gid)
+                        && self.sel_channel.as_deref() == Some(&c.id)
+                    {
+                        self.sel_channel = None;
+                    }
+                    return;
+                }
+            }
             self.upsert_guild_channel(&gid, c);
         }
     }
@@ -299,5 +316,42 @@ mod tests {
             &serde_json::json!({"id": "dm", "type": 1}),
         );
         assert_eq!(app.channels["1"].len(), 2);
+    }
+
+    #[test]
+    fn gateway_does_not_add_hidden_channels_and_removes_revoked_ones() {
+        let (mut app, _) = app(crate::model::VIEW_CHANNEL);
+        app.me =
+            Some(serde_json::from_value(serde_json::json!({"id":"me", "username":"me"})).unwrap());
+        app.my_roles.insert("1".into(), vec![]);
+        let visible = serde_json::json!({"id":"a", "type":0, "name":"a", "guild_id":"1"});
+        let hidden = serde_json::json!({"id":"a", "type":0, "name":"a", "guild_id":"1",
+            "permission_overwrites":[{"id":"1", "type":0, "deny": "1024", "allow":"0"}]});
+        app.on_guild_channel_event("CHANNEL_CREATE", &hidden);
+        assert!(app.channels["1"].is_empty());
+        app.on_guild_channel_event("CHANNEL_CREATE", &visible);
+        assert_eq!(app.channels["1"].len(), 1);
+        app.sel_guild = Some("1".into());
+        app.sel_channel = Some("a".into());
+        app.on_guild_channel_event("CHANNEL_UPDATE", &hidden);
+        assert!(app.channels["1"].is_empty());
+        assert!(app.sel_channel.is_none());
+    }
+
+    #[test]
+    fn guild_permissions_use_current_roles_instead_of_startup_snapshot() {
+        let (mut app, _) = app(crate::model::VIEW_CHANNEL);
+        let role = |permissions: u64| {
+            serde_json::from_value(serde_json::json!({
+                "id":"1", "name":"everyone", "permissions":permissions.to_string()
+            }))
+            .unwrap()
+        };
+        app.my_roles.insert("1".into(), vec![]);
+        app.roles.insert("1".into(), vec![role(0)]);
+        assert_eq!(app.guild_perms("1"), Some(0));
+        app.roles
+            .insert("1".into(), vec![role(crate::model::VIEW_CHANNEL)]);
+        assert_eq!(app.guild_perms("1"), Some(crate::model::VIEW_CHANNEL));
     }
 }

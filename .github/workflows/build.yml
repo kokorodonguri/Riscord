@@ -71,12 +71,7 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Test
-        if: runner.os == 'Linux'
         run: cargo test --release --locked --target ${{ matrix.target }}
-
-      - name: Test macOS build
-        if: runner.os == 'macOS'
-        run: cargo test --release --locked --target ${{ matrix.target }} update::tests::asset_names_match_release_workflow
 
       - name: Package macOS app
         if: runner.os == 'macOS'

@@ -535,8 +535,6 @@ pub async fn run(
                                 let data = if dave.version != 0 {
                                     match dave.session.as_mut().map(|s| s.decrypt(*streamer, MediaType::VIDEO, &au.data)) {
                                         Some(Ok(d)) => d,
-                                        // 暗号化されていないフレーム（DAVE への切り替え中）はそのまま使う
-                                        _ if !au.data.ends_with(&[0xFA, 0xFA]) => au.data,
                                         _ => {
                                             stats.dave_fail += 1;
                                             continue;

@@ -2,10 +2,10 @@
 # リモートのUbuntu (cargo-xwin入り) でWindows版をビルドして dist/ に持ってくる
 # リモートに必要なもの: rustup + cargo-xwin、~/.local/llvm18（clang-cl・llvm-rc）、cmake、ninja
 set -e
-HOST=donguri0423@10.4.23.235
+: "${HOST:?Set HOST to the remote SSH destination}"
 cd "$(dirname "$0")"
-tar --exclude=target --exclude=dist --exclude=.serena -czf - . | ssh $HOST 'rm -rf ~/build/riscord && mkdir -p ~/build/riscord && tar -xzf - -C ~/build/riscord'
-ssh $HOST 'sh -s' <<'EOF'
+tar --exclude=target --exclude=dist --exclude=.serena -czf - . | ssh "$HOST" 'rm -rf ~/build/riscord && mkdir -p ~/build/riscord && tar -xzf - -C ~/build/riscord'
+ssh "$HOST" 'sh -s' <<'EOF'
 set -e
 . ~/.cargo/env
 export PATH=$HOME/.local/bin:$HOME/.local/llvm18/bin:$PATH
@@ -31,5 +31,5 @@ cd ~/build/riscord
 cargo xwin build --release --target x86_64-pc-windows-msvc 2>&1 | grep -v "warning: ring@" | tail -5
 EOF
 mkdir -p dist
-scp -q $HOST:build/riscord/target/x86_64-pc-windows-msvc/release/riscord.exe dist/
+scp -q "$HOST:build/riscord/target/x86_64-pc-windows-msvc/release/riscord.exe" dist/
 ls -lh dist/riscord.exe

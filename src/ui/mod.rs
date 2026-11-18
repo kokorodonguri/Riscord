@@ -420,6 +420,19 @@ pub struct Root {
 }
 
 impl Root {
+    fn open_image_preview(&mut self, uri: String) {
+        if self.image_preview.as_deref() != Some(uri.as_str()) {
+            self.close_image_preview();
+            self.image_preview = Some(uri);
+        }
+    }
+
+    fn close_image_preview(&mut self) {
+        if let Some(uri) = self.image_preview.take() {
+            crate::images::forget_preview(&uri);
+        }
+    }
+
     /// 視聴中の画面共有の新しい 1 枚を画像にする（見ていなければ捨てる）
     fn poll_stream_image(&mut self) {
         let frame = self.app.voice.screen.lock().unwrap().take();
@@ -1340,7 +1353,7 @@ impl Root {
             window.activate_window();
         }
         if let Some(url) = crate::ui::message::PENDING_PREVIEW.lock().unwrap().take() {
-            self.image_preview = Some(url);
+            self.open_image_preview(url);
         }
         // ClickableMentions: 押されたメンションの人のプロフィールを開く
         let mention = crate::ui::message::PENDING_MENTION.lock().unwrap().take();
@@ -1692,7 +1705,7 @@ impl Root {
         }
         if self.image_preview.is_some() {
             if k.key == "escape" {
-                self.image_preview = None;
+                self.close_image_preview();
                 cx.notify();
             }
             cx.stop_propagation();
@@ -1700,12 +1713,7 @@ impl Root {
         }
         let m = &k.modifiers;
         // Ctrl / Cmd+F: メッセージ検索
-        if (m.control || m.platform)
-            && !m.alt
-            && !m.shift
-            && k.key == "f"
-            && self.app.sel_channel.is_some()
-        {
+        if cmd_or_ctrl(m) && !m.alt && !m.shift && k.key == "f" && self.app.sel_channel.is_some() {
             if self.app.side != crate::app::SidePanel::Search {
                 self.app.toggle_search();
             }
@@ -1714,7 +1722,7 @@ impl Root {
             cx.notify();
             return;
         }
-        if (m.control || m.platform) && !m.alt && !m.shift && k.key == "k" {
+        if cmd_or_ctrl(m) && !m.alt && !m.shift && k.key == "k" {
             self.app.switcher = if self.app.switcher.is_some() {
                 None
             } else {
@@ -1815,7 +1823,7 @@ impl Root {
             .is_focused(window);
         // PasteAndSend: Ctrl+Shift+V で貼り付けてそのまま送る
         if compose_focused
-            && (m.control || m.platform)
+            && cmd_or_ctrl(m)
             && m.shift
             && k.key.eq_ignore_ascii_case("v")
             && self.app.plugins.on("paste-and-send")
@@ -2156,4 +2164,9 @@ impl Render for Root {
             .children(self.window_background())
             .child(content)
     }
+}
+
+/// Ctrl、macOS では Cmd も。ほかの OS の Super / Win キーは OS のショートカットと重なるので使わない
+fn cmd_or_ctrl(m: &gpui::Modifiers) -> bool {
+    m.control || (cfg!(target_os = "macos") && m.platform)
 }

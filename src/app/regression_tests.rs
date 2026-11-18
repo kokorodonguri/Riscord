@@ -778,7 +778,10 @@ fn read_ack_is_retried_if_command_channel_is_closed() {
     assert!(
         matches!(rx.try_recv(), Ok(Cmd::Ack { channel_id, message_id }) if channel_id == "c" && message_id == "100000")
     );
-    assert_eq!(app.acked.get("c").map(String::as_str), Some("100000"));
+    assert_eq!(
+        app.acked.get("c").map(|a| a.message_id.as_str()),
+        Some("100000")
+    );
     assert!(app.unread.contains_key("c"));
     app.sync_read_state(true);
     assert!(rx.try_recv().is_err());
@@ -839,7 +842,10 @@ fn failed_read_ack_can_retry_without_overwriting_newer_ack() {
         })
         .unwrap();
     app.poll();
-    assert_eq!(app.acked.get("c").map(String::as_str), Some("100000"));
+    assert_eq!(
+        app.acked.get("c").map(|a| a.message_id.as_str()),
+        Some("100000")
+    );
     events
         .send(Event::AckFailed {
             channel_id: "c".into(),
@@ -1289,9 +1295,9 @@ fn mentions_are_counted_per_server() {
     app.poll();
     assert_eq!(app.mention_count(Some("g")), 5);
     assert_eq!(app.mention_count(None), 1);
-    // サーバーへの既読通知が成功するまでは残す
+    // 開いたチャンネルの分は消える
     app.open_channel("c3".into());
-    assert_eq!(app.mention_count(Some("g")), 5);
+    assert_eq!(app.mention_count(Some("g")), 3);
     // 見ているチャンネルに来たメンションは数えない
     app.window_focused = true;
     tx.send(Event::MessageCreate(msg(
@@ -1303,7 +1309,7 @@ fn mentions_are_counted_per_server() {
     )))
     .unwrap();
     app.poll();
-    assert_eq!(app.mention_count(Some("g")), 5);
+    assert_eq!(app.mention_count(Some("g")), 3);
     app.mark_guild_read("g");
     assert_eq!(app.mention_count(Some("g")), 0);
 }
@@ -1500,7 +1506,7 @@ fn unread_dms_lists_only_dms_with_counts_in_dm_order_until_opened() {
         .into_iter()
         .map(|(c, n)| (c.id.as_str(), n))
         .collect();
-    assert_eq!(list, [("3", 5), ("1", 2)]);
+    assert_eq!(list, [("1", 2)]);
 }
 
 #[test]
@@ -2249,4 +2255,102 @@ fn long_session_with_all_plugins_stays_bounded() {
     assert!(app.tabs.len() <= channels.len());
     assert!(app.plugins.message_actions().len() <= 40);
     let _ = std::fs::remove_dir_all(&app.plugins.data_root);
+}
+
+#[test]
+fn opened_channel_hides_marks_and_restores_them_if_ack_fails() {
+    let mut app = bench_app(1);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.unread.insert("c".into(), None);
+    app.mention_counts.insert("c".into(), (None, 2));
+    app.open_channel("c".into());
+    assert!(!app.unread.contains_key("c") && !app.mention_counts.contains_key("c"));
+    app.sync_read_state(true);
+    assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { .. })));
+    tx.send(Event::AckFailed {
+        channel_id: "c".into(),
+        message_id: "100000".into(),
+    })
+    .unwrap();
+    app.poll();
+    assert!(app.unread.contains_key("c"));
+    assert_eq!(app.mention_counts.get("c"), Some(&(None, 2)));
+}
+
+#[test]
+fn opening_channel_without_messages_clears_marks() {
+    // フォーラムやボイス、読み込みに失敗したチャンネルは既読通知を送れないが、開けば印は消える
+    let mut app = App::default();
+    app.unread.insert("v".into(), None);
+    app.mention_counts.insert("v".into(), (None, 1));
+    app.open_channel("v".into());
+    app.sync_read_state(true);
+    assert!(!app.unread.contains_key("v") && !app.mention_counts.contains_key("v"));
+}
+
+#[test]
+fn manual_mark_unread_elsewhere_is_acked_when_viewed() {
+    let mut app = bench_app(1);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.sync_read_state(true);
+    assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { .. })));
+    tx.send(Event::AckSucceeded {
+        channel_id: "c".into(),
+        message_id: "100000".into(),
+    })
+    .unwrap();
+    app.poll();
+    app.on_gateway_event(
+        "MESSAGE_ACK",
+        serde_json::json!({ "channel_id": "c", "message_id": "99999", "manual": true, "mention_count": 1 }),
+    );
+    assert!(app.unread.contains_key("c"));
+    assert_eq!(app.mention_counts.get("c"), Some(&(None, 1)));
+    app.last_ack = None;
+    app.sync_read_state(true);
+    assert!(
+        matches!(rx.try_recv(), Ok(Cmd::Ack { channel_id, message_id }) if channel_id == "c" && message_id == "100000")
+    );
+}
+
+#[test]
+fn switching_away_during_load_restores_unread_marks() {
+    let mut app = App::default();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_tx, ev) = std::sync::mpsc::channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.unread.insert("c".into(), None);
+    app.mention_counts.insert("c".into(), (None, 1));
+    app.open_channel("c".into());
+    assert!(app.pending_message_loads.contains_key("c"));
+    app.open_channel("other".into());
+    assert!(app.unread.contains_key("c"));
+    assert_eq!(app.mention_counts.get("c"), Some(&(None, 1)));
+}
+
+#[test]
+fn load_pending_across_new_session_is_refetched() {
+    let mut app = bench_app(1);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.stale_channels.insert("c".into());
+    app.load_messages("c".into());
+    assert!(matches!(rx.try_recv(), Ok(Cmd::LoadMessages(_))));
+    tx.send(Event::GatewayReady).unwrap();
+    app.poll();
+    assert!(rx.try_recv().is_err(), "読み込み中は重ねて出さない");
+    // 切断前の要求の応答が届いたら、古いまま扱って読み直す
+    tx.send(Event::Messages("c".into(), Vec::new())).unwrap();
+    app.poll();
+    assert!(app.stale_channels.contains("c"));
+    assert!(matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "c"));
+    tx.send(Event::Messages("c".into(), Vec::new())).unwrap();
+    app.poll();
+    assert!(!app.stale_channels.contains("c"));
+    assert!(rx.try_recv().is_err());
 }

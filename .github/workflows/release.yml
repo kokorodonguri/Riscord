@@ -32,7 +32,7 @@ jobs:
     name: ${{ matrix.asset || matrix.macos_asset }}
     runs-on: ${{ matrix.os }}
     # arm64 版のビルドが落ちても x64 版だけでリリースする（arm64 機の利用者は、その版では x64 版に更新される）。
-    # x64 版が落ちたときはリリースしない
+    # x64 版が落ちたときはリリースしない。macOS 版は手動で更新するので、落ちても他の OS のリリースは止めない
     continue-on-error: ${{ matrix.optional == true }}
     strategy:
       fail-fast: false
@@ -60,9 +60,11 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             macos_asset: riscord-macos-x64.zip
+            optional: true
           - os: macos-15
             target: aarch64-apple-darwin
             macos_asset: riscord-macos-arm64.zip
+            optional: true
     steps:
       - uses: actions/checkout@v4
 

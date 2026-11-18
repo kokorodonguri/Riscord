@@ -18,6 +18,8 @@ const MAX_PAGE_LABEL_CHARS: usize = 2000;
 /// メッセージの操作（全プラグイン合計）と、ボイスパネルの行の上限
 const MAX_MESSAGE_ACTIONS: usize = 40;
 const MAX_VOICE_LINES: usize = 8;
+/// 全プラグインからの自動送信を合算し、連鎖送信を検出したら停止する。
+const MAX_PLUGIN_SENDS_PER_MINUTE: usize = 5;
 
 /// 文字数で切り、切ったら末尾を … にする（UTF-8 の境目で切る）
 pub fn clip(s: &str, max_chars: usize) -> String {
@@ -148,6 +150,7 @@ pub struct Plugins {
     stopped: Vec<String>,
     /// message_actions() の結果（revision ごと）。ツールバーは毎フレーム描くので Lua を毎回呼ばない
     actions_cache: Option<(u64, Vec<MessageAction>)>,
+    recent_sends: std::collections::VecDeque<Instant>,
 }
 
 pub fn directory() -> PathBuf {
@@ -1143,6 +1146,14 @@ impl Plugins {
     pub fn tick(&mut self) -> (Vec<Action>, Option<Duration>) {
         let mut actions = Vec::new();
         let mut next: Option<Duration> = None;
+        let now = Instant::now();
+        while self
+            .recent_sends
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+        {
+            self.recent_sends.pop_front();
+        }
         for p in &mut self.entries {
             let Some(r) = &p.runtime else { continue };
             let now = Instant::now();
@@ -1179,7 +1190,24 @@ impl Plugins {
             if let Some(e) = error {
                 p.fail(e);
             } else {
-                actions.extend(r.queue.borrow_mut().drain(..));
+                let queued: Vec<_> = r.queue.borrow_mut().drain(..).collect();
+                let sends = queued
+                    .iter()
+                    .filter(|a| matches!(a, Action::Send(..)))
+                    .count();
+                if self.recent_sends.len() + sends > MAX_PLUGIN_SENDS_PER_MINUTE {
+                    p.fail(
+                        tr!(
+                        "プラグインの送信回数が上限を超えました（全プラグイン合計で1分間に5件）",
+                        "Plugin send limit exceeded (5 messages per minute across all plugins)",
+                        "插件发送次数超过限制（所有插件每分钟合计5条）"
+                    )
+                        .to_string(),
+                    );
+                    continue;
+                }
+                self.recent_sends.extend(std::iter::repeat_n(now, sends));
+                actions.extend(queued);
                 for timer in r.timers.borrow().iter() {
                     let delay = timer.at.saturating_duration_since(Instant::now());
                     next = Some(next.map_or(delay, |n| n.min(delay)));
@@ -1557,6 +1585,11 @@ mod tests {
             ),
             "Hello. https://example.com/a\nhttp://example.org/b\nWorld"
         );
+        assert_eq!(
+            send(&mut p, "see this. www.example.com/path"),
+            "See this. www.example.com/path"
+        );
+        assert_eq!(send(&mut p, "hi\nexample.com"), "Hi\nexample.com");
         assert_eq!(send(&mut p, "/cmd x"), "/cmd x");
         assert_eq!(send(&mut p, "hello `code`"), "hello `code`");
         let mut p = only("chat-aliases");
@@ -1601,6 +1634,22 @@ mod tests {
         assert!(p.page("to-do-list").iter().any(|i| i.label == "! buy milk"));
     }
     /// スクリプトから直接プラグインを作る（id = 名前）
+    #[test]
+    fn todo_page_keeps_controls_and_reaches_later_items() {
+        let mut p = only("to-do-list");
+        for i in 0..55 {
+            assert!(p.command(&format!("/todo task-{i}"), "1"));
+        }
+        let first = p.page("to-do-list");
+        assert!(first.iter().any(|i| i.action == "add"));
+        assert!(first.iter().any(|i| i.action == "next_page"));
+        p.page_action("to-do-list", "next_page", Default::default());
+        let second = p.page("to-do-list");
+        assert!(second.iter().any(|i| i.action == "add"));
+        assert!(second.iter().any(|i| i.label == "task-54"));
+    }
+
+    /// スクリプトから直接プラグインを作る（id = 名前）
     fn scripted(list: &[(&str, &str)]) -> (Plugins, Vec<String>) {
         let mut plugins = Plugins::default();
         let mut enabled = Vec::new();
@@ -1642,6 +1691,49 @@ mod tests {
             "content": content, "timestamp": "2026-01-01T00:00:00+00:00"
         }))
         .unwrap()
+    }
+    #[test]
+    fn automatic_send_loop_stops_at_shared_limit() {
+        let (mut plugins, _) = scripted(&[(
+            "loop",
+            "return {on_message=function() riscord.send_message('2', 'reply') end}",
+        )]);
+        for _ in 0..MAX_PLUGIN_SENDS_PER_MINUTE {
+            plugins.event(&message("reply"));
+            assert_eq!(plugins.tick().0.len(), 1);
+        }
+        plugins.event(&message("reply"));
+        assert!(plugins.tick().0.is_empty());
+        assert!(!plugins.on("loop"));
+        assert!(plugins.entries[0].error.is_some());
+    }
+
+    #[test]
+    fn send_limit_is_shared_and_expires() {
+        let (mut plugins, _) = scripted(&[
+            (
+                "a",
+                "return {on_message=function() riscord.send_message('2', 'reply') end}",
+            ),
+            (
+                "b",
+                "return {on_message=function() riscord.send_message('2', 'reply') end}",
+            ),
+        ]);
+        plugins.recent_sends.extend(std::iter::repeat_n(
+            Instant::now(),
+            MAX_PLUGIN_SENDS_PER_MINUTE - 1,
+        ));
+        plugins.event(&message("hello"));
+        assert_eq!(plugins.tick().0.len(), 1);
+        assert!(!plugins.on("b"));
+        plugins.recent_sends = std::iter::repeat_n(
+            Instant::now() - Duration::from_secs(61),
+            MAX_PLUGIN_SENDS_PER_MINUTE,
+        )
+        .collect();
+        plugins.event(&message("hello"));
+        assert_eq!(plugins.tick().0.len(), 1);
     }
     #[test]
     fn clip_counts_characters_in_every_language() {

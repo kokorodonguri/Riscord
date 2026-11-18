@@ -424,6 +424,7 @@ struct Api {
 struct ApiLimits {
     concurrent: tokio::sync::Semaphore,
     cooldown: tokio::sync::Mutex<tokio::time::Instant>,
+    routes: tokio::sync::Mutex<HashMap<String, tokio::time::Instant>>,
 }
 
 impl Default for ApiLimits {
@@ -431,6 +432,7 @@ impl Default for ApiLimits {
         Self {
             concurrent: tokio::sync::Semaphore::new(8),
             cooldown: tokio::sync::Mutex::new(tokio::time::Instant::now()),
+            routes: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -493,13 +495,20 @@ impl Api {
         build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
         const MAX_RETRIES: usize = 3;
-        let _permit =
-            tokio::time::timeout(Duration::from_secs(120), self.limits.concurrent.acquire())
-                .await??;
+        let route = format!("{} {}", method, path.split('?').next().unwrap_or(path));
         for attempt in 0..=MAX_RETRIES {
             tokio::time::timeout(Duration::from_secs(120), async {
                 loop {
-                    let until = *self.limits.cooldown.lock().await;
+                    let global = *self.limits.cooldown.lock().await;
+                    let local = self
+                        .limits
+                        .routes
+                        .lock()
+                        .await
+                        .get(&route)
+                        .copied()
+                        .unwrap_or(global);
+                    let until = global.max(local);
                     if until <= tokio::time::Instant::now() {
                         break;
                     }
@@ -507,6 +516,9 @@ impl Api {
                 }
             })
             .await?;
+            let _permit =
+                tokio::time::timeout(Duration::from_secs(120), self.limits.concurrent.acquire())
+                    .await??;
             #[cfg(test)]
             let base = self.base_url.as_deref().unwrap_or(API);
             #[cfg(not(test))]
@@ -541,8 +553,16 @@ impl Api {
                             )
                         );
                     }
-                    let mut until = self.limits.cooldown.lock().await;
-                    *until = (*until).max(tokio::time::Instant::now() + delay);
+                    let deadline = tokio::time::Instant::now() + delay;
+                    if v["global"].as_bool().unwrap_or(false) {
+                        let mut until = self.limits.cooldown.lock().await;
+                        *until = (*until).max(deadline);
+                    } else {
+                        let mut routes = self.limits.routes.lock().await;
+                        routes.retain(|_, until| *until > tokio::time::Instant::now());
+                        let until = routes.entry(route.clone()).or_insert(deadline);
+                        *until = (*until).max(deadline);
+                    }
                 }
                 StatusCode::UNAUTHORIZED => return Err(anyhow::Error::msg(UnauthorizedMarker)),
                 s if !s.is_success() => {
@@ -845,9 +865,7 @@ async fn run(
                 Ok(g) => {
                     let mut perms = api.guild_perms.lock().unwrap();
                     for guild in &g {
-                        if let Some(p) = guild.permissions.as_deref().and_then(|p| p.parse().ok()) {
-                            perms.insert(guild.id.clone(), p);
-                        }
+                        perms.insert(guild.id.clone(), if guild.owner { u64::MAX } else { 0 });
                     }
                     drop(perms);
                     tx.send(Event::Guilds(g))
@@ -945,11 +963,14 @@ async fn run(
                     // 自分のロールが分からないときは絞らない（見えるはずのものを隠さないため）
                     let filter = match (&roles, &member) {
                         (Ok(roles), Ok(member)) => {
-                            let known = api.guild_perms.lock().unwrap().get(&gid).copied();
-                            let base = known.unwrap_or_else(|| {
-                                model::base_permissions(&gid, roles, &member.roles)
-                            });
-                            Some((base, member.roles.clone()))
+                            api.guild_perms.lock().unwrap().get(&gid).map(|owner| {
+                                let base = if *owner == u64::MAX {
+                                    u64::MAX
+                                } else {
+                                    model::base_permissions(&gid, roles, &member.roles)
+                                };
+                                (base, member.roles.clone())
+                            })
                         }
                         _ => None,
                     };
@@ -1070,61 +1091,76 @@ async fn run(
                     files,
                     extra,
                 } => {
-                    let path = format!("/channels/{channel_id}/messages");
-                    // 分けた前半は順番どおりに届くよう、1 通ずつ待って送る
-                    for part in &extra.before {
-                        let mut body = json!({ "content": part, "nonce": nonce(), "tts": false });
+                    'send: {
+                        let path = format!("/channels/{channel_id}/messages");
+                        // 分けた前半は順番どおりに届くよう、1 通ずつ待って送る
+                        for part in &extra.before {
+                            let mut body =
+                                json!({ "content": part, "nonce": nonce(), "tts": false });
+                            if extra.flags != 0 {
+                                body["flags"] = json!(extra.flags);
+                            }
+                            if let Some(am) = &extra.allowed_mentions {
+                                body["allowed_mentions"] = am.clone();
+                            }
+                            if let Err(e) =
+                                api.request(reqwest::Method::POST, &path, Some(&body)).await
+                            {
+                                eprintln!("分割送信失敗: {e:#}");
+                                if let Some(reason) = compose_reject_reason(&e) {
+                                    tx.send(Event::ComposeRejected {
+                                        channel_id: channel_id.clone(),
+                                        reason,
+                                    });
+                                }
+                                tx.send(Event::ComposeResult {
+                                    channel_id,
+                                    result: Err(()),
+                                });
+                                break 'send;
+                            }
+                        }
+                        let mut body =
+                            json!({ "content": content, "nonce": nonce(), "tts": extra.tts });
                         if extra.flags != 0 {
                             body["flags"] = json!(extra.flags);
                         }
                         if let Some(am) = &extra.allowed_mentions {
                             body["allowed_mentions"] = am.clone();
                         }
-                        if let Err(e) = api.request(reqwest::Method::POST, &path, Some(&body)).await
-                        {
-                            eprintln!("分割送信失敗: {e:#}");
+                        if let Some(id) = reply_to {
+                            body["message_reference"] =
+                                json!({ "channel_id": channel_id, "message_id": id });
                         }
-                    }
-                    let mut body =
-                        json!({ "content": content, "nonce": nonce(), "tts": extra.tts });
-                    if extra.flags != 0 {
-                        body["flags"] = json!(extra.flags);
-                    }
-                    if let Some(am) = &extra.allowed_mentions {
-                        body["allowed_mentions"] = am.clone();
-                    }
-                    if let Some(id) = reply_to {
-                        body["message_reference"] =
-                            json!({ "channel_id": channel_id, "message_id": id });
-                    }
-                    let response = if files.is_empty() {
-                        api.request(reqwest::Method::POST, &path, Some(&body)).await
-                    } else {
-                        body["attachments"] = files
-                            .iter()
-                            .enumerate()
-                            .map(|(i, (name, _))| json!({ "id": i, "filename": name }))
-                            .collect();
-                        let payload = body.to_string();
-                        api.request_with(reqwest::Method::POST, &path, |req| {
-                            req.multipart(upload_form(&payload, &files))
-                        })
-                        .await
-                    };
-                    let result = match response {
-                        Ok(response) => Ok(response.json::<Message>().await.ok()),
-                        Err(e) => {
-                            eprintln!("メッセージ送信失敗: {e:#}");
-                            if let Some(reason) = compose_reject_reason(&e) {
-                                tx.send(Event::ComposeRejected {
-                                    channel_id: channel_id.clone(),
-                                    reason,
-                                });
+                        let response = if files.is_empty() {
+                            api.request(reqwest::Method::POST, &path, Some(&body)).await
+                        } else {
+                            body["attachments"] = files
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (name, _))| json!({ "id": i, "filename": name }))
+                                .collect();
+                            let payload = body.to_string();
+                            api.request_with(reqwest::Method::POST, &path, |req| {
+                                req.multipart(upload_form(&payload, &files))
+                            })
+                            .await
+                        };
+                        let result = match response {
+                            Ok(response) => Ok(response.json::<Message>().await.ok()),
+                            Err(e) => {
+                                eprintln!("メッセージ送信失敗: {e:#}");
+                                if let Some(reason) = compose_reject_reason(&e) {
+                                    tx.send(Event::ComposeRejected {
+                                        channel_id: channel_id.clone(),
+                                        reason,
+                                    });
+                                }
+                                Err(())
                             }
-                            Err(())
-                        }
-                    };
-                    tx.send(Event::ComposeResult { channel_id, result });
+                        };
+                        tx.send(Event::ComposeResult { channel_id, result });
+                    }
                     Ok(())
                 }
                 Cmd::Edit {
@@ -2346,6 +2382,7 @@ async fn voice_task(
     };
     let mut session_id: Option<String> = None;
     let mut target: Option<Target> = None;
+    let mut ringing: Option<tokio::task::JoinHandle<()>> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(20));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -2374,6 +2411,9 @@ async fn voice_task(
                 channel_id,
                 ring,
             } => {
+                if let Some(task) = ringing.take() {
+                    task.abort();
+                }
                 stream.stop_all();
                 if let Some(s) = &mut session {
                     s.leave();
@@ -2395,6 +2435,9 @@ async fn voice_task(
                 });
             }
             VoiceMsg::Leave => {
+                if let Some(task) = ringing.take() {
+                    task.abort();
+                }
                 stream.stop_all();
                 if let Some(t) = target.take() {
                     let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
@@ -2421,6 +2464,9 @@ async fn voice_task(
                 match d["channel_id"].as_str() {
                     // 他の端末で抜けた・切断された
                     None => {
+                        if let Some(task) = ringing.take() {
+                            task.abort();
+                        }
                         stream.stop_all();
                         if target.take().is_some() {
                             if let Some(s) = &mut session {
@@ -2474,17 +2520,27 @@ async fn voice_task(
                         }));
                         if std::mem::take(&mut t.ring) {
                             let path = format!("/channels/{}/call/ring", t.channel_id);
-                            if let Err(e) = api.post(&path, &json!({ "recipients": null })).await {
-                                tx.send(Event::Error(tr!(
-                                    "呼び出し失敗: {e:#}",
-                                    "Request failed: {e:#}",
-                                    "请求失败：{e:#}",
-                                )));
+                            let api = api.clone();
+                            let tx = tx.clone();
+                            if let Some(task) = ringing.take() {
+                                task.abort();
                             }
+                            ringing = Some(tokio::spawn(async move {
+                                if let Err(e) =
+                                    api.post(&path, &json!({ "recipients": null })).await
+                                {
+                                    tx.send(Event::Error(tr!(
+                                        "呼び出し失敗: {e:#}",
+                                        "Request failed: {e:#}",
+                                        "请求失败：{e:#}",
+                                    )));
+                                }
+                            }));
                         }
                     }
                     Err(e) => {
                         stream.stop_all();
+                        s.leave();
                         tx.send(Event::Voice(VoiceStatus::Error(format!("{e:#}"))));
                         let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
                         target = None;

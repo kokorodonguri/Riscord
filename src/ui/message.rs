@@ -533,7 +533,7 @@ fn image_box(
                 if video {
                     cx.open_url(&open);
                 } else {
-                    this.image_preview = Some(open.clone());
+                    this.open_image_preview(open.clone());
                     cx.notify();
                 }
             }

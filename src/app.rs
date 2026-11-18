@@ -82,13 +82,41 @@ pub fn save_token(profile: Option<&str>, token: &str) -> std::io::Result<()> {
     let p = token_path(profile);
     std::fs::create_dir_all(p.parent().unwrap())?;
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600); // 自分だけ読める
     }
-    opts.open(&p)?.write_all(token.as_bytes())
+    let mut file = opts.open(&p)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.set_len(0)?;
+    file.write_all(token.as_bytes())
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn saving_token_restricts_existing_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let profile = Some("token-permissions-test");
+    let path = token_path(profile);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "old token").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    save_token(profile, "new token").unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new token");
+    std::fs::remove_file(path).unwrap();
 }
 
 /// ローカルのサーバーフォルダ。Discord の設定とは同期しない。
@@ -1257,6 +1285,16 @@ pub struct PollDraft {
     pub error: Option<String>,
 }
 
+/// 既読として送った位置
+#[derive(Clone, Debug, PartialEq)]
+pub struct Acked {
+    pub message_id: String,
+    pub succeeded: bool,
+}
+
+/// 開いたときに隠した未読の印（unread の値, mention_counts の値）
+pub type HiddenReadMarks = (Option<Option<String>>, Option<(Option<String>, u32)>);
+
 #[derive(Default)]
 pub struct App {
     pub plugins: crate::plugins::Plugins,
@@ -1350,10 +1388,14 @@ pub struct App {
     pub uploads: Vec<clip::Upload>,
     /// 添付や文字数の上限についてのお知らせ（入力欄の上に出す）
     pub compose_notice: Option<(String, std::time::Instant)>,
-    /// チャンネルごとに、最後に既読として Discord に送ったメッセージID
-    pub acked: HashMap<String, String>,
-    /// 最後に送った ACK が成功したチャンネル。
-    pub ack_succeeded: HashSet<String>,
+    /// チャンネルごとに、最後に既読として Discord に送ったメッセージIDと、それが成功したか
+    pub acked: HashMap<String, Acked>,
+    /// チャンネルを開いたときに先に消した未読とメンションの印（unread, mention_counts の値）。
+    /// 既読通知が失敗したら戻し、成功したら捨てる
+    pub hidden_read_marks: HashMap<String, HiddenReadMarks>,
+    /// 新しいセッションになった時点で読み込み中だったチャンネル。
+    /// その応答は切断中の変更を含まないかもしれないので、届いたら読み直す
+    pub reload_after_ready: HashSet<String>,
     /// API エラー後に再試行できる時刻（チャンネルごと）
     pub ack_retry_at: HashMap<String, std::time::Instant>,
     /// 最後に既読を送った時刻（送りすぎて制限されないよう間を空ける）
@@ -1363,6 +1405,8 @@ pub struct App {
     pub theme_error: Option<String>,
     /// テーマファイルの読み飛ばした項目（知らない部品・読めない値）
     pub theme_warnings: Vec<String>,
+    /// 設定画面で使うテーマ一覧。ファイル変更通知または明示的な再読込で破棄する。
+    pub theme_files: Option<Vec<(String, Option<theme::ThemeFile>)>>,
     /// themes/ のファイルが変わったら届く（保存するとすぐ反映）
     pub theme_watch: Option<Receiver<()>>,
     /// 開いているファイル選択ダイアログの結果の受け口
@@ -2141,6 +2185,9 @@ impl App {
     pub fn logout(&mut self) {
         self.send(Cmd::LeaveVoice);
         let _ = std::fs::remove_file(self.token_path());
+        if let Err(e) = self.message_log.discard() {
+            eprintln!("メッセージの記録を削除できませんでした: {e}");
+        }
         cache::remove(self.profile.as_deref());
         self.reset();
     }
@@ -2418,15 +2465,17 @@ impl App {
                     channel_id,
                     message_id,
                 } => {
-                    if self.acked.get(&channel_id) == Some(&message_id) {
-                        self.ack_succeeded.insert(channel_id.clone());
-                        let latest = self.messages.get(&channel_id).and_then(|messages| {
-                            messages
-                                .iter()
-                                .rev()
-                                .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
-                        });
-                        if latest.is_some_and(|m| m.id == message_id) {
+                    if let Some(a) = self
+                        .acked
+                        .get_mut(&channel_id)
+                        .filter(|a| a.message_id == message_id)
+                    {
+                        a.succeeded = true;
+                        self.hidden_read_marks.remove(&channel_id);
+                        if self
+                            .latest_live_message(&channel_id)
+                            .is_some_and(|m| m.id == message_id)
+                        {
                             self.unread.remove(&channel_id);
                             self.mention_counts.remove(&channel_id);
                         }
@@ -2437,9 +2486,13 @@ impl App {
                     message_id,
                 } => {
                     // より新しい ACK を既に出していれば古い失敗は無視する。
-                    if self.acked.get(&channel_id) == Some(&message_id) {
+                    if self
+                        .acked
+                        .get(&channel_id)
+                        .is_some_and(|a| a.message_id == message_id)
+                    {
                         self.acked.remove(&channel_id);
-                        self.ack_succeeded.remove(&channel_id);
+                        self.restore_read_marks(&channel_id);
                         self.ack_retry_at
                             .insert(channel_id, std::time::Instant::now() + ACK_RETRY_DELAY);
                         self.repaint_after(ACK_RETRY_DELAY);
@@ -2502,6 +2555,7 @@ impl App {
                 }
                 Event::MessagesFailed(cid) => {
                     self.pending_message_loads.remove(&cid);
+                    self.reload_after_ready.remove(&cid);
                     if self.loaded_channels.iter().any(|id| id == &cid) {
                         if self.messages.contains_key(&cid) {
                             self.status = MESSAGE_RELOAD_ERROR.s().into();
@@ -2646,6 +2700,9 @@ impl App {
                     // 再開できず新しいセッションになった場合、切断中のイベントは再送されない。
                     // キャッシュを古い状態として扱い、開いているチャンネルはすぐ取り直す。
                     self.stale_channels.extend(self.messages.keys().cloned());
+                    // 切断前に出した読み込みの応答は、切断中の変更を含まないかもしれない
+                    self.reload_after_ready
+                        .extend(self.pending_message_loads.keys().cloned());
                     if let Some(cid) = self.sel_channel.clone() {
                         if self.stale_channels.contains(&cid) && !self.is_detached(&cid) {
                             self.load_messages(cid);
@@ -2710,20 +2767,31 @@ impl App {
                             ..Default::default()
                         },
                     );
-                    self.stale_channels.remove(&cid);
+                    // 新しいセッションの前に出した要求の応答なら、古いまま扱って読み直す
+                    let refetch = self.reload_after_ready.remove(&cid);
+                    if !refetch {
+                        self.stale_channels.remove(&cid);
+                    }
                     self.no_access.remove(&cid);
                     self.clear_message_error_status(&cid);
                     self.message_errors.remove(&cid);
                     let jumping = self.jump.as_ref().is_some_and(|j| j.channel_id == cid);
-                    if let Some(old) = self.messages.insert(cid, m) {
+                    if let Some(old) = self.messages.insert(cid.clone(), m) {
                         sticker_cache_dirty |= old.iter().any(|m| !m.sticker_items.is_empty());
                     }
                     if jumping {
                         self.resolve_jump();
                     }
+                    if refetch
+                        && self.sel_channel.as_deref() == Some(&cid)
+                        && !self.is_detached(&cid)
+                    {
+                        self.load_messages(cid);
+                    }
                 }
                 Event::NoAccess(cid) => {
                     self.pending_message_loads.remove(&cid);
+                    self.reload_after_ready.remove(&cid);
                     if !self.loaded_channels.iter().any(|id| id == &cid) {
                         continue;
                     }
@@ -3894,7 +3962,23 @@ impl App {
         }
         if t.starts_with("GUILD_ROLE_") {
             if let Some(guild_id) = d["guild_id"].as_str() {
+                if let Some(roles) = self.roles.get_mut(guild_id) {
+                    if t == "GUILD_ROLE_DELETE" {
+                        if let Some(id) = d["role_id"].as_str() {
+                            roles.retain(|role| role.id != id);
+                        }
+                    } else if let Ok(role) = serde_json::from_value::<Role>(d["role"].clone()) {
+                        if let Some(old) = roles.iter_mut().find(|old| old.id == role.id) {
+                            *old = role;
+                        } else {
+                            roles.push(role);
+                        }
+                    }
+                }
                 self.role_admin_event(guild_id);
+                if self.channels.contains_key(guild_id) {
+                    self.send(Cmd::LoadGuildChannels(guild_id.to_owned()));
+                }
             }
             return;
         }
@@ -4055,11 +4139,16 @@ impl App {
             // 公式クライアントなど別の端末で既読にした
             "MESSAGE_ACK" => {
                 if let Some(cid) = d["channel_id"].as_str() {
+                    // サーバーの既読位置が変わったので、開いたときに隠した印はもう戻さない
+                    self.hidden_read_marks.remove(cid);
                     if d["manual"] == true {
+                        // 別端末の未読指定で以前の ACK は無効になる。
                         self.acked.remove(cid);
-                        self.ack_succeeded.remove(cid);
-                    }
-                    if d["manual"] != true {
+                        let guild = self.channels.iter().find_map(|(gid, channels)| {
+                            channels.iter().any(|c| c.id == cid).then(|| gid.clone())
+                        });
+                        self.unread.insert(cid.to_string(), guild);
+                    } else {
                         self.unread.remove(cid);
                         if let Some(mid) = d["message_id"].as_str().and_then(|s| s.parse().ok()) {
                             let e = self.channel_read_rank.entry(cid.to_string()).or_default();
@@ -4070,6 +4159,10 @@ impl App {
                         Some(n) if n > 0 => {
                             if let Some(e) = self.mention_counts.get_mut(cid) {
                                 e.1 = n as u32;
+                            } else if d["manual"] == true {
+                                let guild = self.unread.get(cid).cloned().flatten();
+                                self.mention_counts
+                                    .insert(cid.to_string(), (guild, n as u32));
                             }
                         }
                         _ => {
@@ -4102,6 +4195,9 @@ impl App {
                             .filter_map(|r| r.as_str().map(String::from))
                             .collect();
                         self.my_roles.insert(gid.to_string(), roles);
+                        if self.channels.contains_key(gid) {
+                            self.send(Cmd::LoadGuildChannels(gid.to_owned()));
+                        }
                     }
                 }
             }
@@ -4337,6 +4433,10 @@ impl App {
         self.unread.retain(|_, g| g.as_deref() != Some(gid));
         self.mention_counts
             .retain(|_, (g, _)| g.as_deref() != Some(gid));
+        self.hidden_read_marks.retain(|_, (u, m)| {
+            u.as_ref().is_none_or(|g| g.as_deref() != Some(gid))
+                && m.as_ref().is_none_or(|(g, _)| g.as_deref() != Some(gid))
+        });
         self.api(net::ApiCall::AckGuild(gid.to_string()));
     }
 
@@ -4565,6 +4665,9 @@ impl App {
 
     /// 設定のテーマを読み直し、変わっていれば配色・フォント・背景画像を適用する。force = ファイルが変わった
     pub fn apply_theme(&mut self, force: bool) {
+        if force {
+            self.theme_files = None;
+        }
         let dir = themes_dir();
         let (r, err, warnings) = theme::resolve(
             &self.settings.theme,
@@ -4622,23 +4725,18 @@ impl App {
         if self.is_detached(&cid) {
             return;
         }
-        // MessageLogger が残した削除済みメッセージは既読の位置に使わない（もう存在しない ID のため）
-        let Some(messages) = self.messages.get(&cid) else {
+        if !self.messages.contains_key(&cid) {
             return;
-        };
-        let Some(last) = messages
-            .iter()
-            .rev()
-            .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
-        else {
+        }
+        let Some(last_id) = self.latest_live_message(&cid).map(|m| m.id.clone()) else {
             if !self.pending_message_loads.contains_key(&cid) {
                 self.unread.remove(&cid);
                 self.mention_counts.remove(&cid);
             }
             return;
         };
-        if self.acked.get(&cid) == Some(&last.id) {
-            if self.ack_succeeded.contains(&cid) {
+        if let Some(a) = self.acked.get(&cid).filter(|a| a.message_id == last_id) {
+            if a.succeeded {
                 self.unread.remove(&cid);
                 self.mention_counts.remove(&cid);
             }
@@ -4659,7 +4757,7 @@ impl App {
             self.repaint_after(wait);
             return;
         }
-        let message_id = last.id.clone();
+        let message_id = last_id;
         let queued = self.backend.as_ref().is_some_and(|backend| {
             backend
                 .cmd
@@ -4675,9 +4773,58 @@ impl App {
             return;
         }
         self.ack_retry_at.remove(&cid);
-        self.ack_succeeded.remove(&cid);
-        self.acked.insert(cid.clone(), message_id);
+        self.acked.insert(
+            cid.clone(),
+            Acked {
+                message_id,
+                succeeded: false,
+            },
+        );
         self.last_ack = Some(std::time::Instant::now());
+    }
+
+    /// 既読の位置に使う最新のメッセージ。
+    /// MessageLogger が残した削除済みメッセージは使わない（もう存在しない ID のため）
+    pub fn latest_live_message(&self, channel_id: &str) -> Option<&Message> {
+        self.messages
+            .get(channel_id)?
+            .iter()
+            .rev()
+            .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
+    }
+
+    /// 開いたチャンネルの未読とメンションの印を先に消す。既読通知が失敗したら restore_read_marks で戻す。
+    /// フォーラムやボイス、過去を表示中のチャンネルなど、すぐには既読通知を送れない場合も印は消える
+    fn hide_read_marks(&mut self, channel_id: &str) {
+        let unread = self.unread.remove(channel_id);
+        let mention = self.mention_counts.remove(channel_id);
+        if unread.is_none() && mention.is_none() {
+            return;
+        }
+        let e = self
+            .hidden_read_marks
+            .entry(channel_id.to_string())
+            .or_default();
+        if e.0.is_none() {
+            e.0 = unread;
+        }
+        if e.1.is_none() {
+            e.1 = mention;
+        }
+    }
+
+    fn restore_read_marks(&mut self, channel_id: &str) {
+        let Some((unread, mention)) = self.hidden_read_marks.remove(channel_id) else {
+            return;
+        };
+        if let Some(u) = unread {
+            self.unread.entry(channel_id.to_string()).or_insert(u);
+        }
+        if let Some(m) = mention {
+            self.mention_counts
+                .entry(channel_id.to_string())
+                .or_insert(m);
+        }
     }
 
     pub fn clear_message_error_status(&mut self, channel_id: &str) {
@@ -4714,6 +4861,11 @@ impl App {
             self.back_to_latest(&id);
         }
         if self.sel_channel.as_deref() != Some(&id) {
+            if let Some(old) = self.sel_channel.clone() {
+                if self.pending_message_loads.contains_key(&old) {
+                    self.restore_read_marks(&old);
+                }
+            }
             if self.editing.take().is_some() {
                 self.input.clear();
             }
@@ -4735,6 +4887,7 @@ impl App {
         if !no_messages {
             self.remember_tab(&id);
         }
+        self.hide_read_marks(&id);
         self.touch_channel(&id);
         let key = self.sel_guild.as_deref().unwrap_or("");
         if self.settings.last_channels.get(key) != Some(&id) {
@@ -4771,7 +4924,6 @@ impl App {
             self.no_access.remove(&old);
             self.message_errors.remove(&old);
             self.acked.remove(&old);
-            self.ack_succeeded.remove(&old);
             self.ack_retry_at.remove(&old);
             evicted = true;
             // そのチャンネルでしか使っていない画像は、デコード済みの画像・テクスチャごと解放する

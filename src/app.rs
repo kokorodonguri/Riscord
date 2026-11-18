@@ -1352,6 +1352,8 @@ pub struct App {
     pub compose_notice: Option<(String, std::time::Instant)>,
     /// チャンネルごとに、最後に既読として Discord に送ったメッセージID
     pub acked: HashMap<String, String>,
+    /// 最後に送った ACK が成功したチャンネル。
+    pub ack_succeeded: HashSet<String>,
     /// API エラー後に再試行できる時刻（チャンネルごと）
     pub ack_retry_at: HashMap<String, std::time::Instant>,
     /// 最後に既読を送った時刻（送りすぎて制限されないよう間を空ける）
@@ -2412,6 +2414,24 @@ impl App {
                     }
                     self.import_official_folders(&d);
                 }
+                Event::AckSucceeded {
+                    channel_id,
+                    message_id,
+                } => {
+                    if self.acked.get(&channel_id) == Some(&message_id) {
+                        self.ack_succeeded.insert(channel_id.clone());
+                        let latest = self.messages.get(&channel_id).and_then(|messages| {
+                            messages
+                                .iter()
+                                .rev()
+                                .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
+                        });
+                        if latest.is_some_and(|m| m.id == message_id) {
+                            self.unread.remove(&channel_id);
+                            self.mention_counts.remove(&channel_id);
+                        }
+                    }
+                }
                 Event::AckFailed {
                     channel_id,
                     message_id,
@@ -2419,6 +2439,7 @@ impl App {
                     // より新しい ACK を既に出していれば古い失敗は無視する。
                     if self.acked.get(&channel_id) == Some(&message_id) {
                         self.acked.remove(&channel_id);
+                        self.ack_succeeded.remove(&channel_id);
                         self.ack_retry_at
                             .insert(channel_id, std::time::Instant::now() + ACK_RETRY_DELAY);
                         self.repaint_after(ACK_RETRY_DELAY);
@@ -2622,6 +2643,14 @@ impl App {
                 Event::GatewayReady => {
                     // 一からつながったときは購読が消えているので、次の描画で送り直す
                     self.member_sub = None;
+                    // 再開できず新しいセッションになった場合、切断中のイベントは再送されない。
+                    // キャッシュを古い状態として扱い、開いているチャンネルはすぐ取り直す。
+                    self.stale_channels.extend(self.messages.keys().cloned());
+                    if let Some(cid) = self.sel_channel.clone() {
+                        if self.stale_channels.contains(&cid) && !self.is_detached(&cid) {
+                            self.load_messages(cid);
+                        }
+                    }
                 }
                 Event::GuildMembers(gid, members) => {
                     self.apply_requested_members(&gid, &members);
@@ -4026,6 +4055,10 @@ impl App {
             // 公式クライアントなど別の端末で既読にした
             "MESSAGE_ACK" => {
                 if let Some(cid) = d["channel_id"].as_str() {
+                    if d["manual"] == true {
+                        self.acked.remove(cid);
+                        self.ack_succeeded.remove(cid);
+                    }
                     if d["manual"] != true {
                         self.unread.remove(cid);
                         if let Some(mid) = d["message_id"].as_str().and_then(|s| s.parse().ok()) {
@@ -4590,18 +4623,25 @@ impl App {
             return;
         }
         // MessageLogger が残した削除済みメッセージは既読の位置に使わない（もう存在しない ID のため）
-        let Some(last) = self.messages.get(&cid).and_then(|l| {
-            l.iter()
-                .rev()
-                .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
-        }) else {
+        let Some(messages) = self.messages.get(&cid) else {
+            return;
+        };
+        let Some(last) = messages
+            .iter()
+            .rev()
+            .find(|m| m.log.as_ref().is_none_or(|x| x.deleted_at.is_none()))
+        else {
+            if !self.pending_message_loads.contains_key(&cid) {
+                self.unread.remove(&cid);
+                self.mention_counts.remove(&cid);
+            }
             return;
         };
         if self.acked.get(&cid) == Some(&last.id) {
-            // 最新まで既読にしてあるのに未読の印だけ残っていたら消す（届いたメッセージがすぐ消された、
-            // つなぎ直しで件数だけ入り直した、など。残すと次のメッセージが来るまでレールのアイコンが出たままになる）
-            self.unread.remove(&cid);
-            self.mention_counts.remove(&cid);
+            if self.ack_succeeded.contains(&cid) {
+                self.unread.remove(&cid);
+                self.mention_counts.remove(&cid);
+            }
             return;
         }
         if let Some(wait) = self
@@ -4635,10 +4675,9 @@ impl App {
             return;
         }
         self.ack_retry_at.remove(&cid);
+        self.ack_succeeded.remove(&cid);
         self.acked.insert(cid.clone(), message_id);
         self.last_ack = Some(std::time::Instant::now());
-        self.unread.remove(&cid);
-        self.mention_counts.remove(&cid);
     }
 
     pub fn clear_message_error_status(&mut self, channel_id: &str) {
@@ -4680,8 +4719,6 @@ impl App {
             }
             self.reply_to = None;
         }
-        self.unread.remove(&id);
-        self.mention_counts.remove(&id);
         // フォーラムにはメッセージが無い（投稿の一覧は ensure_forum が読む）。
         // ボイスチャンネルは専用の画面を出し、チャットは読まない
         let no_messages = self
@@ -4734,6 +4771,7 @@ impl App {
             self.no_access.remove(&old);
             self.message_errors.remove(&old);
             self.acked.remove(&old);
+            self.ack_succeeded.remove(&old);
             self.ack_retry_at.remove(&old);
             evicted = true;
             // そのチャンネルでしか使っていない画像は、デコード済みの画像・テクスチャごと解放する

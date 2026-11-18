@@ -1,6 +1,6 @@
-# v* のタグを push すると、Windows / Linux（x64・arm64）の実行ファイルをビルドして GitHub Releases に載せる。
-# アプリの自動アップデート（src/update.rs の asset_for）は、ここで付ける名前を探す。
-# asset を足す・変えるときは asset_for と TARGETS も合わせる（cargo test で食い違いを検出する）
+# v* のタグを push すると、各 OS（x64・arm64）の配布物をビルドして GitHub Releases に載せる。
+# Windows / Linux の自動アップデートは asset を探す。変更時は src/update.rs も合わせる。
+# macOS は .app の ZIP を手動で更新するため macos_asset で別に指定する。
 name: release
 
 on:
@@ -29,7 +29,7 @@ jobs:
       - run: cargo test --release --locked
 
   build:
-    name: ${{ matrix.asset }}
+    name: ${{ matrix.asset || matrix.macos_asset }}
     runs-on: ${{ matrix.os }}
     # arm64 版のビルドが落ちても x64 版だけでリリースする（arm64 機の利用者は、その版では x64 版に更新される）。
     # x64 版が落ちたときはリリースしない
@@ -57,6 +57,12 @@ jobs:
             bin: riscord
             asset: riscord-linux-arm64
             optional: true
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            macos_asset: riscord-macos-x64.zip
+          - os: macos-15
+            target: aarch64-apple-darwin
+            macos_asset: riscord-macos-arm64.zip
     steps:
       - uses: actions/checkout@v4
 
@@ -94,15 +100,22 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Rename
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           mkdir -p out
           cp target/${{ matrix.target }}/release/${{ matrix.bin }} out/${{ matrix.asset }}
 
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          scripts/package-macos.sh target/${{ matrix.target }}/release/riscord out
+          ditto -c -k --sequesterRsrc --keepParent out/Riscord.app out/${{ matrix.macos_asset }}
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: out/${{ matrix.asset }}
+          name: ${{ matrix.asset || matrix.macos_asset }}
+          path: out/${{ matrix.asset || matrix.macos_asset }}
           if-no-files-found: error
 
   release:

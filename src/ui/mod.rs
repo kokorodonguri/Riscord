@@ -1699,8 +1699,13 @@ impl Root {
             return;
         }
         let m = &k.modifiers;
-        // Ctrl+F: メッセージ検索
-        if m.control && !m.alt && !m.shift && k.key == "f" && self.app.sel_channel.is_some() {
+        // Ctrl / Cmd+F: メッセージ検索
+        if (m.control || m.platform)
+            && !m.alt
+            && !m.shift
+            && k.key == "f"
+            && self.app.sel_channel.is_some()
+        {
             if self.app.side != crate::app::SidePanel::Search {
                 self.app.toggle_search();
             }
@@ -1709,7 +1714,7 @@ impl Root {
             cx.notify();
             return;
         }
-        if m.control && !m.alt && !m.shift && k.key == "k" {
+        if (m.control || m.platform) && !m.alt && !m.shift && k.key == "k" {
             self.app.switcher = if self.app.switcher.is_some() {
                 None
             } else {
@@ -1877,7 +1882,7 @@ impl Root {
             return;
         }
         let k = &ev.keystroke;
-        if k.modifiers.control || k.modifiers.alt {
+        if k.modifiers.control || k.modifiers.alt || k.modifiers.platform {
             return;
         }
         if let Some(ch) = k

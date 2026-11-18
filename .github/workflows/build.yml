@@ -1,4 +1,4 @@
-# プッシュのたびに Windows / Linux（x64・arm64）向けの release ビルドを作り、成果物として保存する
+# プッシュのたびに各 OS（x64・arm64）向けの release ビルドを作り、成果物として保存する
 name: build
 
 on:
@@ -30,6 +30,12 @@ jobs:
           - name: linux-arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +74,18 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test --release --locked --target ${{ matrix.target }}
 
+      - name: Test macOS build
+        if: runner.os == 'macOS'
+        run: cargo test --release --locked --target ${{ matrix.target }} update::tests::asset_names_match_release_workflow
+
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          scripts/package-macos.sh target/${{ matrix.target }}/release/riscord out
+          plutil -lint out/Riscord.app/Contents/Info.plist
+          codesign --verify --strict out/Riscord.app
+          ditto -c -k --sequesterRsrc --keepParent out/Riscord.app out/riscord-${{ matrix.name }}.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -75,4 +93,5 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/riscord
             target/${{ matrix.target }}/release/riscord.exe
+            out/riscord-${{ matrix.name }}.zip
           if-no-files-found: error

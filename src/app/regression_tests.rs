@@ -274,6 +274,26 @@ fn loading_messages_replays_gateway_changes_and_prevents_duplicate_requests() {
 }
 
 #[test]
+fn fresh_gateway_session_refreshes_cached_messages() {
+    let mut app = bench_app(1);
+    app.messages.insert("other".into(), Vec::new());
+    app.touch_channel("other");
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    tx.send(Event::GatewayReady).unwrap();
+    app.poll();
+    assert!(app.stale_channels.contains("c"));
+    assert!(app.stale_channels.contains("other"));
+    assert!(matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "c"));
+    tx.send(Event::Messages("c".into(), Vec::new())).unwrap();
+    app.poll();
+    assert!(!app.stale_channels.contains("c"));
+    app.open_channel("other".into());
+    assert!(matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "other"));
+}
+
+#[test]
 fn initial_message_load_keeps_arrivals_and_own_send_response() {
     let mut app = bench_app(1);
     let (tx, ev) = std::sync::mpsc::channel();
@@ -759,7 +779,7 @@ fn read_ack_is_retried_if_command_channel_is_closed() {
         matches!(rx.try_recv(), Ok(Cmd::Ack { channel_id, message_id }) if channel_id == "c" && message_id == "100000")
     );
     assert_eq!(app.acked.get("c").map(String::as_str), Some("100000"));
-    assert!(!app.unread.contains_key("c"));
+    assert!(app.unread.contains_key("c"));
     app.sync_read_state(true);
     assert!(rx.try_recv().is_err());
 }
@@ -1269,9 +1289,9 @@ fn mentions_are_counted_per_server() {
     app.poll();
     assert_eq!(app.mention_count(Some("g")), 5);
     assert_eq!(app.mention_count(None), 1);
-    // 開いたチャンネルの分は消える
+    // サーバーへの既読通知が成功するまでは残す
     app.open_channel("c3".into());
-    assert_eq!(app.mention_count(Some("g")), 3);
+    assert_eq!(app.mention_count(Some("g")), 5);
     // 見ているチャンネルに来たメンションは数えない
     app.window_focused = true;
     tx.send(Event::MessageCreate(msg(
@@ -1283,7 +1303,7 @@ fn mentions_are_counted_per_server() {
     )))
     .unwrap();
     app.poll();
-    assert_eq!(app.mention_count(Some("g")), 3);
+    assert_eq!(app.mention_count(Some("g")), 5);
     app.mark_guild_read("g");
     assert_eq!(app.mention_count(Some("g")), 0);
 }
@@ -1480,26 +1500,52 @@ fn unread_dms_lists_only_dms_with_counts_in_dm_order_until_opened() {
         .into_iter()
         .map(|(c, n)| (c.id.as_str(), n))
         .collect();
-    assert_eq!(list, [("1", 2)]);
+    assert_eq!(list, [("3", 5), ("1", 2)]);
 }
 
 #[test]
-fn viewing_already_acked_channel_clears_leftover_unread_marks() {
+fn unread_marks_remain_until_ack_succeeds() {
     let mut app = bench_app(1);
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
-    let _tx = tx;
     app.sync_read_state(true);
     assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { .. })));
-    // 最新は既読のまま、件数だけが入り直した（つなぎ直しの READY や、届いてすぐ消されたメッセージ）
     app.mention_counts.insert("c".into(), (None, 1));
     app.unread.insert("c".into(), None);
     app.sync_read_state(false);
     assert!(app.mention_counts.contains_key("c"), "見ていない間は残す");
     app.sync_read_state(true);
+    assert!(app.mention_counts.contains_key("c") && app.unread.contains_key("c"));
+    tx.send(Event::AckSucceeded {
+        channel_id: "c".into(),
+        message_id: "100000".into(),
+    })
+    .unwrap();
+    app.poll();
     assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
     assert!(rx.try_recv().is_err(), "既読は送り直さない");
+    // 成功後に READY などで件数が再び入っても、同じ最新位置なら消せる。
+    app.mention_counts.insert("c".into(), (None, 1));
+    app.unread.insert("c".into(), None);
+    app.sync_read_state(true);
+    assert!(!app.mention_counts.contains_key("c") && !app.unread.contains_key("c"));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn empty_loaded_channel_clears_unread_only_after_loading() {
+    let mut app = bench_app(0);
+    app.unread.insert("c".into(), None);
+    app.mention_counts.insert("c".into(), (None, 1));
+    app.pending_message_loads.insert("c".into(), Vec::new());
+    app.sync_read_state(true);
+    assert!(app.unread.contains_key("c") && app.mention_counts.contains_key("c"));
+    app.pending_message_loads.remove("c");
+    app.sync_read_state(false);
+    assert!(app.unread.contains_key("c"));
+    app.sync_read_state(true);
+    assert!(!app.unread.contains_key("c") && !app.mention_counts.contains_key("c"));
 }
 
 #[test]

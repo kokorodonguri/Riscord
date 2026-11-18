@@ -8,10 +8,16 @@ local S = settings({
 })
 local function capitalize(text)
   if text:match("^%s*[/!$]") or text:find("```", 1, true) or text:find("`", 1, true) then return nil end
-  local out = text:gsub("^(%s*)(%l)", function(sp, c) return sp .. c:upper() end)
+  local function transform(source, pattern)
+    return (source:gsub(pattern, function(prefix, pos, c)
+      if source:sub(pos):match("^https?://") then return prefix .. c end
+      return prefix .. c:upper()
+    end))
+  end
+  local out = transform(text, "^(%s*)()(%l)")
   if S.state.sentences then
-    out = out:gsub("([%.!?]%s+)(%l)", function(p, c) return p .. c:upper() end)
-    out = out:gsub("(\n%s*)(%l)", function(p, c) return p .. c:upper() end)
+    out = transform(out, "([%.!?]%s+)()(%l)")
+    out = transform(out, "(\n%s*)()(%l)")
   end
   return out
 end

@@ -822,6 +822,8 @@ impl Root {
             toggle_icon("search_toggle", IconName::Search, search_open)
                 .tooltip(tip(if search_open {
                     tr!("検索を閉じる", "Close search", "关闭搜索")
+                } else if cfg!(target_os = "macos") {
+                    tr!("検索（⌘F）", "Search (⌘F)", "搜索（⌘F）")
                 } else {
                     tr!("検索（Ctrl+F）", "Search (Ctrl+F)", "搜索（Ctrl+F）")
                 }))

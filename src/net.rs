@@ -204,6 +204,10 @@ pub enum Event {
     AuthFailed,
     LoginFailed,
     MessagesFailed(String),
+    AckSucceeded {
+        channel_id: String,
+        message_id: String,
+    },
     /// 既読通知が Discord に届かなかった。古い失敗が新しい通知を消さないよう ID を含める。
     AckFailed {
         channel_id: String,
@@ -1186,6 +1190,11 @@ async fn send_ack(api: &Api, tx: &Tx, channel_id: String, message_id: String) ->
         .await;
     if result.is_err() {
         tx.send(Event::AckFailed {
+            channel_id,
+            message_id,
+        });
+    } else {
+        tx.send(Event::AckSucceeded {
             channel_id,
             message_id,
         });
@@ -2588,7 +2597,9 @@ mod tests {
                     matches!(events.try_recv(), Ok(Event::AckFailed { channel_id, message_id }) if channel_id == "c" && message_id == "m")
                 );
             } else {
-                assert!(events.try_recv().is_err());
+                assert!(
+                    matches!(events.try_recv(), Ok(Event::AckSucceeded { channel_id, message_id }) if channel_id == "c" && message_id == "m")
+                );
             }
         }
     }

@@ -2,7 +2,7 @@
 
 **Discord を、Rust と GPUI で。**
 
-Riscord は、Electron を使わずに動作する非公式 Discord クライアントです。表示は日本語・英語・中国語（簡体字）に対応しています。チャットや通話をはじめ、画面共有、テーマ、Lua プラグイン、複数アカウントに対応しています。Windows・Linux 向けのデスクトップ版と、開発中の Android 版があります。
+Riscord は、Electron を使わずに動作する非公式 Discord クライアントです。表示は日本語・英語・中国語（簡体字）に対応しています。チャットや通話をはじめ、画面共有、テーマ、Lua プラグイン、複数アカウントに対応しています。Windows・macOS・Linux 向けのデスクトップ版と、開発中の Android 版があります。
 
 [紹介ページ](https://kokorodonguri.github.io/Riscord/) · [ダウンロード](https://github.com/kokorodonguri/Riscord/releases/latest) · [Android 版](android/README.md) · [プラグイン開発ガイド](docs/plugins.md)
 
@@ -37,6 +37,9 @@ Riscord は、Electron を使わずに動作する非公式 Discord クライア
 |---|---|---|
 | Windows | `riscord-windows-x64.exe` | `riscord-windows-arm64.exe` |
 | Linux | `riscord-linux-x64` | `riscord-linux-arm64` |
+| macOS | `riscord-macos-x64.zip` | `riscord-macos-arm64.zip` |
+
+macOS 版は次のリリースから配布されます。ZIP を展開し、`Riscord.app` をアプリケーションフォルダに移して起動してください。Developer ID 署名・公証は行っていないため、初回起動時に macOS の「プライバシーとセキュリティ」で起動を許可する必要があります。通話ではマイクへのアクセスを許可してください。
 
 Android 版はまだリリースで配布していません。開発用（debug 署名）の APK は、GitHub Actions の「Android」ワークフローの実行結果から `riscord-android-arm64-debug` としてダウンロードできます（GitHub へのログインが必要です）。詳しくは下の「Android 版」を参照してください。
 
@@ -49,7 +52,7 @@ chmod +x riscord-linux-x64
 
 Linux 版の実行には、下の「ソースからビルド」に挙げた ALSA、Vulkan、GStreamer などのライブラリが必要です。
 
-配布版は起動時と、起動中は3時間おきに新しいリリースを確認し、裏でダウンロードして実行ファイルを差し替えます。差し替えが終わると OS の通知と画面上部の帯で知らせ、新しい版は次に起動したときから使われます。確認を止めるには、環境変数 `RISCORD_NO_UPDATE` を設定してください。
+Windows・Linux の配布版は起動時と、起動中は3時間おきに新しいリリースを確認し、裏でダウンロードして実行ファイルを差し替えます。差し替えが終わると OS の通知と画面上部の帯で知らせ、新しい版は次に起動したときから使われます。確認を止めるには、環境変数 `RISCORD_NO_UPDATE` を設定してください。macOS 版は新しい ZIP をダウンロードして手動で更新します。
 
 ## ソースからビルド
 
@@ -81,6 +84,20 @@ set CMAKE_GENERATOR=NMake Makefiles
 cargo clean -p libopus_sys --release
 cargo run --release --locked
 ```
+
+### macOS
+
+Xcode Command Line Tools、CMake、[Rust（rustup）](https://rust-lang.org/tools/install/) をインストールし、次を実行します。Homebrew を使う場合、CMake は `brew install cmake` でインストールできます。
+
+```sh
+git clone https://github.com/kokorodonguri/Riscord.git
+cd Riscord
+cargo build --release --locked
+scripts/package-macos.sh target/release/riscord dist
+open dist/Riscord.app
+```
+
+画面共有の配信・視聴と添付動画の再生は Linux のみの対応です。macOS では検索に `Command+F`、クイックスイッチャーに `Command+K` を使えます。
 
 ### Arch Linux
 

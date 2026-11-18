@@ -1546,7 +1546,19 @@ mod tests {
         );
         let mut p = only("write-uppercase");
         assert_eq!(send(&mut p, "hello. world? yes"), "Hello. World? Yes");
+        assert_eq!(
+            send(&mut p, "https://example.com/Path. hello"),
+            "https://example.com/Path. Hello"
+        );
+        assert_eq!(
+            send(
+                &mut p,
+                "hello. https://example.com/a\nhttp://example.org/b\nworld"
+            ),
+            "Hello. https://example.com/a\nhttp://example.org/b\nWorld"
+        );
         assert_eq!(send(&mut p, "/cmd x"), "/cmd x");
+        assert_eq!(send(&mut p, "hello `code`"), "hello `code`");
         let mut p = only("chat-aliases");
         assert_eq!(send(&mut p, "brb soon"), "be right back soon");
         assert_eq!(send(&mut p, "brbx"), "brbx");

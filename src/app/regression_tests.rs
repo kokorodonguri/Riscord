@@ -1021,6 +1021,40 @@ fn snapshot_restores_recent_conversation_and_refreshes_it() {
     assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { message_id, .. }) if message_id == "200002"));
 }
 
+/// LazyLoadChannels が有効でも、前回の控えが出ているチャンネルは開いたら読み直す。
+/// 控えがあると「読み込む」ボタンが出ないので、読み直さないと閉じていた間のメッセージが出ない
+#[test]
+fn lazy_load_still_refreshes_restored_channels() {
+    let mut app = bench_app(10);
+    app.token_owner = Some("1".into());
+    app.me = Some(User {
+        public_flags: 0,
+        id: "1".into(),
+        username: "me".into(),
+        global_name: None,
+        avatar: None,
+        premium_type: None,
+        bot: false,
+        avatar_decoration_data: None,
+    });
+    let s = app.build_snapshot().expect("snapshot");
+
+    let mut next = App::default();
+    next.plugins.reload(&["lazy-load-channels".into()]);
+    let (_tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    next.backend = Some(Backend { cmd, ev });
+    next.restore_snapshot(s);
+    assert!(
+        matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "c"),
+        "cached channel is reloaded even with LazyLoadChannels"
+    );
+
+    // 一度も読んでいないチャンネルは、これまでどおり開いてもすぐには読まない
+    next.open_channel("never-opened".into());
+    assert!(rx.try_recv().is_err());
+}
+
 /// 控えを出したまま接続に失敗しても画面は残し、送信待ちは失敗扱いにしてつなぎ直しを予約する
 #[test]
 fn login_failure_with_snapshot_keeps_view_and_retries() {

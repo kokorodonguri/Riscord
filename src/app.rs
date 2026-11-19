@@ -4931,9 +4931,12 @@ impl App {
             .as_deref()
             .and_then(|g| self.find_guild_channel(g, &id))
             .is_some_and(|c| c.is_forum() || c.is_voice());
+        // LazyLoadChannels が止めるのは、まだ一度も読んでいないチャンネルだけ。
+        // 前回の控え（古いかもしれない一覧）が出ているチャンネルは「読み込む」ボタンが出ないので、
+        // ここで読み直さないと、閉じていた間のメッセージが出ないままになる
         if !no_messages
-            && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id))
-            && !self.lazy_skip(&id)
+            && ((!self.messages.contains_key(&id) && !self.lazy_skip(&id))
+                || self.stale_channels.contains(&id))
         {
             self.load_messages(id.clone());
         }

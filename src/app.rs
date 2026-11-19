@@ -1485,8 +1485,6 @@ pub struct App {
     pub hide_rail: bool,
     /// 同梱プラグインが出す情報ダイアログ（見出し, 本文）
     pub info_dialog: Option<(String, String)>,
-    /// LazyLoadChannels で読み込むことにしたチャンネル
-    pub lazy_allowed: HashSet<String>,
     /// StartUpPage を済ませたか・READY を受け取ったか
     pub startup_done: bool,
     pub startup_done_ready: bool,
@@ -2245,6 +2243,7 @@ impl App {
                     id,
                     original,
                     generation,
+                    manual,
                 } => {
                     if self.plugins.generation == generation
                         && self.plugins.translator_enabled()
@@ -2253,6 +2252,16 @@ impl App {
                         })
                     {
                         match item.result {
+                            // 原文がもともと翻訳先の言語なら、同じ文を重ねて出さない
+                            Ok(_) if item.same_language => {
+                                if manual {
+                                    self.show_toast(tr!(
+                                        "すでに翻訳先の言語で書かれています",
+                                        "This message is already in the target language",
+                                        "这条消息已是目标语言"
+                                    ));
+                                }
+                            }
                             Ok(result) => {
                                 if self.translator.messages.len() >= 512 {
                                     self.translator.messages.clear();
@@ -4931,12 +4940,8 @@ impl App {
             .as_deref()
             .and_then(|g| self.find_guild_channel(g, &id))
             .is_some_and(|c| c.is_forum() || c.is_voice());
-        // LazyLoadChannels が止めるのは、まだ一度も読んでいないチャンネルだけ。
-        // 前回の控え（古いかもしれない一覧）が出ているチャンネルは「読み込む」ボタンが出ないので、
-        // ここで読み直さないと、閉じていた間のメッセージが出ないままになる
         if !no_messages
-            && ((!self.messages.contains_key(&id) && !self.lazy_skip(&id))
-                || self.stale_channels.contains(&id))
+            && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id))
         {
             self.load_messages(id.clone());
         }

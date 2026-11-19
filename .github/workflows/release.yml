@@ -29,6 +29,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release --locked
+      # 紹介ページの版番号が Cargo.toml と食い違っていればリリースを止める。
+      # 直すには scripts/update-site-version.sh を実行してコミットし、タグを打ち直す
+      - name: Check site version
+        run: scripts/update-site-version.sh --check
 
   build:
     name: ${{ matrix.asset || matrix.macos_asset }}

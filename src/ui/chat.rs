@@ -1355,7 +1355,7 @@ impl Root {
         Some(bar)
     }
 
-    /// LazyLoadChannels・StreamingChannels: メッセージの代わりに出す画面
+    /// StreamingChannels: メッセージの代わりに出す画面
     fn bd_placeholder(&mut self, cid: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.app.streaming_hidden(cid) {
             return Some(
@@ -1373,42 +1373,6 @@ impl Root {
                         15.0,
                         MUTED(),
                     ))
-                    .into_any_element(),
-            );
-        }
-        if !self.app.messages.contains_key(cid) && self.app.lazy_skip(cid) {
-            let id = cid.to_string();
-            return Some(
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .gap(z(12.0))
-                    .items_center()
-                    .justify_center()
-                    .child(text(
-                        tr!(
-                            "このチャンネルはまだ読み込んでいません（LazyLoadChannels）",
-                            "This channel hasn't been loaded yet (LazyLoadChannels)",
-                            "此频道尚未加载（LazyLoadChannels）"
-                        ),
-                        15.0,
-                        MUTED(),
-                    ))
-                    .child(
-                        div()
-                            .id("lazy_load")
-                            .px(z(16.0))
-                            .py(z(8.0))
-                            .rounded(z(6.0))
-                            .bg(BLURPLE())
-                            .cursor_pointer()
-                            .child(text(tr!("読み込む", "Load", "加载"), 14.0, WHITE()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.app.lazy_load(&id);
-                                cx.notify();
-                            })),
-                    )
                     .into_any_element(),
             );
         }

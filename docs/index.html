@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="google-site-verification" content="8hyeTfpni2E5VSKEy8HZax2TCSja3zBbvyZ54OFqYwk" />
 <title>Riscord — Rust 製の軽量な非公式 Discord クライアント</title>
-<meta name="description" content="Riscord は Rust と GPUI で作られた、非公式 Discord デスクトップクライアントです。日本語・英語・簡体字中国語に対応し、Linux・Windows・macOS で動作します。">
-<meta name="keywords" content="Riscord, Discord クライアント, 非公式 Discord クライアント, Rust, GPUI, 軽量, Linux, Windows, macOS, Discord client, unofficial Discord client">
+<meta name="description" content="Riscord は Rust と GPUI で作られた、非公式 Discord デスクトップクライアントです。約 110 個の同梱プラグイン、テーマ、複数アカウントに対応し、日本語・英語・簡体字中国語で Linux・Windows・macOS に対応しています。">
+<meta name="keywords" content="Riscord, Discord クライアント, 非公式 Discord クライアント, Rust, GPUI, 軽量, Linux, Windows, macOS, Discord client, unofficial Discord client, Lua プラグイン">
 <link rel="canonical" href="https://kokorodonguri.github.io/Riscord/">
 <link rel="alternate" hreflang="ja" href="https://kokorodonguri.github.io/Riscord/">
 <meta name="theme-color" content="#0b0b0d">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Riscord">
 <meta property="og:title" content="Riscord — Rust 製の軽量な非公式 Discord クライアント">
-<meta property="og:description" content="Rust と GPUI で作られた、軽量で日本語対応の非公式 Discord デスクトップクライアント。">
+<meta property="og:description" content="Rust と GPUI で作られた、非公式 Discord デスクトップクライアントです。約 110 個の同梱プラグイン、テーマ、複数アカウントに対応し、日本語・英語・簡体字中国語で Linux・Windows・macOS に対応しています。">
 <meta property="og:url" content="https://kokorodonguri.github.io/Riscord/">
 <meta property="og:locale" content="ja_JP">
 <meta name="twitter:card" content="summary">
@@ -23,9 +23,11 @@
   "@type": "SoftwareApplication",
   "name": "Riscord",
   "alternateName": "riscord",
-  "description": "Rust と GPUI で作られた、軽量で日本語対応の非公式 Discord デスクトップクライアント。",
+  "description": "Rust と GPUI で作られた、非公式 Discord デスクトップクライアントです。約 110 個の同梱プラグイン、テーマ、複数アカウントに対応し、日本語・英語・簡体字中国語で Linux・Windows・macOS に対応しています。",
   "applicationCategory": "CommunicationApplication",
   "operatingSystem": "Linux, Windows, macOS",
+  "softwareVersion": "0.4.0",
+  "downloadUrl": "https://github.com/kokorodonguri/Riscord/releases/latest",
   "programmingLanguage": "Rust",
   "inLanguage": ["ja", "en", "zh-Hans"],
   "url": "https://kokorodonguri.github.io/Riscord/",
@@ -76,34 +78,82 @@
   dd { margin: 4px 0 0; color: var(--muted); }
   footer { padding: 32px 0 56px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--border); }
   a { color: var(--accent); }
+  .badge {
+    display: inline-block; margin: 0 0 16px; padding: 4px 12px; border-radius: 999px; font-size: 0.85rem; font-weight: 600;
+    color: var(--accent); border: 1px solid var(--accent); text-decoration: none;
+  }
+  ul.news { margin: 0; padding-left: 1.2em; }
+  ul.news li { margin: 6px 0; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-weight: 600; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
+    <a class="badge" href="https://github.com/kokorodonguri/Riscord/releases/latest">最新版 v0.4.0</a>
     <h1>Riscord</h1>
-    <p class="lead">Rust と GPUI で作られた、<strong>非公式</strong> Discord デスクトップクライアントです。日本語・英語・簡体字中国語に対応し、Linux・Windows・macOS で動作します。Android 版も開発中です。</p>
+    <p class="lead">Rust と GPUI で作られた、<strong>非公式</strong> Discord デスクトップクライアントです。Electron を使わずに動き、約 110 個の同梱プラグインで自分好みに変えられます。日本語・英語・簡体字中国語に対応し、Linux・Windows・macOS で動作します。Android 版も開発中です。</p>
     <div class="actions">
-      <a class="btn primary" href="https://github.com/kokorodonguri/Riscord">GitHub でソースを見る</a>
-      <a class="btn" href="#build">ビルド方法</a>
+      <a class="btn primary" href="#download">ダウンロード</a>
+      <a class="btn" href="https://github.com/kokorodonguri/Riscord">GitHub でソースを見る</a>
     </div>
   </header>
+
+  <section aria-labelledby="news">
+    <h2 id="news">v0.4.0 の主な変更</h2>
+    <ul class="news">
+      <li><strong>同梱プラグインが約 110 個に。</strong>BetterDiscord の人気プラグインを参考に Riscord 用に作り直しました。設定画面のカードから、使いたいものだけを有効にできます。</li>
+      <li><strong>macOS 版の配布を開始。</strong>Intel（x64）と Apple シリコン（arm64）に対応しています。</li>
+      <li><strong>署名付きの自動更新。</strong>Windows・Linux 版は、リリースの署名を確認できたときだけ自動で更新します。</li>
+      <li>接続の安定性、セキュリティ、ボイスチャンネル、添付ファイル、メンションの表示を改善しました。</li>
+    </ul>
+    <p><a href="https://github.com/kokorodonguri/Riscord/releases/tag/v0.4.0">リリースノートを見る</a></p>
+  </section>
 
   <section aria-labelledby="features">
     <h2 id="features">主な機能</h2>
     <div class="grid">
       <div class="card"><h3>チャット</h3><p>サーバー・チャンネル・DM でのメッセージの送受信、返信・編集・削除。画像や GIF、スタンプ、埋め込みも表示します。</p></div>
-      <div class="card"><h3>ボイス通話</h3><p>ボイスチャンネルや DM 通話に参加。マイク・出力デバイス、プッシュトゥトーク、入力感度を設定できます。</p></div>
+      <div class="card"><h3>ボイス通話</h3><p>ボイスチャンネルや DM 通話に参加。マイク・出力デバイス、ノイズ抑制、プッシュトゥトーク、サウンドボードに対応しています。</p></div>
+      <div class="card"><h3>画面共有</h3><p>Linux では画面共有の配信と視聴ができます（xdg-desktop-portal と GStreamer が必要です）。Windows・macOS 版では使えません。</p></div>
+      <div class="card"><h3>プラグイン</h3><p>長文の自動分割、自動翻訳、ダブルクリックで返信、チャンネルタブなど、約 110 個を同梱。Lua で自作することもできます。</p></div>
+      <div class="card"><h3>複数アカウント</h3><p>複数のアカウントに同時にログインし、分割表示や別ウィンドウで並べて使えます。</p></div>
       <div class="card"><h3>QR コードでログイン</h3><p>スマホの Discord アプリで読み取るだけ。メールアドレスとパスワード（二段階認証対応）でもログインできます。</p></div>
       <div class="card"><h3>テーマ</h3><p>配色・背景画像・フォントを TOML ファイルで自由に変更。保存するとすぐ反映されます。</p></div>
       <div class="card"><h3>プロフィール編集</h3><p>表示名・代名詞・アバター・自己紹介をアプリ内で変更できます。</p></div>
       <div class="card"><h3>表示言語と対応 OS</h3><p>日本語・英語・簡体字中国語を選べます。デスクトップ版は Linux・Windows・macOS に対応しています。</p></div>
+      <div class="card"><h3>自動更新</h3><p>Windows・Linux 版は新しいリリースを自動で確認し、署名を確かめてから更新します。公開鍵を組み込まずにソースからビルドした版は更新しません。環境変数 <code>RISCORD_NO_UPDATE</code> を設定すると確認を止められます。複数アカウントのときは、メインアカウントのウィンドウだけが更新します。macOS 版は手動で入れ替えてください。</p></div>
     </div>
   </section>
 
+  <section aria-labelledby="download">
+    <h2 id="download">ダウンロード</h2>
+    <p><a href="https://github.com/kokorodonguri/Riscord/releases/latest">GitHub Releases</a> から、お使いの OS と CPU に合うファイルをダウンロードしてください。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">OS</th><th scope="col">x64</th><th scope="col">arm64</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Windows</th><td><code>riscord-windows-x64.exe</code></td><td><code>riscord-windows-arm64.exe</code></td></tr>
+          <tr><th scope="row">Linux</th><td><code>riscord-linux-x64</code></td><td><code>riscord-linux-arm64</code></td></tr>
+          <tr><th scope="row">macOS</th><td><code>riscord-macos-x64.zip</code></td><td><code>riscord-macos-arm64.zip</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="news">
+      <li><strong>Windows：</strong>コード署名をしていないため、初回起動時に「Windows によって PC が保護されました」と表示されることがあります。「詳細情報」から「実行」を選んでください。</li>
+      <li><strong>macOS：</strong>署名・公証をしていないため、初回起動時に「システム設定 → プライバシーとセキュリティ」で起動を許可してください。画面共有と添付動画の再生には対応していません。</li>
+      <li><strong>Linux：</strong>実行権限を付けてから起動します。ALSA・Vulkan・GStreamer などのライブラリが必要です。ファイル選択には <code>xdg-desktop-portal</code> と、デスクトップ環境に合ったバックエンドが必要です。</li>
+    </ul>
+    <p><a class="btn primary" href="https://github.com/kokorodonguri/Riscord/releases/latest">最新版をダウンロード</a></p>
+  </section>
+
   <section aria-labelledby="build">
-    <h2 id="build">ビルドと実行</h2>
-    <p>Rust と Cargo が必要です。Linux では音声用に ALSA の開発ライブラリなども必要です。</p>
+    <h2 id="build">ソースからビルド</h2>
+    <p>Rust と Cargo、CMake が必要です。Linux では ALSA・Vulkan・GStreamer などの開発ライブラリも必要です。</p>
 <pre><code>git clone https://github.com/kokorodonguri/Riscord.git
 cd Riscord
 cargo run --release --locked</code></pre>
@@ -116,7 +166,9 @@ cargo run --release --locked</code></pre>
       <dt>Discord の公式アプリですか？</dt>
       <dd>いいえ。Riscord は Discord Inc. とは関係のない、個人が開発している非公式クライアントです。</dd>
       <dt>安全に使えますか？</dt>
-      <dd>ユーザーアカウントで非公式クライアントを使うことは、Discord の利用規約に抵触する可能性があり、アカウントが制限されるおそれがあります。利用は自己責任でお願いします。ログイン情報は Discord 以外には送信しません。</dd>
+      <dd>ユーザーアカウントで非公式クライアントを使うことは、Discord の利用規約に抵触する可能性があり、アカウントが制限されるおそれがあります。利用は自己責任でお願いします。ログイン情報は Discord 以外には送信しません。ただし、Discord 以外とも次の通信をします。更新の確認とダウンロードのための GitHub への接続（Windows・Linux 版）、翻訳系のプラグインを有効にしたときの Google への本文の送信、GIF や埋め込みの画像を Tenor・Giphy・YouTube などの配信元から読み込む通信です。</dd>
+      <dt>BetterDiscord のプラグインは使えますか？</dt>
+      <dd>そのままでは読み込めません。主なプラグインは Riscord 用に作り直して同梱しています。翻訳系のプラグインは、翻訳する本文を Google に送ります。</dd>
       <dt>無料ですか？</dt>
       <dd>はい。ソースコードは GitHub で公開しています。</dd>
     </dl>

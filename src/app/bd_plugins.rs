@@ -409,6 +409,7 @@ impl App {
                     id: m.id.clone(),
                     original: m.content.clone(),
                     generation: self.plugins.generation,
+                    manual: false,
                 };
                 let _ = self.translator.request(
                     target,

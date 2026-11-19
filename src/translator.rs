@@ -1,7 +1,7 @@
 //! Translation requests run off the UI thread and never receive Discord credentials.
 use crate::wake::Waker;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::mpsc::{self, Receiver, Sender},
     time::Duration,
 };
@@ -13,6 +13,8 @@ pub enum Target {
         id: String,
         original: String,
         generation: u64,
+        /// 翻訳ボタンから頼んだもの（自動翻訳ではない）
+        manual: bool,
     },
     Outgoing {
         channel: String,
@@ -23,11 +25,22 @@ pub enum Target {
 pub struct ResultItem {
     pub target: Target,
     pub result: Result<String, String>,
+    /// 原文がもともと翻訳先の言語だった
+    pub same_language: bool,
 }
+struct Job {
+    target: Target,
+    text: String,
+    language: String,
+    waker: Waker,
+}
+const MAX_RUNNING: usize = 4;
+const MAX_QUEUED: usize = 64;
 pub struct Translator {
     tx: Sender<ResultItem>,
     rx: Receiver<ResultItem>,
     pub pending: usize,
+    queue: VecDeque<Job>,
     pub next_request_id: u64,
     pub outgoing: HashMap<String, u64>,
     pub messages: HashMap<(String, String), (String, String)>,
@@ -39,6 +52,7 @@ impl Default for Translator {
             tx,
             rx,
             pending: 0,
+            queue: VecDeque::new(),
             next_request_id: 0,
             outgoing: HashMap::new(),
             messages: HashMap::new(),
@@ -59,7 +73,7 @@ pub fn prefix(text: &str) -> Option<(String, &str)> {
     let body = body.trim_start();
     (!body.is_empty()).then_some((code, body))
 }
-fn parse_response(bytes: &[u8]) -> Result<String, String> {
+fn parse_response(bytes: &[u8]) -> Result<(String, Option<String>), String> {
     let data: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| {
         tr!(
             "翻訳サービスの応答を読み取れませんでした",
@@ -85,8 +99,22 @@ fn parse_response(bytes: &[u8]) -> Result<String, String> {
         )
         .into())
     } else {
-        Ok(text)
+        let source = data.get("src").and_then(|v| v.as_str()).map(str::to_owned);
+        Ok((text, source))
     }
+}
+/// 検出された原文の言語が翻訳先と同じか（zh-CN と zh-TW は別扱い、he と iw は同じ扱い）
+fn same_language(source: &str, target: &str) -> bool {
+    let norm = |code: &str| {
+        let code = code.to_ascii_lowercase();
+        match code.as_str() {
+            "iw" => "he".to_owned(),
+            "jw" => "jv".to_owned(),
+            "zh" => "zh-cn".to_owned(),
+            _ => code,
+        }
+    };
+    norm(source) == norm(target)
 }
 impl Translator {
     pub fn request(
@@ -96,14 +124,6 @@ impl Translator {
         language: String,
         waker: Waker,
     ) -> Result<(), String> {
-        if self.pending >= 4 {
-            return Err(tr!(
-                "翻訳中のリクエストが多すぎます",
-                "Too many translation requests in progress",
-                "正在进行的翻译请求过多"
-            )
-            .into());
-        }
         if text.is_empty() || text.len() > 8000 {
             return Err(tr!(
                 "翻訳する文章または言語が無効です",
@@ -117,6 +137,33 @@ impl Translator {
             "Invalid text or language to translate",
             "要翻译的文字或语言无效"
         ))?;
+        let job = Job {
+            target,
+            text,
+            language,
+            waker,
+        };
+        if self.pending < MAX_RUNNING {
+            self.start(job);
+        } else if self.queue.len() < MAX_QUEUED {
+            self.queue.push_back(job);
+        } else {
+            return Err(tr!(
+                "翻訳中のリクエストが多すぎます",
+                "Too many translation requests in progress",
+                "正在进行的翻译请求过多"
+            )
+            .into());
+        }
+        Ok(())
+    }
+    fn start(&mut self, job: Job) {
+        let Job {
+            target,
+            text,
+            language,
+            waker,
+        } = job;
         self.pending += 1;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -196,10 +243,14 @@ impl Translator {
                         parse_response(&bytes)
                     })
                 });
-            let _ = tx.send(ResultItem { target, result });
+            let same = matches!(&result, Ok((_, Some(source))) if same_language(source, &language));
+            let _ = tx.send(ResultItem {
+                target,
+                result: result.map(|(text, _)| text),
+                same_language: same,
+            });
             waker.wake();
         });
-        Ok(())
     }
     #[cfg(test)]
     pub fn inject(&mut self, item: ResultItem) {
@@ -209,6 +260,12 @@ impl Translator {
     pub fn drain(&mut self) -> Vec<ResultItem> {
         let items: Vec<_> = self.rx.try_iter().collect();
         self.pending = self.pending.saturating_sub(items.len());
+        while self.pending < MAX_RUNNING {
+            let Some(job) = self.queue.pop_front() else {
+                break;
+            };
+            self.start(job);
+        }
         items
     }
 }
@@ -230,10 +287,44 @@ mod tests {
     #[test]
     fn parses_segmented_response_and_rejects_invalid() {
         assert_eq!(
-            parse_response(br#"{"sentences":[{"trans":"hello "},{"trans":"world"}]}"#).unwrap(),
-            "hello world"
+            parse_response(br#"{"sentences":[{"trans":"hello "},{"trans":"world"}],"src":"en"}"#)
+                .unwrap(),
+            ("hello world".to_string(), Some("en".to_string()))
         );
         assert!(parse_response(b"not json").is_err());
         assert!(parse_response(br#"{"sentences":[]}"#).is_err());
+    }
+    #[test]
+    fn detects_source_already_in_target_language() {
+        assert!(same_language("ja", "ja"));
+        assert!(same_language("iw", "he"));
+        assert!(same_language("zh-CN", "zh-CN"));
+        assert!(!same_language("zh-TW", "zh-CN"));
+        assert!(!same_language("en", "ja"));
+    }
+}
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    #[test]
+    fn busy_requests_wait_instead_of_being_dropped() {
+        let mut t = Translator::default();
+        t.pending = MAX_RUNNING;
+        let target = || Target::Outgoing {
+            channel: "c".into(),
+            request_id: 0,
+            generation: 0,
+        };
+        for _ in 0..MAX_QUEUED {
+            assert!(t
+                .request(target(), "hi".into(), "ja".into(), Waker::default())
+                .is_ok());
+        }
+        assert_eq!(t.queue.len(), MAX_QUEUED);
+        assert!(t
+            .request(target(), "hi".into(), "ja".into(), Waker::default())
+            .is_err());
+        assert!(t.drain().is_empty());
+        assert_eq!(t.queue.len(), MAX_QUEUED);
     }
 }

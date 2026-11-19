@@ -1021,10 +1021,9 @@ fn snapshot_restores_recent_conversation_and_refreshes_it() {
     assert!(matches!(rx.try_recv(), Ok(Cmd::Ack { message_id, .. }) if message_id == "200002"));
 }
 
-/// LazyLoadChannels が有効でも、前回の控えが出ているチャンネルは開いたら読み直す。
-/// 控えがあると「読み込む」ボタンが出ないので、読み直さないと閉じていた間のメッセージが出ない
+/// 前回の控えが出ているチャンネルは開いたら読み直す。
 #[test]
-fn lazy_load_still_refreshes_restored_channels() {
+fn restored_channels_are_refreshed() {
     let mut app = bench_app(10);
     app.token_owner = Some("1".into());
     app.me = Some(User {
@@ -1040,19 +1039,18 @@ fn lazy_load_still_refreshes_restored_channels() {
     let s = app.build_snapshot().expect("snapshot");
 
     let mut next = App::default();
-    next.plugins.reload(&["lazy-load-channels".into()]);
     let (_tx, ev) = std::sync::mpsc::channel();
     let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
     next.backend = Some(Backend { cmd, ev });
     next.restore_snapshot(s);
     assert!(
         matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "c"),
-        "cached channel is reloaded even with LazyLoadChannels"
+        "cached channel is reloaded"
     );
 
-    // 一度も読んでいないチャンネルは、これまでどおり開いてもすぐには読まない
+    // 一度も読んでいないチャンネルも、開いたら読み込む。
     next.open_channel("never-opened".into());
-    assert!(rx.try_recv().is_err());
+    assert!(matches!(rx.try_recv(), Ok(Cmd::LoadMessages(id)) if id == "never-opened"));
 }
 
 /// 控えを出したまま接続に失敗しても画面は残し、送信待ちは失敗扱いにしてつなぎ直しを予約する
@@ -1471,12 +1469,14 @@ fn translated_outgoing_is_sent_only_for_current_successful_request() {
     app.translator.inject(crate::translator::ResultItem {
         target: target(1),
         result: Ok("old".into()),
+        same_language: false,
     });
     app.poll();
     assert!(rx.try_recv().is_err());
     app.translator.inject(crate::translator::ResultItem {
         target: target(2),
         result: Ok("hello".into()),
+        same_language: false,
     });
     app.poll();
     assert!(matches!(rx.try_recv(), Ok(Cmd::Send { content, .. }) if content == "hello"));
@@ -1506,6 +1506,7 @@ fn failed_translation_retains_original_draft() {
             generation: app.plugins.generation,
         },
         result: Err("通信エラー".into()),
+        same_language: false,
     });
     app.poll();
     assert!(app.compose_submissions["c"].failed);
@@ -2445,4 +2446,41 @@ fn load_pending_across_new_session_is_refetched() {
     app.poll();
     assert!(!app.stale_channels.contains("c"));
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn translation_in_same_language_is_not_shown() {
+    let mut app = App::default();
+    app.plugins.reload(&["translator".into()]);
+    let m: Message = serde_json::from_value(serde_json::json!({
+        "id": "1", "channel_id": "c", "author": { "id": "u", "username": "u" },
+        "content": "こんにちは", "timestamp": "2026-11-01T10:00:00+00:00"
+    }))
+    .unwrap();
+    app.messages.insert("c".into(), vec![m]);
+    let generation = app.plugins.generation;
+    let target = |manual| crate::translator::Target::Message {
+        channel: "c".into(),
+        id: "1".into(),
+        original: "こんにちは".into(),
+        generation,
+        manual,
+    };
+    app.translator.inject(crate::translator::ResultItem {
+        target: target(false),
+        result: Ok("こんにちは".into()),
+        same_language: true,
+    });
+    app.poll();
+    assert!(app.translator.messages.is_empty());
+    app.translator.inject(crate::translator::ResultItem {
+        target: target(false),
+        result: Ok("Hello".into()),
+        same_language: false,
+    });
+    app.poll();
+    assert_eq!(
+        app.translator.messages[&("c".into(), "1".into())].1,
+        "Hello"
+    );
 }

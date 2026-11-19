@@ -348,21 +348,6 @@ impl App {
         channel_id.to_owned()
     }
 
-    /// LazyLoadChannels: 開いてもすぐには読まないチャンネルか
-    pub fn lazy_skip(&self, channel_id: &str) -> bool {
-        self.plugins.on("lazy-load-channels")
-            && !self.lazy_allowed.contains(channel_id)
-            && !list(&self.plugins.opt_str("lazy-load-channels", "always"))
-                .iter()
-                .any(|c| c == channel_id)
-    }
-
-    /// LazyLoadChannels: 読み込むことにした
-    pub fn lazy_load(&mut self, channel_id: &str) {
-        self.lazy_allowed.insert(channel_id.to_owned());
-        self.load_messages(channel_id.to_owned());
-    }
-
     /// StreamingChannels: 配信中に中身を隠すチャンネルか
     pub fn streaming_hidden(&self, channel_id: &str) -> bool {
         if !self.plugins.on("streaming-channels") {

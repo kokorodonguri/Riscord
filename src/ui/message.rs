@@ -1331,6 +1331,7 @@ impl Root {
                                 id: message.id.clone(),
                                 original: message.content.clone(),
                                 generation: this.app.plugins.generation,
+                                manual: true,
                             };
                             if let Err(e) = this.app.translator.request(
                                 target,

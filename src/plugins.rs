@@ -312,10 +312,11 @@ impl Runtime {
                 Ok(())
             })?,
         )?;
-        let ts = timers.clone();
+        let ts = Rc::downgrade(&timers);
         api.set(
             "set_timeout",
             lua.create_function(move |lua, (ms, f): (u64, Function)| {
+                let ts = ts.upgrade().ok_or_else(|| mlua::Error::runtime("Plugin stopped"))?;
                 if ts.borrow().len() >= 100 {
                     return Err(mlua::Error::runtime(tr!(
                         "タイマーの上限です",
@@ -629,6 +630,7 @@ impl Plugins {
     /// Set all discovered plugins at once without restarting those already running.
     pub fn set_all(&mut self, on: bool, enabled: &mut Vec<String>) {
         self.dirty();
+        self.actions_cache = None;
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         if on {
@@ -650,6 +652,7 @@ impl Plugins {
     }
     pub fn toggle(&mut self, id: &str, enabled: &mut Vec<String>) {
         self.dirty();
+        self.actions_cache = None;
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         if let Some(p) = self.entries.iter_mut().find(|p| p.manifest.id == id) {

@@ -46,15 +46,24 @@ fn install_budget(lua: &Lua, deadline: Duration) -> mlua::Result<()> {
 }
 
 // Check nesting iteratively before serde recursively walks plugin-provided tables.
+// 同じ文字列を何度も参照する表は Lua の中では小さくても、変換すると参照の数だけ複製されるので、
+// 文字列（キーを含む）のバイト数も合計して数える
 fn json_value(lua: &Lua, value: Value) -> mlua::Result<serde_json::Value> {
     let mut pending = vec![(value.clone(), 0usize)];
     let mut nodes = 0usize;
+    let mut bytes = 0usize;
     while let Some((value, depth)) = pending.pop() {
         nodes += 1;
         if depth > 32 || nodes > 10_000 {
             return Err(mlua::Error::runtime(
                 "plugin value exceeds nesting or size limit",
             ));
+        }
+        if let Value::String(text) = &value {
+            bytes += text.as_bytes().len();
+            if bytes > MAX_VALUE_BYTES {
+                return Err(mlua::Error::runtime("plugin value exceeds size limit"));
+            }
         }
         if let Value::Table(table) = value {
             for entry in table.pairs::<Value, Value>() {
@@ -72,10 +81,17 @@ fn json_value(lua: &Lua, value: Value) -> mlua::Result<serde_json::Value> {
 
 const API_VERSION: u32 = 1;
 const MAX_SCRIPT: u64 = 1024 * 1024;
+/// プラグインから受け取る値（save・options）の文字列の合計バイト数の上限
+const MAX_VALUE_BYTES: usize = 2 * 1024 * 1024;
 /// 画面に出すプラグインの文字列の上限（文字数）。長くても画面を押しつぶさないように切る
 const MAX_ERROR_CHARS: usize = 600;
 const MAX_ACTION_LABEL_CHARS: usize = 60;
 const MAX_PAGE_LABEL_CHARS: usize = 2000;
+/// on_display が返した本文・before_send が返した理由の上限（文字数）
+const MAX_DISPLAY_CHARS: usize = 8000;
+const MAX_REASON_CHARS: usize = 300;
+/// 部品の種類・操作名・アイコン名の上限（バイト数）
+const MAX_NAME_BYTES: usize = 256;
 /// メッセージの操作（全プラグイン合計）と、ボイスパネルの行の上限
 const MAX_MESSAGE_ACTIONS: usize = 40;
 const MAX_VOICE_LINES: usize = 8;
@@ -85,6 +101,8 @@ const MAX_PLUGIN_SENDS_PER_MINUTE: usize = 5;
 const MAX_USER_SENDS_PER_ACTION: usize = 3;
 /// 外に影響する操作（URL を開く・読み上げ・状態の変更・コピー）の上限（全プラグイン合計で1分間）。超えた分は捨てる
 const MAX_PLUGIN_EFFECTS_PER_MINUTE: usize = 20;
+/// 通知・情報ダイアログの上限（全プラグイン合計で1分間）。超えた分は捨てる
+const MAX_PLUGIN_NOTICES_PER_MINUTE: usize = 20;
 /// 設定ページの部品の上限
 const MAX_PAGE_ITEMS: usize = 100;
 
@@ -94,6 +112,76 @@ pub fn clip(s: &str, max_chars: usize) -> String {
         Some((end, _)) => format!("{}…", &s[..end]),
         None => s.to_owned(),
     }
+}
+
+/// バイト数で切る（名前なので … は付けない。UTF-8 の境目で切る）
+fn clip_bytes(mut s: String, max_bytes: usize) -> String {
+    if s.len() > max_bytes {
+        let mut end = max_bytes;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+/// 保存データを一時ファイルに書いてから置き換える（途中で落ちても前のデータが残る）
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}-{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// 保存データを読む。無ければ nil。壊れていたら（JSON として読めない・大きすぎる）
+/// `<id>.json.bak` へ退避して Err で知らせる（そのまま nil を返すと、プラグインが空のデータで上書きしてしまう）
+fn load_data(path: &Path) -> Result<serde_json::Value, String> {
+    let bytes = match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::Value::Null),
+        Err(e) => return Err(e.to_string()),
+        Ok(m) if m.len() > MAX_SCRIPT => None,
+        Ok(_) => Some(std::fs::read(path).map_err(|e| e.to_string())?),
+    };
+    if let Some(v) = bytes.and_then(|b| serde_json::from_slice(&b).ok()) {
+        return Ok(v);
+    }
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let bak = path.with_file_name(format!("{name}.bak"));
+    let moved = std::fs::rename(path, &bak);
+    Err(match moved {
+        Ok(()) => tr!(
+            "保存データが壊れていたため {} へ移しました",
+            "The saved data was corrupted and has been moved to {}",
+            "保存的数据已损坏，已移至 {}",
+            bak.display()
+        ),
+        Err(e) => tr!(
+            "保存データが壊れています（{} へ移せませんでした: {e}）",
+            "The saved data is corrupted (couldn't move it to {}: {e})",
+            "保存的数据已损坏（无法移至 {}：{e}）",
+            bak.display()
+        ),
+    })
 }
 
 #[derive(Clone, Deserialize)]
@@ -226,9 +314,15 @@ pub struct Plugins {
     recent_sends: std::collections::VecDeque<Instant>,
     /// 外へ影響する操作（URL・読み上げ・状態・コピー）を行った時刻（直近1分）
     recent_effects: std::collections::VecDeque<Instant>,
+    /// 通知・情報ダイアログを出した時刻（直近1分）
+    recent_notices: std::collections::VecDeque<Instant>,
     /// 止めたプラグインの stop() が積んだ操作。次の tick で渡す
     stopped_actions: Vec<Action>,
 }
+
+/// メッセージの本文（DM を含む）を外部のサービス（translate.googleapis.com）へ送る同梱プラグイン。
+/// 「すべてオン」ではオンにしない
+pub const EXTERNAL_PLUGINS: &[&str] = &["translator", "auto-translate"];
 
 pub fn directory() -> PathBuf {
     crate::app::config_root().join("riscord/plugins")
@@ -384,11 +478,9 @@ impl Runtime {
         api.set(
             "load",
             lua.create_function(move |lua, ()| {
-                let v: serde_json::Value = std::fs::read(&file)
-                    .ok()
-                    .filter(|b| b.len() <= MAX_SCRIPT as usize)
-                    .and_then(|b| serde_json::from_slice(&b).ok())
-                    .unwrap_or(serde_json::Value::Null);
+                // 壊れていたときはエラーにしてプラグインを止め、設定画面にその旨を出す。
+                // 壊れたファイルは .bak へ移すので、もう一度オンにすれば空のデータから始められる
+                let v = load_data(&file).map_err(mlua::Error::runtime)?;
                 if v.is_null() {
                     Ok(Value::Nil)
                 } else {
@@ -409,7 +501,7 @@ impl Runtime {
                     )));
                 }
                 std::fs::create_dir_all(&data_dir).map_err(mlua::Error::external)?;
-                std::fs::write(&data_file, bytes).map_err(mlua::Error::external)
+                write_atomic(&data_file, &bytes).map_err(mlua::Error::external)
             })?,
         )?;
         for (name, make) in [
@@ -524,7 +616,12 @@ impl Runtime {
             lua.create_function(|_, ()| Ok(crate::i18n::code()))?,
         )?;
         lua.globals().set("riscord", api)?;
-        let callbacks: Table = lua.load(script).set_name(&manifest.entry).eval()?;
+        // 事前にコンパイルしたバイトコードは検査を通らない命令を作れるので、文字のスクリプトだけ読む
+        let callbacks: Table = lua
+            .load(script)
+            .set_name(&manifest.entry)
+            .set_mode(mlua::ChunkMode::Text)
+            .eval()?;
         lua.globals().set("__plugin", callbacks.clone())?;
         let has_page = callbacks
             .raw_get::<Value>("page")
@@ -701,6 +798,7 @@ impl Plugins {
             .collect();
     }
     /// Set all discovered plugins at once without restarting those already running.
+    /// オンにするときは、本文を外部のサービスへ送るプラグイン（EXTERNAL_PLUGINS）を含めない。これらは個別にオンにする
     pub fn set_all(&mut self, on: bool, enabled: &mut Vec<String>) {
         self.dirty();
         self.actions_cache = None;
@@ -708,6 +806,9 @@ impl Plugins {
         self.revision = self.revision.wrapping_add(1);
         if on {
             for plugin in &mut self.entries {
+                if EXTERNAL_PLUGINS.contains(&plugin.manifest.id.as_str()) {
+                    continue;
+                }
                 if !enabled.contains(&plugin.manifest.id) {
                     enabled.push(plugin.manifest.id.clone());
                 }
@@ -807,7 +908,8 @@ impl Plugins {
                             items.push((
                                 i + 1,
                                 clip(&item.get::<String>("label")?, MAX_ACTION_LABEL_CHARS),
-                                item.get::<Option<String>>("icon")?,
+                                item.get::<Option<String>>("icon")?
+                                    .map(|icon| clip_bytes(icon, MAX_NAME_BYTES)),
                             ));
                         }
                         Ok(items)
@@ -1197,7 +1299,7 @@ impl Plugins {
             match result {
                 Some(Ok(Value::String(s))) => {
                     if let Ok(s) = s.to_str() {
-                        return Some(s.to_owned());
+                        return Some(clip(&s, MAX_REASON_CHARS));
                     }
                 }
                 Some(Err(e)) => p.fail(e.to_string()),
@@ -1215,6 +1317,8 @@ impl Plugins {
                 .map(|r| r.call(name, (content.clone(), channel.to_owned())));
             match result {
                 Some(Ok(Value::String(s))) => match s.to_str() {
+                    // 表示する本文は画面を押しつぶさないよう切る（送る本文は送信側の上限で扱う）
+                    Ok(s) if name == "on_display" => content = clip(&s, MAX_DISPLAY_CHARS),
                     Ok(s) => content = s.to_owned(),
                     Err(e) => p.fail(e.to_string()),
                 },
@@ -1241,12 +1345,12 @@ impl Plugins {
                     .take(MAX_PAGE_ITEMS)
                     .filter_map(Result::ok)
                     .map(|v| PageItem {
-                        kind: v.get("kind").unwrap_or_default(),
+                        kind: clip_bytes(v.get("kind").unwrap_or_default(), MAX_NAME_BYTES),
                         label: clip(
                             &v.get::<String>("label").unwrap_or_default(),
                             MAX_PAGE_LABEL_CHARS,
                         ),
-                        action: v.get("action").unwrap_or_default(),
+                        action: clip_bytes(v.get("action").unwrap_or_default(), MAX_NAME_BYTES),
                         enabled: v.get("enabled").unwrap_or(false),
                     })
                     .collect();
@@ -1294,7 +1398,11 @@ impl Plugins {
         let mut actions = Vec::new();
         let mut next: Option<Duration> = None;
         let now = Instant::now();
-        for recent in [&mut self.recent_sends, &mut self.recent_effects] {
+        for recent in [
+            &mut self.recent_sends,
+            &mut self.recent_effects,
+            &mut self.recent_notices,
+        ] {
             while recent
                 .front()
                 .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
@@ -1429,18 +1537,21 @@ impl Plugins {
             self.revision = self.revision.wrapping_add(1);
             self.actions_cache = None;
         }
-        // 外へ影響する操作は全プラグイン合計で数え、上限を超えた分は捨てる
+        // 外へ影響する操作・通知は全プラグイン合計で数え、上限を超えた分は捨てる
         actions.retain(|a| {
-            if !matches!(
-                a,
-                Action::OpenUrl(_) | Action::Speak(_) | Action::SetStatus(_) | Action::Copy(_)
-            ) {
-                return true;
-            }
-            if self.recent_effects.len() >= MAX_PLUGIN_EFFECTS_PER_MINUTE {
+            let (recent, max) = match a {
+                Action::OpenUrl(_) | Action::Speak(_) | Action::SetStatus(_) | Action::Copy(_) => {
+                    (&mut self.recent_effects, MAX_PLUGIN_EFFECTS_PER_MINUTE)
+                }
+                Action::Notify(..) | Action::Info(..) => {
+                    (&mut self.recent_notices, MAX_PLUGIN_NOTICES_PER_MINUTE)
+                }
+                _ => return true,
+            };
+            if recent.len() >= max {
                 return false;
             }
-            self.recent_effects.push_back(now);
+            recent.push_back(now);
             true
         });
         (actions, next)
@@ -1767,6 +1878,10 @@ mod tests {
         assert!(ids.len() >= 3);
         let mut enabled = Vec::new();
         plugins.set_all(true, &mut enabled);
+        // 本文を外部へ送るものは「すべてオン」に含まれないので個別にオンにする
+        for id in EXTERNAL_PLUGINS {
+            plugins.toggle(id, &mut enabled);
+        }
         for p in plugins
             .entries
             .iter()
@@ -2354,6 +2469,11 @@ mod tests {
         let mut enabled = Vec::new();
         for round in 0..5 {
             plugins.set_all(true, &mut enabled);
+            // 本文を外部へ送るものは「すべてオン」に含めず、個別にオンにする
+            for id in EXTERNAL_PLUGINS {
+                assert!(!plugins.on(id), "round {round}: {id}");
+                plugins.toggle(id, &mut enabled);
+            }
             for id in &ids {
                 assert!(plugins.on(id), "round {round}: {id}");
             }
@@ -2382,6 +2502,123 @@ mod tests {
             assert!(plugins.message_actions().is_empty());
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+    /// 「すべてオン」は翻訳など本文を外部へ送るプラグインをオンにしない
+    #[test]
+    fn set_all_skips_external_plugins() {
+        let mut plugins = Plugins::default();
+        for id in ["translator", "auto-translate", "plain"] {
+            let manifest = Manifest {
+                id: id.into(),
+                name: id.into(),
+                version: "1".into(),
+                description: String::new(),
+                api: 1,
+                entry: "main.lua".into(),
+                description_en: String::new(),
+                description_zh: String::new(),
+                bd: false,
+            };
+            plugins.entries.push(Plugin {
+                manifest,
+                error: None,
+                runtime: None,
+                path: PathBuf::new(),
+                failed: false,
+                waker: Default::default(),
+                bundled_source: Some("return {}"),
+            });
+        }
+        let mut enabled = Vec::new();
+        plugins.set_all(true, &mut enabled);
+        assert_eq!(enabled, ["plain"]);
+        assert!(!plugins.entries[0].running() && !plugins.entries[1].running());
+        assert!(plugins.entries[2].running());
+    }
+    /// 同じ大きな文字列を何度も参照する値は、変換する前に断る
+    #[test]
+    fn rejects_values_with_too_many_string_bytes() {
+        let lua = mlua::Lua::new();
+        let big = lua.create_string("x".repeat(1024 * 1024)).unwrap();
+        let t = lua.create_table().unwrap();
+        for i in 1..=4 {
+            t.set(i, big.clone()).unwrap();
+        }
+        assert!(json_value(&lua, Value::Table(t)).is_err());
+        let ok = lua.create_table().unwrap();
+        ok.set("k", "small").unwrap();
+        assert!(json_value(&lua, Value::Table(ok)).is_ok());
+    }
+    /// 保存は置き換えで行い、壊れた保存データは .bak へ移してエラーで知らせる
+    #[test]
+    fn save_is_atomic_and_broken_data_is_backed_up() {
+        let (r, dir) = runtime(
+            "return { save=function(v) riscord.save(v) end, load=function() return riscord.load() end }",
+        );
+        let file = dir.join("test.json");
+        r.call("save", "hello").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "\"hello\"");
+        // 一時ファイルが残らない
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+        let Value::String(v) = r.call("load", ()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(v.to_str().unwrap(), "hello");
+        std::fs::write(&file, "{broken").unwrap();
+        assert!(r.call("load", ()).is_err());
+        assert!(!file.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("test.json.bak")).unwrap(),
+            "{broken"
+        );
+        // 退避した後は空のデータから始められる
+        assert!(matches!(r.call("load", ()).unwrap(), Value::Nil));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    /// プラグインが返す文字列は UTF-8 の境目で切る
+    #[test]
+    fn plugin_strings_are_clipped() {
+        assert_eq!(clip_bytes("あいう".into(), 4), "あ");
+        assert_eq!(clip_bytes("abc".into(), 256), "abc");
+        let (mut plugins, _) = scripted(&[(
+            "long",
+            "return {on_display=function(s) return ('あ'):rep(20000) end, \
+             before_send=function() return ('x'):rep(5000) end, \
+             page=function() return {{kind=('k'):rep(1000), action=('a'):rep(1000), label='l'}} end}",
+        )]);
+        let shown = plugins.transform("on_display", "hi", "1");
+        assert_eq!(shown.chars().count(), MAX_DISPLAY_CHARS + 1);
+        let reason = plugins.check_send("hi", "1").unwrap();
+        assert_eq!(reason.chars().count(), MAX_REASON_CHARS + 1);
+        let page = plugins.page("long");
+        assert_eq!(page[0].kind.len(), MAX_NAME_BYTES);
+        assert_eq!(page[0].action.len(), MAX_NAME_BYTES);
+    }
+    /// 通知・情報ダイアログも 1 分あたりの上限を超えた分を捨てる
+    #[test]
+    fn notices_are_rate_limited() {
+        let (mut plugins, _) = scripted(&[(
+            "chatty",
+            "return {on_message=function() for i = 1, 30 do riscord.notify('a', 'b') riscord.show_info('c', 'd') end end}",
+        )]);
+        plugins.event(&message("hi"));
+        let actions = plugins.tick().0;
+        let notices = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Notify(..) | Action::Info(..)))
+            .count();
+        assert_eq!(notices, MAX_PLUGIN_NOTICES_PER_MINUTE);
+        plugins.event(&message("hi"));
+        assert!(plugins
+            .tick()
+            .0
+            .iter()
+            .all(|a| !matches!(a, Action::Notify(..) | Action::Info(..))));
     }
     #[test]
     fn rejects_paths_outside_plugin() {

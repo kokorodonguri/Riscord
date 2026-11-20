@@ -114,11 +114,33 @@ fn write_unlocked(profile: Option<&str>, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(p.parent().unwrap())?;
     let tmp = p.with_extension("json.tmp");
     write_private(&tmp, bytes)?;
-    std::fs::rename(&tmp, &p)
+    std::fs::rename(&tmp, &p)?;
+    sync_parent(&p);
+    Ok(())
 }
 
-/// 本人だけが読めるファイルとして書く
+/// 本人だけが読めるファイルとして書き、ディスクまで書き切る（このあと rename で置き換える前提。
+/// 書き切らずに置き換えると、電源断で中身が空のファイルが残ることがある）
 pub fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_private_file(p, bytes)?.sync_all()
+}
+
+/// write_private のディスクまで書き切らない版（壊れても取り直せるアイコンの控えなど）
+pub fn write_private_unsynced(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_private_file(p, bytes).map(drop)
+}
+
+/// rename した結果（ディレクトリの中身）もディスクに書き切る。できなくても気にしない
+pub fn sync_parent(p: &std::path::Path) {
+    #[cfg(unix)]
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    #[cfg(not(unix))]
+    let _ = p;
+}
+
+fn write_private_file(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -127,7 +149,8 @@ pub fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts.open(p)?;
-    f.write_all(bytes)
+    f.write_all(bytes)?;
+    Ok(f)
 }
 
 /// ログアウト・ログイン失敗のとき。会話の控えを残さない

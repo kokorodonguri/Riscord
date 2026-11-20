@@ -6,19 +6,29 @@ use super::*;
 /// コードブロックの途中で切ったときは、閉じてから次の部分で開き直す
 pub fn split_message(text: &str, limit: usize) -> Vec<String> {
     let limit = limit.max(16);
+    // limit - 4（閉じる ``` の分）に収まる最後の位置まで
+    let budget = limit - 4;
     let mut parts = Vec::new();
     let mut rest = text.to_string();
     let mut reopen: Option<String> = None;
+    // 開き直しで先へ進めなくなったら、以後は開き直さずにそのまま切る
+    let mut no_reopen = false;
+    // 念のための回数の上限（1 回で少なくとも 1 文字は進む）
+    let mut rounds = text.chars().count() + 8;
     while !rest.is_empty() {
-        if let Some(fence) = reopen.take() {
-            rest = format!("{fence}\n{rest}");
-        }
-        if message_text_len(&rest) <= limit {
+        let before = rest.len();
+        let reopened = match reopen.take() {
+            Some(fence) if !no_reopen => {
+                rest = format!("{fence}\n{rest}");
+                true
+            }
+            _ => false,
+        };
+        if message_text_len(&rest) <= limit || rounds == 0 {
             parts.push(std::mem::take(&mut rest));
             break;
         }
-        // limit - 4（閉じる ``` の分）に収まる最後の位置
-        let budget = limit - 4;
+        rounds -= 1;
         let mut used = 0usize;
         let mut cut = 0usize;
         for (i, c) in rest.char_indices() {
@@ -29,6 +39,10 @@ pub fn split_message(text: &str, limit: usize) -> Vec<String> {
             used += w;
             cut = i + c.len_utf8();
         }
+        if cut == 0 {
+            // 1 文字も入らない（limit は 16 以上なので起きないはず）
+            cut = rest.chars().next().map_or(rest.len(), char::len_utf8);
+        }
         let head = &rest[..cut];
         let at = head
             .rfind('\n')
@@ -38,15 +52,15 @@ pub fn split_message(text: &str, limit: usize) -> Vec<String> {
             .unwrap_or(cut);
         let mut part = rest[..at].trim_end_matches('\n').to_string();
         let tail = rest[at..].to_string();
-        // ``` の数が奇数ならコードブロックの途中
-        let fences: Vec<&str> = part
-            .lines()
-            .filter(|l| l.trim_start().starts_with("```"))
-            .collect();
-        if fences.len() % 2 == 1 {
-            let open = fences.last().unwrap().trim().to_string();
+        if reopened && tail.len() >= before {
+            // 開き直した ``` の分しか進んでいない。開き直しをやめて切り直す
+            no_reopen = true;
+            rest = rest.split_off(rest.find('\n').map_or(0, |i| i + 1));
+            continue;
+        }
+        if let Some(open) = open_fence(&part) {
             part.push_str("\n```");
-            reopen = Some(if open.len() > 3 { open } else { "```".into() });
+            reopen = Some(open);
         }
         if !part.trim().is_empty() {
             parts.push(part);
@@ -54,6 +68,36 @@ pub fn split_message(text: &str, limit: usize) -> Vec<String> {
         rest = tail;
     }
     parts
+}
+
+/// part の終わりでコードブロックが開いたままなら、開き直すときの ``` と言語名を返す。
+/// 同じ行に ``` が対になって入っている行は開き・閉じに数えない
+fn open_fence(part: &str) -> Option<String> {
+    let mut open: Option<String> = None;
+    for line in part.lines() {
+        let t = line.trim_start();
+        if !t.starts_with("```") || t.matches("```").count() % 2 == 0 {
+            continue;
+        }
+        open = match open {
+            Some(_) => None,
+            None => {
+                // 言語名は英数字（と + - # _ .）だけの 20 文字まで。それ以外は ``` だけで開き直す
+                let lang = t[3..].trim_end();
+                let ok = !lang.is_empty()
+                    && lang.len() <= 20
+                    && lang
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+-#_.".contains(c));
+                Some(if ok {
+                    format!("```{lang}")
+                } else {
+                    "```".into()
+                })
+            }
+        };
+    }
+    open
 }
 
 impl App {
@@ -708,5 +752,32 @@ mod tests {
             assert_eq!(p.matches("```").count() % 2, 0, "{p}");
         }
         assert!(parts[1].starts_with("```rust"));
+    }
+
+    #[test]
+    fn split_long_fence_line_terminates() {
+        // ``` で始まる 2000 文字を超える 1 行（空白入り）でも止まる
+        let text = format!("```{}```", "word ".repeat(600));
+        let parts = split_message(&text, 2000);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|p| message_text_len(p) <= 2000));
+        // 開き直しは ``` だけ（行の中身を丸ごと持ち越さない）
+        assert!(parts[1].starts_with("```\n"));
+
+        // 閉じない ``` で始まる長い行・小さい limit でも止まる
+        let text = format!("```{}", "word ".repeat(600));
+        let parts = split_message(&text, 16);
+        assert!(parts.iter().all(|p| message_text_len(p) <= 16), "{parts:?}");
+        let text = format!("```abcdefghijklmnopqrst\n{}", "x".repeat(100));
+        let parts = split_message(&text, 16);
+        assert!(parts.iter().all(|p| message_text_len(p) <= 16), "{parts:?}");
+    }
+
+    #[test]
+    fn fence_detection() {
+        assert_eq!(open_fence("```rust\nlet x;"), Some("```rust".into()));
+        assert_eq!(open_fence("```a b c\nx"), Some("```".into()));
+        assert_eq!(open_fence("```inline```\nx"), None);
+        assert_eq!(open_fence("```\nx\n```"), None);
     }
 }

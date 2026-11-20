@@ -45,20 +45,24 @@ pub enum Block {
 /// 本文を、上から順に並べる塊に分ける
 pub fn blocks(s: &str) -> Vec<Block> {
     let mut out = Vec::new();
-    let mut rest = s;
-    while let Some(open) = rest.find("```") {
-        let Some(close) = rest[open + 3..].find("```").map(|i| open + 3 + i) else {
+    // text_start: まだ塊にしていない文字の始まり、at: 次の ``` を探す位置
+    let (mut text_start, mut at) = (0, 0);
+    while let Some(open) = s[at..].find("```").map(|i| at + i) {
+        let Some(close) = s[open + 3..].find("```").map(|i| open + 3 + i) else {
             break;
         };
-        let code = fence_body(&rest[open + 3..close]);
+        let code = fence_body(&s[open + 3..close]);
         if code.trim().is_empty() {
-            break;
+            // 中身の無い ``` ``` は文字のまま残し、後ろのコードブロックは探し続ける
+            at = close + 3;
+            continue;
         }
-        text_blocks(&rest[..open], &mut out);
+        text_blocks(&s[text_start..open], &mut out);
         out.push(Block::Code(code.replace('\t', "    ")));
-        rest = &rest[close + 3..];
+        text_start = close + 3;
+        at = text_start;
     }
-    text_blocks(rest, &mut out);
+    text_blocks(&s[text_start..], &mut out);
     out
 }
 
@@ -175,9 +179,11 @@ fn push(out: &mut Vec<Span>, text: &str, style: Style) {
 
 /// i から始まる URL の終わり（URL の中の _ や * は記法として扱わない）
 fn link_end(links: &[Range<usize>], i: usize, to: usize) -> Option<usize> {
+    // find_links は前から順に並べて返すので、二分探索で引く
+    let k = links.partition_point(|l| l.start < i);
     links
-        .iter()
-        .find(|l| l.start == i && l.end <= to)
+        .get(k)
+        .filter(|l| l.start == i && l.end <= to)
         .map(|l| l.end)
 }
 
@@ -371,6 +377,26 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn empty_code_block_stays_text_and_later_blocks_still_parse() {
+        let b = blocks("``` ```\n```\ncode\n```");
+        assert!(
+            matches!(&b[0], Block::Text { .. }),
+            "空の ``` ``` は文字のまま"
+        );
+        assert_eq!(b.last(), Some(&Block::Code("code".into())));
+        assert_eq!(b.iter().filter(|b| matches!(b, Block::Code(_))).count(), 1);
+    }
+
+    #[test]
+    fn link_end_finds_links_by_start() {
+        let links = [0..5, 10..20, 30..40];
+        assert_eq!(link_end(&links, 10, 50), Some(20));
+        assert_eq!(link_end(&links, 30, 35), None, "範囲を越えるものは使わない");
+        assert_eq!(link_end(&links, 11, 50), None);
+        assert_eq!(link_end(&links, 50, 60), None);
     }
 
     #[test]

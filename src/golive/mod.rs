@@ -549,15 +549,29 @@ impl Manager {
         s.stop = Some(stop_tx);
         let (id, back) = (s.id, self.back.clone());
         tokio::spawn(async move {
+            use futures_util::FutureExt;
             let b2 = back.clone();
-            let r = conn::run(
+            let r = std::panic::AssertUnwindSafe(conn::run(
                 params,
                 role,
                 move |conn::Report::Live| b2(Msg::Live(id)),
                 stop_rx,
-            )
+            ))
+            .catch_unwind()
             .await;
-            back(Msg::Ended(id, r.err().map(|e| format!("{e:#}"))));
+            // panic しても Ended は必ず送る（「接続中」のまま残らないように）
+            let err = match r {
+                Ok(r) => r.err().map(|e| format!("{e:#}")),
+                Err(_) => Some(
+                    tr!(
+                        "配信の接続が異常終了しました",
+                        "The stream connection crashed",
+                        "直播连接异常终止"
+                    )
+                    .to_string(),
+                ),
+            };
+            back(Msg::Ended(id, err));
         });
     }
 }

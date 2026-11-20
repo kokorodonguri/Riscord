@@ -95,15 +95,23 @@ pub fn parse_offset(s: &str) -> Option<i64> {
         '-' => (-1, &s[1..]),
         _ => (1, s),
     };
+    // 数字で始まらないもの・ASCII 以外が混じったもの（"+9時" など）は先に弾く（バイト位置で切ると文字の途中になる）
+    if !rest.is_ascii() || !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
     let (h, m) = if let Some((h, m)) = rest.split_once(':') {
         (h.parse::<i64>().ok()?, m.parse::<i64>().ok()?)
     } else if rest.len() == 4 {
-        (rest[..2].parse().ok()?, rest[2..].parse().ok()?)
+        (rest.get(..2)?.parse().ok()?, rest.get(2..)?.parse().ok()?)
     } else {
         let f: f64 = rest.parse().ok()?;
+        // inf や 1e300 は時刻の計算であふれるので、±14 時間に収まるものだけ
+        if !f.is_finite() || f.abs() > 14.0 {
+            return None;
+        }
         return Some(sign * (f * 3600.0) as i64);
     };
-    (h <= 14 && m < 60).then_some(sign * (h * 3600 + m * 60))
+    ((0..=14).contains(&h) && (0..60).contains(&m)).then_some(sign * (h * 3600 + m * 60))
 }
 
 /// BetterChatNames: "general-chat_room" → "General Chat Room"
@@ -528,12 +536,15 @@ impl App {
                 .find(|(k, _)| *k == user.id)
                 .and_then(|(_, v)| parse_offset(&v))
             {
-                let t = chrono::Utc::now() + chrono::Duration::seconds(off);
-                tags.push(tag(
-                    format!("🕒{}", t.format("%H:%M")),
-                    rgb(0x949ba4),
-                    Some(tr!("相手の現地時刻", "Their local time", "对方的当地时间").into()),
-                ));
+                if let Some(t) = chrono::TimeDelta::try_seconds(off)
+                    .and_then(|d| chrono::Utc::now().checked_add_signed(d))
+                {
+                    tags.push(tag(
+                        format!("🕒{}", t.format("%H:%M")),
+                        rgb(0x949ba4),
+                        Some(tr!("相手の現地時刻", "Their local time", "对方的当地时间").into()),
+                    ));
+                }
             }
         }
         if p.on("show-me-your-name") {
@@ -730,6 +741,14 @@ mod tests {
         assert_eq!(parse_offset("+9"), Some(9 * 3600));
         assert_eq!(parse_offset("-5:30"), Some(-(5 * 3600 + 30 * 60)));
         assert_eq!(parse_offset("UTC+0530"), Some(5 * 3600 + 30 * 60));
+        // 文字の途中で切ったり、時刻の計算があふれたりしない
+        assert_eq!(parse_offset("+9時"), None);
+        assert_eq!(parse_offset("+日本"), None);
+        assert_eq!(parse_offset("inf"), None);
+        assert_eq!(parse_offset("+1e300"), None);
+        assert_eq!(parse_offset("NaN"), None);
+        assert_eq!(parse_offset("+5.5"), Some(5 * 3600 + 30 * 60));
+        assert_eq!(parse_offset("+-5"), None);
         assert_eq!(
             parse_map("1=a; 2 = b ;bad"),
             vec![("1".into(), "a".into()), ("2".into(), "b".into())]

@@ -170,8 +170,10 @@ impl Root {
             );
         }
         if !self.app.status.is_empty() && self.app.status != "接続済み" {
-            let color = if self.app.status.starts_with("エラー")
-                || self.app.status.starts_with("Error")
+            // 失敗のお知らせは各言語とも「エラー」で始める
+            let color = if ["エラー", "Error", "错误"]
+                .iter()
+                .any(|p| self.app.status.starts_with(p))
             {
                 RED()
             } else {

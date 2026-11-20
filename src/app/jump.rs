@@ -272,6 +272,24 @@ impl App {
             .find(|c| c.id == channel_id)
             .and_then(|c| c.last_message_id.clone())
     }
+
+    /// 手元で分かるチャンネルの最新メッセージ ID（読み込んだ一覧の末尾とチャンネルの last_message_id の新しい方）
+    pub fn latest_known_message(&self, channel_id: &str) -> Option<String> {
+        let loaded = self
+            .messages
+            .get(channel_id)
+            .and_then(|l| l.last())
+            .map(|m| m.id.clone());
+        let last = self.channel_last_message(channel_id);
+        match (loaded, last) {
+            (Some(a), Some(b)) => Some(if crate::message_log::snowflake_cmp(&a, &b).is_lt() {
+                b
+            } else {
+                a
+            }),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 #[cfg(test)]

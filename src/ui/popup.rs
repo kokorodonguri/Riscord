@@ -343,16 +343,28 @@ impl Root {
             })
         {
             let (cid, mid) = (m.channel_id.clone(), m.id.clone());
+            // 取り消せないので 2 回押しで終える
+            let confirming = self.app.end_poll_confirming(&mid);
             col = col.child(
                 menu_row(
                     "mm_end_poll",
-                    icon(IconName::Pin, 18.0, TEXT()).into_any_element(),
-                    tr!("投票を終了", "End Poll", "结束投票"),
+                    icon(IconName::Pin, 18.0, if confirming { RED() } else { TEXT() })
+                        .into_any_element(),
+                    if confirming {
+                        tr!(
+                            "もう一度押して確定",
+                            "Press again to confirm",
+                            "再按一次确认"
+                        )
+                    } else {
+                        tr!("投票を終了", "End Poll", "结束投票")
+                    },
                     false,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    close(this);
-                    this.app.end_poll(&cid, &mid);
+                    if this.app.confirm_end_poll(&cid, &mid) {
+                        close(this);
+                    }
                     cx.notify();
                 })),
             );

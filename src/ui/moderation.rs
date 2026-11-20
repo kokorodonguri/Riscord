@@ -276,7 +276,7 @@ impl Root {
             }
             if m.tab != ModTab::Audit {
                 let id = row.id.clone();
-                let confirming = m.confirm.as_deref() == Some(format!("delete:{id}").as_str());
+                let confirming = m.confirming(&format!("delete:{id}"));
                 let label = match (m.tab, confirming) {
                     (_, true) => tr!(
                         "もう一度押して確定",

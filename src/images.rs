@@ -149,24 +149,41 @@ fn get_variant(uri: &str, preview: bool) -> Img {
         if !is_current_request(s.cache.lock().unwrap().get(&key), &request) {
             return;
         }
-        let bytes = load_bytes(&s.http, &uri).await;
-        let result = match bytes {
-            Ok(b) => {
-                let _permit = s.decode.clone().acquire_owned().await;
-                // 待っている間に捨てられた（チャンネルを閉じた等）ならデコードしない
-                if !is_current_request(s.cache.lock().unwrap().get(&key), &request) {
-                    return;
+        let max = if preview || uri.starts_with("file://") {
+            MAX_BACKGROUND_PIXELS
+        } else {
+            MAX_FRAME_PIXELS
+        };
+        let disk = disk_path(&uri);
+        let result = 'load: {
+            // ディスクの控えが読めなければ（途中で切れた・壊れた）消して取り直す
+            if let Some(p) = &disk {
+                if let Some(b) = read_disk_cache(p).await {
+                    match decode_current(&key, &request, b, max).await {
+                        None => return,
+                        Some((_, Ok(frames))) => break 'load Ok(frames),
+                        Some((_, Err(e))) => {
+                            eprintln!("画像の控えが壊れていたので取り直します {uri}: {e}");
+                            let _ = tokio::fs::remove_file(p).await;
+                        }
+                    }
                 }
-                let max = if preview || uri.starts_with("file://") {
-                    MAX_BACKGROUND_PIXELS
-                } else {
-                    MAX_FRAME_PIXELS
-                };
-                tokio::task::spawn_blocking(move || decode(&b, max))
-                    .await
-                    .unwrap_or_else(|_| Err("decode panicked".into()))
             }
-            Err(e) => Err(e),
+            let b = match load_bytes(&s.http, &uri).await {
+                Ok(b) => b,
+                Err(e) => break 'load Err(e),
+            };
+            match decode_current(&key, &request, b, max).await {
+                None => return,
+                Some((b, Ok(frames))) => {
+                    // 画像として読めたものだけ控える（ログイン画面の HTML などを残さない）
+                    if let Some(p) = disk {
+                        let _ = tokio::task::spawn_blocking(move || save_disk_cache(&p, &b)).await;
+                    }
+                    Ok(frames)
+                }
+                Some((_, Err(e))) => Err(e),
+            }
         };
         let mut cache = s.cache.lock().unwrap();
         if !is_current_request(cache.get(&key), &request) {
@@ -263,7 +280,80 @@ pub(crate) fn release_queued(image: &Arc<RenderImage>) -> bool {
         .any(|item| Arc::ptr_eq(item, image))
 }
 
+/// デコード待ちの順番を取ってデコードする。待っている間に捨てられた（チャンネルを閉じた等）なら None。
+/// 控えに書くために、中身も返す
+async fn decode_current(
+    key: &str,
+    request: &Arc<()>,
+    bytes: Vec<u8>,
+    max: u32,
+) -> Option<(Vec<u8>, Result<Vec<Frame>, String>)> {
+    let s = store();
+    let _permit = s.decode.clone().acquire_owned().await;
+    if !is_current_request(s.cache.lock().unwrap().get(key), request) {
+        return None;
+    }
+    Some(
+        tokio::task::spawn_blocking(move || {
+            let r = decode(&bytes, max);
+            (bytes, r)
+        })
+        .await
+        .unwrap_or_else(|_| (Vec::new(), Err("decode panicked".into()))),
+    )
+}
+
+/// ディスクの控えを読む（無い・大きすぎるなら None）
+async fn read_disk_cache(p: &std::path::Path) -> Option<Vec<u8>> {
+    if !tokio::fs::metadata(p)
+        .await
+        .is_ok_and(|m| m.len() <= MAX_DOWNLOAD_BYTES as u64)
+    {
+        return None;
+    }
+    tokio::fs::read(p)
+        .await
+        .ok()
+        .filter(|b| !b.is_empty() && b.len() <= MAX_DOWNLOAD_BYTES)
+}
+
+/// 控えを書く。同じ画像を同時に書いても混ざらないよう、一時ファイルの名前は書くたびに変える
+fn save_disk_cache(p: &std::path::Path, bytes: &[u8]) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (Some(dir), Some(name)) = (p.parent(), p.file_name()) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(dir);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(
+        "{}.{}.{n}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    if crate::cache::write_private_unsynced(&tmp, bytes).is_ok() && std::fs::rename(&tmp, p).is_ok()
+    {
+        return;
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// 1 枚を取り終えるまでの上限。少しずつ届き続ける応答でも、ここで諦める
+const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(LOAD_TIMEOUT, fetch_bytes(http, uri))
+        .await
+        .unwrap_or_else(|_| {
+            Err(tr!(
+                "画像の読み込みに時間がかかりすぎました",
+                "Loading the image took too long",
+                "图片加载时间过长"
+            )
+            .into())
+        })
+}
+
+async fn fetch_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String> {
     if let Some(path) = uri.strip_prefix("file://") {
         return tokio::fs::read(path)
             .await
@@ -272,22 +362,9 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
     if !(uri.starts_with("http://") || uri.starts_with("https://")) {
         return Err(tr!("対応していない URI", "Unsupported URI", "不支持的 URI").into());
     }
-    let disk = disk_path(uri);
-    if let Some(p) = &disk {
-        if tokio::fs::metadata(p)
-            .await
-            .is_ok_and(|m| m.len() <= MAX_DOWNLOAD_BYTES as u64)
-        {
-            if let Ok(b) = tokio::fs::read(p).await {
-                if b.len() <= MAX_DOWNLOAD_BYTES {
-                    return Ok(b);
-                }
-            }
-        }
-    }
     let mut resp = http.get(uri).send().await.map_err(|e| e.to_string())?;
     let status = resp.status();
-    if status.as_u16() >= 400 {
+    if !status.is_success() {
         return Err(format!("{}", status.as_u16()));
     }
     if resp
@@ -312,18 +389,6 @@ async fn load_bytes(http: &reqwest::Client, uri: &str) -> Result<Vec<u8>, String
             .into());
         }
         bytes.extend_from_slice(&chunk);
-    }
-    if let Some(p) = disk {
-        let b = bytes.clone();
-        tokio::task::spawn_blocking(move || {
-            let _ = std::fs::create_dir_all(p.parent().unwrap());
-            let tmp = p.with_extension("tmp");
-            if crate::cache::write_private(&tmp, &b).is_ok() {
-                let _ = std::fs::rename(&tmp, &p);
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
     }
     Ok(bytes)
 }
@@ -697,6 +762,25 @@ mod request_tests {
             .unwrap_err();
         assert!(error.contains("上限"), "{error}");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn disk_cache_writes_replace_atomically_with_unique_temp_files() {
+        let dir = std::env::temp_dir().join(format!("riscord-img-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("icon");
+        std::thread::scope(|scope| {
+            for i in 0..8u8 {
+                let p = &p;
+                scope.spawn(move || save_disk_cache(p, &[i; 4096]));
+            }
+        });
+        let b = std::fs::read(&p).unwrap();
+        assert_eq!(b.len(), 4096);
+        assert!(b.iter().all(|&x| x == b[0]), "書き込みが混ざらない");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(left.len(), 1, "一時ファイルが残らない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

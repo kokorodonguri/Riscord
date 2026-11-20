@@ -270,13 +270,15 @@ mod platform {
                     })
                     .build(),
             );
-            pipeline.set_state(gst::State::Playing).map_err(|e| {
-                tr!(
+            if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                // 途中まで動いた pipewiresrc が fd を使っているので、Null にしてから閉じる
+                stop_pipeline(pipeline, move || drop(source));
+                return Err(tr!(
                     "画面の取り込みを始められません: {e}",
                     "Can't start screen capture: {e}",
                     "无法开始屏幕捕获：{e}",
-                )
-            })?;
+                ));
+            }
             Ok(Capture {
                 pipeline,
                 sink,
@@ -419,13 +421,14 @@ mod platform {
                     })
                     .build(),
             );
-            pipeline.set_state(gst::State::Playing).map_err(|e| {
-                tr!(
+            if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                stop_pipeline(pipeline, || {});
+                return Err(tr!(
                     "映像を再生できません: {e}",
                     "Can't play the video: {e}",
                     "无法播放视频：{e}",
-                )
-            })?;
+                ));
+            }
             Ok(Decoder { pipeline, src })
         }
 

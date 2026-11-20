@@ -382,6 +382,8 @@ impl Client {
             .resume_url
             .as_deref()
             .filter(|_| session.resumable().is_some())
+            // Discord 以外の接続先へはトークンを送らない
+            .filter(|u| crate::gateway::is_discord_gateway_url(u))
             .unwrap_or(GATEWAY)
             .trim_end_matches('/')
             .to_owned();

@@ -200,7 +200,9 @@ impl Rich {
                 break;
             };
             let after = &rest[close + 2..];
-            let Some(end) = after.find(')') else { break };
+            let Some(end) = masked_url_end(after) else {
+                break;
+            };
             let url = after[..end]
                 .trim()
                 .trim_start_matches('<')
@@ -316,6 +318,22 @@ impl Rich {
 /// スポイラーを開いたときに呼ぶ
 type SpoilerFn = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// [文字](URL) の URL 側（"(" の後ろ）で、URL を閉じる ")" の位置。
+/// URL の中の対になった括弧（wiki の Foo_(bar) など）は飛ばす。対にならなければ最初の ")"
+fn masked_url_end(after: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(i),
+            ')' => depth -= 1,
+            c if c.is_whitespace() => break,
+            _ => {}
+        }
+    }
+    after.find(')')
+}
+
 pub const MENTION_LINK: &str = "riscord-mention:";
 /// StickerEmojiPreview: 押された絵文字の大きい画像（Root の描画で開く）
 pub static PENDING_PREVIEW: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -391,16 +409,24 @@ pub fn preview_rich(content: &str, revealed: bool) -> Rich {
     r
 }
 
-/// 埋め込みの本文。URL・[文字](URL) の伏せリンクと、文中の記法（太字・`コード` など）を解釈する
-fn embed_text(id: impl Into<ElementId>, s: &str, size: f32, color: Color32) -> Div {
+/// 埋め込みの本文。URL・[文字](URL) の伏せリンクと、文中の記法（太字・`コード` など）を解釈する。
+/// スポイラーは revealed になるまで塗りつぶし、押すと on_spoiler を呼ぶ
+fn embed_text(
+    id: impl Into<ElementId>,
+    s: &str,
+    size: f32,
+    color: Color32,
+    revealed: bool,
+    on_spoiler: &SpoilerFn,
+) -> Div {
     let mut r = Rich::default();
     for span in md::inline(s) {
-        r.span(&span, true);
+        r.span(&span, revealed);
     }
     div()
         .text_size(z(size))
         .text_color(color)
-        .child(r.element(id))
+        .child(r.element_with(id, Some(on_spoiler.clone())))
 }
 
 /// 押すとブラウザで開く1行の文字
@@ -1832,6 +1858,16 @@ impl Root {
                             revealed,
                         );
                     }
+                    // 伏せたままのスポイラーの中の絵文字は、画像を出さず塗りつぶした :名前: にする
+                    Seg::Emoji { name, .. } if span.style.spoiler && !revealed => {
+                        cur.span(
+                            &md::Span {
+                                text: format!(":{name}:"),
+                                style: span.style,
+                            },
+                            revealed,
+                        );
+                    }
                     Seg::Emoji { name, id, animated } => {
                         if color_codes {
                             cur.color_codes();
@@ -2478,6 +2514,18 @@ impl Root {
             None
         };
         let inner = EMBED_MAX_W - 32.0;
+        // 埋め込みのスポイラーは埋め込みごとに開く
+        let reveal_key = format!("embed:{key}");
+        let revealed = self.revealed.contains(&reveal_key);
+        let on_spoiler: SpoilerFn = {
+            let root = cx.entity().downgrade();
+            Rc::new(move |_, cx| {
+                let _ = root.update(cx, |this, cx| {
+                    this.revealed.insert(reveal_key.clone());
+                    cx.notify();
+                });
+            })
+        };
         let mut body = div()
             .flex_1()
             .min_w_0()
@@ -2528,6 +2576,8 @@ impl Root {
                 d,
                 14.0,
                 TEXT(),
+                revealed,
+                &on_spoiler,
             ));
         }
         // フィールド: inline は最大3つまで横に並べる
@@ -2554,6 +2604,8 @@ impl Root {
                                 &f.name,
                                 14.0,
                                 WHITE(),
+                                revealed,
+                                &on_spoiler,
                             )
                             .font_weight(FontWeight::MEDIUM),
                         )
@@ -2562,6 +2614,8 @@ impl Root {
                             &f.value,
                             14.0,
                             TEXT(),
+                            revealed,
+                            &on_spoiler,
                         )),
                 );
             }
@@ -2684,6 +2738,16 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn masked_link_keeps_balanced_parens_in_url() {
+        let after = "https://en.wikipedia.org/wiki/Foo_(bar)) 続き";
+        assert_eq!(
+            &after[..super::masked_url_end(after).unwrap()],
+            "https://en.wikipedia.org/wiki/Foo_(bar)"
+        );
+        assert_eq!(super::masked_url_end("https://a.com) (x)"), Some(13));
+    }
+
     /// メッセージのツールバーは 1 行に収め、入りきらないプラグインの操作は「…」へ回す
     #[test]
     fn toolbar_fits_one_row() {

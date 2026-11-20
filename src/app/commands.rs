@@ -129,6 +129,9 @@ pub struct CommandDraft {
     pub ac_nonce: Option<String>,
     pub ac_due: Option<std::time::Instant>,
     pub error: Option<String>,
+    /// 選んだときのサーバーとチャンネル（ほかへ移ったら実行しない）
+    pub guild_id: Option<String>,
+    pub channel_id: Option<String>,
 }
 
 /// 送った実行（返事待ち）
@@ -468,7 +471,16 @@ impl App {
             ac_nonce: None,
             ac_due: None,
             error: None,
+            guild_id: self.sel_guild.clone(),
+            channel_id: self.sel_channel.clone(),
         });
+    }
+
+    /// 下書きを選んだチャンネルにいるか
+    pub fn command_draft_here(&self) -> bool {
+        self.cmd_draft
+            .as_ref()
+            .is_some_and(|d| d.guild_id == self.sel_guild && d.channel_id == self.sel_channel)
     }
 
     pub fn cancel_command(&mut self) {
@@ -604,6 +616,10 @@ impl App {
         options: Vec<serde_json::Value>,
         nonce: &str,
     ) -> Option<serde_json::Value> {
+        // 選んだときと別のチャンネルでは送らない
+        if d.guild_id != self.sel_guild || d.channel_id != self.sel_channel {
+            return None;
+        }
         let channel_id = self.sel_channel.clone()?;
         let c = &d.command;
         Some(serde_json::json!({
@@ -628,6 +644,11 @@ impl App {
 
     /// コマンドを実行する
     pub fn run_command(&mut self) {
+        if self.cmd_draft.is_some() && !self.command_draft_here() {
+            // 別のチャンネルへ移った下書きは捨てる
+            self.cmd_draft = None;
+            return;
+        }
         let Some(d) = self.cmd_draft.as_ref() else {
             return;
         };

@@ -207,7 +207,8 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
                 )
             })?;
         }
-        file.flush().map_err(|_| {
+        // 置き換える前にディスクまで書き切る（電源断で中身の欠けたファイルが残らないように）
+        file.flush().and_then(|()| file.sync_all()).map_err(|_| {
             tr!(
                 "{what}を保存できませんでした",
                 "Couldn't save the {what}",
@@ -223,6 +224,7 @@ async fn download_to(url: &str, destination: &Path, what: &str) -> Result<(), St
             )
             .to_string()
         })?;
+        crate::cache::sync_parent(destination);
         Ok::<(), String>(())
     }
     .await;

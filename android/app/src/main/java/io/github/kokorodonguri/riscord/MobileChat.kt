@@ -193,7 +193,8 @@ import java.time.Duration
                         val url=embed.optString("url")
                         embed.nonNull("title")?.let {Text(it,fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=MobileAccent,modifier=Modifier.clickable(enabled=url.startsWith("https://")) {openUrl(context,url)})}
                         embed.nonNull("description")?.let {Text(it,fontSize=13.sp,lineHeight=19.sp)}
-                        (embed.optJSONObject("image") ?: embed.optJSONObject("thumbnail"))?.let {AsyncImage(it.optString("proxy_url",it.optString("url")),null,Modifier.fillMaxWidth().heightIn(max=220.dp).clip(RoundedCornerShape(8.dp)))}
+                        // 元の URL から直接読むと、埋め込みを作った第三者のサーバーに IP が伝わるので、Discord のプロキシ経由のときだけ出す
+                        (embed.optJSONObject("image") ?: embed.optJSONObject("thumbnail"))?.nonNull("proxy_url")?.let {AsyncImage(it,null,Modifier.fillMaxWidth().heightIn(max=220.dp).clip(RoundedCornerShape(8.dp)))}
                     }
                 }
             }

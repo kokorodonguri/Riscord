@@ -827,15 +827,22 @@ pub fn find_links(s: &str) -> Vec<std::ops::Range<usize>> {
         let mut end = t
             .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`'))
             .unwrap_or(t.len());
+        // 括弧の数は一度だけ数え、末尾を削るたびに差し引く
+        let mut opens = t[..end].matches('(').count();
+        let mut closes = t[..end].matches(')').count();
         while let Some(c) = t[..end].chars().next_back() {
-            let unbalanced =
-                c == ')' && t[..end].matches('(').count() < t[..end].matches(')').count();
+            let unbalanced = c == ')' && opens < closes;
             if matches!(
                 c,
                 '.' | ',' | ':' | ';' | '!' | '?' | '\'' | '*' | '_' | '~' | '|'
             ) || unbalanced
             {
                 end -= c.len_utf8();
+                match c {
+                    ')' => closes -= 1,
+                    '(' => opens -= 1,
+                    _ => {}
+                }
             } else {
                 break;
             }
@@ -1145,6 +1152,8 @@ pub struct History {
     /// 続きの読み込み中の起点（このIDより後を頼んでいる）
     pub pending_newer: Option<String>,
     pub newer_retry_at: Option<std::time::Instant>,
+    /// 古いページの読み込み中に届いた変更（応答が古い内容で上書きしないよう、届いたら当て直す）
+    pub older_changes: Vec<MessageChange>,
 }
 
 /// 上端からこの行数まで近づいたら古いメッセージを読み足す
@@ -1220,6 +1229,7 @@ pub struct Backend {
     pub ev: Receiver<Event>,
 }
 
+#[derive(Clone)]
 pub enum MessageChange {
     Create(Box<Message>),
     Update {
@@ -1620,6 +1630,8 @@ pub struct App {
     /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
     /// 処分の 2 回押しの 1 回目（鍵, 押した時刻）
     pub member_action_confirm: Option<(String, std::time::Instant)>,
+    /// 投票の終了の 2 回押しの 1 回目（メッセージ ID, 押した時刻）
+    pub end_poll_confirm: Option<(String, std::time::Instant)>,
     pub member_action_pending: Option<(u64, &'static str)>,
     /// サウンドボードの一覧（開いているとき）と、自分が最後に鳴らした音
     pub soundboard: Option<Soundboard>,
@@ -2152,7 +2164,9 @@ impl App {
                 self.pending_delete = self.editing.take();
                 return;
             }
-            if content == m.content {
+            // 後付け添付があるときは本文が同じでも送る
+            let late_files = !self.uploads.is_empty() && self.plugins.on("late-attachments");
+            if content == m.content && !late_files {
                 self.editing = None;
                 return;
             }
@@ -2675,6 +2689,15 @@ impl App {
                         Err(e) => self.profile_error = Some(e),
                     }
                 }
+                Event::ComposePartial {
+                    channel_id,
+                    remaining,
+                } => {
+                    // 前半は届いているので、戻すのは残りだけにする
+                    if let Some(submission) = self.compose_submissions.get_mut(&channel_id) {
+                        submission.content = remaining;
+                    }
+                }
                 Event::ComposeRejected { channel_id, reason } => {
                     if let Some(submission) = self.compose_submissions.get_mut(&channel_id) {
                         submission.rejected = Some(reason);
@@ -2936,6 +2959,7 @@ impl App {
                         continue;
                     }
                     h.pending = None;
+                    let changes = std::mem::take(&mut h.older_changes);
                     let Some(older) = messages else {
                         h.retry_at =
                             Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
@@ -2956,6 +2980,10 @@ impl App {
                         .filter(|m| !have.contains(m.id.as_str()))
                         .collect();
                     let end = h.end;
+                    // 待っている間に届いた削除・編集を当てる（古い応答で消えたものが戻らないように）
+                    for change in changes {
+                        change.apply(&mut older);
+                    }
                     self.fill_message_members(&channel_id, &mut older);
                     let Some(list) = self.messages.get_mut(&channel_id) else {
                         continue;
@@ -2979,7 +3007,11 @@ impl App {
                         changes.push(MessageChange::Create(Box::new(m.clone())));
                     }
                     let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
-                    if !mine && self.sel_channel.as_deref() != Some(&m.channel_id) {
+                    if mine {
+                        // 自分が（別の端末からでも）書いたチャンネルは、そこまで読んだことになる
+                        self.read_state.unread.remove(&m.channel_id);
+                        self.read_state.mention_counts.remove(&m.channel_id);
+                    } else if self.sel_channel.as_deref() != Some(&m.channel_id) {
                         self.read_state
                             .unread
                             .insert(m.channel_id.clone(), m.guild_id.clone());
@@ -3027,14 +3059,15 @@ impl App {
                     embeds,
                     pinned,
                 } => {
-                    if let Some(changes) = self.pending_message_loads.get_mut(&channel_id) {
-                        changes.push(MessageChange::Update {
+                    self.record_message_change(
+                        &channel_id,
+                        MessageChange::Update {
                             id: id.clone(),
                             content: content.clone(),
                             embeds: embeds.clone(),
                             pinned,
-                        });
-                    }
+                        },
+                    );
                     if let Some(p) = pinned {
                         self.on_pin_changed(&channel_id, &id, p);
                     }
@@ -3875,6 +3908,25 @@ impl App {
         }
     }
 
+    /// 投票を終える 2 回押しの 1 回目を押したばかりか
+    pub fn end_poll_confirming(&self, message: &str) -> bool {
+        self.end_poll_confirm
+            .as_ref()
+            .is_some_and(|(id, at)| id == message && at.elapsed() < moderation::CONFIRM_TTL)
+    }
+
+    /// 投票の終了は取り消せないので、1 回目で確認を出し、2 回目で終える。終えたら true
+    pub fn confirm_end_poll(&mut self, channel: &str, message: &str) -> bool {
+        if !self.end_poll_confirming(message) {
+            self.end_poll_confirm = Some((message.to_owned(), std::time::Instant::now()));
+            self.repaint_after(moderation::CONFIRM_TTL);
+            return false;
+        }
+        self.end_poll_confirm = None;
+        self.end_poll(channel, message);
+        true
+    }
+
     pub fn end_poll(&mut self, channel: &str, message: &str) {
         let key = (channel.to_owned(), message.to_owned());
         let allowed = self
@@ -4007,14 +4059,32 @@ impl App {
         }
     }
 
+    /// 読み込み中の応答（最新ページ・古いページ）に後で当て直す変更を覚える。
+    /// 古いページには新着は含まれないので、作成は覚えない
+    fn record_message_change(&mut self, channel_id: &str, change: MessageChange) {
+        if let Some(h) = self
+            .history
+            .get_mut(channel_id)
+            .filter(|h| h.pending.is_some())
+        {
+            if !matches!(change, MessageChange::Create(_)) {
+                h.older_changes.push(change.clone());
+            }
+        }
+        if let Some(changes) = self.pending_message_loads.get_mut(channel_id) {
+            changes.push(change);
+        }
+    }
+
     /// 表示中の一覧（と読み込み中の差分）にリアクションの増減を当てる
     fn apply_reaction_op(&mut self, channel_id: &str, message_id: &str, op: model::ReactionOp) {
-        if let Some(changes) = self.pending_message_loads.get_mut(channel_id) {
-            changes.push(MessageChange::Reaction {
+        self.record_message_change(
+            channel_id,
+            MessageChange::Reaction {
                 id: message_id.to_string(),
                 op: op.clone(),
-            });
-        }
+            },
+        );
         if let Some(m) = self
             .messages
             .get_mut(channel_id)
@@ -4096,9 +4166,7 @@ impl App {
     /// 削除を受け取ったとき。MessageLogger が記録したら一覧に削除済みとして残し、そうでなければ消す。
     /// 消したメッセージにスタンプがあれば true（スタンプの画像を手放すため）
     fn on_message_delete(&mut self, channel_id: &str, id: &str) -> bool {
-        if let Some(changes) = self.pending_message_loads.get_mut(channel_id) {
-            changes.push(MessageChange::Delete(id.to_string()));
-        }
+        self.record_message_change(channel_id, MessageChange::Delete(id.to_string()));
         let old = self
             .messages
             .get(channel_id)
@@ -4161,6 +4229,15 @@ impl App {
         }
         if t.starts_with("GUILD_ROLE_") {
             if let Some(guild_id) = d["guild_id"].as_str() {
+                let role_id = d["role_id"].as_str().or_else(|| d["role"]["id"].as_str());
+                // 権限が変わりうるのは自分のロールと @everyone（ID がサーバーと同じ）だけ
+                let affects_me = role_id.is_none_or(|id| {
+                    id == guild_id
+                        || self
+                            .my_roles
+                            .get(guild_id)
+                            .is_some_and(|roles| roles.iter().any(|r| r == id))
+                });
                 if let Some(roles) = self.roles.get_mut(guild_id) {
                     if t == "GUILD_ROLE_DELETE" {
                         if let Some(id) = d["role_id"].as_str() {
@@ -4175,7 +4252,9 @@ impl App {
                     }
                 }
                 self.role_admin_event(guild_id);
-                if self.channels.contains_key(guild_id) {
+                // メンバー一覧の名前の色を塗り直す
+                self.member_ver += 1;
+                if affects_me && self.channels.contains_key(guild_id) {
                     self.send(Cmd::LoadGuildChannels(guild_id.to_owned()));
                 }
             }
@@ -4270,14 +4349,15 @@ impl App {
                 ) {
                     let added = t == "MESSAGE_POLL_VOTE_ADD";
                     let mine = self.me.as_ref().is_some_and(|me| me.id == user);
-                    if let Some(changes) = self.pending_message_loads.get_mut(channel) {
-                        changes.push(MessageChange::PollVote {
+                    self.record_message_change(
+                        channel,
+                        MessageChange::PollVote {
                             id: message.into(),
                             answer,
                             added,
                             mine,
-                        });
-                    }
+                        },
+                    );
                     if self
                         .messages
                         .get_mut(channel)
@@ -4363,11 +4443,19 @@ impl App {
                     if d["manual"] == true {
                         // 別端末の未読指定で以前の ACK は無効になる。
                         self.read_state.acked.remove(cid);
-                        let guild = self.channels.iter().find_map(|(gid, channels)| {
-                            channels.iter().any(|c| c.id == cid).then(|| gid.clone())
-                        });
+                        // スレッドも親サーバーの未読として数える
+                        let guild = self.guild_of_channel(cid);
                         self.read_state.unread.insert(cid.to_string(), guild);
                     } else {
+                        // 既読にした位置より新しいメッセージを知っていれば、未読は残す
+                        let stale = d["message_id"].as_str().is_some_and(|mid| {
+                            self.latest_known_message(cid).is_some_and(|latest| {
+                                crate::message_log::snowflake_cmp(mid, &latest).is_lt()
+                            })
+                        });
+                        if stale {
+                            return;
+                        }
                         self.read_state.unread.remove(cid);
                         if let Some(mid) = d["message_id"].as_str().and_then(|s| s.parse().ok()) {
                             let e = self
@@ -4794,13 +4882,7 @@ impl App {
             return;
         };
         let set = self.guild_settings.get(gid).cloned().unwrap_or_default();
-        if set.muted_channels.contains(&m.channel_id)
-            || self
-                .channels
-                .get(gid)
-                .and_then(|channels| channels.iter().find(|c| c.id == m.channel_id))
-                .is_some_and(|channel| self.is_channel_muted(gid, channel))
-        {
+        if set.muted_channels.contains(&m.channel_id) || self.message_channel_muted(gid, m) {
             return;
         }
         let wanted = match set.notifications {
@@ -5087,6 +5169,11 @@ impl App {
         let Some(cid) = self.sel_channel.clone() else {
             return;
         };
+        self.sync_channel_ack(cid, true);
+    }
+
+    /// 開いているチャンネルの既読を送る。throttle が false なら送る間隔を待たない（チャンネルを離れるとき）
+    fn sync_channel_ack(&mut self, cid: String, throttle: bool) {
         // 控えのままの一覧は最新とは限らないので、既読を古い位置に戻さないよう送らない
         if self.stale_channels.contains(&cid) {
             return;
@@ -5130,6 +5217,7 @@ impl App {
             .read_state
             .last_ack
             .and_then(|t| ACK_INTERVAL.checked_sub(t.elapsed()))
+            .filter(|_| throttle)
         {
             self.repaint_after(wait);
             return;
@@ -5204,6 +5292,9 @@ impl App {
         };
         if self.pending_message_loads.contains_key(&old) {
             self.read_state.restore_read_marks(&old);
+        } else if self.window_focused {
+            // 送る間隔のせいでまだ送っていない既読があれば、離れる前に送る
+            self.sync_channel_ack(old, false);
         }
         if self.editing.take().is_some() {
             self.input.clear();
@@ -5533,6 +5624,22 @@ impl App {
     }
 
     /// チャンネル（か、それを入れたカテゴリ）をミュートしているか
+    /// 新着の届いたチャンネルがミュートか。スレッドは親チャンネルとそのカテゴリーも見る
+    fn message_channel_muted(&self, guild_id: &str, m: &Message) -> bool {
+        let Some(channel) = self.find_guild_channel(guild_id, &m.channel_id) else {
+            return false;
+        };
+        if self.is_channel_muted(guild_id, channel) {
+            return true;
+        }
+        channel.is_thread()
+            && channel
+                .parent_id
+                .as_deref()
+                .and_then(|p| self.find_guild_channel(guild_id, p))
+                .is_some_and(|parent| self.is_channel_muted(guild_id, parent))
+    }
+
     pub fn is_channel_muted(&self, guild_id: &str, c: &Channel) -> bool {
         self.guild_settings.get(guild_id).is_some_and(|s| {
             s.muted_channels.contains(&c.id)

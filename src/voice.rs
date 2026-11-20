@@ -26,6 +26,12 @@ const OUT_MAX: usize = FRAME * 10;
 const EFFECT_MAX: usize = RATE as usize * 2 * 12;
 /// サウンドボードの音の長さの上限（Discord は 5.2 秒まで）
 const SOUND_MAX_SECS: usize = 10;
+/// 受け付けるサンプリングレートの範囲（外れた値はリサンプラが極端な量を作る）
+const RATE_RANGE: std::ops::RangeInclusive<u32> = 8_000..=192_000;
+/// サウンドボードの音で、中身の無いパケットがこれだけ続いたら諦める
+const SOUND_EMPTY_MAX: usize = 1_000;
+/// サウンドボードの音で読むパケット数の上限（壊れたデータで終わらないのを防ぐ）
+const SOUND_PACKET_MAX: usize = 100_000;
 /// 音声検出で閉じるまでの猶予
 const VAD_HANG: Duration = Duration::from_millis(300);
 
@@ -259,9 +265,15 @@ struct Resampler {
 
 impl Resampler {
     fn new(from: u32, to: u32, ch: usize) -> Self {
+        // 0 Hz や極端な比では止まらない・巨大になるので、そのまま通す
+        let step = if from == 0 || to == 0 {
+            1.0
+        } else {
+            (from as f64 / to as f64).clamp(1.0 / 64.0, 64.0)
+        };
         Resampler {
-            ch,
-            step: from as f64 / to as f64,
+            ch: ch.max(1),
+            step,
             pos: 0.0,
             prev: vec![0.0; ch],
         }
@@ -633,13 +645,24 @@ fn open_streams(
 
 /// 設定画面のマイクテスト。持っている間だけマイクを開いてレベルを測る
 pub struct MicTest {
-    _io: AudioIo,
+    io: Option<AudioIo>,
 }
 
 impl MicTest {
     pub fn start(ctl: Arc<VoiceCtl>) -> MicTest {
         MicTest {
-            _io: AudioIo::start(ctl, Arc::new(Ring::default()), None),
+            io: Some(AudioIo::start(ctl, Arc::new(Ring::default()), None)),
+        }
+    }
+}
+
+impl Drop for MicTest {
+    /// UI のスレッドで落とされるので待たない。デバイスを閉じ終わるのは別のスレッドで待つ
+    fn drop(&mut self) {
+        if let Some(t) = self.io.take().and_then(|mut io| io.stop()) {
+            std::thread::spawn(move || {
+                let _ = t.join();
+            });
         }
     }
 }
@@ -719,7 +742,9 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
     use symphonia_core::probe::Hint;
 
     let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
-    let mut format = songbird::input::codecs::get_probe()
+    // songbird の probe は生 PCM の読み手も含み、壊れたデータで空のパケットを返し続けることがある。
+    // symphonia の既定（Cargo.toml で有効にした MP3 と Ogg だけ）で読む
+    let mut format = symphonia::default::get_probe()
         .format(
             &Hint::new(),
             mss,
@@ -753,7 +778,8 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
     let mut rs: Option<(u32, Resampler)> = None;
     let limit = RATE as usize * 2 * SOUND_MAX_SECS;
     let (mut st, mut out, mut part) = (Vec::new(), Vec::new(), Vec::new());
-    loop {
+    let mut empty = 0usize;
+    for _ in 0..SOUND_PACKET_MAX {
         let packet = match format.next_packet() {
             Ok(p) => p,
             Err(SymErr::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -769,7 +795,11 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
                 ))
             }
         };
-        if packet.track_id() != track_id {
+        if packet.track_id() != track_id || packet.data.is_empty() {
+            empty += 1;
+            if empty >= SOUND_EMPTY_MAX {
+                break;
+            }
             continue;
         }
         let buf = match dec.decode(&packet) {
@@ -783,7 +813,26 @@ pub fn decode_sound(bytes: Vec<u8>) -> Result<Vec<f32>> {
                 ))
             }
         };
+        if buf.frames() == 0 {
+            empty += 1;
+            if empty >= SOUND_EMPTY_MAX {
+                break;
+            }
+            continue;
+        }
+        empty = 0;
         let spec = *buf.spec();
+        if !RATE_RANGE.contains(&spec.rate) {
+            let rate = spec.rate;
+            return Err(anyhow!(
+                "{}",
+                tr!(
+                    "未対応のサンプリングレート {rate}",
+                    "Unsupported sample rate {rate}",
+                    "不支持的采样率 {rate}",
+                )
+            ));
+        }
         let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
         sb.copy_interleaved_ref(buf);
         st.clear();
@@ -828,6 +877,10 @@ impl EventHandler for Receiver {
                 }
             }
             EventContext::VoiceTick(t) => {
+                // leave のあとに遅れて届いたものは捨てる（話している印が残らないように）
+                if !self.ctl.in_call.load(Relaxed) {
+                    return None;
+                }
                 let mut guard = self.scratch.lock().unwrap();
                 let (mix, talking) = &mut *guard;
                 mix.clear();
@@ -857,6 +910,10 @@ impl EventHandler for Receiver {
                 }
                 // 変化したときだけ UI を再描画する
                 let mut cur = self.ctl.speaking.lock().unwrap();
+                // leave は in_call を下ろしてから speaking を空にするので、ロックの中で見直す
+                if !self.ctl.in_call.load(Relaxed) {
+                    return None;
+                }
                 if *cur != *talking {
                     std::mem::swap(&mut *cur, talking);
                     drop(cur);
@@ -881,6 +938,8 @@ pub struct VoiceSession {
     mic: Arc<Ring>,
     out: Arc<Ring>,
     io: Option<AudioIo>,
+    /// SSRC → user_id。通話ごとに作り直されるので、入る・抜けるときに空にする
+    users: Arc<Mutex<HashMap<u32, String>>>,
     /// leave で止めた音声スレッド。次に音声を開く前に終わるのを待つ（デバイスを取り合わない）
     closing: Option<std::thread::JoinHandle<()>>,
     muted: bool,
@@ -918,6 +977,7 @@ impl VoiceSession {
             mic,
             out,
             io: None,
+            users,
             closing: None,
             muted: true,
         }
@@ -953,6 +1013,7 @@ impl VoiceSession {
             token: token.into(),
             user_id: id(user_id)?.into(),
         };
+        self.users.lock().unwrap().clear();
         self.driver.connect(info).await?;
         if self.io.is_none() {
             if let Some(t) = self.closing.take() {
@@ -988,6 +1049,7 @@ impl VoiceSession {
         // 抜けたあとに届いた・残っていた効果音を次の通話で鳴らさない
         self.ctl.set_in_call(false);
         self.ctl.speaking.lock().unwrap().clear();
+        self.users.lock().unwrap().clear();
         self.ctl.transmitting.store(false, Relaxed);
     }
 
@@ -1138,6 +1200,25 @@ mod tests {
     #[test]
     fn decode_sound_rejects_garbage() {
         assert!(decode_sound(b"not audio at all".to_vec()).is_err());
+        // 生 PCM として読まれて終わらない、ということがない
+        let t = Instant::now();
+        assert!(decode_sound(vec![0u8; 1 << 16]).is_err());
+        assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn resampler_ignores_zero_rate() {
+        for (from, to) in [(0, RATE), (RATE, 0), (0, 0)] {
+            let mut r = Resampler::new(from, to, 2);
+            let mut o = Vec::new();
+            r.run(&[1.0, 2.0, 3.0, 4.0], &mut o);
+            assert_eq!(o, [1.0, 2.0, 3.0, 4.0]);
+        }
+        // 極端な比でも出力は抑える
+        let mut r = Resampler::new(1, RATE, 2);
+        let mut o = Vec::new();
+        r.run(&[0.0; 200], &mut o);
+        assert!(o.len() <= 200 * 64 + 2, "{}", o.len());
     }
 
     #[test]

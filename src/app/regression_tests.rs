@@ -1336,6 +1336,15 @@ fn mentions_are_counted_per_server() {
         serde_json::json!({ "mentions": me_user }),
     )))
     .unwrap();
+    // 自分の送信は数えない（送ったチャンネルはそこまで読んだことになるので、先に送る）
+    tx.send(Event::MessageCreate(msg(
+        "5",
+        "c3",
+        Some("g"),
+        "me",
+        serde_json::json!({ "mentions": me_user }),
+    )))
+    .unwrap();
     tx.send(Event::MessageCreate(msg(
         "2",
         "c3",
@@ -1358,14 +1367,6 @@ fn mentions_are_counted_per_server() {
         Some("g"),
         "x",
         serde_json::json!({ "mention_roles": ["other"] }),
-    )))
-    .unwrap();
-    tx.send(Event::MessageCreate(msg(
-        "5",
-        "c3",
-        Some("g"),
-        "me",
-        serde_json::json!({ "mentions": me_user }),
     )))
     .unwrap();
     tx.send(Event::MessageCreate(msg(
@@ -2583,4 +2584,170 @@ fn dm_list_response_keeps_events_received_while_loading() {
     let ids: Vec<_> = app.dms.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, ["20", "22"]);
     assert!(app.dms_loaded);
+}
+
+#[test]
+fn older_page_load_replays_deletes_and_edits() {
+    let mut app = bench_app(1);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.history.entry("c".into()).or_default().pending = Some("100000".into());
+    let old = |id: &str, content: &str| -> Message {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "channel_id": "c", "author": { "id": "1", "username": "u" },
+            "content": content, "timestamp": "2026-11-01T10:00:00+00:00"
+        }))
+        .unwrap()
+    };
+    // 古いページを待つ間に、そのページのメッセージが消され・編集された
+    app.on_message_delete("c", "90");
+    tx.send(Event::MessageUpdate {
+        channel_id: "c".into(),
+        id: "91".into(),
+        content: Some("new".into()),
+        embeds: None,
+        pinned: None,
+    })
+    .unwrap();
+    tx.send(Event::OlderMessages {
+        channel_id: "c".into(),
+        before: "100000".into(),
+        messages: Some(vec![old("90", "gone"), old("91", "old")]),
+    })
+    .unwrap();
+    app.poll();
+    let list = &app.messages["c"];
+    assert!(!list.iter().any(|m| m.id == "90"), "消えたものは戻さない");
+    assert_eq!(
+        list.iter().find(|m| m.id == "91").unwrap().content,
+        "new",
+        "古い応答で編集を戻さない"
+    );
+    assert!(app.history["c"].older_changes.is_empty());
+}
+
+#[test]
+fn stale_message_ack_keeps_unread_and_manual_ack_finds_thread_guild() {
+    let mut app = bench_app(3);
+    app.sel_channel = None;
+    app.read_state.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 1));
+    // 別端末が古い位置まで読んだ: 新しいメッセージ（100002）を知っているので未読は残す
+    app.on_gateway_event(
+        "MESSAGE_ACK",
+        serde_json::json!({"channel_id": "c", "message_id": "100000"}),
+    );
+    assert!(app.read_state.unread.contains_key("c"));
+    assert!(app.read_state.mention_counts.contains_key("c"));
+    app.on_gateway_event(
+        "MESSAGE_ACK",
+        serde_json::json!({"channel_id": "c", "message_id": "100002"}),
+    );
+    assert!(!app.read_state.unread.contains_key("c"));
+    assert!(!app.read_state.mention_counts.contains_key("c"));
+    // スレッドの未読指定はサーバーの未読として数える
+    let thread: Channel =
+        serde_json::from_value(serde_json::json!({"id": "t", "type": 11, "parent_id": "p"}))
+            .unwrap();
+    app.threads.insert("g".into(), vec![thread]);
+    app.on_gateway_event(
+        "MESSAGE_ACK",
+        serde_json::json!({"channel_id": "t", "message_id": "1", "manual": true}),
+    );
+    assert_eq!(app.read_state.unread.get("t"), Some(&Some("g".to_string())));
+}
+
+#[test]
+fn own_message_from_another_device_clears_unread() {
+    let mut app = bench_app(1);
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.me = Some(serde_json::from_value(serde_json::json!({"id":"me","username":"me"})).unwrap());
+    app.sel_channel = None;
+    app.read_state.unread.insert("c".into(), None);
+    app.read_state.mention_counts.insert("c".into(), (None, 2));
+    let mut m = app.messages["c"][0].clone();
+    m.id = "100001".into();
+    m.author.id = "me".into();
+    tx.send(Event::MessageCreate(m)).unwrap();
+    app.poll();
+    assert!(!app.read_state.unread.contains_key("c"));
+    assert!(!app.read_state.mention_counts.contains_key("c"));
+}
+
+#[test]
+fn role_events_reload_channels_only_for_my_roles() {
+    let mut app = App::default();
+    let (_tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.channels.insert("g".into(), Vec::new());
+    app.my_roles.insert("g".into(), vec!["mine".into()]);
+    let reloads = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
+        let mut n = 0;
+        while let Ok(c) = rx.try_recv() {
+            n += matches!(c, Cmd::LoadGuildChannels(_)) as usize;
+        }
+        n
+    };
+    let ver = app.member_ver;
+    app.on_gateway_event(
+        "GUILD_ROLE_UPDATE",
+        serde_json::json!({"guild_id": "g", "role": {"id": "other", "name": "x"}}),
+    );
+    assert_eq!(reloads(&mut rx), 0, "人のロールでは読み直さない");
+    assert!(app.member_ver > ver, "名前の色は塗り直す");
+    app.on_gateway_event(
+        "GUILD_ROLE_UPDATE",
+        serde_json::json!({"guild_id": "g", "role": {"id": "g", "name": "@everyone"}}),
+    );
+    assert_eq!(reloads(&mut rx), 1);
+    app.on_gateway_event(
+        "GUILD_ROLE_DELETE",
+        serde_json::json!({"guild_id": "g", "role_id": "mine"}),
+    );
+    assert_eq!(reloads(&mut rx), 1);
+}
+
+#[test]
+fn leaving_channel_sends_throttled_ack() {
+    let mut app = bench_app(1);
+    let (_tx, ev) = std::sync::mpsc::channel();
+    let (cmd, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    app.window_focused = true;
+    // ほかのチャンネルの既読を送ったばかりで、c の既読は間隔待ち
+    app.read_state.last_ack = Some(std::time::Instant::now());
+    app.sync_read_state(true);
+    assert!(rx.try_recv().is_err());
+    app.leave_channel();
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(Cmd::Ack { channel_id, message_id }) if channel_id == "c" && message_id == "100000"
+    ));
+}
+
+#[test]
+fn find_links_trims_unbalanced_parens() {
+    let s = "(see https://en.wikipedia.org/wiki/Foo_(bar)))";
+    let r = &find_links(s)[0];
+    assert_eq!(&s[r.clone()], "https://en.wikipedia.org/wiki/Foo_(bar)");
+}
+
+#[test]
+fn end_poll_needs_two_clicks() {
+    let mut app = App::default();
+    assert!(!app.confirm_end_poll("c", "m"));
+    assert!(app.end_poll_confirming("m"));
+    assert!(!app.end_poll_confirming("other"));
+    app.end_poll_confirm = Some((
+        "m".into(),
+        std::time::Instant::now() - moderation::CONFIRM_TTL,
+    ));
+    assert!(!app.end_poll_confirming("m"), "しばらくたったら取り消す");
+    assert!(!app.confirm_end_poll("c", "m"));
+    assert!(app.confirm_end_poll("c", "m"));
+    assert!(app.end_poll_confirm.is_none());
 }

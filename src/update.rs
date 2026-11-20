@@ -445,16 +445,37 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
         let _ = std::fs::remove_file(&new);
         return Err(e);
     }
-    // 他のインスタンスが同じ版を入れ直さないよう、差し替えた版を書いておく
-    let _ = std::fs::write(sibling(exe, ".updated"), &version);
+    // 他のインスタンスが同じ版を入れ直さないよう、差し替えた版と exe の SHA-256 を書いておく
+    let _ = std::fs::write(sibling(exe, ".updated"), updated_marker(&version, &got));
     Ok(Outcome::Ready(version))
 }
 
-/// 差し替え済みの版（exe の隣の .updated）。起動中の版より新しいときだけ意味がある
+/// .updated の中身。「版\nexe の SHA-256」
+fn updated_marker(version: &str, digest: &str) -> String {
+    format!("{version}\n{digest}\n")
+}
+
+/// 差し替え済みの版（exe の隣の .updated）。起動中の版より新しいときだけ意味がある。
+/// 利用者が古い exe に戻したなど、今の exe が自分で入れたものと違うなら印は古いので消す
 fn installed_version(exe: &Path) -> Option<String> {
-    std::fs::read_to_string(sibling(exe, ".updated"))
-        .ok()
-        .map(|s| s.trim().to_owned())
+    let marker = sibling(exe, ".updated");
+    let text = std::fs::read_to_string(&marker).ok()?;
+    let mut lines = text.lines().map(str::trim);
+    let (Some(version), Some(digest)) = (lines.next(), lines.next()) else {
+        let _ = std::fs::remove_file(&marker);
+        return None;
+    };
+    let current = std::fs::read(exe).ok().map(|b| {
+        Sha256::digest(&b)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    });
+    if current.as_deref() != Some(&digest.to_ascii_lowercase()) {
+        let _ = std::fs::remove_file(&marker);
+        return None;
+    }
+    Some(version.to_owned())
 }
 
 /// exe の差し替えを 1 インスタンスずつにするロック（exe の隣の .update-lock）。
@@ -723,6 +744,30 @@ mod tests {
         assert_eq!(banner(), None);
         *STATUS.lock().unwrap() = Status::Off;
         BANNER_CLOSED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn updated_marker_is_trusted_only_for_the_installed_exe() {
+        let dir = std::env::temp_dir().join(format!("riscord-upd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("riscord");
+        std::fs::write(&exe, b"new build").unwrap();
+        let digest: String = Sha256::digest(b"new build")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let marker = sibling(&exe, ".updated");
+        std::fs::write(&marker, updated_marker("v9.0.0", &digest)).unwrap();
+        assert_eq!(installed_version(&exe).as_deref(), Some("v9.0.0"));
+        // 利用者が古い exe に戻した
+        std::fs::write(&exe, b"old build").unwrap();
+        assert_eq!(installed_version(&exe), None);
+        assert!(!marker.exists(), "古い印は消す");
+        // 以前の形式（版だけ）は信用しない
+        std::fs::write(&marker, "v9.0.0").unwrap();
+        assert_eq!(installed_version(&exe), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

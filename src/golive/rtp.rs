@@ -306,34 +306,52 @@ impl Rtp<'_> {
     }
 }
 
-/// RTCP の中に、自分宛ての PLI / FIR（キーフレーム要求）があるか
-pub fn rtcp_wants_keyframe(cipher: &Cipher, packet: &[u8]) -> bool {
+/// RTCP の中に、自分宛ての PLI / FIR（キーフレーム要求）があるか。
+/// 先頭 8 バイト（ヘッダーと送り手の SSRC）以外は暗号化されているので、開けて（認証して）から、
+/// 対象のメディア SSRC が media_ssrc（自分の映像）のものだけを数える
+pub fn rtcp_wants_keyframe(cipher: &Cipher, packet: &[u8], media_ssrc: u32) -> bool {
     if packet.len() < 8 {
         return false;
     }
-    let pt = packet[1];
-    let fmt = packet[0] & 0x1F;
-    // 先頭の RTCP の種類だけ見る（複合パケットの残りは暗号化されている）
-    if pt == 206 && (fmt == 1 || fmt == 4) {
-        return true;
-    }
-    // 先頭が SR/RR などの複合パケットなら中身を開いて探す
+    // 開けないもの（偽物・壊れたもの）は見ない
     let Some(plain) = cipher.open(packet, 8) else {
         return false;
     };
     let first_len = (u16::from_be_bytes([packet[2], packet[3]]) as usize + 1) * 4;
-    let mut rest = &plain[first_len.saturating_sub(8).min(plain.len())..];
+    let first_body = first_len.saturating_sub(8).min(plain.len());
+    if block_wants_keyframe(&packet[..8], &plain[..first_body], media_ssrc) {
+        return true;
+    }
+    // 複合パケットの残り
+    let mut rest = &plain[first_body..];
     while rest.len() >= 4 {
         let len = (u16::from_be_bytes([rest[2], rest[3]]) as usize + 1) * 4;
-        if rest[1] == 206 && matches!(rest[0] & 0x1F, 1 | 4) {
-            return true;
-        }
         if len > rest.len() {
             break;
+        }
+        if len >= 8 && block_wants_keyframe(&rest[..8], &rest[8..len], media_ssrc) {
+            return true;
         }
         rest = &rest[len..];
     }
     false
+}
+
+/// RTCP の 1 ブロック（head は先頭 8 バイト、body はその後ろ）が media_ssrc 宛ての PLI / FIR か
+fn block_wants_keyframe(head: &[u8], body: &[u8], media_ssrc: u32) -> bool {
+    if head[1] != 206 {
+        return false;
+    }
+    let be = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    match head[0] & 0x1F {
+        // PLI: メディア SSRC
+        1 => body.len() >= 4 && be(body) == media_ssrc,
+        // FIR: メディア SSRC（0）のあとに、SSRC と番号の 8 バイトが並ぶ
+        4 => body
+            .get(4..)
+            .is_some_and(|fci| fci.as_chunks::<8>().0.iter().any(|e| be(e) == media_ssrc)),
+        _ => false,
+    }
 }
 
 /// A bounded jitter buffer for decrypted video RTP packets.
@@ -766,7 +784,22 @@ mod tests {
         let mut p = Packetizer::new(1);
         let sealed = p.seal_rtcp(&c, &pli(1, 2)).unwrap();
         assert!(is_rtcp(&sealed));
-        assert!(rtcp_wants_keyframe(&c, &sealed));
+        assert!(rtcp_wants_keyframe(&c, &sealed, 2));
         assert_eq!(c.open(&sealed, 8).unwrap(), 2u32.to_be_bytes());
+        // 別の SSRC 宛ては数えない
+        assert!(!rtcp_wants_keyframe(&c, &sealed, 3));
+        // 認証を通らないもの（暗号化していない・書き換えた）は数えない
+        let mut plain = pli(1, 2).to_vec();
+        plain.extend_from_slice(&[0; 32]);
+        assert!(!rtcp_wants_keyframe(&c, &plain, 2));
+        let mut forged = sealed.clone();
+        forged[9] ^= 1;
+        assert!(!rtcp_wants_keyframe(&c, &forged, 2));
+        // 先頭が RR の複合パケットの中の PLI
+        let mut compound = vec![0x80, 201, 0, 1, 0, 0, 0, 1];
+        compound.extend_from_slice(&pli(1, 2));
+        let sealed = p.seal_rtcp(&c, &compound).unwrap();
+        assert!(rtcp_wants_keyframe(&c, &sealed, 2));
+        assert!(!rtcp_wants_keyframe(&c, &sealed, 3));
     }
 }

@@ -164,7 +164,8 @@ pub(crate) async fn run_session(
                             Some("READY") => {
                                 if let Some(data) = frame.d.as_deref().and_then(|d| serde_json::from_str::<ReadySession>(d.get()).ok()) {
                                     session.id = data.session_id;
-                                    session.resume_url = data.resume_gateway_url;
+                                    // Discord 以外の接続先は信用しない（その場合は既定の接続先で再開する）
+                                    session.resume_url = data.resume_gateway_url.filter(|u| is_discord_gateway_url(u));
                                 }
                                 ready = true;
                             }
@@ -182,6 +183,29 @@ pub(crate) async fn run_session(
             }
         }
     }
+}
+
+/// 再開用に教わった接続先が Discord のゲートウェイか（wss:// で、ホストが discord.gg かその下）。
+/// 違う所へトークンを送らないよう、それ以外は使わない
+pub(crate) fn is_discord_gateway_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("wss://") else {
+        return false;
+    };
+    // 後ろに付く「?」以下は自分で付け直すので、パスより先は受け付けない
+    if rest.contains(['?', '#', '@', '\\']) {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        Some(_) => return false,
+        None => authority,
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "discord.gg"
+        || host
+            .strip_suffix(".discord.gg")
+            .is_some_and(|sub| !sub.is_empty() && sub.split('.').all(|l| !l.is_empty()))
 }
 
 #[derive(Default)]
@@ -417,6 +441,23 @@ mod tests {
         assert_eq!(s.resumable(), Some(("session", 42)));
         s.id = Some(String::new());
         assert!(s.resumable().is_none());
+    }
+    #[test]
+    fn accepts_only_discord_resume_urls() {
+        assert!(is_discord_gateway_url(
+            "wss://gateway-us-east1-b.discord.gg"
+        ));
+        assert!(is_discord_gateway_url("wss://gateway.discord.gg/"));
+        assert!(is_discord_gateway_url("wss://discord.gg:443"));
+        assert!(!is_discord_gateway_url("ws://gateway.discord.gg"));
+        assert!(!is_discord_gateway_url("wss://evil.example"));
+        assert!(!is_discord_gateway_url("wss://evildiscord.gg"));
+        assert!(!is_discord_gateway_url("wss://discord.gg.evil.example"));
+        assert!(!is_discord_gateway_url(
+            "wss://user@evil.example/.discord.gg"
+        ));
+        assert!(!is_discord_gateway_url("wss://gateway.discord.gg?x=1"));
+        assert!(!is_discord_gateway_url("wss://.discord.gg"));
     }
     #[test]
     fn classifies_gateway_opcodes() {

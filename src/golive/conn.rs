@@ -128,6 +128,12 @@ fn codecs() -> Value {
     ])
 }
 
+/// Hello の heartbeat_interval（ミリ秒）を間隔にする。おかしな値でも panic せず、1〜60 秒に収める
+fn heartbeat_every(ms: f64) -> Duration {
+    let ms = if ms.is_finite() { ms } else { 1000.0 };
+    Duration::from_secs_f64(ms.clamp(1000.0, 60_000.0) / 1000.0)
+}
+
 /// 接続して、stop が来るまで送受信を続ける
 pub async fn run(
     p: Params,
@@ -237,7 +243,7 @@ pub async fn run(
     }
     let ready = ready.unwrap();
     debug(format_args!("Ready: {}", ready));
-    let hb_every = Duration::from_secs_f64(hello.unwrap().max(1000.0) / 1000.0);
+    let hb_every = heartbeat_every(hello.unwrap());
     let ssrc = ready["ssrc"]
         .as_u64()
         .ok_or_else(|| anyhow!("{}", tr!("ssrc がありません", "Missing ssrc", "缺少 ssrc",)))?
@@ -532,7 +538,7 @@ pub async fn run(
                 let pkt = &buf[..n];
                 match &mut role {
                     Role::Broadcast { capture, .. } => {
-                        if rtp::is_rtcp(pkt) && rtp::rtcp_wants_keyframe(&cipher, pkt) && last_pli.elapsed() > Duration::from_millis(500) {
+                        if rtp::is_rtcp(pkt) && rtp::rtcp_wants_keyframe(&cipher, pkt, video_ssrc) && last_pli.elapsed() > Duration::from_millis(500) {
                             last_pli = Instant::now();
                             capture.force_keyframe();
                         }
@@ -877,4 +883,19 @@ async fn handle_binary(ws: &mut Ws, dave: &mut Dave, b: &[u8], seq_ack: &mut i64
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_interval_is_clamped() {
+        assert_eq!(heartbeat_every(13_750.0), Duration::from_millis(13_750));
+        assert_eq!(heartbeat_every(0.0), Duration::from_secs(1));
+        assert_eq!(heartbeat_every(-5.0), Duration::from_secs(1));
+        assert_eq!(heartbeat_every(1e300), Duration::from_secs(60));
+        assert_eq!(heartbeat_every(f64::NAN), Duration::from_secs(1));
+        assert_eq!(heartbeat_every(f64::INFINITY), Duration::from_secs(1));
+    }
 }

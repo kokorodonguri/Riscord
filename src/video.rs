@@ -257,13 +257,15 @@ mod platform {
                     .build()
                     .expect("fakesink"),
             );
-            pipeline.set_state(gst::State::Playing).map_err(|e| {
-                tr!(
+            if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                // Null に戻してから手放す（途中まで動いた要素を残さない）
+                stop_in_background(pipeline);
+                return Err(tr!(
                     "動画を再生できません: {e}",
                     "Can't play the video: {e}",
                     "无法播放视频：{e}",
-                )
-            })?;
+                ));
+            }
             Ok(Self {
                 channel,
                 url,
@@ -294,7 +296,7 @@ mod platform {
                                 e.error()
                             ));
                             self.paused = true;
-                            let _ = self.pipeline.set_state(gst::State::Null);
+                            stop_in_background(self.pipeline.clone());
                         }
                         gst::MessageView::Eos(..) => {
                             self.ended = true;
@@ -351,9 +353,22 @@ mod platform {
             }
         }
     }
+    /// Null にするのは数秒かかることがある（HTTP の接続を閉じるなど）ので、UI のスレッドでは待たない
+    fn stop_in_background(pipeline: gst::Element) {
+        let p = pipeline.clone();
+        let spawned = std::thread::Builder::new()
+            .name("video-stop".into())
+            .spawn(move || {
+                let _ = p.set_state(gst::State::Null);
+            });
+        if spawned.is_err() {
+            // スレッドを作れないときは、待ってでも止める
+            let _ = pipeline.set_state(gst::State::Null);
+        }
+    }
     impl Drop for Player {
         fn drop(&mut self) {
-            let _ = self.pipeline.set_state(gst::State::Null);
+            stop_in_background(self.pipeline.clone());
             if let Some(img) = self.image.take() {
                 images::release(img);
             }

@@ -4,11 +4,14 @@
 set -euo pipefail
 : "${HOST:?Set HOST to the remote SSH destination}"
 cd "$(dirname "$0")"
-# 未コミットの変更も含めて送る。.git と android/local.properties（SDK のパスなど手元の設定）は送らない。
+# git が追跡しているファイルと、.gitignore に当たらない未追跡のファイルだけを送る（未コミットの変更も含む）。
+# 作業フォルダに置いた .env・鍵・トークンなど、無視しているファイルはリモートに置かない。
 # .git がないとリモートの build.rs がコミットを読めないので、GITHUB_SHA として渡す
 sha="$(git rev-parse HEAD 2>/dev/null || true)"
-tar --exclude=./target --exclude=./dist --exclude=./.serena --exclude=./.git --exclude=./.claude \
-  --exclude=local.properties -czf - . | ssh "$HOST" 'rm -rf ~/build/riscord && mkdir -p ~/build/riscord && tar -xzf - -C ~/build/riscord'
+git ls-files -z --cached --others --exclude-standard \
+  | while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done \
+  | grep -zv -e '^\.claude/' -e '^\.serena/' -e 'local\.properties$' \
+  | tar --null -T - -czf - | ssh "$HOST" 'rm -rf ~/build/riscord && mkdir -p ~/build/riscord && tar -xzf - -C ~/build/riscord'
 ssh "$HOST" "GITHUB_SHA='$sha' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.cargo/env

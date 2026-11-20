@@ -166,11 +166,21 @@ fn load_custom(name: &str, rate: f32) -> Option<Vec<f32>> {
             break;
         }
     }
-    if mono.is_empty() {
+    resample_nearest(&mono, src_rate, rate)
+}
+
+/// 受け付けるサンプリングレート。外れた値だと step がほぼ 0 になり、巨大な確保をしてしまう
+const RATE_RANGE: std::ops::RangeInclusive<f32> = 8_000.0..=192_000.0;
+/// 鳴らす音の長さの上限（秒）
+const MAX_SECS: f32 = 10.0;
+
+/// mono（src_rate）を rate へ一番近いサンプルで合わせる。レートがおかしければ None
+fn resample_nearest(mono: &[f32], src_rate: f32, rate: f32) -> Option<Vec<f32>> {
+    if mono.is_empty() || !RATE_RANGE.contains(&src_rate) || !RATE_RANGE.contains(&rate) {
         return None;
     }
     let step = src_rate / rate;
-    let n = (mono.len() as f32 / step) as usize;
+    let n = ((mono.len() as f32 / step) as usize).min((rate * MAX_SECS) as usize);
     Some(
         (0..n)
             .map(|i| mono[((i as f32 * step) as usize).min(mono.len() - 1)])
@@ -210,5 +220,26 @@ pub fn speak(text: &str) {
     };
     if r.is_err() {
         play("message", 1.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resample_nearest_rejects_bad_rates_and_caps_length() {
+        let mono = vec![0.5; 1000];
+        assert!(resample_nearest(&mono, 0.0, 48_000.0).is_none());
+        assert!(resample_nearest(&mono, 1.0, 48_000.0).is_none());
+        assert!(resample_nearest(&mono, f32::NAN, 48_000.0).is_none());
+        assert!(resample_nearest(&[], 48_000.0, 48_000.0).is_none());
+        assert_eq!(
+            resample_nearest(&mono, 24_000.0, 48_000.0).unwrap().len(),
+            2000
+        );
+        let long = vec![0.0; 48_000 * 10];
+        let out = resample_nearest(&long, 8_000.0, 192_000.0).unwrap();
+        assert_eq!(out.len(), 192_000 * 10);
     }
 }

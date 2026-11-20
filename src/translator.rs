@@ -192,16 +192,17 @@ impl Translator {
                                 )
                                 .to_string()
                             })?;
+                        // 本文は URL に載せず POST の本文で送る（URL はログや履歴に残りやすく、長さの上限もある）
                         let response = client
-                            .get("https://translate.googleapis.com/translate_a/single")
+                            .post("https://translate.googleapis.com/translate_a/single")
                             .query(&[
                                 ("client", "gtx"),
                                 ("dt", "t"),
                                 ("dj", "1"),
                                 ("sl", "auto"),
                                 ("tl", language.as_str()),
-                                ("q", text.as_str()),
                             ])
+                            .form(&[("q", text.as_str())])
                             .send()
                             .await
                             .map_err(|_| {

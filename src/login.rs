@@ -356,7 +356,12 @@ async fn post(url: &str, body: &Value) -> std::result::Result<Value, String> {
     if (200..300).contains(&status) {
         return Ok(v);
     }
-    eprintln!("ログイン失敗: {status} {v}");
+    // 本文には CAPTCHA のトークンやチケットが入るので、ログには状態と code だけ出す
+    eprintln!(
+        "ログイン失敗: {status} code={}",
+        v.get("code")
+            .map_or_else(|| "-".to_string(), Value::to_string)
+    );
     Err(login_error_text(status, &v))
 }
 

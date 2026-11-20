@@ -1560,6 +1560,10 @@ impl Root {
 
     /// Enter で入力欄の中身を送る（文字数の上限を超えていたら送らずに知らせる）
     fn submit_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 削除・退出の確認中の Enter は確認のほうに使う（送信と確定が両方起きないように）
+        if self.app.pending_delete.is_some() || self.app.confirm_leave.is_some() {
+            return;
+        }
         let a = &mut self.app;
         a.input = self.inp.compose.read(cx).value().to_string();
         let limit = st::message_text_limit(a.me.as_ref().and_then(|u| u.premium_type));
@@ -1637,6 +1641,10 @@ impl Root {
             .is_some_and(|m| Some(&m.channel_id) != here.as_ref())
         {
             a.reply_to = None;
+        }
+        // コマンドの下書きは選んだチャンネルのものなので、移ったら捨てる
+        if a.cmd_draft.is_some() && !a.command_draft_here() {
+            a.cmd_draft = None;
         }
         // ピン一覧はそのチャンネルのものなので、移ったら閉じる
         if a.pins
@@ -1790,11 +1798,15 @@ impl Root {
             cx.notify();
             return;
         }
-        if m.alt && !m.control {
+        // macOS の Option+矢印は入力欄で単語・段落の移動に使うので、文字の欄にいるときは奪わない
+        let text_focused =
+            !self.focus.is_focused(window) && self.focus.contains_focused(window, cx);
+        let alt_nav = m.alt && !m.control && !(cfg!(target_os = "macos") && text_focused);
+        if alt_nav && matches!(k.key.as_str(), "left" | "right" | "up" | "down") {
             match k.key.as_str() {
                 "left" => self.navigate(true),
                 "right" => self.navigate(false),
-                "up" | "down" => {
+                _ => {
                     let order = self.app.sidebar_order();
                     if !order.is_empty() {
                         let d = if k.key == "up" { -1 } else { 1 };
@@ -1810,8 +1822,8 @@ impl Root {
                         self.open_channel(order[n].clone());
                     }
                 }
-                _ => return,
             }
+            // ほかの Alt+キーは下の Toggle Your Stuff などへ回す
             cx.stop_propagation();
             cx.notify();
             return;

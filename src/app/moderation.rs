@@ -116,6 +116,8 @@ impl MemberAction {
 
 /// 処分の 2 回押しの 1 回目が有効な時間
 const MEMBER_ACTION_CONFIRM_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+/// ほかの取り消せない操作の 2 回押しも同じ時間で取り消す
+pub(crate) const CONFIRM_TTL: std::time::Duration = MEMBER_ACTION_CONFIRM_TTL;
 
 pub struct ServerModeration {
     pub guild_id: String,
@@ -127,8 +129,8 @@ pub struct ServerModeration {
     pub has_more: bool,
     /// 送信中の変更（リクエスト ID と完了時に出す文）
     pub mutation: Option<(u64, &'static str)>,
-    /// 確認待ちの操作のキー（もう一度押すと実行）
-    pub confirm: Option<String>,
+    /// 確認待ちの操作のキーと押した時刻（しばらく以内にもう一度押すと実行）
+    pub confirm: Option<(String, std::time::Instant)>,
     pub error: Option<String>,
     pub event_draft: Option<EventDraft>,
     /// 編集前のイベント（変わった項目だけ送る）
@@ -152,6 +154,13 @@ impl ServerModeration {
             event_original: None,
             rule_draft: None,
         }
+    }
+
+    /// 2 回押しの 1 回目を押したばかりか（処分と同じく、しばらくたったら取り消す）
+    pub fn confirming(&self, key: &str) -> bool {
+        self.confirm
+            .as_ref()
+            .is_some_and(|(k, at)| k == key && at.elapsed() < MEMBER_ACTION_CONFIRM_TTL)
     }
 }
 
@@ -829,11 +838,12 @@ impl App {
         let Some(m) = self.moderation.as_mut() else {
             return false;
         };
-        if m.confirm.as_deref() == Some(key.as_str()) {
+        if m.confirming(&key) {
             m.confirm = None;
             true
         } else {
-            m.confirm = Some(key);
+            m.confirm = Some((key, std::time::Instant::now()));
+            self.repaint_after(MEMBER_ACTION_CONFIRM_TTL);
             false
         }
     }

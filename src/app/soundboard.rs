@@ -170,7 +170,11 @@ impl App {
         let sb = self.soundboard.as_mut().unwrap();
         sb.error = None;
         match id {
-            Some(id) => sb.sending = Some((id, sound)),
+            Some(id) => {
+                // 送り始めたときに覚える。REST の応答より先に自分の知らせが届いても、二重に鳴らさない
+                self.recent_sound = Some((sound.id.clone(), std::time::Instant::now()));
+                sb.sending = Some((id, sound));
+            }
             None => {
                 sb.error = Some(
                     tr!(
@@ -200,14 +204,20 @@ impl App {
             let (_, sound) = sb.sending.take().unwrap();
             match result {
                 Ok(_) => {
-                    // 自分の端末でも鳴らす。あとで届く知らせでは鳴らさない
-                    self.recent_sound = Some((sound.id.clone(), std::time::Instant::now()));
+                    // 自分の端末でも鳴らす。届く知らせでは鳴らさない（recent_sound は send_sound で覚えた）
                     self.send(Cmd::PlaySound {
                         sound_id: sound.id,
                         volume: sound.volume,
                     });
                 }
                 Err(e) => {
+                    if self
+                        .recent_sound
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == sound.id)
+                    {
+                        self.recent_sound = None;
+                    }
                     sb.error = Some(super::pins::api_error_text(
                         &e,
                         tr!("鳴らせませんでした", "Couldn't play it", "无法播放"),
@@ -349,6 +359,17 @@ mod tests {
             matches!(rx.try_recv().unwrap(), Cmd::PlaySound { volume, .. } if (volume - 0.3).abs() < 1e-6)
         );
         app.on_voice_effect(&serde_json::json!({"channel_id":"99","user_id":"11","sound_id":"5"}));
+        assert!(rx.try_recv().is_err());
+
+        // REST の応答より先に自分の知らせが届いても、鳴らすのは 1 回だけ
+        app.send_sound("7");
+        let (id, _) = api(&mut rx);
+        app.on_voice_effect(&effect);
+        assert!(rx.try_recv().is_err());
+        app.soundboard_result(id, Ok(serde_json::Value::Null));
+        assert!(
+            matches!(rx.try_recv().unwrap(), Cmd::PlaySound { ref sound_id, .. } if sound_id == "7")
+        );
         assert!(rx.try_recv().is_err());
     }
 

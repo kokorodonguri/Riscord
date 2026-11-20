@@ -194,6 +194,12 @@ pub enum Event {
         channel_id: String,
         result: Result<Option<Message>, ()>,
     },
+    /// 分けて送った長文の前半だけが届いた。remaining は届いていない残り（ComposeResult の Err の直前に送る）。
+    /// 全文を戻して送り直すと、届いた分がもう一度投稿されてしまうため
+    ComposePartial {
+        channel_id: String,
+        remaining: String,
+    },
     /// 送信・編集が Discord に断られた（確実に届いていない）。理由を添えて ComposeResult の直前に送る
     ComposeRejected {
         channel_id: String,
@@ -450,6 +456,19 @@ fn retry_delay(value: &Value) -> Result<Duration> {
     Ok(Duration::from_secs_f64(seconds.max(0.1)))
 }
 
+/// 429 の Retry-After ヘッダー（秒）。無い・読めないときは None（本文の retry_after を使う）
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let seconds: f64 = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (seconds.is_finite() && (0.0..=86_400.0).contains(&seconds))
+        .then(|| Duration::from_secs_f64(seconds.max(0.1)))
+}
+
 impl Api {
     async fn request(
         &self,
@@ -518,8 +537,23 @@ impl Api {
                             )
                         );
                     }
-                    let v: Value = r.json().await.unwrap_or_default();
-                    let delay = retry_delay(&v)?;
+                    // 待ち時間はまずヘッダーから。本文が JSON でない 429 は Cloudflare の締め出しなので、待っても無駄
+                    let header = retry_after_header(r.headers());
+                    let text = r.text().await.unwrap_or_default();
+                    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                        bail!(
+                            "{}",
+                            tr!(
+                                "Discord への接続が一時的に制限されています。しばらく待ってから試してください",
+                                "Access to Discord is temporarily blocked. Please wait a while and try again",
+                                "与 Discord 的连接暂时受到限制。请稍后再试",
+                            )
+                        );
+                    };
+                    let delay = match header {
+                        Some(delay) => delay,
+                        None => retry_delay(&v)?,
+                    };
                     if delay > Duration::from_secs(120) {
                         bail!(
                             "{}",
@@ -543,10 +577,11 @@ impl Api {
                 }
                 StatusCode::UNAUTHORIZED => return Err(anyhow::Error::msg(UnauthorizedMarker)),
                 s if !s.is_success() => {
-                    let text = r.text().await.unwrap_or_default();
+                    let body = r.text().await.unwrap_or_default();
                     return Err(anyhow::Error::new(HttpError {
                         status: s.as_u16(),
-                        text: format!("{method} {path}: {s} {text}"),
+                        head: format!("{method} {path}: {s}"),
+                        body,
                     }));
                 }
                 _ => return Ok(r),
@@ -587,15 +622,42 @@ impl std::fmt::Display for UnauthorizedMarker {
     }
 }
 
-/// 401 以外の失敗。表示は今までどおり「GET /path: 403 Forbidden {本文}」
-#[derive(Debug)]
+/// 401 以外の失敗。表示は「GET /path: 403 Forbidden (50013 Missing Permissions)」。
+/// 本文には CAPTCHA のトークンなどが入ることがあるので、表示（ログ）には code と message だけを出す
 struct HttpError {
     status: u16,
-    text: String,
+    /// 「GET /path: 403 Forbidden」
+    head: String,
+    /// 返ってきた本文そのまま（理由の判定に使う。ログには出さない）
+    body: String,
+}
+impl HttpError {
+    fn json(&self) -> Value {
+        serde_json::from_str(&self.body).unwrap_or_default()
+    }
 }
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.text)
+        f.write_str(&self.head)?;
+        let v = self.json();
+        let code = v["code"].as_u64();
+        let message: String = v["message"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect();
+        match (code, message.is_empty()) {
+            (Some(code), false) => write!(f, " ({code} {message})"),
+            (Some(code), true) => write!(f, " ({code})"),
+            (None, false) => write!(f, " ({message})"),
+            (None, true) => Ok(()),
+        }
+    }
+}
+impl std::fmt::Debug for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
     }
 }
 impl std::error::Error for HttpError {}
@@ -604,11 +666,7 @@ impl std::error::Error for HttpError {}
 /// 通信が途中で切れたなど、届いたか分からないときは None
 pub fn compose_reject_reason(e: &anyhow::Error) -> Option<String> {
     let h = e.downcast_ref::<HttpError>()?;
-    let body: Value = h
-        .text
-        .find('{')
-        .and_then(|i| serde_json::from_str(&h.text[i..]).ok())
-        .unwrap_or_default();
+    let body = h.json();
     let code = body["code"].as_u64().unwrap_or(0);
     let raw = body.to_string();
     Some(match (h.status, code) {
@@ -1094,7 +1152,14 @@ async fn run(
                     'send: {
                         let path = format!("/channels/{channel_id}/messages");
                         // 分けた前半は順番どおりに届くよう、1 通ずつ待って送る
-                        for part in &extra.before {
+                        // i 通目で失敗したら、そこから後ろ（本文を含む）が届いていない残り
+                        let unsent_from = |i: usize| {
+                            let mut rest: Vec<&str> =
+                                extra.before[i..].iter().map(String::as_str).collect();
+                            rest.push(&content);
+                            rest.join("\n")
+                        };
+                        for (i, part) in extra.before.iter().enumerate() {
                             let mut body =
                                 json!({ "content": part, "nonce": nonce(), "tts": false });
                             if extra.flags != 0 {
@@ -1107,6 +1172,12 @@ async fn run(
                                 api.request(reqwest::Method::POST, &path, Some(&body)).await
                             {
                                 eprintln!("分割送信失敗: {e:#}");
+                                if i > 0 {
+                                    tx.send(Event::ComposePartial {
+                                        channel_id: channel_id.clone(),
+                                        remaining: unsent_from(i),
+                                    });
+                                }
                                 if let Some(reason) = compose_reject_reason(&e) {
                                     tx.send(Event::ComposeRejected {
                                         channel_id: channel_id.clone(),
@@ -1150,6 +1221,12 @@ async fn run(
                             Ok(response) => Ok(response.json::<Message>().await.ok()),
                             Err(e) => {
                                 eprintln!("メッセージ送信失敗: {e:#}");
+                                if !extra.before.is_empty() {
+                                    tx.send(Event::ComposePartial {
+                                        channel_id: channel_id.clone(),
+                                        remaining: content.clone(),
+                                    });
+                                }
                                 if let Some(reason) = compose_reject_reason(&e) {
                                     tx.send(Event::ComposeRejected {
                                         channel_id: channel_id.clone(),
@@ -1278,12 +1355,25 @@ async fn load_sticker(
     id: &str,
     format: u8,
 ) -> Result<crate::sticker::Frames> {
-    let r = http
+    // 画像と同じく 16 MB まで（それ以上は読み切らずに諦める）
+    const STICKER_MAX_BYTES: usize = 16 * 1024 * 1024;
+    let mut r = http
         .get(crate::sticker::url(id, format))
         .send()
         .await?
         .error_for_status()?;
-    let bytes = r.bytes().await?;
+    if r.content_length()
+        .is_some_and(|n| n > STICKER_MAX_BYTES as u64)
+    {
+        bail!("sticker too large");
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = r.chunk().await? {
+        if chunk.len() > STICKER_MAX_BYTES - bytes.len() {
+            bail!("sticker too large");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     tokio::task::spawn_blocking(move || crate::sticker::decode(format, &bytes)).await?
 }
 
@@ -1404,7 +1494,7 @@ pub fn profile_error_text(e: &anyhow::Error) -> String {
         )
         .into();
     };
-    let t = &h.text;
+    let t = &h.body;
     if t.contains("captcha_key") {
         tr!(
             "Discord が確認（CAPTCHA）を求めました。この変更は公式アプリで行ってください",
@@ -1460,7 +1550,8 @@ fn nonce() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    ((ms - EPOCH) << 22).to_string()
+    // 時計が 2015 年より前にずれていても桁あふれさせない
+    (ms.saturating_sub(EPOCH) << 22).to_string()
 }
 
 fn presence_payload(p: &MyPresence) -> Value {
@@ -1493,9 +1584,15 @@ async fn gateway_loop(
     v_tx: UnboundedSender<VoiceMsg>,
 ) {
     let mut session = GatewaySession::default();
-    let mut failures: u32 = 0;
+    // つながらなかった回数（Hello が届いたら数え直す）と、identify が READY まで行かなかった回数は別に数える。
+    // 一緒に数えると、しばらくオフラインだったあとの再開失敗（op 9）で一からのログインまで何分も待ってしまう
+    let mut conn_failures: u32 = 0;
+    let mut identify_failures: u32 = 0;
     loop {
         let mut ready = false;
+        let mut hello = false;
+        // 今回は再開ではなく identify を送る接続か
+        let identifying = session.resumable().is_none();
         let end = gateway_once(
             &token,
             &tx,
@@ -1504,6 +1601,7 @@ async fn gateway_loop(
             &v_tx,
             &mut session,
             &mut ready,
+            &mut hello,
         )
         .await
         .unwrap_or_else(|e| {
@@ -1514,10 +1612,16 @@ async fn gateway_loop(
         if out.is_closed() {
             return;
         }
-        // つながった（READY / RESUMED まで行った）なら、待ち時間を最初に戻す
-        if ready {
-            failures = 0;
+        // Discord まで届いた（Hello を受けた）なら、つなぎ直しの待ち時間を最初に戻す
+        if hello {
+            conn_failures = 0;
         }
+        // ログインできた（READY / RESUMED まで行った）なら、identify の待ち時間を最初に戻す
+        if ready {
+            identify_failures = 0;
+        }
+        // identify を送ったのに READY まで行かずに切れた（identify は 1 日の回数に上限がある）
+        let identify_failed = identifying && hello && !ready;
         let wait = match end {
             GatewayEnd::Fatal(msg) => {
                 tx.send(Status(tr!("エラー: {msg}", "Error: {msg}", "错误：{msg}",)));
@@ -1526,11 +1630,16 @@ async fn gateway_loop(
             // 再開できないと言われたら一からログインし直す。最低 1〜5 秒、失敗が続けばもっと待つ
             GatewayEnd::Reidentify => {
                 session.reset_keeping_unsent();
-                reidentify_delay(failures)
+                identify_failures = identify_failures.saturating_add(1);
+                reidentify_delay(identify_failures - 1)
             }
-            GatewayEnd::Resume => reconnect_delay(failures),
+            GatewayEnd::Resume if identify_failed => {
+                identify_failures = identify_failures.saturating_add(1);
+                reidentify_delay(identify_failures - 1)
+            }
+            GatewayEnd::Resume => reconnect_delay(conn_failures),
         };
-        failures = failures.saturating_add(1);
+        conn_failures = conn_failures.saturating_add(1);
         tx.send(Status(tr!(
             "接続が切れました。{}秒後に再接続します…",
             "Disconnected. Reconnecting in {} seconds…",
@@ -1602,8 +1711,9 @@ async fn gateway_once(
     v_tx: &UnboundedSender<VoiceMsg>,
     session: &mut GatewaySession,
     ready: &mut bool,
+    hello: &mut bool,
 ) -> Result<GatewayEnd> {
-    gateway_once_at(GATEWAY, token, tx, out, status, v_tx, session, ready).await
+    gateway_once_at(GATEWAY, token, tx, out, status, v_tx, session, ready, hello).await
 }
 
 /// gateway = 最初につなぐ所（テストでは手元のサーバー）
@@ -1617,6 +1727,7 @@ async fn gateway_once_at(
     v_tx: &UnboundedSender<VoiceMsg>,
     session: &mut GatewaySession,
     ready: &mut bool,
+    hello: &mut bool,
 ) -> Result<GatewayEnd> {
     // 再開できるときは READY で教わった接続先へ（同じ接続の設定を付ける）
     let resume = session.resumable().map(|(id, seq)| (id.to_owned(), seq));
@@ -1640,6 +1751,7 @@ async fn gateway_once_at(
             return Err(error);
         }
     };
+    *hello = true;
     let first = match &resume {
         // 途中から再開する（切れていた間のイベントは Discord が送り直す）
         Some((id, seq)) => {
@@ -2645,6 +2757,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retry_after_header_is_read_first() {
+        let mut h = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after_header(&h), None);
+        h.insert(reqwest::header::RETRY_AFTER, "3".parse().unwrap());
+        assert_eq!(retry_after_header(&h), Some(Duration::from_secs(3)));
+        h.insert(reqwest::header::RETRY_AFTER, "-1".parse().unwrap());
+        assert_eq!(retry_after_header(&h), None);
+    }
+
+    #[tokio::test]
+    async fn html_429_fails_without_retrying() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 2048];
+            let _ = socket.read(&mut request).unwrap();
+            let body = "<html>banned</html>";
+            write!(
+                socket,
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            // 2 回目は来ないはず
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+            assert!(listener.accept().is_err(), "再試行してはいけない");
+        });
+        let api = Api {
+            base_url: Some(format!("http://{addr}")),
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            token: "test".into(),
+            roles: Default::default(),
+            guild_perms: Default::default(),
+            limits: Default::default(),
+        };
+        let result = api.delete("/x").await;
+        server.join().unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn http_error_display_hides_body() {
+        let e = HttpError {
+            status: 400,
+            head: "POST /x: 400 Bad Request".into(),
+            body: r#"{"code": 50035, "message": "Invalid Form Body", "captcha_rqtoken": "secret"}"#
+                .into(),
+        };
+        let shown = format!("{e} {e:?}");
+        assert!(shown.contains("50035") && shown.contains("Invalid Form Body"));
+        assert!(!shown.contains("secret"));
+        let html = HttpError {
+            status: 502,
+            head: "GET /x: 502 Bad Gateway".into(),
+            body: "<html>secret</html>".into(),
+        };
+        assert_eq!(html.to_string(), "GET /x: 502 Bad Gateway");
+    }
+
     /// 大きいサーバーの GUILD_MEMBERS_CHUNK（1000人＋オンライン状態）相当
     fn members_chunk() -> Value {
         let members: Vec<Value> = (0..1000)
@@ -3498,6 +3676,7 @@ mod tests {
             });
             let mut session = GatewaySession::default();
             let mut ready = false;
+            let mut hello = false;
             let result = gateway_once_at(
                 &base,
                 "tok",
@@ -3507,6 +3686,7 @@ mod tests {
                 &s.v_tx,
                 &mut session,
                 &mut ready,
+                &mut hello,
             )
             .await;
             assert!(result.is_err());
@@ -3552,14 +3732,16 @@ mod tests {
             let mut session = GatewaySession::default();
             // 1回目: identify して READY を受け、op 7 で「再開」
             let mut ready = false;
-            let end = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready).await.unwrap();
+            let mut hello = false;
+            let end = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready, &mut hello).await.unwrap();
             assert_eq!(end, GatewayEnd::Resume);
             assert!(ready);
+            assert!(hello, "Hello を受けた");
             assert_eq!((session.id.as_deref(), session.seq), (Some("sess"), Some(5)));
             // 2回目: RESUME を送り、op 9 (false) で「一から」
             let mut ready = false;
             session.resume_url = Some(base.clone());
-            let end = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready).await.unwrap();
+            let end = gateway_once_at(&base, "tok", &s.tx, &mut out, &status, &s.v_tx, &mut session, &mut ready, &mut hello).await.unwrap();
             assert_eq!(end, GatewayEnd::Reidentify);
             assert!(ready, "RESUMED でつながった扱い");
             let firsts = server.await.unwrap();
@@ -3607,7 +3789,8 @@ mod tests {
         let err = |status: u16, body: &str| {
             anyhow::Error::new(HttpError {
                 status,
-                text: format!("PATCH /users/@me: {status} {body}"),
+                head: format!("PATCH /users/@me: {status}"),
+                body: body.into(),
             })
         };
         assert!(
@@ -3631,7 +3814,8 @@ mod tests {
         let err = |status: u16, body: &str| {
             anyhow::Error::new(HttpError {
                 status,
-                text: format!("POST /channels/1/messages: {status} {body}"),
+                head: format!("POST /channels/1/messages: {status}"),
+                body: body.into(),
             })
         };
         assert_eq!(

@@ -613,8 +613,21 @@ impl App {
             .as_ref()
             .ok()
             .and_then(|v| serde_json::from_value::<Channel>(v.clone()).ok());
+        // 応答の guild_id を使う（待つ間に別のサーバーへ移っていることがある）
+        let response_guild = result
+            .as_ref()
+            .ok()
+            .and_then(|v| v["guild_id"].as_str().map(str::to_owned));
         match (t, result) {
             (Some(t), _) => {
+                let gid = response_guild
+                    .or_else(|| {
+                        t.parent_id
+                            .as_deref()
+                            .and_then(|p| self.guild_of_channel(p))
+                    })
+                    .or_else(|| self.sel_guild.clone())
+                    .unwrap_or_default();
                 self.joined_threads.insert(t.id.clone());
                 if from_message {
                     self.thread_draft = None;
@@ -623,7 +636,14 @@ impl App {
                     self.post_title.clear();
                     self.post_body.clear();
                 }
-                self.open_thread(t);
+                // 作った場所（親チャンネル）を見ているときだけ開く。ほかへ移っていたら覚えるだけ
+                let here = self.sel_guild.as_deref() == Some(gid.as_str())
+                    && (t.parent_id.is_none() || t.parent_id == self.sel_channel);
+                let id = t.id.clone();
+                self.upsert_thread(&gid, t);
+                if here {
+                    self.pending_open = Some(id);
+                }
             }
             (None, r) => {
                 let e = r.err().unwrap_or_else(|| {

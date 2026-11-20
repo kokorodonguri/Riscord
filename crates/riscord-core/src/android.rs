@@ -92,7 +92,14 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(
                 #[cfg(target_os = "android")]
                 "audio_devices" => Ok(json!({"input":crate::voice::input_devices(),"output":crate::voice::output_devices()})),
                 #[cfg(target_os = "android")]
-                "voice_join" => client.voice(crate::mobile_voice::Command::Join {guild:v["guild"].as_str().map(str::to_owned),channel:v["channel"].as_str().unwrap_or_default().into(),ring:v["ring"].as_bool().unwrap_or(false)}),
+                "voice_join" => {
+                    // ID は API のパス（/channels/{id}/call/ring）にも入るので、数字だけのものに限る
+                    let is_id = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+                    let channel = v["channel"].as_str().unwrap_or_default();
+                    let guild = v["guild"].as_str();
+                    anyhow::ensure!(is_id(channel) && guild.is_none_or(is_id), "無効なチャンネル");
+                    client.voice(crate::mobile_voice::Command::Join {guild:guild.map(str::to_owned),channel:channel.into(),ring:v["ring"].as_bool().unwrap_or(false)})
+                },
                 #[cfg(target_os = "android")]
                 "voice_leave" => client.voice(crate::mobile_voice::Command::Leave),
                 #[cfg(target_os = "android")]

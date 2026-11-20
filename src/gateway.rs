@@ -111,14 +111,35 @@ pub(crate) async fn run_session(
     mut dispatch: impl FnMut(&GatewayFrame),
 ) -> Result<SessionEnd> {
     let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    // スリープから戻ったときに、取りこぼした分をまとめて打たない（ACK を待たずに切断扱いになるため）
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut acknowledged = true;
     let mut ready = false;
     let mut commands_open = true;
     loop {
         tokio::select! {
+            // 前のセッションで送れなかった VC の状態（op 4）。切断中のイベントの再送が終わる
+            // READY / RESUMED のあとに送る。古すぎるものは今の状態と食い違いうるので捨てる
+            _ = std::future::ready(()), if ready && session.unsent.is_some() => {
+                if let Some((at, command)) = session.unsent.take() {
+                    if at.elapsed() <= UNSENT_TTL {
+                        if let Err(e) = socket.send(Message::Text(command.to_string().into())).await {
+                            session.unsent = Some((at, command));
+                            return Err(e.into());
+                        }
+                    }
+                }
+            }
             command = commands.recv(), if commands_open && (!wait_until_ready || ready) => {
                 if let Some(command) = command {
-                    socket.send(Message::Text(command.to_string().into())).await?;
+                    // 新しい VC の状態を送るなら、持ち越していた古い分は要らない（順番の入れ替わりを防ぐ）
+                    if is_voice_state(&command) {
+                        session.unsent = None;
+                    }
+                    if let Err(e) = socket.send(Message::Text(command.to_string().into())).await {
+                        session.keep_unsent(command);
+                        return Err(e.into());
+                    }
                 } else if wait_until_ready {
                     bail!("Gateway command channel closed");
                 } else {
@@ -168,9 +189,34 @@ pub(crate) struct GatewaySession {
     pub id: Option<String>,
     pub seq: Option<i64>,
     pub resume_url: Option<String>,
+    /// 切断で送れなかった VC の状態（op 4）と、送ろうとした時刻。次のセッションで READY のあとに送る。
+    /// ほかのコマンドは持ち越さない（op 3 は identify に今の状態が入り、購読は READY のあとに送り直すため）
+    pub unsent: Option<(std::time::Instant, serde_json::Value)>,
+}
+
+/// 持ち越した op 4 を送ってよい時間。これより古いと、その間に VC から外されていても入り直してしまう
+const UNSENT_TTL: Duration = Duration::from_secs(30);
+
+fn is_voice_state(command: &serde_json::Value) -> bool {
+    command["op"].as_u64() == Some(4)
 }
 
 impl GatewaySession {
+    fn keep_unsent(&mut self, command: serde_json::Value) {
+        if is_voice_state(&command) {
+            self.unsent = Some((std::time::Instant::now(), command));
+        }
+    }
+
+    /// 一からログインし直すときの状態。セッションは捨てるが、送れなかったコマンドは残す
+    pub fn reset_keeping_unsent(&mut self) {
+        let unsent = std::mem::take(&mut self.unsent);
+        *self = GatewaySession {
+            unsent,
+            ..Default::default()
+        };
+    }
+
     pub fn resumable(&self) -> Option<(&str, i64)> {
         Some((self.id.as_deref().filter(|id| !id.is_empty())?, self.seq?))
     }
@@ -225,6 +271,21 @@ pub(crate) fn heartbeat_period(ms: Option<u64>) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_the_latest_voice_state_is_carried_over() {
+        let mut s = GatewaySession {
+            id: Some("x".into()),
+            seq: Some(5),
+            ..Default::default()
+        };
+        s.keep_unsent(serde_json::json!({"op": 3, "d": {}}));
+        assert!(s.unsent.is_none(), "op 4 以外は持ち越さない");
+        s.keep_unsent(serde_json::json!({"op": 4, "n": 1}));
+        s.keep_unsent(serde_json::json!({"op": 4, "n": 2}));
+        s.reset_keeping_unsent();
+        assert!(s.resumable().is_none());
+        assert_eq!(s.unsent.as_ref().unwrap().1["n"], 2, "最新の 1 件だけ");
+    }
     #[tokio::test]
     async fn shared_handshake_reads_hello_and_preserves_close_code() {
         use futures_util::SinkExt;

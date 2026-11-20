@@ -85,7 +85,7 @@ fn from_anim(frames: image::Frames<'_>) -> Result<Frames> {
     for f in frames.take(MAX_FRAMES) {
         let f = f?;
         let (n, d) = f.delay().numer_denom_ms();
-        let ms = if d == 0 { 100 } else { (n / d).max(20) };
+        let ms = n.checked_div(d).map_or(100, |ms| ms.max(20));
         let img = shrink(f.into_buffer());
         size = [img.width() as usize, img.height() as usize];
         out.push((img.into_raw(), ms));

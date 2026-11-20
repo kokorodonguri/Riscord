@@ -1373,6 +1373,7 @@ impl Root {
             }
         }
         self.app.poll_file_pick();
+        self.app.poll_uploads();
         if let Some(t) = self.app.clipboard_out.take() {
             cx.write_to_clipboard(ClipboardItem::new_string(t));
         }

@@ -9,8 +9,6 @@ pub struct Presence {
     pub platforms: u8,
     /// Spotify で聴いている曲（曲名, アーティスト）
     pub spotify: Option<(String, String)>,
-    /// ゲームなどのアクティビティ名（type 0）
-    pub game: Option<String>,
 }
 
 /// プロフィールのポップアップ用（/users/{id}/profile とサーバーのロール）

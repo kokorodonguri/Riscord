@@ -1038,7 +1038,7 @@ impl Root {
                             Color32::WHITE,
                             true,
                         )
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                        .on_click(move |_, _, cx| crate::app::open_link(cx, &url)),
                     ),
             );
         let close = cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -1074,7 +1074,7 @@ mod tests {
         for n in [2, 4, 5, 9, 10, 25] {
             for avail in [240.0, 600.0, 1040.0] {
                 let (cols, w, _) = tile_layout(n, avail, 600.0);
-                assert!(cols >= 1 && cols <= 4);
+                assert!((1..=4).contains(&cols));
                 // 横にはみ出さない
                 assert!(w * cols as f32 + 8.0 * (cols - 1) as f32 <= avail.max(120.0) + 0.5);
             }

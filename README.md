@@ -293,6 +293,9 @@ Android 10 以上（arm64）向けのアプリを開発しています。画面�
 
 開発用（debug 署名）の APK は、GitHub Actions の「Android」ワークフローの実行結果から `riscord-android-arm64-debug` としてダウンロードできます（GitHub へのログインが必要です）。
 
+> [!CAUTION]
+> この APK は開発者向けの debug ビルドです（`debuggable=true`）。USB デバッグを有効にした端末に adb で触れる人は、アプリの中のデータ（保存したトークンを含む）を取り出せます。普段使いの端末やアカウントでは使わないでください。また、ビルドごとに署名の鍵が変わるため、新しい APK を入れる前に古いものをアンインストールする必要があります。署名鍵を登録すると、同じワークフローが release 版（`riscord-android-arm64-release`）も作ります（[署名の手順](docs/release-signing.md#android-版の署名)）。
+
 ビルドには Linux x86_64、JDK 17 または 21、Android SDK 35、NDK 27.2.12479018、Rust の `aarch64-linux-android` ターゲットが必要です。
 
 ```sh

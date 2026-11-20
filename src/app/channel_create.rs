@@ -176,9 +176,75 @@ impl App {
         list.sort_by_key(|c| (c.is_voice(), c.position));
     }
 
-    /// CHANNEL_CREATE / CHANNEL_UPDATE / CHANNEL_DELETE（サーバーのチャンネルだけ。DM は別に扱う）
+    /// DM（グループ DM を含む）の CHANNEL_CREATE / CHANNEL_UPDATE / CHANNEL_DELETE
+    pub(super) fn on_dm_channel_event(&mut self, t: &str, d: &serde_json::Value) {
+        if t == "CHANNEL_DELETE" {
+            // DM を閉じた・グループから抜けた
+            let Some(id) = d["id"].as_str() else { return };
+            self.dms.retain(|c| c.id != id);
+            if !self.dms_loaded {
+                self.dms_deleted_while_loading.insert(id.to_owned());
+            }
+            self.read_state.unread.remove(id);
+            self.read_state.mention_counts.remove(id);
+            // 閉じた DM を開いていたら選択を外す
+            if self.sel_guild.is_none() && self.sel_channel.as_deref() == Some(id) {
+                self.leave_channel();
+                self.sel_channel = None;
+            }
+            return;
+        }
+        let Ok(c) = serde_json::from_value::<Channel>(d.clone()) else {
+            return;
+        };
+        // 1 = DM、3 = グループ DM。それ以外（スレッドなど）はここでは扱わない
+        if !matches!(c.kind, 1 | 3) {
+            return;
+        }
+        match self.dms.iter_mut().find(|x| x.id == c.id) {
+            Some(slot) => {
+                // 更新の通知には最後のメッセージが入っていないことがあるので、知っている値を残す
+                let last = slot.last_message_id.take();
+                *slot = c;
+                if slot.last_message_id.is_none() {
+                    slot.last_message_id = last;
+                }
+            }
+            None => {
+                let at = self
+                    .dms
+                    .iter()
+                    .position(|x| x.last_id() < c.last_id())
+                    .unwrap_or(self.dms.len());
+                self.dms.insert(at, c);
+            }
+        }
+    }
+
+    /// 一覧にない DM に新着が来たとき（閉じていた DM など）、送り主との DM として先頭に足す。
+    /// グループかどうかはメッセージから分からないので仮の行にし、チャンネルを取り直して置き換える
+    pub(super) fn ensure_dm_listed(&mut self, m: &crate::model::Message) {
+        if m.guild_id.is_some() || self.dms.iter().any(|c| c.id == m.channel_id) {
+            return;
+        }
+        let placeholder = serde_json::json!({
+            "id": m.channel_id,
+            "type": 1,
+            "recipients": [m.author],
+            "last_message_id": m.id,
+        });
+        if let Ok(c) = serde_json::from_value::<Channel>(placeholder) {
+            self.dms.insert(0, c);
+            // 種類（グループ DM か）・名前・参加者を正しくするため取り直す
+            let id = self.api(net::ApiCall::GetChannel(m.channel_id.clone()));
+            self.dm_lookups.insert(id);
+        }
+    }
+
+    /// CHANNEL_CREATE / CHANNEL_UPDATE / CHANNEL_DELETE
     pub(super) fn on_guild_channel_event(&mut self, t: &str, d: &serde_json::Value) {
         let Some(gid) = d["guild_id"].as_str().map(str::to_owned) else {
+            self.on_dm_channel_event(t, d);
             return;
         };
         if t == "CHANNEL_DELETE" {
@@ -205,6 +271,10 @@ impl App {
                     if let Some(list) = self.channels.get_mut(&gid) {
                         list.retain(|old| old.id != c.id);
                     }
+                    // 見られなくなったチャンネルの未読・メンションは消せなくなるので一緒に消す
+                    self.read_state.unread.remove(&c.id);
+                    self.read_state.mention_counts.remove(&c.id);
+                    self.read_state.hidden_read_marks.remove(&c.id);
                     if self.sel_guild.as_deref() == Some(&gid)
                         && self.sel_channel.as_deref() == Some(&c.id)
                     {
@@ -358,5 +428,77 @@ mod tests {
         app.roles
             .insert("1".into(), vec![role(crate::model::VIEW_CHANNEL)]);
         assert_eq!(app.guild_perms("1"), Some(crate::model::VIEW_CHANNEL));
+    }
+
+    #[test]
+    fn dm_channel_events_keep_the_dm_list_current() {
+        let (mut app, mut rx) = app(0);
+        let dm = |id: &str, last: &str| {
+            serde_json::json!({"id": id, "type": 1, "last_message_id": last,
+                "recipients": [{"id": "u1", "username": "a"}]})
+        };
+        app.on_guild_channel_event("CHANNEL_CREATE", &dm("10", "100"));
+        app.on_guild_channel_event("CHANNEL_CREATE", &dm("11", "200"));
+        let ids: Vec<_> = app.dms.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["11", "10"], "新しい順");
+        // 更新に last_message_id が無くても、知っている値を残す
+        app.on_guild_channel_event(
+            "CHANNEL_UPDATE",
+            &serde_json::json!({"id": "10", "type": 1, "recipients": []}),
+        );
+        assert_eq!(app.dms[1].last_message_id.as_deref(), Some("100"));
+        app.read_state.mention_counts.insert("11".into(), (None, 2));
+        app.on_guild_channel_event(
+            "CHANNEL_DELETE",
+            &serde_json::json!({"id": "11", "type": 1}),
+        );
+        assert_eq!(app.dms.len(), 1);
+        assert!(app.read_state.mention_counts.is_empty());
+        // 一覧にない DM の新着は、送り主との DM として足す
+        let m: crate::model::Message = serde_json::from_value(serde_json::json!({
+            "id": "300", "channel_id": "12", "content": "hi",
+            "author": {"id": "u2", "username": "b"}, "timestamp": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        app.ensure_dm_listed(&m);
+        assert_eq!(app.dms[0].id, "12");
+        assert_eq!(app.dms[0].recipients[0].id, "u2");
+        // 取り直したチャンネルがグループ DM なら、仮の行を置き換える
+        let Some(Cmd::Api { id, call }) = std::iter::from_fn(|| rx.try_recv().ok()).last() else {
+            panic!("取り直していない")
+        };
+        assert!(matches!(call, net::ApiCall::GetChannel(ref c) if c == "12"));
+        app.on_api_result(
+            id,
+            call,
+            Ok(serde_json::json!({"id": "12", "type": 3, "name": "仲間",
+                "recipients": [{"id": "u2", "username": "b"}, {"id": "u3", "username": "c"}]})),
+        );
+        assert_eq!(app.dms[0].kind, 3);
+        assert_eq!(app.dms[0].name.as_deref(), Some("仲間"));
+        assert_eq!(
+            app.dms[0].last_message_id.as_deref(),
+            Some("300"),
+            "知っている最新は残す"
+        );
+    }
+
+    #[test]
+    fn hidden_channel_drops_its_badges() {
+        let (mut app, _) = app(0);
+        app.my_roles.insert("1".into(), vec![]);
+        app.me = Some(
+            serde_json::from_value(serde_json::json!({"id": "me", "username": "me"})).unwrap(),
+        );
+        app.read_state
+            .mention_counts
+            .insert("5".into(), (Some("1".into()), 3));
+        app.read_state.unread.insert("5".into(), Some("1".into()));
+        app.on_guild_channel_event(
+            "CHANNEL_UPDATE",
+            &serde_json::json!({"id": "5", "guild_id": "1", "type": 0, "name": "x"}),
+        );
+        assert!(app.read_state.mention_counts.is_empty());
+        assert!(app.read_state.unread.is_empty());
     }
 }

@@ -2,6 +2,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Riscord: a hash of the vendored C sources (see build.rs). Embedding it makes
+/// this crate, and the Lua library built from it, rebuild whenever they change.
+#[doc(hidden)]
+pub const SOURCE_HASH: &str = env!("RISCORD_LUA_SRC_HASH");
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Version {
     Lua51,

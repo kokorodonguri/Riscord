@@ -9,6 +9,9 @@ use std::{
     time::Duration,
 };
 use tokio::task::JoinHandle;
+
+/// これだけつながっていたら、次の再接続の待ち時間を 1 秒に戻す
+const STABLE_CONNECTION: Duration = Duration::from_secs(60);
 use tokio_tungstenite::tungstenite::Message;
 
 const API: &str = "https://discord.com/api/v10";
@@ -81,7 +84,7 @@ impl Client {
             status: Mutex::new("online".into()),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(60))
-                .user_agent("Riscord/0.2.1 (Android)")
+                .user_agent(concat!("Riscord/", env!("CARGO_PKG_VERSION"), " (Android)"))
                 .build()
                 .expect("http"),
             events: Mutex::new(VecDeque::new()),
@@ -149,7 +152,14 @@ impl Client {
     /// pause した Gateway をつなぎ直す
     pub fn resume(self: &Arc<Self>) -> Result<Value> {
         anyhow::ensure!(!self.token.lock().unwrap().is_empty(), "接続されていません");
-        if self.task.lock().unwrap().is_none() {
+        // 致命的な切断で Gateway のタスクが終わっていても、つなぎ直せるようにする
+        if self
+            .task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|t| t.is_finished())
+        {
             self.start_gateway();
         }
         Ok(Value::Null)
@@ -325,13 +335,21 @@ impl Client {
         let mut delay = 1u64;
         loop {
             self.push(json!({"t":"CONNECTION","d":{"status":"接続中"}}));
+            let mut ready_at = None;
             let result = self
-                .connection(&mut session, &mut commands, &mut delay)
+                .connection(&mut session, &mut commands, &mut ready_at)
                 .await;
+            // しばらく安定してつながっていたときだけ待ち時間を戻す。
+            // READY の直後に切られ続ける状態で、1 秒おきに identify し続けないように
+            if ready_at.is_some_and(|t: std::time::Instant| t.elapsed() >= STABLE_CONNECTION) {
+                delay = 1;
+            }
+            let mut reidentify = session.resumable().is_none();
             if let Err(e) = &result {
                 if let Some(GatewayClosed(code)) = e.downcast_ref::<GatewayClosed>() {
                     if close_action(*code) == CloseAction::Reidentify {
-                        session = GatewaySession::default();
+                        session.reset_keeping_unsent();
+                        reidentify = true;
                     }
                     if close_action(*code) == CloseAction::Fatal {
                         if *code == 4004 {
@@ -344,7 +362,13 @@ impl Client {
                 }
             }
             self.push(json!({"t":"CONNECTION","d":{"status":"再接続待ち"}}));
-            tokio::time::sleep(Duration::from_secs(delay)).await;
+            // 一からログインし直すときは、Discord の推奨どおり少なくとも 1〜5 秒のばらつきを入れる
+            let wait = if reidentify {
+                Duration::from_millis((delay * 1000).max(1000 + rand::random::<u64>() % 4000))
+            } else {
+                Duration::from_secs(delay)
+            };
+            tokio::time::sleep(wait).await;
             delay = (delay * 2).min(30);
         }
     }
@@ -352,7 +376,7 @@ impl Client {
         &self,
         session: &mut GatewaySession,
         commands: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
-        delay: &mut u64,
+        ready_at: &mut Option<std::time::Instant>,
     ) -> Result<()> {
         let base = session
             .resume_url
@@ -375,7 +399,7 @@ impl Client {
             crate::gateway::run_session(ws, inflater, period, session, commands, true, |frame| {
                 let t = frame.t.as_str().unwrap_or_default();
                 if t == "READY" || t == "RESUMED" {
-                    *delay = 1;
+                    *ready_at = Some(std::time::Instant::now());
                     self.push(json!({"t":"CONNECTION","d":{"status":"接続済み"}}));
                 }
                 let data: Value = frame
@@ -401,7 +425,7 @@ impl Client {
         match end {
             crate::gateway::SessionEnd::Resume => bail!("Gateway reconnect requested"),
             crate::gateway::SessionEnd::Reidentify => {
-                *session = GatewaySession::default();
+                session.reset_keeping_unsent();
                 bail!("Gateway session invalid");
             }
             crate::gateway::SessionEnd::Closed(code) => Err(GatewayClosed(code).into()),

@@ -371,7 +371,7 @@ fn shrink(img: RgbaImage, max: u32) -> RgbaImage {
 
 /// RGBA（非乗算）を gpui の BGRA のフレームにする
 pub fn bgra_frame(mut img: RgbaImage, delay: Duration) -> Frame {
-    for p in img.chunks_exact_mut(4) {
+    for p in img.as_chunks_mut::<4>().0 {
         p.swap(0, 2);
     }
     Frame::from_parts(img, 0, 0, Delay::from_saturating_duration(delay))
@@ -441,7 +441,13 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
     let mut durations: Vec<Duration> = Vec::new();
     // 最初は全部残し、上限に達したら1つおきに減らして間隔を倍にする（総フレーム数を先に知らなくて済む）
     let mut step = 1usize;
+    let started = std::time::Instant::now();
     for (i, f) in frames.enumerate() {
+        // コマは最後まで全部デコードするので、小さなコマを大量に並べた画像で延々と CPU を使わないよう、
+        // コマ数と時間で打ち切る（そこまでのコマでアニメーションする）
+        if i >= MAX_DECODED_FRAMES || started.elapsed() > MAX_DECODE_TIME {
+            break;
+        }
         let f = f.map_err(|e| format!("frame decode failure ({e})"))?;
         let delay = frame_delay(f.delay().into());
         if i % step == 0 {
@@ -470,9 +476,30 @@ pub fn decode(bytes: &[u8], max_pixels: u32) -> Result<Vec<Frame>, String> {
         .collect())
 }
 
+/// アニメーションでデコードするコマの上限
+const MAX_DECODED_FRAMES: usize = 1000;
+/// 1 枚のアニメーションのデコードに使う時間の上限
+const MAX_DECODE_TIME: Duration = Duration::from_secs(5);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn many_frame_animation_stops_at_frame_limit() {
+        use image::codecs::gif::GifEncoder;
+        let mut bytes = Vec::new();
+        {
+            let mut enc = GifEncoder::new_with_speed(&mut bytes, 30);
+            for _ in 0..(MAX_DECODED_FRAMES + 50) {
+                let img = RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+                enc.encode_frame(image::Frame::new(img)).unwrap();
+            }
+        }
+        let frames = decode(&bytes, MAX_FRAME_PIXELS).unwrap();
+        assert!(!frames.is_empty());
+        assert!(frames.len() <= MAX_DECODED_FRAMES);
+    }
 
     #[test]
     fn rejects_oversized_gif_canvas_before_decoding() {

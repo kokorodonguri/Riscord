@@ -392,7 +392,7 @@ struct Api {
     token: String,
     /// サーバーごとのロール一覧と取得時刻。プロフィールを開くたびの再取得（1往復 約180ms）を省く。
     /// 古い名前を出し続けないよう ROLE_CACHE_TTL を過ぎたら取り直す（ユーザー判断で採用）
-    roles: Arc<Mutex<HashMap<String, (std::time::Instant, Vec<Role>)>>>,
+    roles: Arc<Mutex<RoleCache>>,
     /// /users/@me/guilds が返した、サーバーごとの自分の権限（見えるチャンネルを絞るのに使う）
     guild_perms: Arc<Mutex<HashMap<String, u64>>>,
     limits: Arc<ApiLimits>,
@@ -663,6 +663,9 @@ fn is_unauthorized(e: &anyhow::Error) -> bool {
     e.downcast_ref::<UnauthorizedMarker>().is_some()
 }
 
+/// サーバーごとのロールと、取得した時刻
+type RoleCache = HashMap<String, (std::time::Instant, Vec<Role>)>;
+
 /// サウンドボードの音の取得と、復号済みの音の置き場（同じ音を何度も取りに行かない）
 #[derive(Clone)]
 struct SoundCache {
@@ -720,13 +723,15 @@ impl SoundCache {
             return;
         }
         let this = self.clone();
+        let gen = self.ctl.call_generation();
         tokio::spawn(async move {
             let r = this.fetch(&sound_id).await;
             this.loading.lock().unwrap().remove(&sound_id);
             match r {
                 Ok(pcm) => {
                     let pcm = Arc::new(pcm);
-                    this.ctl.play_effect(&pcm, volume);
+                    // 取りに行っている間に通話を抜けた・入り直したなら鳴らさない
+                    this.ctl.play_effect_in(gen, &pcm, volume);
                     let mut q = this.decoded.lock().unwrap();
                     q.push_back((sound_id, pcm));
                     while q.len() > SOUND_CACHE {
@@ -1279,7 +1284,7 @@ async fn load_sticker(
         .await?
         .error_for_status()?;
     let bytes = r.bytes().await?;
-    Ok(tokio::task::spawn_blocking(move || crate::sticker::decode(format, &bytes)).await??)
+    tokio::task::spawn_blocking(move || crate::sticker::decode(format, &bytes)).await?
 }
 
 pub fn profile_key(user_id: &str, guild_id: Option<&str>) -> String {
@@ -1505,6 +1510,10 @@ async fn gateway_loop(
             eprintln!("ゲートウェイ切断: {e:#}");
             GatewayEnd::Resume
         });
+        // 画面側が閉じた（ログアウト・終了）ならつなぎ直さない
+        if out.is_closed() {
+            return;
+        }
         // つながった（READY / RESUMED まで行った）なら、待ち時間を最初に戻す
         if ready {
             failures = 0;
@@ -1514,10 +1523,10 @@ async fn gateway_loop(
                 tx.send(Status(tr!("エラー: {msg}", "Error: {msg}", "错误：{msg}",)));
                 return;
             }
-            // 再開できないと言われたら一からログインし直す。Discord の推奨どおり 1〜5 秒待つ
+            // 再開できないと言われたら一からログインし直す。最低 1〜5 秒、失敗が続けばもっと待つ
             GatewayEnd::Reidentify => {
-                session = GatewaySession::default();
-                Duration::from_millis(1000 + rand::random::<u64>() % 4000)
+                session.reset_keeping_unsent();
+                reidentify_delay(failures)
             }
             GatewayEnd::Resume => reconnect_delay(failures),
         };
@@ -1549,6 +1558,15 @@ enum GatewayEnd {
 fn reconnect_delay(failures: u32) -> Duration {
     let secs = (1u64 << failures.min(6)).min(60);
     Duration::from_millis(secs * 1000 + rand::random::<u64>() % 1000)
+}
+
+/// 一からログインし直すまでの待ち時間。Discord の推奨どおり最低 1〜5 秒待ち、
+/// READY まで届かない失敗が続くほど長く待つ（identify は 1 日 1000 回を超えるとトークンが無効にされる）。
+/// 最長 5 分なので、失敗が続いても 1 日 300 回ほどに収まる
+fn reidentify_delay(failures: u32) -> Duration {
+    let floor = 1000 + rand::random::<u64>() % 4000;
+    let backoff = (1u64 << failures.min(9)).min(300) * 1000 + rand::random::<u64>() % 1000;
+    Duration::from_millis(floor.max(backoff))
 }
 
 /// 切断コードごとの扱い（https://discord.com/developers/docs/topics/opcodes-and-status-codes）
@@ -1639,7 +1657,9 @@ async fn gateway_once_at(
     };
     ws.send(WsMsg::Text(first.to_string().into())).await?;
 
-    let end = crate::gateway::run_session(ws, inflater, period, session, out, false, |frame| {
+    // コマンド（VC の参加・購読など）は READY / RESUMED のあとに送る。identify の前後に送ると、
+    // 認証前として切られたり（4003）、再開の再送より前に古い状態で上書きしたりするため
+    let end = crate::gateway::run_session(ws, inflater, period, session, out, true, |frame| {
         let t = frame.t.as_str().unwrap_or("");
         match t {
             "READY" => {
@@ -1851,11 +1871,6 @@ fn parse_presence(v: &Value) -> Option<(String, Presence)> {
             activity: activity_text(&v["activities"]),
             platforms: platforms(&v["client_status"]),
             spotify: spotify(&v["activities"]),
-            game: v["activities"]
-                .as_array()
-                .and_then(|a| a.iter().find(|a| a["type"] == 0))
-                .and_then(|a| a["name"].as_str())
-                .map(str::to_owned),
         },
     ))
 }
@@ -2850,7 +2865,7 @@ mod tests {
     #[test]
     fn zlib_stream_enforces_compressed_and_expanded_limits() {
         let text = "a".repeat(128);
-        let packet = zlib_stream(&[text.clone()]).remove(0);
+        let packet = zlib_stream(std::slice::from_ref(&text)).remove(0);
         let mut exact = Inflater::new();
         assert_eq!(
             exact.push_with_limit(&packet, 128).unwrap(),
@@ -2894,6 +2909,30 @@ mod tests {
         assert_eq!(inflater.buf.capacity(), 0);
     }
 
+    #[test]
+    fn zlib_stream_size_limit_is_exact() {
+        // 上限ちょうどは通り、1 バイトでも超えたら止める（普段のテストで回せるよう上限を小さくして確かめる）
+        let limit = 256 << 10;
+        let packets = zlib_stream(&["x".repeat(limit), "next".into()]);
+        let mut inflater = Inflater::new();
+        assert_eq!(
+            inflater
+                .push_with_limit(&packets[0], limit)
+                .unwrap()
+                .unwrap()
+                .len(),
+            limit
+        );
+        assert_eq!(
+            inflater.push_with_limit(&packets[1], limit).unwrap(),
+            Some("next")
+        );
+        let packet = zlib_stream(&["x".repeat(limit + 1)]).remove(0);
+        let mut inflater = Inflater::new();
+        assert!(inflater.push_with_limit(&packet, limit).is_err());
+    }
+
+    /// 本物の上限（MAX_MESSAGE）で確かめる。メモリを多く使うので普段は回さない
     #[test]
     #[ignore]
     fn zlib_stream_actual_size_limit() {
@@ -3396,6 +3435,19 @@ mod tests {
     }
 
     #[test]
+    fn reidentify_waits_longer_while_it_keeps_failing() {
+        for _ in 0..50 {
+            let first = reidentify_delay(0).as_millis() as u64;
+            assert!((1000..5000).contains(&first), "最初は 1〜5 秒: {first}ms");
+        }
+        // 失敗が続けば延び、最長 5 分で止まる
+        let d = reidentify_delay(6).as_millis() as u64;
+        assert!((64_000..65_000).contains(&d), "{d}ms");
+        let d = reidentify_delay(30).as_millis() as u64;
+        assert!((300_000..301_000).contains(&d), "{d}ms");
+    }
+
+    #[test]
     fn reconnect_backs_off_and_stops_on_fatal_codes() {
         // 1, 2, 4 … 秒と延び、60 秒で止まる（揺らぎは 1 秒未満）
         for (n, secs) in [(0, 1), (1, 2), (2, 4), (5, 32), (6, 60), (20, 60)] {
@@ -3655,7 +3707,8 @@ mod tests {
         assert_eq!(extra["read_state"]["entries"][0]["mention_count"], 1);
     }
 
-    fn both_paths(text: &str) -> [(Option<i64>, Option<u64>, Vec<String>, Vec<String>); 2] {
+    type PathResult = (Option<i64>, Option<u64>, Vec<String>, Vec<String>);
+    fn both_paths(text: &str) -> [PathResult; 2] {
         let run = |raw: bool| {
             let (tx, rx) = std::sync::mpsc::channel();
             let (v_tx, mut v_rx) = unbounded_channel();

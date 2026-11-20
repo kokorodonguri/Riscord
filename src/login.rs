@@ -113,7 +113,10 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
     // 鍵の生成は少し重いので、接続より先に済ませる
     let key =
         tokio::task::spawn_blocking(|| RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048)).await??;
-    let public = STANDARD.encode(key.to_public_key().to_public_key_der()?.as_bytes());
+    let der = key.to_public_key().to_public_key_der()?;
+    let public = STANDARD.encode(der.as_bytes());
+    // Discord が返す fingerprint は公開鍵（DER）の SHA-256 を URL 用 Base64 にしたもの
+    let expected_fingerprint = URL_SAFE_NO_PAD.encode(Sha256::digest(der.as_bytes()));
     let decrypt = |b64: &str| -> Result<Vec<u8>> {
         Ok(key.decrypt(Oaep::new::<Sha256>(), &STANDARD.decode(b64)?)?)
     };
@@ -122,7 +125,13 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
     // Origin が discord.com でないと接続を断られる
     req.headers_mut()
         .insert("Origin", "https://discord.com".parse()?);
-    let (ws, _) = tokio_tungstenite::connect_async(req).await?;
+    // 通信が止まったときにスレッドが残り続けないよう、接続には期限を付ける
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio_tungstenite::connect_async(req),
+    )
+    .await
+    .map_err(|_| anyhow!("remote auth connect timed out"))??;
     let (mut write, mut read) = ws.split();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(40));
     heartbeat.tick().await;
@@ -205,15 +214,23 @@ async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
                         )
                     )
                 })?;
+                // 自分の鍵に対する応答か確かめる（違う鍵の QR を出さない）
+                if fp != expected_fingerprint {
+                    return Err(anyhow!("remote auth fingerprint mismatch"));
+                }
                 if !tx.send(LoginEvent::QrUrl(format!("https://discord.com/ra/{fp}"))) {
                     return Ok(());
                 }
             }
             "pending_ticket" => {
-                // 「ユーザーID:識別番号:アバター:ユーザー名」
-                let payload = String::from_utf8(decrypt(
-                    v["encrypted_user_payload"].as_str().unwrap_or(""),
-                )?)?;
+                // 「ユーザーID:識別番号:アバター:ユーザー名」。読めないときは「読み取り済み」の表示だけ飛ばして続ける
+                let Some(payload) = v["encrypted_user_payload"]
+                    .as_str()
+                    .and_then(|b| decrypt(b).ok())
+                    .and_then(|b| String::from_utf8(b).ok())
+                else {
+                    continue;
+                };
                 let parts: Vec<&str> = payload.splitn(4, ':').collect();
                 let (id, avatar, name) = (
                     parts.first().copied().unwrap_or(""),

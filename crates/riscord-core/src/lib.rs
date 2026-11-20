@@ -1,4 +1,5 @@
 //! UI-independent modules shared with the desktop client.
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 #[macro_use]
 #[path = "../../../src/i18n.rs"]
 pub mod i18n;

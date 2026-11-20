@@ -3,11 +3,47 @@ use crate::model::Message;
 use mlua::{Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value};
 use serde::Deserialize;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
 };
+
+/// 1 回の呼び出しで使える Lua の命令数
+const INSTRUCTION_BUDGET: u32 = 100_000;
+/// 命令数を数える間隔。この間隔ごとに経過時間も確かめる。
+/// table.sort などの数えていない C の処理を短いループで繰り返されても、締め切りをすぐ確かめられるよう短めにする
+const HOOK_INTERVAL: u32 = 100;
+/// 1 回の呼び出しの締め切り（C の関数の中で時間を使っても、次の確認で止める）
+const CALL_DEADLINE: Duration = Duration::from_millis(200);
+/// 読み込み（チャンクの実行）と start() の締め切り。ファイルの読み込みなどが入り、遅い端末では時間がかかるため長め
+const START_DEADLINE: Duration = Duration::from_secs(1);
+/// C の文字列処理（検索・繰り返し・パターン照合）の作業量。vendor/lua-src の lstrlib.c が registry から引く
+const STRING_WORK_BUDGET: i64 = 128 * 1024 * 1024;
+const STRING_WORK_KEY: &str = "riscord.strwork";
+
+/// 呼び出しごとの予算を最初から入れ直す。命令数と経過時間はフックで、
+/// フックの届かない C の文字列処理は lstrlib.c と共有する registry の値で数える
+fn install_budget(lua: &Lua, deadline: Duration) -> mlua::Result<()> {
+    lua.set_named_registry_value(STRING_WORK_KEY, STRING_WORK_BUDGET)?;
+    let started = Instant::now();
+    let ticks = std::cell::Cell::new(0u32);
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(HOOK_INTERVAL),
+        move |_, _| {
+            ticks.set(ticks.get() + 1);
+            if ticks.get() * HOOK_INTERVAL >= INSTRUCTION_BUDGET || started.elapsed() > deadline {
+                return Err(mlua::Error::runtime(tr!(
+                    "実行時間の制限を超えました",
+                    "Exceeded the execution time limit",
+                    "超出执行时间限制"
+                )));
+            }
+            Ok(mlua::VmState::Continue)
+        },
+    );
+    Ok(())
+}
 
 // Check nesting iteratively before serde recursively walks plugin-provided tables.
 fn json_value(lua: &Lua, value: Value) -> mlua::Result<serde_json::Value> {
@@ -45,6 +81,12 @@ const MAX_MESSAGE_ACTIONS: usize = 40;
 const MAX_VOICE_LINES: usize = 8;
 /// 全プラグインからの自動送信を合算し、連鎖送信を検出したら停止する。
 const MAX_PLUGIN_SENDS_PER_MINUTE: usize = 5;
+/// ユーザーの操作（コマンド・メッセージの操作・設定ページ）1 回につき、自動送信に数えない送信の数
+const MAX_USER_SENDS_PER_ACTION: usize = 3;
+/// 外に影響する操作（URL を開く・読み上げ・状態の変更・コピー）の上限（全プラグイン合計で1分間）。超えた分は捨てる
+const MAX_PLUGIN_EFFECTS_PER_MINUTE: usize = 20;
+/// 設定ページの部品の上限
+const MAX_PAGE_ITEMS: usize = 100;
 
 /// 文字数で切り、切ったら末尾を … にする（UTF-8 の境目で切る）
 pub fn clip(s: &str, max_chars: usize) -> String {
@@ -143,6 +185,10 @@ struct Runtime {
     lua: Lua,
     queue: Rc<RefCell<Vec<Action>>>,
     timers: Rc<RefCell<Vec<Timer>>>,
+    /// ユーザーの操作を処理している間だけ true。open_url はこの間だけ使える
+    user: Rc<Cell<bool>>,
+    /// 送信待ちのうち、ユーザーの操作で積まれたので自動送信に数えない数
+    user_sends: Cell<usize>,
 }
 pub struct Plugin {
     pub manifest: Manifest,
@@ -162,6 +208,8 @@ pub struct Plugins {
     index: std::collections::HashMap<String, usize>,
     /// options() の結果のキャッシュ
     options_cache: RefCell<std::collections::HashMap<String, serde_json::Value>>,
+    /// &self の options() で起きたエラー（プラグイン ID, 文）。次の tick でそのプラグインを止める
+    option_errors: RefCell<Vec<(String, String)>>,
     pub host: Rc<RefCell<HostInfo>>,
     pub errors: Vec<String>,
     pub selected: Option<String>,
@@ -176,6 +224,10 @@ pub struct Plugins {
     /// message_actions() の結果（revision ごと）。ツールバーは毎フレーム描くので Lua を毎回呼ばない
     actions_cache: Option<(u64, Vec<MessageAction>)>,
     recent_sends: std::collections::VecDeque<Instant>,
+    /// 外へ影響する操作（URL・読み上げ・状態・コピー）を行った時刻（直近1分）
+    recent_effects: std::collections::VecDeque<Instant>,
+    /// 止めたプラグインの stop() が積んだ操作。次の tick で渡す
+    stopped_actions: Vec<Action>,
 }
 
 pub fn directory() -> PathBuf {
@@ -275,16 +327,7 @@ impl Runtime {
             LuaOptions::default(),
         )?;
         lua.set_memory_limit(16 * 1024 * 1024)?;
-        lua.set_hook(
-            HookTriggers::new().every_nth_instruction(100_000),
-            |_, _| {
-                Err(mlua::Error::runtime(tr!(
-                    "実行時間の制限を超えました",
-                    "Exceeded the execution time limit",
-                    "超出执行时间限制"
-                )))
-            },
-        );
+        install_budget(&lua, START_DEADLINE)?;
         lua.globals().set("pcall", Value::Nil)?;
         lua.globals().set("xpcall", Value::Nil)?;
         for name in ["dofile", "loadfile", "load", "require", "collectgarbage"] {
@@ -292,6 +335,7 @@ impl Runtime {
         }
         let queue = Rc::new(RefCell::new(Vec::new()));
         let timers: Rc<RefCell<Vec<Timer>>> = Rc::new(RefCell::new(Vec::new()));
+        let user = Rc::new(Cell::new(false));
         let api = lua.create_table()?;
         let q = queue.clone();
         api.set(
@@ -316,7 +360,9 @@ impl Runtime {
         api.set(
             "set_timeout",
             lua.create_function(move |lua, (ms, f): (u64, Function)| {
-                let ts = ts.upgrade().ok_or_else(|| mlua::Error::runtime("Plugin stopped"))?;
+                let ts = ts
+                    .upgrade()
+                    .ok_or_else(|| mlua::Error::runtime("Plugin stopped"))?;
                 if ts.borrow().len() >= 100 {
                     return Err(mlua::Error::runtime(tr!(
                         "タイマーの上限です",
@@ -378,6 +424,7 @@ impl Runtime {
             ("show_info", 2),
         ] {
             let q = queue.clone();
+            let user = user.clone();
             api.set(
                 name,
                 lua.create_function(move |_, (a, b): (String, Option<String>)| {
@@ -394,6 +441,12 @@ impl Runtime {
                     let action = match (name, make) {
                         ("notify", _) => Action::Notify(a, b.unwrap_or_default()),
                         ("copy", _) => Action::Copy(a),
+                        // 受信などの自動の処理から開くと、本文をブラウザ経由で外へ送れてしまう
+                        ("open_url", _) if !user.get() => {
+                            return Err(mlua::Error::runtime(
+                                "open_url: only from commands, message actions or page actions",
+                            ))
+                        }
                         ("open_url", _)
                             if a.starts_with("https://")
                                 || a.starts_with("http://")
@@ -481,24 +534,44 @@ impl Runtime {
             lua,
             queue,
             timers,
+            user,
+            user_sends: Cell::new(0),
         };
-        runtime.call("start", ())?;
+        runtime.call_with_deadline("start", (), START_DEADLINE)?;
         Ok(runtime)
     }
+    /// ユーザーの操作として f を呼ぶ。その間に積まれた送信は MAX_USER_SENDS_PER_ACTION 件まで自動送信に数えない
+    fn as_user<R>(&self, f: impl FnOnce() -> R) -> R {
+        let sends = || {
+            self.queue
+                .borrow()
+                .iter()
+                .filter(|a| matches!(a, Action::Send(..)))
+                .count()
+        };
+        let before = sends();
+        self.user.set(true);
+        let result = f();
+        self.user.set(false);
+        let added = sends().saturating_sub(before);
+        self.user_sends
+            .set(self.user_sends.get() + added.min(MAX_USER_SENDS_PER_ACTION));
+        result
+    }
     fn reset_budget(&self) {
-        self.lua.set_hook(
-            HookTriggers::new().every_nth_instruction(100_000),
-            |_, _| {
-                Err(mlua::Error::runtime(tr!(
-                    "実行時間の制限を超えました",
-                    "Exceeded the execution time limit",
-                    "超出执行时间限制"
-                )))
-            },
-        );
+        // 失敗するのはメモリ上限に当たったときだけ。そのときは続く呼び出しが失敗して止まる
+        let _ = install_budget(&self.lua, CALL_DEADLINE);
     }
     fn call<A: mlua::IntoLuaMulti>(&self, name: &str, args: A) -> mlua::Result<Value> {
-        self.reset_budget();
+        self.call_with_deadline(name, args, CALL_DEADLINE)
+    }
+    fn call_with_deadline<A: mlua::IntoLuaMulti>(
+        &self,
+        name: &str,
+        args: A,
+        deadline: Duration,
+    ) -> mlua::Result<Value> {
+        let _ = install_budget(&self.lua, deadline);
         let t: Table = self.lua.globals().get("__plugin")?;
         match t.get::<Value>(name)? {
             Value::Function(f) => f.call(args),
@@ -524,7 +597,7 @@ impl Plugins {
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         for p in &mut self.entries {
-            p.stop();
+            self.stopped_actions.extend(p.stop());
         }
         self.entries.clear();
         self.errors.clear();
@@ -644,7 +717,7 @@ impl Plugins {
             }
         } else {
             for plugin in &mut self.entries {
-                plugin.stop();
+                self.stopped_actions.extend(plugin.stop());
             }
             enabled.clear();
             self.selected = None;
@@ -658,7 +731,7 @@ impl Plugins {
         if let Some(p) = self.entries.iter_mut().find(|p| p.manifest.id == id) {
             if enabled.iter().any(|v| v == id) {
                 enabled.retain(|v| v != id);
-                p.stop();
+                self.stopped_actions.extend(p.stop());
                 // 止めたプラグインの設定ページは開いたままにしない
                 if self.selected.as_deref() == Some(id) {
                     self.selected = None;
@@ -684,7 +757,11 @@ impl Plugins {
                     return Ok(None);
                 };
                 match commands.get::<Value>(name)? {
-                    Value::Function(f) => Ok(Some(f.call((args.to_owned(), channel.to_owned()))?)),
+                    Value::Function(f) => {
+                        Ok(Some(r.as_user(|| {
+                            f.call((args.to_owned(), channel.to_owned()))
+                        })?))
+                    }
                     _ => Ok(None),
                 }
             });
@@ -762,7 +839,7 @@ impl Plugins {
                 let item: Table = actions.get(index)?;
                 let f: Function = item.get("run")?;
                 let message = message_table(&r.lua, m)?;
-                f.call(message)
+                r.as_user(|| f.call(message))
             });
             p.check(result);
         }
@@ -793,7 +870,16 @@ impl Plugins {
             .iter()
             .find(|p| p.manifest.id == id)
             .and_then(|p| p.runtime.as_ref())
-            .and_then(|r| r.call("options", ()).ok())
+            .and_then(|r| match r.call("options", ()) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    // 握りつぶすと、予算を使い切り続けるプラグインが止まらずに居座る
+                    self.option_errors
+                        .borrow_mut()
+                        .push((id.to_owned(), e.to_string()));
+                    None
+                }
+            })
             .and_then(|v| {
                 let r = self
                     .entries
@@ -1026,6 +1112,8 @@ impl Plugins {
             let Some(r) = p.runtime.as_ref() else {
                 continue;
             };
+            let id = &p.manifest.id;
+            let cache = &self.options_cache;
             let result = (|| -> mlua::Result<bool> {
                 let callbacks: Table = r.lua.globals().get("__plugin")?;
                 if !matches!(
@@ -1038,13 +1126,27 @@ impl Plugins {
                     let v = r.call("options", ())?;
                     Ok(json_value(&r.lua, v).unwrap_or(serde_json::Value::Null))
                 };
-                let before = options()?;
-                r.message("on_message", m)?;
                 let display = matches!(
                     callbacks.raw_get::<Value>("on_display")?,
                     Value::Function(_)
                 );
-                Ok(display || options()? != before)
+                if display {
+                    // どのみち描き直すので設定は比べない。次に読むときに作り直す
+                    r.message("on_message", m)?;
+                    cache.borrow_mut().remove(id);
+                    return Ok(true);
+                }
+                // 前の値はキャッシュがあればそれを使い、受信のたびに 2 回 JSON にしない
+                let cached = cache.borrow().contains_key(id);
+                let before = if cached { None } else { Some(options()?) };
+                r.message("on_message", m)?;
+                let after = options()?;
+                let changed = match &before {
+                    Some(b) => *b != after,
+                    None => cache.borrow().get(id) != Some(&after),
+                };
+                cache.borrow_mut().insert(id.clone(), after);
+                Ok(changed)
             })();
             match result {
                 Ok(c) => changed |= c,
@@ -1052,8 +1154,8 @@ impl Plugins {
             }
         }
         if changed {
-            self.dirty();
             self.revision = self.revision.wrapping_add(1);
+            self.actions_cache = None;
         }
     }
     /// 削除（on_delete）・編集（on_edit、2つ目の引数は編集後の本文）をプラグインへ知らせる。m は削除・編集前のメッセージ
@@ -1133,20 +1235,37 @@ impl Plugins {
         };
         let result = p.runtime.as_ref().map(|r| r.call("page", ()));
         match result {
-            Some(Ok(Value::Table(t))) => t
-                .sequence_values::<Table>()
-                .take(100)
-                .filter_map(Result::ok)
-                .map(|v| PageItem {
-                    kind: v.get("kind").unwrap_or_default(),
-                    label: clip(
-                        &v.get::<String>("label").unwrap_or_default(),
-                        MAX_PAGE_LABEL_CHARS,
-                    ),
-                    action: v.get("action").unwrap_or_default(),
-                    enabled: v.get("enabled").unwrap_or(false),
-                })
-                .collect(),
+            Some(Ok(Value::Table(t))) => {
+                let mut items: Vec<PageItem> = t
+                    .sequence_values::<Table>()
+                    .take(MAX_PAGE_ITEMS)
+                    .filter_map(Result::ok)
+                    .map(|v| PageItem {
+                        kind: v.get("kind").unwrap_or_default(),
+                        label: clip(
+                            &v.get::<String>("label").unwrap_or_default(),
+                            MAX_PAGE_LABEL_CHARS,
+                        ),
+                        action: v.get("action").unwrap_or_default(),
+                        enabled: v.get("enabled").unwrap_or(false),
+                    })
+                    .collect();
+                // 切った分があることを知らせる（黙って消えると、末尾のボタンが無いように見える）
+                let rest = t.raw_len().saturating_sub(MAX_PAGE_ITEMS);
+                if rest > 0 {
+                    items.push(PageItem {
+                        kind: "text".into(),
+                        label: tr!(
+                            "（部品が多すぎるため、残りの {rest} 個は表示していません）",
+                            "(Too many items: {rest} more are not shown)",
+                            "（项目过多，其余 {rest} 个未显示）",
+                        ),
+                        action: String::new(),
+                        enabled: false,
+                    });
+                }
+                items
+            }
             Some(Err(e)) => {
                 p.fail(e.to_string());
                 vec![]
@@ -1166,7 +1285,7 @@ impl Plugins {
             let result = p.runtime.as_ref().map(|r| {
                 r.lua
                     .to_value(&values)
-                    .and_then(|v| r.call("on_action", (action.to_owned(), v)))
+                    .and_then(|v| r.as_user(|| r.call("on_action", (action.to_owned(), v))))
             });
             p.check(result);
         }
@@ -1175,12 +1294,35 @@ impl Plugins {
         let mut actions = Vec::new();
         let mut next: Option<Duration> = None;
         let now = Instant::now();
-        while self
-            .recent_sends
-            .front()
-            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
-        {
-            self.recent_sends.pop_front();
+        for recent in [&mut self.recent_sends, &mut self.recent_effects] {
+            while recent
+                .front()
+                .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+            {
+                recent.pop_front();
+            }
+        }
+        // 止めたときの stop() で積まれた操作。止めたプラグインは止め直せないので、送信が上限を超えた分は捨てる
+        for action in std::mem::take(&mut self.stopped_actions) {
+            if matches!(action, Action::Send(..)) {
+                if self.recent_sends.len() >= MAX_PLUGIN_SENDS_PER_MINUTE {
+                    continue;
+                }
+                self.recent_sends.push_back(now);
+            }
+            actions.push(action);
+        }
+        let mut display_changed = false;
+        for (id, e) in self.option_errors.take() {
+            if let Some(p) = self
+                .entries
+                .iter_mut()
+                .find(|p| p.manifest.id == id && p.runtime.is_some())
+            {
+                p.fail(e);
+                self.options_cache.borrow_mut().remove(&id);
+                display_changed = true;
+            }
         }
         for p in &mut self.entries {
             let Some(r) = &p.runtime else { continue };
@@ -1200,11 +1342,31 @@ impl Plugins {
                 }
             }
             let mut error = None;
-            if !due.is_empty() {
-                self.revision = self.revision.wrapping_add(1);
-                self.options_cache.borrow_mut().clear();
-            }
-            for timer in due {
+            // 表示が変わりうるのは on_display を持つか、設定（options）が変わったときだけ
+            let display = !due.is_empty()
+                && r.lua
+                    .globals()
+                    .get::<Table>("__plugin")
+                    .and_then(|c| c.raw_get::<Value>("on_display"))
+                    .is_ok_and(|v| matches!(v, Value::Function(_)));
+            let before = if due.is_empty() || display {
+                None
+            } else {
+                Some(
+                    self.options_cache
+                        .borrow()
+                        .get(&p.manifest.id)
+                        .cloned()
+                        .unwrap_or_else(|| match r.call("options", ()) {
+                            Ok(v) => json_value(&r.lua, v).unwrap_or(serde_json::Value::Null),
+                            Err(e) => {
+                                error = Some(e.to_string());
+                                serde_json::Value::Null
+                            }
+                        }),
+                )
+            };
+            for timer in due.into_iter().filter(|_| error.is_none()) {
                 r.reset_budget();
                 let result = r
                     .lua
@@ -1218,11 +1380,32 @@ impl Plugins {
             if let Some(e) = error {
                 p.fail(e);
             } else {
+                if display {
+                    display_changed = true;
+                    self.options_cache.borrow_mut().remove(&p.manifest.id);
+                } else if let Some(before) = before {
+                    let after = match r.call("options", ()) {
+                        Ok(v) => json_value(&r.lua, v).unwrap_or(serde_json::Value::Null),
+                        Err(e) => {
+                            p.fail(e.to_string());
+                            display_changed = true;
+                            continue;
+                        }
+                    };
+                    if after != before {
+                        display_changed = true;
+                    }
+                    self.options_cache
+                        .borrow_mut()
+                        .insert(p.manifest.id.clone(), after);
+                }
                 let queued: Vec<_> = r.queue.borrow_mut().drain(..).collect();
+                // ユーザーの操作で積まれた送信は数えない
                 let sends = queued
                     .iter()
                     .filter(|a| matches!(a, Action::Send(..)))
-                    .count();
+                    .count()
+                    .saturating_sub(r.user_sends.replace(0));
                 if self.recent_sends.len() + sends > MAX_PLUGIN_SENDS_PER_MINUTE {
                     p.fail(
                         tr!(
@@ -1242,13 +1425,32 @@ impl Plugins {
                 }
             }
         }
+        if display_changed {
+            self.revision = self.revision.wrapping_add(1);
+            self.actions_cache = None;
+        }
+        // 外へ影響する操作は全プラグイン合計で数え、上限を超えた分は捨てる
+        actions.retain(|a| {
+            if !matches!(
+                a,
+                Action::OpenUrl(_) | Action::Speak(_) | Action::SetStatus(_) | Action::Copy(_)
+            ) {
+                return true;
+            }
+            if self.recent_effects.len() >= MAX_PLUGIN_EFFECTS_PER_MINUTE {
+                return false;
+            }
+            self.recent_effects.push_back(now);
+            true
+        });
         (actions, next)
     }
 }
 impl Drop for Plugins {
     fn drop(&mut self) {
+        // 終了時は操作を行う先がないので捨てる
         for plugin in &mut self.entries {
-            plugin.stop();
+            let _ = plugin.stop();
         }
     }
 }
@@ -1274,10 +1476,15 @@ impl Plugin {
             Err(e) => self.error = Some(clip(&format!("{e:#}"), MAX_ERROR_CHARS)),
         }
     }
-    fn stop(&mut self) {
-        if let Some(r) = self.runtime.take() {
-            let _ = r.call("stop", ());
-        }
+    /// 止める。stop() の中で積まれた操作（状態を戻すなど）を返すので、呼び出し側が次の tick で渡す
+    #[must_use]
+    fn stop(&mut self) -> Vec<Action> {
+        let Some(r) = self.runtime.take() else {
+            return vec![];
+        };
+        let _ = r.call("stop", ());
+        let actions = std::mem::take(&mut *r.queue.borrow_mut());
+        actions
     }
     /// 実行中のエラーで止める。本体側の機能は on() が false になるので標準の表示に戻る
     fn fail(&mut self, e: String) {
@@ -1383,6 +1590,35 @@ mod tests {
         assert_eq!(s.to_str().unwrap(), "hello!");
         assert_eq!(r.timers.borrow().len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn native_string_work_shares_one_budget_per_call() {
+        // 1 回の plain find で O(n·m) の比較をさせても、すぐに止まる
+        let (r, dir) = runtime(
+            "return { on_send=function(s) local h=('a'):rep(1000000) local n=('a'):rep(200000)..'b' \
+             h:find(n,1,true) return s end }",
+        );
+        let t = Instant::now();
+        assert!(r.call("on_send", ("x", "1")).is_err());
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // 上限ぎりぎりのパターン照合を繰り返しても、合計で止まる
+        let (r2, dir2) = runtime(
+            "return { on_send=function(s) local h=('a'):rep(100000) \
+             for i=1,10000 do h:find('a*b') end return s end }",
+        );
+        let t = Instant::now();
+        assert!(r2.call("on_send", ("x", "1")).is_err());
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // 普通の量の文字列処理は通り、次の呼び出しでは予算が戻る
+        let (r3, dir3) = runtime(
+            "return { on_send=function(s) for i=1,200 do s:gsub('%s+', ' '):find('hello', 1, true) end return s end }",
+        );
+        for _ in 0..50 {
+            assert!(r3.call("on_send", ("hello world", "1")).is_ok());
+        }
+        for d in [dir, dir2, dir3] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
     }
     #[test]
     fn budget_is_reset_between_calls() {
@@ -1833,6 +2069,39 @@ mod tests {
         assert!(plugins.take_stopped().is_empty());
         assert_eq!(plugins.revision, after);
     }
+    /// options() のエラーを握りつぶさず、そのプラグインを止める
+    #[test]
+    fn options_error_stops_the_plugin() {
+        let (mut plugins, _) =
+            scripted(&[("bad", "return {options=function() error('boom') end}")]);
+        assert_eq!(plugins.options("bad"), serde_json::Value::Null);
+        assert!(plugins.on("bad"));
+        plugins.tick();
+        assert!(!plugins.on("bad"));
+        assert!(plugins.entries[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("boom"));
+    }
+    /// 上限で止まった gmatch のイテレータを使い直しても、作業量が巻き戻って止まらなくなることはない
+    #[test]
+    fn exhausted_gmatch_iterator_stays_bounded() {
+        let lua = mlua::Lua::new();
+        lua.load(
+            "local h = ('a'):rep(200000) \
+             it = h:gmatch('a*a*a*a*b') \
+             assert(not pcall(it))",
+        )
+        .exec()
+        .unwrap();
+        let t = Instant::now();
+        assert!(lua
+            .load("return pcall(it)")
+            .eval::<bool>()
+            .is_ok_and(|ok| !ok));
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    }
     /// 受信のたびに revision を上げるのは、表示が変わりうるときだけ
     #[test]
     fn message_event_bumps_revision_only_when_display_can_change() {
@@ -1881,6 +2150,193 @@ mod tests {
         plugins.toggle("p0", &mut enabled);
         assert!(!plugins.on("p0"));
         assert!(plugins.message_actions().iter().all(|(id, ..)| id != "p0"));
+    }
+    /// open_url はユーザーの操作の中でだけ使え、受信などの自動の処理から呼ぶと止まる
+    #[test]
+    fn open_url_only_from_user_actions() {
+        let (mut plugins, _) = scripted(&[(
+            "opener",
+            "return {on_message=function(m) riscord.open_url('https://example.com/?q=' .. m.content) end,
+              commands={go=function() riscord.open_url('https://example.com/') return true end},
+              message_actions={{label='open', run=function() riscord.open_url('steam://run/1') end}}}",
+        )]);
+        assert!(plugins.command("/go", "1"));
+        plugins.message_action("opener", 1, &message("hi"));
+        assert_eq!(
+            plugins.tick().0,
+            vec![
+                Action::OpenUrl("https://example.com/".into()),
+                Action::OpenUrl("steam://run/1".into())
+            ]
+        );
+        plugins.event(&message("secret"));
+        assert!(plugins.tick().0.is_empty());
+        assert!(!plugins.on("opener"));
+    }
+    /// 外へ影響する操作は全プラグイン合計で 1 分あたりの上限を超えた分を捨てる
+    #[test]
+    fn side_effects_share_rate_limit() {
+        let (mut plugins, _) = scripted(&[(
+            "noisy",
+            "return {on_message=function() for i = 1, 30 do riscord.speak('x') end riscord.notify('a', 'b') end}",
+        )]);
+        plugins.event(&message("hi"));
+        let actions = plugins.tick().0;
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Speak(_)))
+                .count(),
+            MAX_PLUGIN_EFFECTS_PER_MINUTE
+        );
+        assert!(actions.iter().any(|a| matches!(a, Action::Notify(..))));
+        plugins.event(&message("hi"));
+        assert!(plugins
+            .tick()
+            .0
+            .iter()
+            .all(|a| !matches!(a, Action::Speak(_))));
+        assert!(plugins.on("noisy"));
+    }
+    /// 手で打ったコマンドの送信は自動送信の上限に数えない
+    #[test]
+    fn command_sends_do_not_count_as_automatic() {
+        let mut plugins = only("better-formatting-redux");
+        for i in 0..MAX_PLUGIN_SENDS_PER_MINUTE * 3 {
+            assert!(plugins.command(&format!("/fw hello {i}"), "1"));
+            let actions = plugins.tick().0;
+            assert!(
+                matches!(&actions[..], [Action::Send(c, _)] if c == "1"),
+                "{actions:?}"
+            );
+        }
+        assert!(plugins.on("better-formatting-redux"));
+        assert!(plugins.recent_sends.is_empty());
+        // 1 回のコマンドで数えないのは MAX_USER_SENDS_PER_ACTION 件まで
+        let (mut plugins, _) = scripted(&[(
+            "burst",
+            "return {commands={burst=function(_, c) for i = 1, 4 do riscord.send_message(c, 'x') end return true end}}",
+        )]);
+        assert!(plugins.command("/burst", "1"));
+        assert_eq!(plugins.tick().0.len(), 4);
+        assert_eq!(plugins.recent_sends.len(), 4 - MAX_USER_SENDS_PER_ACTION);
+    }
+    /// 部品が上限を超えたら切ったことを知らせる
+    #[test]
+    fn page_notes_truncated_items() {
+        let (mut plugins, _) = scripted(&[(
+            "big",
+            "return {page=function() local t = {} for i = 1, 150 do t[i] = {kind='text', label='x' .. i} end return t end}",
+        )]);
+        let items = plugins.page("big");
+        assert_eq!(items.len(), MAX_PAGE_ITEMS + 1);
+        assert_eq!(items[MAX_PAGE_ITEMS - 1].label, "x100");
+        assert!(items[MAX_PAGE_ITEMS].label.contains("50"));
+    }
+    /// stop() の中で積んだ操作（状態を戻すなど）も次の tick で届く
+    #[test]
+    fn actions_queued_in_stop_are_delivered() {
+        let (mut plugins, mut enabled) = scripted(&[(
+            "away",
+            "return {stop=function() riscord.set_status('online') end}",
+        )]);
+        plugins.toggle("away", &mut enabled);
+        assert!(!plugins.on("away"));
+        assert_eq!(plugins.tick().0, vec![Action::SetStatus("online".into())]);
+        assert!(plugins.tick().0.is_empty());
+    }
+    /// タイマーが動いても、表示が変わりうるときだけ revision を上げる
+    #[test]
+    fn timer_bumps_revision_only_when_display_can_change() {
+        let (mut plugins, _) = scripted(&[(
+            "quiet",
+            "local s = {n = 0}; local function f() s.hidden = (s.hidden or 0) + 1 end
+             return {start=function() riscord.set_timeout(0, f) end, options=function() return {n = s.n} end,
+               commands={bump=function() riscord.set_timeout(0, function() s.n = s.n + 1 end) return true end}}",
+        )]);
+        assert_eq!(plugins.opt_f64("quiet", "n"), Some(0.0));
+        let before = plugins.revision;
+        plugins.entries[0]
+            .runtime
+            .as_ref()
+            .unwrap()
+            .timers
+            .borrow_mut()[0]
+            .at = Instant::now();
+        plugins.tick();
+        assert_eq!(plugins.revision, before);
+        assert!(plugins.command("/bump", "1"));
+        let before = plugins.revision;
+        plugins.entries[0]
+            .runtime
+            .as_ref()
+            .unwrap()
+            .timers
+            .borrow_mut()[0]
+            .at = Instant::now();
+        plugins.tick();
+        assert_ne!(plugins.revision, before);
+        assert_eq!(plugins.opt_f64("quiet", "n"), Some(1.0));
+    }
+    /// 長い本文を UTF-8 の途中で切らず、保存できる大きさに収める
+    #[test]
+    fn personal_pins_clip_utf8_and_fit_save_limit() {
+        let dir = std::env::temp_dir().join(format!(
+            "riscord-pins-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pins: Vec<_> = (0..500)
+            .map(|i| serde_json::json!({"id": i.to_string(), "channel_id": "2", "author": "a", "content": "y".repeat(1900), "timestamp": ""}))
+            .collect();
+        let file = dir.join("personal-pins.json");
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&serde_json::json!({"pins": pins})).unwrap(),
+        )
+        .unwrap();
+        let mut plugins = Plugins::default();
+        plugins.data_root = dir.clone();
+        plugins.reload(&["personal-pins".to_string()]);
+        assert!(plugins.on("personal-pins"));
+        let mut m = message(&"あ".repeat(1400));
+        m.id = "new".into();
+        plugins.message_action("personal-pins", 1, &m);
+        assert!(
+            plugins.on("personal-pins"),
+            "{:?}",
+            plugins
+                .entries
+                .iter()
+                .find(|p| p.manifest.id == "personal-pins")
+                .map(|p| &p.error)
+        );
+        assert!(std::fs::metadata(&file).unwrap().len() < MAX_SCRIPT);
+        let page = plugins.page("personal-pins");
+        let newest = page.iter().find(|i| i.label.contains('あ')).unwrap();
+        assert!(newest.label.ends_with("あ…"), "{}", newest.label);
+        assert!(page.iter().any(|i| i.action == "next_page"));
+        assert!(page.len() <= MAX_PAGE_ITEMS);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    /// 記録が多くても「記録を消す」が先頭にあり、ページを送れる
+    #[test]
+    fn removed_connection_alerts_keeps_clear_button_reachable() {
+        let mut plugins = only("removed-connection-alerts");
+        for i in 0..200 {
+            plugins.hook(
+                "on_removed",
+                &["guild".into(), i.to_string().into(), format!("s{i}").into()],
+            );
+            let _ = plugins.tick();
+        }
+        assert!(plugins.on("removed-connection-alerts"));
+        let page = plugins.page("removed-connection-alerts");
+        assert!(page.len() <= MAX_PAGE_ITEMS);
+        assert!(page.iter().any(|i| i.action == "clear"));
+        assert!(page.iter().any(|i| i.action == "next_page"));
+        assert!(page.iter().any(|i| i.label.ends_with("s199")));
     }
     /// 同梱プラグインの全 ON / 全 OFF と 1 つずつの切り替えを繰り返しても、状態がずれない
     #[test]

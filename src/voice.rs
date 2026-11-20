@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -53,6 +53,10 @@ pub struct VoiceCtl {
     noise_suppression: AtomicBool,
     /// 再生待ちのサウンドボードの音（48 kHz ステレオ）。受信の音声に混ぜて流す
     effects: Mutex<VecDeque<f32>>,
+    /// 通話に入っている（入っていない間の効果音は受け付けない）
+    in_call: AtomicBool,
+    /// 通話に入る・抜けるたびに増える番号。取得に時間がかかった効果音を、別の通話で鳴らさないために使う
+    call_gen: std::sync::atomic::AtomicU64,
     /// 実際に送信中か
     pub transmitting: AtomicBool,
     pub input_device: Mutex<Option<String>>,
@@ -81,6 +85,8 @@ impl Default for VoiceCtl {
             vad_open: AtomicBool::new(false),
             noise_suppression: AtomicBool::new(false),
             effects: Mutex::new(VecDeque::new()),
+            in_call: AtomicBool::new(false),
+            call_gen: std::sync::atomic::AtomicU64::new(0),
             transmitting: AtomicBool::new(false),
             input_device: Mutex::new(None),
             output_device: Mutex::new(None),
@@ -103,10 +109,35 @@ impl VoiceCtl {
     pub fn set_in_gain(&self, v: f32) {
         f32_store(&self.in_gain, v)
     }
+    /// 今の通話の番号（play_effect_in で、取得を始めたときの通話かを確かめる）
+    pub fn call_generation(&self) -> u64 {
+        self.call_gen.load(Relaxed)
+    }
+    /// gen の通話がまだ続いているときだけ鳴らす
+    pub fn play_effect_in(&self, gen: u64, pcm: &[f32], volume: f32) {
+        self.enqueue_effect(Some(gen), pcm, volume);
+    }
     /// サウンドボードの音を鳴らす。すでに鳴っている音には重ねる
     pub fn play_effect(&self, pcm: &[f32], volume: f32) {
+        self.enqueue_effect(None, pcm, volume);
+    }
+    /// 通話に入る・抜けるときの印を付け替える。効果音の判定と同じロックの中で行い、
+    /// 判定を通ってからキューに入れるまでの間に通話が変わることがないようにする
+    fn set_in_call(&self, in_call: bool) {
+        let mut q = self.effects.lock().unwrap();
+        self.in_call.store(in_call, Relaxed);
+        self.call_gen.fetch_add(1, Relaxed);
+        if !in_call {
+            q.clear();
+        }
+    }
+    fn enqueue_effect(&self, gen: Option<u64>, pcm: &[f32], volume: f32) {
         let volume = volume.clamp(0.0, 1.0);
         let mut q = self.effects.lock().unwrap();
+        // 読み込みが遅れて、通話を抜けたあと・別の通話に入ったあとに届いたものは捨てる
+        if !self.in_call.load(Relaxed) || gen.is_some_and(|g| g != self.call_gen.load(Relaxed)) {
+            return;
+        }
         let overlap = q.len().min(pcm.len());
         for (v, &s) in q.iter_mut().zip(&pcm[..overlap]) {
             *v = (*v + s * volume).clamp(-1.0, 1.0);
@@ -204,7 +235,6 @@ fn find_device(input: bool, name: Option<&str>) -> Option<cpal::Device> {
 #[derive(Default)]
 struct Ring {
     buf: Mutex<VecDeque<f32>>,
-    cv: Condvar,
 }
 
 impl Ring {
@@ -213,8 +243,6 @@ impl Ring {
         b.extend(data);
         let over = b.len().saturating_sub(max);
         b.drain(..over);
-        drop(b);
-        self.cv.notify_one();
     }
     fn clear(&self) {
         self.buf.lock().unwrap().clear();
@@ -324,11 +352,19 @@ pub struct AudioIo {
 
 impl Drop for AudioIo {
     fn drop(&mut self) {
-        self.stop.store(true, Relaxed);
-        if let Some(t) = self.thread.take() {
-            t.thread().unpark();
+        if let Some(t) = self.stop() {
             let _ = t.join();
         }
+    }
+}
+
+impl AudioIo {
+    /// 止めるよう伝えるだけで待たない。待つのは返したスレッドを join する側
+    fn stop(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.stop.store(true, Relaxed);
+        let t = self.thread.take()?;
+        t.thread().unpark();
+        Some(t)
     }
 }
 
@@ -539,8 +575,13 @@ fn open_streams(
                     } else {
                         (l * gain, r * gain)
                     };
-                    for c in 0..ch {
-                        write(f * ch + c, if c % 2 == 0 { l } else { r });
+                    if ch == 1 {
+                        write(f, (l + r) * 0.5);
+                    } else {
+                        // 3 チャンネル目から先（センターやリアなど）には出さない
+                        for c in 0..ch {
+                            write(f * ch + c, [l, r].get(c).copied().unwrap_or(0.0));
+                        }
                     }
                 }
             };
@@ -605,9 +646,25 @@ impl MicTest {
 
 // ---- songbird へ渡すマイク入力 ----
 
-/// マイクのリングバッファを f32 LE のバイト列として読ませる
+/// マイクのリングバッファを f32 LE のバイト列として読ませる。
+/// songbird の 20ms ごとのミキサーが同じスレッドで同期に呼ぶので、ここでは決して待たない。
+/// cpal の届く間隔とミキサーの間隔のずれを吸収するため、PRIME 分たまってから読み始め、
+/// 足りなくなったら無音を返してためなおす
 struct MicSource {
     ring: Arc<Ring>,
+    primed: bool,
+}
+
+/// 読み始めるまでにためる量（40ms）
+const MIC_PRIME: usize = FRAME * 2;
+
+impl MicSource {
+    fn new(ring: Arc<Ring>) -> Self {
+        MicSource {
+            ring,
+            primed: false,
+        }
+    }
 }
 
 impl Read for MicSource {
@@ -617,25 +674,22 @@ impl Read for MicSource {
             return Ok(0);
         }
         let mut b = self.ring.buf.lock().unwrap();
-        if b.is_empty() {
-            // 少しだけ待つ。来なければ無音で埋めて止まらないようにする
-            b = self
-                .ring
-                .cv
-                .wait_timeout(b, Duration::from_millis(25))
-                .unwrap()
-                .0;
+        if !self.primed && b.len() >= MIC_PRIME {
+            self.primed = true;
         }
-        let n = if b.is_empty() {
-            want
-        } else {
-            b.len().min(want)
-        };
-        for i in 0..n {
-            let s = b.pop_front().unwrap_or(0.0);
-            out[i * 4..i * 4 + 4].copy_from_slice(&s.to_le_bytes());
+        if self.primed && b.len() < want {
+            // 足りない（ミュート中も含む）: 無音を返し、残りは捨てずにためなおす
+            self.primed = false;
         }
-        Ok(n * 4)
+        for chunk in out[..want * 4].as_chunks_mut::<4>().0 {
+            let s = if self.primed {
+                b.pop_front().unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            chunk.copy_from_slice(&s.to_le_bytes());
+        }
+        Ok(want * 4)
     }
 }
 
@@ -827,6 +881,8 @@ pub struct VoiceSession {
     mic: Arc<Ring>,
     out: Arc<Ring>,
     io: Option<AudioIo>,
+    /// leave で止めた音声スレッド。次に音声を開く前に終わるのを待つ（デバイスを取り合わない）
+    closing: Option<std::thread::JoinHandle<()>>,
     muted: bool,
 }
 
@@ -862,6 +918,7 @@ impl VoiceSession {
             mic,
             out,
             io: None,
+            closing: None,
             muted: true,
         }
     }
@@ -897,8 +954,16 @@ impl VoiceSession {
             user_id: id(user_id)?.into(),
         };
         self.driver.connect(info).await?;
+        if self.io.is_none() {
+            if let Some(t) = self.closing.take() {
+                // デバイスを閉じ終わるまで数秒かかることがあるので、非同期のワーカーでは待たない
+                let _ = tokio::task::spawn_blocking(move || t.join()).await;
+            }
+        }
+        // 前の通話の音声スレッドが止まりきってから空にする（止まる直前に積んだ音を次の通話で流さない）
         self.mic.clear();
         self.out.clear();
+        self.ctl.set_in_call(true);
         if self.io.is_none() {
             self.io = Some(AudioIo::start(
                 self.ctl.clone(),
@@ -906,14 +971,7 @@ impl VoiceSession {
                 Some(self.out.clone()),
             ));
         }
-        let input: Input = RawAdapter::new(
-            MicSource {
-                ring: self.mic.clone(),
-            },
-            RATE,
-            2,
-        )
-        .into();
+        let input: Input = RawAdapter::new(MicSource::new(self.mic.clone()), RATE, 2).into();
         self.driver.play_only_input(input);
         self.muted = true;
         self.driver.mute(true);
@@ -923,7 +981,12 @@ impl VoiceSession {
     pub fn leave(&mut self) {
         self.driver.stop();
         self.driver.leave();
-        self.io = None;
+        // join はここではしない（tokio のワーカーを数秒ふさぐことがある）
+        if let Some(mut io) = self.io.take() {
+            self.closing = io.stop();
+        }
+        // 抜けたあとに届いた・残っていた効果音を次の通話で鳴らさない
+        self.ctl.set_in_call(false);
         self.ctl.speaking.lock().unwrap().clear();
         self.ctl.transmitting.store(false, Relaxed);
     }
@@ -950,6 +1013,32 @@ impl VoiceSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mic_source_never_waits_and_buffers_before_reading() {
+        let ring = Arc::new(Ring::default());
+        let mut src = MicSource::new(ring.clone());
+        let mut out = vec![0u8; FRAME * 4];
+        let read = |src: &mut MicSource, out: &mut Vec<u8>| {
+            let t = Instant::now();
+            assert_eq!(src.read(out).unwrap(), FRAME * 4);
+            assert!(t.elapsed() < Duration::from_millis(5), "待たない");
+            f32::from_le_bytes(out[..4].try_into().unwrap())
+        };
+        // 空なら無音
+        assert_eq!(read(&mut src, &mut out), 0.0);
+        // 1 フレームだけでは、まだためている
+        ring.push(&[0.5; FRAME], MIC_MAX);
+        assert_eq!(read(&mut src, &mut out), 0.0);
+        assert_eq!(ring.buf.lock().unwrap().len(), FRAME, "ためた分は捨てない");
+        // 2 フレームたまったら順に読む
+        ring.push(&[0.5; FRAME], MIC_MAX);
+        assert_eq!(read(&mut src, &mut out), 0.5);
+        assert_eq!(read(&mut src, &mut out), 0.5);
+        // 足りなくなったら無音に戻る
+        ring.push(&[0.25; FRAME / 2], MIC_MAX);
+        assert_eq!(read(&mut src, &mut out), 0.0);
+    }
 
     #[test]
     #[ignore]
@@ -1009,6 +1098,10 @@ mod tests {
     #[test]
     fn effects_overlap_and_drain_into_mix() {
         let ctl = VoiceCtl::default();
+        // 通話に入っていない間は受け付けない
+        ctl.play_effect(&[0.5; 4], 1.0);
+        assert!(!ctl.mix_effects(&mut [0.0f32; 4]));
+        ctl.in_call.store(true, Relaxed);
         ctl.play_effect(&[0.5; 4], 1.0);
         ctl.play_effect(&[0.25; 6], 0.5);
         let mut mix = [0.0f32; 4];

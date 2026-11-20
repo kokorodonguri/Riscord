@@ -138,7 +138,8 @@ parts! {
     ProfileButton "profile.button" "プロフィールのボタン";
 }
 
-/// 部品に書ける項目（名前, 説明）
+/// 部品に書ける項目（名前, 説明）。themes/template.toml と食い違っていないかをテストで確かめる
+#[cfg(test)]
 pub const PART_PROPS: &[(&str, crate::i18n::Tr)] = &[
     ("bg", trc!("地の色", "Background color", "底色")),
     ("text", trc!("文字の色", "Text color", "文字颜色")),
@@ -335,8 +336,15 @@ pub struct Resolved {
     pub font: Option<PathBuf>,
 }
 
-/// 組み込みのテーマ（キー, 表示名, 上書きする色）
-pub const BUILTIN: &[(&str, crate::i18n::Tr, &[(&str, &str)])] = &[
+/// 組み込みのテーマ 1 つ（キー, 表示名, 上書きする色）
+pub type BuiltinTheme = (
+    &'static str,
+    crate::i18n::Tr,
+    &'static [(&'static str, &'static str)],
+);
+
+/// 組み込みのテーマ
+pub const BUILTIN: &[BuiltinTheme] = &[
     (
         "black",
         trc!("黒（既定）", "Black (default)", "黑色（默认）"),
@@ -490,8 +498,12 @@ fn expand_home(p: &str) -> PathBuf {
 
 /// 画像の指定を URI にする（ファイルは呼び出し側で bytes:// として読み込む）
 pub fn image_uri(spec: &str, base: &Path) -> String {
-    if spec.starts_with("https://") || spec.starts_with("http://") {
+    if spec.starts_with("https://") {
         return spec.to_string();
+    }
+    // 暗号化されない http では取りに行かない（https に読み替える）
+    if let Some(rest) = spec.strip_prefix("http://") {
+        return format!("https://{rest}");
     }
     let p = expand_home(spec);
     let p = if p.is_relative() { base.join(p) } else { p };
@@ -560,11 +572,28 @@ pub fn resolve(
     if !specified("settings_nav") {
         colors[31] = colors[30];
     }
-    let image = bg_override
-        .image
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .or(file.background.image.clone());
+    let own_image = bg_override.image.clone().filter(|s| !s.trim().is_empty());
+    // 人からもらったテーマが外部のサーバーから背景を読むと、起動のたびにそこへ通信が行く（IP などが伝わる）。
+    // 自分で設定画面から指定したものでなければ、設定画面のテーマの注意に出して知らせる
+    if own_image.is_none() {
+        if let Some(host) = file
+            .background
+            .image
+            .as_deref()
+            .and_then(|s| {
+                s.strip_prefix("https://")
+                    .or_else(|| s.strip_prefix("http://"))
+            })
+            .map(|rest| rest.split(['/', '?', '#']).next().unwrap_or(rest))
+        {
+            warnings.push(tr!(
+                "このテーマは外部のサーバー（{host}）から背景画像を読み込みます",
+                "This theme loads its background image from an external server ({host})",
+                "此主题会从外部服务器（{host}）加载背景图片",
+            ));
+        }
+    }
+    let image = own_image.or(file.background.image.clone());
     let opacity = bg_override
         .opacity
         .or(file.background.opacity)
@@ -689,6 +718,35 @@ mod tests {
             resolve_colors(&overrides)[31],
             parse_color("#112233").unwrap()
         );
+    }
+
+    #[test]
+    fn remote_background_from_theme_file_is_announced() {
+        let dir = std::env::temp_dir().join(format!("riscord-theme-remote-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("r.toml"),
+            "name = \"r\"\n[background]\nimage = \"http://example.com/a.png?x=1\"\n",
+        )
+        .unwrap();
+        let (r, _, warnings) = resolve("r.toml", &dir, &BTreeMap::new(), &Background::default());
+        assert!(
+            warnings.iter().any(|w| w.contains("example.com")),
+            "{warnings:?}"
+        );
+        assert_eq!(
+            r.background.unwrap().uri,
+            "https://example.com/a.png?x=1",
+            "http は https に読み替える"
+        );
+        // 自分で設定画面から指定したものは知らせない
+        let own = Background {
+            image: Some("https://example.com/b.png".into()),
+            ..Default::default()
+        };
+        let (_, _, warnings) = resolve("r.toml", &dir, &BTreeMap::new(), &own);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

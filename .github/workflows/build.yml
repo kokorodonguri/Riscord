@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -63,9 +66,14 @@ jobs:
         if: matrix.name == 'linux-x64'
         run: cargo fmt --all --check
 
+      # [patch.crates-io] の vendor/ 版（特に lua-src）が版ずれで黙って無視されていないか確かめる
+      - name: Check vendored patches
+        if: matrix.name == 'linux-x64'
+        run: scripts/check-vendored-patches.sh
+
       - name: Clippy
         if: matrix.name == 'linux-x64'
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --locked --all-targets --workspace -- -D warnings
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

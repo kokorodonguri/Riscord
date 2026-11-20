@@ -5,6 +5,9 @@ use gpui::prelude::*;
 use gpui::*;
 
 use super::*;
+
+/// サーバー設定の選択肢の組（見出しと、選べる値の一覧など）
+type SettingGroup<'a> = (&'a str, u8, Option<u64>, &'a [(u64, &'a str)]);
 use crate::color::Color32;
 
 pub(super) const PERMISSIONS: &[(u32, crate::i18n::Tr)] = &[
@@ -360,7 +363,7 @@ impl Root {
                             ),
                         );
                 }
-                let groups: [(&str, u8, Option<u64>, &[(u64, &str)]); 4] = [
+                let groups: [SettingGroup; 4] = [
                     (
                         tr!("認証レベル", "Verification Level", "验证等级"),
                         0,

@@ -246,11 +246,11 @@ pub async fn run(
     let video_ssrc = stream["ssrc"]
         .as_u64()
         .map(|v| v as u32)
-        .unwrap_or(ssrc + 1);
+        .unwrap_or(ssrc.wrapping_add(1));
     let rtx_ssrc = stream["rtx_ssrc"]
         .as_u64()
         .map(|v| v as u32)
-        .unwrap_or(ssrc + 2);
+        .unwrap_or(ssrc.wrapping_add(2));
     let ip: IpAddr = ready["ip"]
         .as_str()
         .ok_or_else(|| anyhow!("{}", tr!("ip がありません", "Missing ip", "缺少 ip",)))?
@@ -510,7 +510,14 @@ pub async fn run(
                         if v["op"].as_u64() == Some(6) {
                             heartbeat_pending = false;
                         }
+                        let before = streamer_video;
                         handle_json(&mut ws, &mut dave, &v, &mut role, &mut streamer_video).await?;
+                        if streamer_video != before {
+                            // 配信者の SSRC が変わった。前の番号のままだと新しいパケットを古いものとして捨ててしまう
+                            reorder.reset();
+                            depack.reset();
+                            got_key = false;
+                        }
                     }
                     WsMsg::Binary(b) => handle_binary(&mut ws, &mut dave, &b, &mut seq_ack).await?,
                     WsMsg::Close(f) => {
@@ -595,6 +602,7 @@ pub(super) fn debug(args: std::fmt::Arguments<'_>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn consume_watch_packets(
     packets: Vec<rtp::VideoPacket>,
     depack: &mut rtp::Depacketizer,
@@ -632,7 +640,12 @@ fn consume_watch_packets(
                     }
                     *got_key = true;
                 }
-                decoder.push(data);
+                if !decoder.push(data, au.keyframe) {
+                    // デコーダーが追いつかず捨てた。次のキーフレームまで待つ
+                    stats.decoder_full += 1;
+                    *got_key = false;
+                    continue;
+                }
                 if !*live {
                     *live = true;
                     became_live = true;
@@ -658,6 +671,8 @@ struct WatchStats {
     frames: u32,
     /// DAVE を解けなかったフレーム
     dave_fail: u32,
+    /// デコーダーが追いつかず捨てたフレーム
+    decoder_full: u32,
     /// キーフレームを待つ間に捨てたフレーム
     no_key: u32,
 }

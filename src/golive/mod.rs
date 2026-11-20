@@ -9,6 +9,7 @@ mod conn;
 pub mod media;
 pub mod rtp;
 
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -137,6 +138,8 @@ pub struct Manager {
     emit: Callback<StreamEvent>,
     back: Callback<Msg>,
     frame: Arc<Mutex<Option<Frame>>>,
+    /// frame に書いてよいデコーダーの世代（視聴中の Session の id。見ていなければ 0）
+    frame_gen: Arc<AtomicU64>,
     waker: Waker,
     broadcast: Option<Session>,
     watch: Option<Session>,
@@ -158,11 +161,19 @@ impl Manager {
             emit: Arc::new(emit),
             back: Arc::new(back),
             frame,
+            frame_gen: Arc::new(AtomicU64::new(0)),
             waker,
             broadcast: None,
             watch: None,
             next_id: 1,
         }
+    }
+
+    /// 映像を消し、前の接続のデコーダーがあとから書き足さないようにする
+    fn clear_frame(&self) {
+        let mut slot = self.frame.lock().unwrap();
+        self.frame_gen.store(0, Relaxed);
+        *slot = None;
     }
 
     fn id(&mut self) -> u64 {
@@ -366,7 +377,7 @@ impl Manager {
         let _ = self
             .gw
             .send(json!({ "op": 19, "d": { "stream_key": s.key } }));
-        *self.frame.lock().unwrap() = None;
+        self.clear_frame();
         (self.emit)(StreamEvent::Watch(s.key.clone(), Phase::Ended(err)));
     }
 
@@ -454,7 +465,7 @@ impl Manager {
                     self.stop_broadcast(reason);
                 } else {
                     let s = self.watch.take();
-                    *self.frame.lock().unwrap() = None;
+                    self.clear_frame();
                     if let Some(s) = s {
                         (self.emit)(StreamEvent::Watch(s.key.clone(), Phase::Ended(reason)));
                     }
@@ -520,7 +531,13 @@ impl Manager {
             }
         } else {
             let streamer = key_user(&s.key).and_then(|u| u.parse().ok()).unwrap_or(0);
-            match media::Decoder::new(self.frame.clone(), self.waker.clone()) {
+            self.frame_gen.store(s.id, Relaxed);
+            match media::Decoder::new(
+                self.frame.clone(),
+                self.waker.clone(),
+                self.frame_gen.clone(),
+                s.id,
+            ) {
                 Ok(decoder) => conn::Role::Watch { streamer, decoder },
                 Err(e) => {
                     self.stop_watch(Some(e));

@@ -77,6 +77,7 @@ mod platform {
     use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
     use std::os::fd::{AsRawFd, OwnedFd};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     use std::sync::{Arc, Mutex};
 
     /// ポータルで選んだ画面・ウィンドウ
@@ -323,7 +324,22 @@ mod platform {
 
     impl Drop for Capture {
         fn drop(&mut self) {
-            let _ = self.pipeline.set_state(gst::State::Null);
+            // 画面の共有（ポータル）はパイプラインを止めてから閉じる
+            let source = self._source.take();
+            stop_pipeline(self.pipeline.clone(), move || drop(source));
+        }
+    }
+
+    /// パイプラインを止める。止まるまで数秒かかることがあるので、tokio の中なら
+    /// spawn_blocking で待つ（非同期のワーカーをふさがない）。止めたあとに after を呼ぶ
+    fn stop_pipeline(pipeline: gst::Element, after: impl FnOnce() + Send + 'static) {
+        let stop = move || {
+            let _ = pipeline.set_state(gst::State::Null);
+            after();
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(stop)),
+            Err(_) => stop(),
         }
     }
 
@@ -333,8 +349,18 @@ mod platform {
         src: gst_app::AppSrc,
     }
 
+    /// デコーダーの手前にためておける量。これを超えたら捨てる（デコードが追いつかないとき）
+    const DECODER_QUEUE_BYTES: u64 = 2_000_000;
+
     impl Decoder {
-        pub fn new(latest: Arc<Mutex<Option<Frame>>>, waker: Waker) -> Result<Decoder, String> {
+        /// generation が current と同じ間だけ latest に書く（視聴を切り替えたあと、
+        /// 前の接続のデコーダーが 1 枚書き足して新しい配信の映像として出ないように）
+        pub fn new(
+            latest: Arc<Mutex<Option<Frame>>>,
+            waker: Waker,
+            current: Arc<AtomicU64>,
+            generation: u64,
+        ) -> Result<Decoder, String> {
             gst::init().map_err(|e| {
                 tr!(
                     "GStreamer を初期化できません: {e}",
@@ -351,7 +377,7 @@ mod platform {
                     "找不到 H264 解码器（请安装 gst-libav 或 openh264）"
                 ))?;
             let desc = format!(
-                "appsrc name=src is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! videoscale ! video/x-raw,format=BGRA,width=[16,1920],height=[16,1080],pixel-aspect-ratio=1/1 ! appsink name=sink max-buffers=1 drop=true sync=false"
+                "appsrc name=src is-live=true do-timestamp=true format=time max-bytes={DECODER_QUEUE_BYTES} caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! videoscale ! video/x-raw,format=BGRA,width=[16,1920],height=[16,1080],pixel-aspect-ratio=1/1 ! appsink name=sink max-buffers=1 drop=true sync=false"
             );
             let pipeline = gst::parse::launch(&desc).map_err(|e| {
                 tr!(
@@ -381,8 +407,13 @@ mod platform {
                     .new_sample(move |sink| {
                         let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         if let Some(f) = frame_from_sample(&sample) {
-                            *latest.lock().unwrap() = Some(f);
-                            waker.wake();
+                            // 世代はロックの中で見る（切り替える側もロックの中で変える）
+                            let mut slot = latest.lock().unwrap();
+                            if current.load(Relaxed) == generation {
+                                *slot = Some(f);
+                                drop(slot);
+                                waker.wake();
+                            }
                         }
                         Ok(gst::FlowSuccess::Ok)
                     })
@@ -398,8 +429,23 @@ mod platform {
             Ok(Decoder { pipeline, src })
         }
 
-        pub fn push(&self, au: Vec<u8>) {
+        /// アクセスユニットを渡す。デコードが追いつかずたまりすぎていたら捨てて false。
+        /// 捨てたあとは参照が欠けるので、呼ぶ側は次のキーフレームまで待つ
+        pub fn push(&self, au: Vec<u8>, keyframe: bool) -> bool {
+            // block=false の appsrc は max-bytes を超えても際限なくためるので、自分で見る。
+            // キーフレームは大きく、捨てると次のキーフレームまで映らない（要求し続けることになる）ので、
+            // 上限の 2 倍までは受け入れる（それでも際限なくはためない）
+            let queued = self.src.current_level_bytes();
+            let max = if keyframe {
+                self.src.max_bytes().saturating_mul(2)
+            } else {
+                self.src.max_bytes()
+            };
+            if queued > 0 && queued + au.len() as u64 > max {
+                return false;
+            }
             let _ = self.src.push_buffer(gst::Buffer::from_mut_slice(au));
+            true
         }
 
         pub fn error(&self) -> Option<String> {
@@ -421,7 +467,7 @@ mod platform {
     impl Drop for Decoder {
         fn drop(&mut self) {
             let _ = self.src.end_of_stream();
-            let _ = self.pipeline.set_state(gst::State::Null);
+            stop_pipeline(self.pipeline.clone(), || {});
         }
     }
 
@@ -474,7 +520,13 @@ mod platform {
                     Capture::with_source("videotestsrc is-live=true num-buffers=30", None, q, tx)
                         .unwrap();
                 let latest = Arc::new(Mutex::new(None));
-                let dec = Decoder::new(latest.clone(), Waker::default()).unwrap();
+                let dec = Decoder::new(
+                    latest.clone(),
+                    Waker::default(),
+                    Arc::new(AtomicU64::new(1)),
+                    1,
+                )
+                .unwrap();
                 let cipher = rtp::Cipher::new(rtp::MODE_AES, &[3u8; 32]).unwrap();
                 let mut pk = rtp::Packetizer::new(5);
                 let mut dp = rtp::Depacketizer::default();
@@ -489,7 +541,7 @@ mod platform {
                         if let rtp::Push::Frame(au) =
                             dp.push(r.seq, r.timestamp, r.marker, &r.decrypt(&cipher).unwrap())
                         {
-                            dec.push(au.data);
+                            assert!(dec.push(au.data, au.keyframe));
                             frames += 1;
                         }
                     }
@@ -519,6 +571,7 @@ mod platform {
 mod platform {
     use super::{Encoded, Frame, Quality};
     use crate::wake::Waker;
+    use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Mutex};
 
     // tr! は表示言語を実行時に選ぶので const にはできない
@@ -553,7 +606,12 @@ mod platform {
     }
     pub struct Decoder;
     impl Decoder {
-        pub fn new(_: Arc<Mutex<Option<Frame>>>, _: Waker) -> Result<Decoder, String> {
+        pub fn new(
+            _: Arc<Mutex<Option<Frame>>>,
+            _: Waker,
+            _: Arc<AtomicU64>,
+            _: u64,
+        ) -> Result<Decoder, String> {
             Err(tr!(
                 "この OS では配信の視聴にまだ対応していません",
                 "Watching streams isn't supported on this OS yet",
@@ -561,7 +619,9 @@ mod platform {
             )
             .into())
         }
-        pub fn push(&self, _: Vec<u8>) {}
+        pub fn push(&self, _: Vec<u8>, _: bool) -> bool {
+            true
+        }
         pub fn error(&self) -> Option<String> {
             None
         }

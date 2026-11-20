@@ -753,7 +753,6 @@ impl Root {
                         this.menu_guild = Some(gid2.clone());
                         this.menu_from_header = false;
                         this.guild_notify_expanded = false;
-                        this.app.request_guild_boost(&gid2);
                         this.app.ensure_guild_channels(&gid2);
                         cx.stop_propagation();
                         cx.notify();
@@ -864,7 +863,6 @@ impl Root {
                                 this.menu_guild = Some(gid.clone());
                                 this.menu_from_header = true;
                                 this.guild_notify_expanded = false;
-                                this.app.request_guild_boost(&gid);
                             }
                             cx.notify();
                         })),

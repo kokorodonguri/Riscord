@@ -185,7 +185,11 @@ pub fn start(waker: &Waker) {
         let Some(exe) = updatable_exe() else { return };
         // 前回の差し替えで残った古い版を片付ける（Windows では実行中の exe を消せないので次の起動で）
         let _ = std::fs::remove_file(sibling(&exe, ".old"));
+        // 差し替えで退けた古い版（.old-*）。動いているものは Windows では消せないので、消せたものだけ片付く
+        remove_siblings(&exe, ".old-", Duration::ZERO);
+        // 以前の版が使っていた固定名の一時ファイルと、落ちたインスタンスの残り
         let _ = std::fs::remove_file(sibling(&exe, ".new"));
+        remove_stale_downloads(&exe);
         let names = asset_names();
         if names.is_empty() {
             return;
@@ -203,8 +207,13 @@ pub fn start(waker: &Waker) {
             // 起動しっぱなしでも新しい版に気づけるよう、間をおいて確認し直す。差し替えたら終わり
             loop {
                 match rt.block_on(run(&exe, &names, &waker)) {
-                    Ok(None) => set(Status::Latest, &waker),
-                    Ok(Some(v)) => {
+                    Ok(Outcome::Latest) => set(Status::Latest, &waker),
+                    // 別のプロファイルの Riscord が差し替え中。終わったころにもう一度見る
+                    Ok(Outcome::Busy) => {
+                        std::thread::sleep(BUSY_RETRY);
+                        continue;
+                    }
+                    Ok(Outcome::Ready(v)) => {
                         set(Status::Ready(v.clone()), &waker);
                         notify_ready(&v);
                         return;
@@ -277,7 +286,19 @@ async fn bounded_body(mut response: reqwest::Response, limit: u64) -> Result<Vec
 }
 
 /// 新しい版に差し替えたらその版を返す。最新なら None
-async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>> {
+/// 1 回の確認の結果
+enum Outcome {
+    Latest,
+    /// 他のインスタンスが差し替え中で、ロックを取れなかった
+    Busy,
+    /// この版に差し替えた（または他のインスタンスが差し替え済み）
+    Ready(String),
+}
+
+/// ロックを取れなかったときに、もう一度確かめるまでの間
+const BUSY_RETRY: Duration = Duration::from_secs(60);
+
+async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
     let http = reqwest::Client::builder()
         .user_agent(format!("riscord/{CURRENT}"))
         .connect_timeout(Duration::from_secs(10))
@@ -292,9 +313,17 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
         .json()
         .await?;
     if !is_newer(&rel.tag_name, CURRENT) {
-        return Ok(None);
+        return Ok(Outcome::Latest);
     }
     let version = rel.tag_name.clone();
+    // 別のプロファイルで動いている Riscord も同じ exe を更新しうるので、ダウンロードの前に
+    // ロックを取り、差し替えは 1 つずつにする。先に差し替えたインスタンスがいれば、同じ版を入れ直さない
+    let Some(_lock) = UpdateLock::acquire(exe) else {
+        return Ok(Outcome::Busy);
+    };
+    if installed_version(exe).as_deref() == Some(version.as_str()) {
+        return Ok(Outcome::Ready(version));
+    }
     let asset = names
         .iter()
         .find_map(|n| rel.assets.iter().find(|a| a.name == *n))
@@ -386,20 +415,153 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Option<String>
         );
     }
 
-    let new = sibling(exe, ".new");
-    std::fs::write(&new, &bytes).with_context(|| {
-        tr!(
-            "{} に書き込めません",
-            "Can't write to {}",
-            "无法写入 {}",
-            new.display()
-        )
-    })?;
+    // 一時ファイルはインスタンスごとの名前にする（落ちたインスタンスの残りと混ざらないように）
+    let new = sibling(
+        exe,
+        &format!(".new-{}-{:08x}", std::process::id(), rand::random::<u32>()),
+    );
+    let written = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&new)?;
+        f.write_all(&bytes)?;
+        // rename の前に中身を確実にディスクへ（途中で電源が落ちても壊れた exe を残さない）
+        f.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&new);
+        return Err(e).with_context(|| {
+            tr!(
+                "{} に書き込めません",
+                "Can't write to {}",
+                "无法写入 {}",
+                new.display()
+            )
+        });
+    }
     if let Err(e) = replace(exe, &new) {
         let _ = std::fs::remove_file(&new);
         return Err(e);
     }
-    Ok(Some(version))
+    // 他のインスタンスが同じ版を入れ直さないよう、差し替えた版を書いておく
+    let _ = std::fs::write(sibling(exe, ".updated"), &version);
+    Ok(Outcome::Ready(version))
+}
+
+/// 差し替え済みの版（exe の隣の .updated）。起動中の版より新しいときだけ意味がある
+fn installed_version(exe: &Path) -> Option<String> {
+    std::fs::read_to_string(sibling(exe, ".updated"))
+        .ok()
+        .map(|s| s.trim().to_owned())
+}
+
+/// exe の差し替えを 1 インスタンスずつにするロック（exe の隣の .update-lock）。
+/// 中に自分の印を書き、drop で消すのは自分の印のときだけ（取り直された他人のロックを消さない）
+struct UpdateLock {
+    path: PathBuf,
+    token: String,
+}
+
+/// これより古いロックは、落ちたインスタンスの残りとみなして取り直す
+const UPDATE_LOCK_STALE: Duration = Duration::from_secs(10 * 60);
+
+impl UpdateLock {
+    fn acquire(exe: &Path) -> Option<UpdateLock> {
+        use std::io::Write;
+        let path = sibling(exe, ".update-lock");
+        let token = format!("{}-{:016x}", std::process::id(), rand::random::<u64>());
+        for _ in 0..2 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    if f.write_all(token.as_bytes()).is_err() {
+                        drop(f);
+                        let _ = std::fs::remove_file(&path);
+                        return None;
+                    }
+                    return Some(UpdateLock { path, token });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // 時刻が未来（時計が戻った）なら、いつまでも古くならないので古いとみなす
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .map(|t| {
+                            t.elapsed().is_ok_and(|age| age > UPDATE_LOCK_STALE)
+                                || t.elapsed().is_err()
+                        })
+                        .unwrap_or(false);
+                    if !stale {
+                        return None;
+                    }
+                    // 古いロックは消さずに別の名前へ移して奪う。rename に成功するのは 1 つだけなので、
+                    // 2 つのインスタンスが同時に「古い」と判断しても、片方が作り直したロックを消さない
+                    let grave = sibling(exe, &format!(".update-lock.stale-{token}"));
+                    if std::fs::rename(&path, &grave).is_err() {
+                        return None;
+                    }
+                    // 古いと判断してから移すまでの間に、他のインスタンスが作り直した新しいロックを
+                    // 移してしまったかもしれない。新しければ（上書きせずに）元へ戻して諦める
+                    let fresh = std::fs::metadata(&grave)
+                        .and_then(|m| m.modified())
+                        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age <= UPDATE_LOCK_STALE));
+                    if fresh {
+                        let _ = std::fs::hard_link(&grave, &path);
+                        let _ = std::fs::remove_file(&grave);
+                        return None;
+                    }
+                    let _ = std::fs::remove_file(&grave);
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        if std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.token) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// 落ちたインスタンスが残した一時ファイル（.new-*）を片付ける。
+/// 他のインスタンスが書いている最中のものを消さないよう、古いものだけ
+fn remove_stale_downloads(exe: &Path) {
+    remove_siblings(exe, ".new-", UPDATE_LOCK_STALE);
+}
+
+/// exe の隣の「exe の名前 + suffix」で始まるファイルのうち、min_age より古いものを消す
+fn remove_siblings(exe: &Path, suffix: &str, min_age: Duration) {
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) else {
+        return;
+    };
+    let mut prefix = name.to_os_string();
+    prefix.push(suffix);
+    let prefix = prefix.to_string_lossy().into_owned();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// 実行中のファイルを new に差し替える
@@ -418,8 +580,12 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         // 実行中の exe は上書きも削除もできないが、名前は変えられる
-        let old = sibling(exe, ".old");
-        let _ = std::fs::remove_file(&old);
+        // 名前は差し替えごとに変える。別のプロファイルの Riscord が前の .old から動いていると、
+        // 固定の名前では消すことも上書きすることもできず、差し替えが毎回失敗するため
+        let old = sibling(
+            exe,
+            &format!(".old-{}-{:08x}", std::process::id(), rand::random::<u32>()),
+        );
         std::fs::rename(exe, &old).context(tr!(
             "実行ファイルの名前を変えられません",
             "Can't rename the executable",
@@ -460,6 +626,44 @@ fn notify_ready(version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_lock_is_taken_over_but_others_lock_is_never_removed() {
+        let dir = std::env::temp_dir().join(format!("riscord-update-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("riscord");
+        let lock = sibling(&exe, ".update-lock");
+        // 落ちたインスタンスの古いロック
+        std::fs::write(&lock, "dead").unwrap();
+        let old = std::time::SystemTime::now() - UPDATE_LOCK_STALE - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let a = UpdateLock::acquire(&exe).expect("古いロックは取り直せる");
+        // 他人に取り直されたら、自分の drop では消さない
+        std::fs::write(&lock, "someone else").unwrap();
+        drop(a);
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), "someone else");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn update_lock_is_exclusive_and_released_on_drop() {
+        let dir = std::env::temp_dir().join(format!("riscord-update-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("riscord");
+        let a = UpdateLock::acquire(&exe).expect("最初は取れる");
+        assert!(
+            UpdateLock::acquire(&exe).is_none(),
+            "他のインスタンスは待つ"
+        );
+        drop(a);
+        assert!(UpdateLock::acquire(&exe).is_some(), "手放したら取れる");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn signature_binds_version_name_and_digest() {

@@ -1,4 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// テストでは App::default() に必要な所だけ順に入れていく書き方のほうが読みやすい
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 
 #[macro_use]
 mod i18n;

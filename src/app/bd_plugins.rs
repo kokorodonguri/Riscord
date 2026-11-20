@@ -148,35 +148,6 @@ impl App {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn split_respects_limit_and_lines() {
-        let text = (0..300)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let parts = split_message(&text, 2000);
-        assert!(parts.len() > 1);
-        assert!(parts.iter().all(|p| message_text_len(p) <= 2000));
-        assert_eq!(parts.join("\n"), text);
-    }
-
-    #[test]
-    fn split_reopens_code_blocks() {
-        let text = format!("```rust\n{}\n```", "let x = 1;\n".repeat(400));
-        let parts = split_message(&text, 2000);
-        assert!(parts.len() > 1);
-        for p in &parts {
-            assert!(message_text_len(p) <= 2000);
-            assert_eq!(p.matches("```").count() % 2, 0, "{p}");
-        }
-        assert!(parts[1].starts_with("```rust"));
-    }
-}
-
 impl App {
     /// TYPING_START: 入力中の人を覚えて（10 秒で消える）、プラグインに知らせる
     pub fn on_typing_start(&mut self, d: &serde_json::Value) {
@@ -200,18 +171,6 @@ impl App {
         self.repaint_after(std::time::Duration::from_secs(10));
         self.plugins
             .hook("on_typing", &[channel.into(), user.into(), name.into()]);
-    }
-
-    /// いま入力中の人（10 秒以内）
-    pub fn typing_in(&self, channel: &str) -> Vec<(String, String)> {
-        let now = std::time::Instant::now();
-        self.typing
-            .get(channel)
-            .into_iter()
-            .flatten()
-            .filter(|(_, _, t)| now.duration_since(*t).as_secs() < 10)
-            .map(|(u, n, _)| (u.clone(), n.clone()))
-            .collect()
     }
 
     /// ユーザーの表示名（知っていれば）
@@ -720,5 +679,34 @@ impl App {
         }
         self.save_settings();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_respects_limit_and_lines() {
+        let text = (0..300)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parts = split_message(&text, 2000);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|p| message_text_len(p) <= 2000));
+        assert_eq!(parts.join("\n"), text);
+    }
+
+    #[test]
+    fn split_reopens_code_blocks() {
+        let text = format!("```rust\n{}\n```", "let x = 1;\n".repeat(400));
+        let parts = split_message(&text, 2000);
+        assert!(parts.len() > 1);
+        for p in &parts {
+            assert!(message_text_len(p) <= 2000);
+            assert_eq!(p.matches("```").count() % 2, 0, "{p}");
+        }
+        assert!(parts[1].starts_with("```rust"));
     }
 }

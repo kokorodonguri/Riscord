@@ -104,14 +104,18 @@ impl MemberAction {
         }
     }
 
-    pub fn key(self, user_id: &str) -> String {
+    /// 2 回押しの確認の鍵。サーバーも含める（別のサーバーで同じ人を処分するときに確認を持ち越さない）
+    pub fn key(self, guild_id: &str, user_id: &str) -> String {
         match self {
-            MemberAction::Timeout(s) => format!("timeout:{s}:{user_id}"),
-            MemberAction::Kick => format!("kick:{user_id}"),
-            MemberAction::Ban => format!("ban:{user_id}"),
+            MemberAction::Timeout(s) => format!("timeout:{s}:{guild_id}:{user_id}"),
+            MemberAction::Kick => format!("kick:{guild_id}:{user_id}"),
+            MemberAction::Ban => format!("ban:{guild_id}:{user_id}"),
         }
     }
 }
+
+/// 処分の 2 回押しの 1 回目が有効な時間
+const MEMBER_ACTION_CONFIRM_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 
 pub struct ServerModeration {
     pub guild_id: String,
@@ -1059,6 +1063,13 @@ impl App {
         }
     }
 
+    /// 2 回押しの 1 回目を押したばかりか（しばらくたったら確認は取り消す）
+    pub fn member_action_confirming(&self, key: &str) -> bool {
+        self.member_action_confirm
+            .as_ref()
+            .is_some_and(|(k, at)| k == key && at.elapsed() < MEMBER_ACTION_CONFIRM_TTL)
+    }
+
     /// メンバーへの処分。1 回目で確認を求め、2 回目で送る。結果はトーストで知らせる
     pub fn member_action(&mut self, guild_id: &str, user_id: &str, action: MemberAction) -> bool {
         if !valid_id(user_id)
@@ -1069,9 +1080,10 @@ impl App {
         {
             return false;
         }
-        let key = action.key(user_id);
-        if self.member_action_confirm.as_deref() != Some(key.as_str()) {
-            self.member_action_confirm = Some(key);
+        let key = action.key(guild_id, user_id);
+        if !self.member_action_confirming(&key) {
+            self.member_action_confirm = Some((key, std::time::Instant::now()));
+            self.repaint_after(MEMBER_ACTION_CONFIRM_TTL);
             return false;
         }
         self.member_action_confirm = None;
@@ -1478,5 +1490,23 @@ mod tests {
         let (_, call) = next(&mut rx);
         assert!(matches!(call, net::ApiCall::ModifyMember { ref body, .. }
             if body["communication_disabled_until"].is_string()));
+    }
+
+    #[test]
+    fn confirmation_is_per_guild_and_expires() {
+        let key = |g| MemberAction::Ban.key(g, "55");
+        assert_ne!(key("1"), key("2"), "別のサーバーの確認は別物");
+        let (mut app, _) = app(BAN_MEMBERS);
+        app.member_action_confirm = Some((key("1"), std::time::Instant::now()));
+        assert!(app.member_action_confirming(&key("1")));
+        assert!(!app.member_action_confirming(&key("2")));
+        app.member_action_confirm = Some((
+            key("1"),
+            std::time::Instant::now() - MEMBER_ACTION_CONFIRM_TTL,
+        ));
+        assert!(
+            !app.member_action_confirming(&key("1")),
+            "時間がたったら取り消す"
+        );
     }
 }

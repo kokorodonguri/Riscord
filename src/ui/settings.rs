@@ -957,7 +957,7 @@ impl Root {
                 tr!("GitHub で見る", "View on GitHub", "在 GitHub 上查看"),
                 false,
             )
-            .on_click(move |_, _, cx| cx.open_url(&open)),
+            .on_click(move |_, _, cx| crate::app::open_link(cx, &open)),
         ));
         if let Status::Behind { commits, .. } = status {
             let mut list = div().flex().flex_col().gap(z(8.0)).mb(z(24.0));
@@ -970,7 +970,7 @@ impl Root {
                         .items_center()
                         .gap(z(12.0))
                         .cursor_pointer()
-                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .on_click(move |_, _, cx| crate::app::open_link(cx, &url))
                         .child(
                             text(c.sha.chars().take(7).collect::<String>(), 14.0, LINK())
                                 .flex_none(),

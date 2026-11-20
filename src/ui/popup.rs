@@ -1674,8 +1674,8 @@ impl Root {
                     continue;
                 }
                 any = true;
-                let key = action.key(&user.id);
-                let confirming = self.app.member_action_confirm.as_deref() == Some(key.as_str());
+                let key = action.key(&guild_id, &user.id);
+                let confirming = self.app.member_action_confirming(&key);
                 let (gid, uid) = (guild_id.clone(), user.id.clone());
                 row = row.child(
                     fill_button(

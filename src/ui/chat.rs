@@ -500,7 +500,7 @@ impl Root {
                             )
                             .id("preview_browser")
                             .cursor_pointer()
-                            .on_click(move |_, _, cx| cx.open_url(&uri)),
+                            .on_click(move |_, _, cx| crate::app::open_link(cx, &uri)),
                         )
                         .child(
                             text(tr!("閉じる", "Close", "关闭"), 14.0, WHITE())
@@ -1356,7 +1356,7 @@ impl Root {
     }
 
     /// StreamingChannels: メッセージの代わりに出す画面
-    fn bd_placeholder(&mut self, cid: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn bd_placeholder(&mut self, cid: &str, _cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.app.streaming_hidden(cid) {
             return Some(
                 div()
@@ -1620,6 +1620,7 @@ impl Root {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn list_item(
         &mut self,
         cid: &str,

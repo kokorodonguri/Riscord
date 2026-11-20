@@ -16,6 +16,17 @@ static NEXT: AtomicI64 = AtomicI64::new(1);
 fn clients() -> &'static Mutex<HashMap<i64, Arc<Client>>> {
     CLIENTS.get_or_init(Default::default)
 }
+/// clients() のロック。どこかで panic して poison されても、以後の呼び出しをすべて道連れにしない
+fn lock_clients() -> std::sync::MutexGuard<'static, HashMap<i64, Arc<Client>>> {
+    clients().lock().unwrap_or_else(|e| e.into_inner())
+}
+/// JNI の境界で panic を止める（越えるとプロセスがそのまま落ちる）。panic したら fallback を返す
+fn guard<R>(name: &str, fallback: R, f: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        eprintln!("riscord: {name} で内部エラーが発生しました");
+        fallback
+    })
+}
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     // 通信の待ちが中心なので、コア数ぶん（8 コア機なら 8 本）は要らない。スレッドとメモリを抑える
@@ -33,9 +44,12 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_create(
     _env: JNIEnv,
     _obj: JObject,
 ) -> jlong {
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    clients().lock().unwrap().insert(id, Client::new());
-    id
+    // 失敗したら 0 を返す（0 のセッションは無いので、以後の call は「終了しました」になる）
+    guard("create", 0, || {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        lock_clients().insert(id, Client::new());
+        id
+    })
 }
 #[no_mangle]
 pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_destroy(
@@ -43,9 +57,12 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_destroy
     _obj: JObject,
     id: jlong,
 ) {
-    if let Some(c) = clients().lock().unwrap().remove(&id) {
-        c.stop();
-    }
+    guard("destroy", (), || {
+        let client = lock_clients().remove(&id);
+        if let Some(c) = client {
+            c.stop();
+        }
+    })
 }
 #[no_mangle]
 pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(
@@ -66,9 +83,7 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(
                 }
                 _ => None,
             };
-            let client = clients()
-                .lock()
-                .unwrap()
+            let client = lock_clients()
                 .get(&id)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("セッションは終了しました"))?;
@@ -146,8 +161,10 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_setLang
     _obj: JObject,
     code: JString,
 ) {
-    let code: String = env.get_string(&code).map(Into::into).unwrap_or_default();
-    crate::i18n::set_setting(crate::i18n::parse_setting(&code).unwrap_or(crate::i18n::EN));
+    guard("setLanguage", (), || {
+        let code: String = env.get_string(&code).map(Into::into).unwrap_or_default();
+        crate::i18n::set_setting(crate::i18n::parse_setting(&code).unwrap_or(crate::i18n::EN));
+    })
 }
 
 #[cfg(target_os = "android")]
@@ -158,16 +175,18 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_initial
     context: JObject,
 ) {
     static CONTEXT: OnceLock<jni::objects::GlobalRef> = OnceLock::new();
-    if CONTEXT.get().is_none() {
-        if let (Ok(vm), Ok(global)) = (env.get_java_vm(), env.new_global_ref(context)) {
-            if let Ok(()) = CONTEXT.set(global) {
-                unsafe {
-                    ndk_context::initialize_android_context(
-                        vm.get_java_vm_pointer().cast(),
-                        CONTEXT.get().unwrap().as_obj().as_raw().cast(),
-                    );
+    guard("initialize", (), || {
+        if CONTEXT.get().is_none() {
+            if let (Ok(vm), Ok(global)) = (env.get_java_vm(), env.new_global_ref(context)) {
+                if let Ok(()) = CONTEXT.set(global) {
+                    unsafe {
+                        ndk_context::initialize_android_context(
+                            vm.get_java_vm_pointer().cast(),
+                            CONTEXT.get().unwrap().as_obj().as_raw().cast(),
+                        );
+                    }
                 }
             }
         }
-    }
+    });
 }

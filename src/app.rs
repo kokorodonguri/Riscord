@@ -425,9 +425,21 @@ pub fn spawn_file_dialog(
     rx
 }
 
+/// 開いてよい URL か（http(s) と steam のみ。file: や UNC パスなどは開かない）
+pub fn url_allowed(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://") || url.starts_with("steam://")
+}
+
+/// GPUI の cx.open_url の代わり。埋め込みなど外から来た URL もあるので、必ず url_allowed を通す
+pub fn open_link(cx: &mut gpui::App, url: &str) {
+    if url_allowed(url) {
+        cx.open_url(url);
+    }
+}
+
 /// URL を既定のアプリで開く（http(s) と steam のみ）
 pub fn open_url(url: &str) {
-    if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with("steam://")) {
+    if !url_allowed(url) {
         return;
     }
     #[cfg(windows)]
@@ -745,10 +757,9 @@ pub fn resolve_mentions<'a>(
                 ('@', id)
             } else if let Some(id) = t.strip_prefix('@') {
                 ('@', id)
-            } else if let Some(id) = t.strip_prefix('#') {
-                ('#', id)
             } else {
-                return None;
+                let id = t.strip_prefix('#')?;
+                ('#', id)
             };
             if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
@@ -860,6 +871,9 @@ pub struct ServerMemberList {
     pub items: Vec<Option<net::ListItem>>,
 }
 
+/// メンバー一覧の行数の上限（Discord の一覧は大きなサーバーでも数十万行に収まる）
+const MEMBER_LIST_MAX_ROWS: usize = 1_000_000;
+
 impl ServerMemberList {
     /// 差分を当てる。当てたら true
     pub fn apply(
@@ -878,6 +892,10 @@ impl ServerMemberList {
             match op {
                 net::ListOp::Sync { range, items } => {
                     let start = range[0] as usize;
+                    // 届いた値で配列を広げるので、ありえない位置は捨てる（巨大な確保・あふれを防ぐ）
+                    if start.saturating_add(items.len()) > MEMBER_LIST_MAX_ROWS {
+                        continue;
+                    }
                     if self.items.len() < start + items.len() {
                         self.items.resize(start + items.len(), None);
                     }
@@ -886,10 +904,16 @@ impl ServerMemberList {
                     }
                 }
                 net::ListOp::Insert { index, item } => {
+                    if self.items.len() >= MEMBER_LIST_MAX_ROWS {
+                        continue;
+                    }
                     let i = index.min(self.items.len());
                     self.items.insert(i, Some(item));
                 }
                 net::ListOp::Update { index, item } => {
+                    if index >= MEMBER_LIST_MAX_ROWS {
+                        continue;
+                    }
                     if index >= self.items.len() {
                         self.items.resize(index + 1, None);
                     }
@@ -914,7 +938,8 @@ impl ServerMemberList {
                 .iter()
                 .filter(|g| g.1 > 0)
                 .map(|g| g.1 as usize + 1)
-                .sum();
+                .sum::<usize>()
+                .min(MEMBER_LIST_MAX_ROWS);
             self.items.resize(total, None);
             self.groups = groups;
         }
@@ -1175,6 +1200,14 @@ pub const COMPOSE_NOTICE_TTL: std::time::Duration = std::time::Duration::from_se
 /// 受信中のメンバー索引は、更新が止まってから短時間で破棄する。
 pub const MEMBER_INDEX_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// ユーザー ID → members の中の位置
+fn member_positions(list: &[Member]) -> HashMap<String, usize> {
+    list.iter()
+        .enumerate()
+        .filter_map(|(i, m)| m.user.as_ref().map(|u| (u.id.clone(), i)))
+        .collect()
+}
+
 pub struct RecentMemberIndex {
     pub guild_id: String,
     pub index: HashMap<String, usize>,
@@ -1188,7 +1221,7 @@ pub struct Backend {
 }
 
 pub enum MessageChange {
-    Create(Message),
+    Create(Box<Message>),
     Update {
         id: String,
         content: Option<String>,
@@ -1216,7 +1249,7 @@ impl MessageChange {
                     let at = messages.partition_point(|m| {
                         (m.id.len(), m.id.as_str()) < (message.id.len(), message.id.as_str())
                     });
-                    messages.insert(at, message);
+                    messages.insert(at, *message);
                 }
             }
             Self::Update {
@@ -1378,6 +1411,10 @@ pub struct App {
     pub me: Option<User>,
     pub guilds: Vec<Guild>,
     pub dms: Vec<Channel>,
+    /// 仮の行で足した DM を取り直している要求（ensure_dm_listed）
+    pub dm_lookups: HashSet<u64>,
+    /// DM 一覧を取得している間に閉じた DM（届いた一覧から除く）
+    pub dms_deleted_while_loading: HashSet<String>,
     pub channels: HashMap<String, Vec<Channel>>,
     pub roles: HashMap<String, Vec<Role>>,
     pub members: HashMap<String, Vec<Member>>,
@@ -1457,6 +1494,8 @@ pub struct App {
     pub theme_watch: Option<Receiver<()>>,
     /// 開いているファイル選択ダイアログの結果の受け口
     pub file_pick: Option<(String, Receiver<Vec<PathBuf>>)>,
+    /// 別スレッドで読み込み中の添付（読み込みを始めたチャンネル, 結果）
+    pub upload_loads: Vec<(Option<String>, Receiver<clip::LoadedFiles>)>,
     pub picked_files: Option<(String, Vec<PathBuf>)>,
     /// 背景画像を選ぶダイアログの結果の受け口
     pub bg_pick: Option<Receiver<Vec<PathBuf>>>,
@@ -1509,6 +1548,8 @@ pub struct App {
     pub settings: Settings,
     pub stickers: HashMap<String, StickerState>,
     pub presences: HashMap<String, Presence>,
+    /// presences を次に間引く件数の目安（prune_presences）
+    pub presence_prune_at: usize,
     pub profiles: HashMap<String, ProfileState>,
     pub popup: Option<ProfilePopup>,
     pub settings_open: bool,
@@ -1576,11 +1617,9 @@ pub struct App {
     pub channel_draft: Option<ChannelDraft>,
     /// このサーバーでの自分のプロフィールを編集する画面
     pub guild_profile: Option<GuildProfileEdit>,
-    /// サーバーブーストの状況と、取得中の要求（リクエスト ID → サーバー）
-    pub guild_boost: HashMap<String, guild_boost::BoostStatus>,
-    pub boost_requests: HashMap<u64, String>,
     /// メンバーへの処分の確認待ち（もう一度押すと実行）と送信中
-    pub member_action_confirm: Option<String>,
+    /// 処分の 2 回押しの 1 回目（鍵, 押した時刻）
+    pub member_action_confirm: Option<(String, std::time::Instant)>,
     pub member_action_pending: Option<(u64, &'static str)>,
     /// サウンドボードの一覧（開いているとき）と、自分が最後に鳴らした音
     pub soundboard: Option<Soundboard>,
@@ -2668,7 +2707,7 @@ impl App {
                                         });
                                     }
                                 } else {
-                                    changes.push(MessageChange::Create(message.clone()));
+                                    changes.push(MessageChange::Create(Box::new(message.clone())));
                                 }
                             }
                             if let Some(list) = self.messages.get_mut(&channel_id) {
@@ -2717,6 +2756,15 @@ impl App {
                     self.apply_guild_order();
                 }
                 Event::Dms(mut d) => {
+                    // 一覧の取得中に届いたイベントを、古い一覧で消さない
+                    // （取得中に閉じた DM は除き、取得中に増えた DM は残す）
+                    let deleted = std::mem::take(&mut self.dms_deleted_while_loading);
+                    d.retain(|c| !deleted.contains(&c.id));
+                    for c in std::mem::take(&mut self.dms) {
+                        if !d.iter().any(|x| x.id == c.id) {
+                            d.push(c);
+                        }
+                    }
                     d.sort_by_cached_key(|c| std::cmp::Reverse(c.last_id()));
                     self.dms = d;
                     self.dms_loaded = true;
@@ -2770,18 +2818,29 @@ impl App {
                     last_member_guild = Some(gid.clone());
                     let list = self.members.entry(gid.clone()).or_default();
                     // 同じ描画前に複数の塊が届いた場合、索引を共有する
-                    let index = member_indexes.entry(gid).or_insert_with(|| {
-                        list.iter()
-                            .enumerate()
-                            .filter_map(|(i, m)| m.user.as_ref().map(|u| (u.id.clone(), i)))
-                            .collect()
-                    });
+                    let index = member_indexes
+                        .entry(gid)
+                        .or_insert_with(|| member_positions(list));
                     for member in members {
                         let Some(id) = member.user.as_ref().map(|u| u.id.clone()) else {
                             continue;
                         };
-                        match index.get(&id) {
-                            Some(&i) => list[i] = member,
+                        // 索引は使い回すので、抜けた人を消したあとは位置がずれていることがある。
+                        // 指す先が本人でなければ作り直す（別人の上書き・範囲外を防ぐ）
+                        let at = |index: &HashMap<String, usize>, list: &[Member]| {
+                            index.get(&id).copied().filter(|&i| {
+                                list.get(i)
+                                    .and_then(|m| m.user.as_ref())
+                                    .is_some_and(|u| u.id == id)
+                            })
+                        };
+                        let mut slot = at(index, list);
+                        if slot.is_none() && index.contains_key(&id) {
+                            *index = member_positions(list);
+                            slot = at(index, list);
+                        }
+                        match slot {
+                            Some(i) => list[i] = member,
                             None => {
                                 index.insert(id, list.len());
                                 list.push(member);
@@ -2917,13 +2976,18 @@ impl App {
                     }
                     self.waker.wake();
                     if let Some(changes) = self.pending_message_loads.get_mut(&m.channel_id) {
-                        changes.push(MessageChange::Create(m.clone()));
+                        changes.push(MessageChange::Create(Box::new(m.clone())));
                     }
                     let mine = self.me.as_ref().is_some_and(|u| u.id == m.author.id);
                     if !mine && self.sel_channel.as_deref() != Some(&m.channel_id) {
                         self.read_state
                             .unread
                             .insert(m.channel_id.clone(), m.guild_id.clone());
+                    }
+                    // 一覧にない DM（初めての相手・閉じていた DM）は先に足す。通知でグループ名を引くため
+                    // 自分の送信（他の端末から）は相手が分からないので足さない
+                    if self.dms_loaded && !mine {
+                        self.ensure_dm_listed(&m);
                     }
                     if !mine {
                         self.on_new_message(&m);
@@ -3136,13 +3200,15 @@ impl App {
                             .is_some_and(|o| o.status != "offline");
                         was != (p.status != "offline")
                     });
-                    if flips {
+                    // 表示中のサーバーにいる人が入れ替わったときだけ、メンバー欄を並べ直す
+                    if flips && self.presence_flip_shown(&list) {
                         self.member_ver += 1;
                     }
                     if list.len() <= 20 {
                         self.plugin_presence_changes(&list);
                     }
                     self.presences.extend(list);
+                    self.prune_presences();
                 }
                 Event::Sticker(id, r) => {
                     // チャンネル破棄後に到着した結果はテクスチャ化しない
@@ -3198,16 +3264,67 @@ impl App {
 
     /// クリップボードの画像を添付に加える。画像がなければ false
     pub fn paste_image(&mut self) -> bool {
-        match clip::clipboard_image() {
-            Some(Ok(u)) => {
-                self.add_uploads(vec![u], 0, Vec::new());
-                true
-            }
-            Some(Err(e)) => {
+        let Some(rgba) = clip::clipboard_rgba() else {
+            return false;
+        };
+        // 大きなスクリーンショットの PNG 変換は時間がかかるので、UI スレッドではしない
+        self.load_uploads_in_background(move || match clip::encode_image(rgba) {
+            Ok(u) => clip::LoadedFiles {
+                loaded: vec![u],
+                errors: Vec::new(),
+            },
+            Err(e) => clip::LoadedFiles {
+                loaded: Vec::new(),
+                errors: vec![e],
+            },
+        });
+        true
+    }
+
+    /// 添付の読み込みを別スレッドで行い、終わったら poll_uploads で受け取る
+    fn load_uploads_in_background(
+        &mut self,
+        load: impl FnOnce() -> clip::LoadedFiles + Send + 'static,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(load());
+            waker.wake();
+        });
+        self.upload_loads.push((self.sel_channel.clone(), rx));
+    }
+
+    /// 読み込み終わった添付を、読み込みを始めたチャンネルを見ているときだけ加える
+    pub fn poll_uploads(&mut self) {
+        let mut done = Vec::new();
+        self.upload_loads
+            .retain(|(channel, rx)| match rx.try_recv() {
+                Ok(files) => {
+                    done.push((channel.clone(), files));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+            });
+        for (channel, files) in done {
+            for e in files.errors {
                 self.set_compose_notice(e);
-                true
             }
-            None => false,
+            if channel != self.sel_channel {
+                if !files.loaded.is_empty() {
+                    self.set_compose_notice(tr!(
+                        "読み込み中にチャンネルを切り替えたため、ファイルは添付していません。",
+                        "The files weren't attached because you switched channels while they were loading.",
+                        "加载时切换了频道，因此未附加文件。"
+                    )
+                    .into());
+                }
+                continue;
+            }
+            if !files.loaded.is_empty() {
+                self.add_uploads(files.loaded, 0, Vec::new());
+            }
         }
     }
 
@@ -3251,7 +3368,7 @@ impl App {
         let room = MAX_UPLOADS.saturating_sub(self.uploads.len());
         let skipped = paths.len().saturating_sub(room);
         let (hard, _) = self.upload_limits();
-        let mut loaded = Vec::new();
+        let mut to_load = Vec::new();
         let mut too_big = Vec::new();
         for p in paths.into_iter().take(room) {
             // 上限を超えるファイルは中身を読まない
@@ -3268,14 +3385,29 @@ impl App {
                 ));
                 continue;
             }
-            match clip::load_file(&p) {
-                Ok(u) => loaded.push(u),
-                Err(e) => self.set_compose_notice(e),
+            to_load.push(p);
+        }
+        // 読み込む前に分かる分（件数・大きさの上限）はすぐに知らせる
+        if skipped > 0 || !too_big.is_empty() {
+            self.add_uploads(Vec::new(), skipped, too_big);
+        }
+        if to_load.is_empty() {
+            return;
+        }
+        // 大きなファイルの読み込みと画像のデコードで画面が固まらないよう、別スレッドで読む
+        self.load_uploads_in_background(move || {
+            let mut files = clip::LoadedFiles {
+                loaded: Vec::new(),
+                errors: Vec::new(),
+            };
+            for p in to_load {
+                match clip::load_file(&p) {
+                    Ok(u) => files.loaded.push(u),
+                    Err(e) => files.errors.push(e),
+                }
             }
-        }
-        if !loaded.is_empty() || skipped > 0 || !too_big.is_empty() {
-            self.add_uploads(loaded, skipped, too_big);
-        }
+            files
+        });
     }
 
     /// 1ファイルの上限（送れないことが確実な大きさ, 超えると送れないかもしれない大きさ）。
@@ -3400,6 +3532,19 @@ impl App {
         if self.bd_api_result(id, &result) {
             return;
         }
+        // 仮の行で足した DM を、取り直したチャンネルで置き換える（失敗したら仮の行のまま）
+        if self.dm_lookups.remove(&id) {
+            if let Ok(v) = &result {
+                if self
+                    .dms
+                    .iter()
+                    .any(|c| v["id"].as_str() == Some(c.id.as_str()))
+                {
+                    self.on_dm_channel_event("CHANNEL_UPDATE", v);
+                }
+            }
+            return;
+        }
         // 結果を自分で扱うもの（失敗の知らせ方もそれぞれ）
         if self.is_role_admin_request(id) {
             self.role_admin_result(id, result);
@@ -3415,10 +3560,6 @@ impl App {
         }
         if self.is_voice_view_request(id) {
             self.voice_view_result(id, result);
-            return;
-        }
-        if self.is_boost_request(id) {
-            self.boost_result(id, result);
             return;
         }
         if self.is_guild_profile_request(id) {
@@ -4041,9 +4182,6 @@ impl App {
             return;
         }
         if t == "GUILD_UPDATE" {
-            self.on_guild_update_boost(&d);
-        }
-        if t == "GUILD_UPDATE" {
             if let Some(guild_id) = d["id"].as_str() {
                 if let Some(guild) = self.guilds.iter_mut().find(|g| g.id == guild_id) {
                     if let Some(name) = d["name"].as_str().filter(|name| !name.is_empty()) {
@@ -4076,6 +4214,29 @@ impl App {
             }
         }
         if t == "GUILD_MEMBER_REMOVE" {
+            // 抜けた人を手元のメンバーから外す（Discord の一覧が無いときに抜けた人が残らないように）
+            if let (Some(guild_id), Some(user_id)) =
+                (d["guild_id"].as_str(), d["user"]["id"].as_str())
+            {
+                if let Some(list) = self.members.get_mut(guild_id) {
+                    let before = list.len();
+                    list.retain(|m| m.user.as_ref().is_none_or(|u| u.id != user_id));
+                    if list.len() != before {
+                        self.member_ver += 1;
+                        // 位置がずれたので、使い回している索引は捨てる
+                        if self
+                            .member_index
+                            .as_ref()
+                            .is_some_and(|c| c.guild_id == guild_id)
+                        {
+                            self.member_index = None;
+                        }
+                    }
+                }
+                if let Some(asked) = self.requested_members.get_mut(guild_id) {
+                    asked.remove(user_id);
+                }
+            }
             let relevant =
                 self.role_admin.as_ref().is_some_and(|admin| {
                     admin.target.as_ref().is_some_and(|target| {
@@ -4479,6 +4640,19 @@ impl App {
             self.leave_channel();
         }
         self.channels.remove(gid);
+        // そのサーバーのメンバー情報も捨てる（残すとセッション中ずっと増え続ける）
+        self.members.remove(gid);
+        if self
+            .member_index
+            .as_ref()
+            .is_some_and(|c| c.guild_id == gid)
+        {
+            self.member_index = None;
+        }
+        self.roles.remove(gid);
+        self.requested_members.remove(gid);
+        self.member_lists.remove(gid);
+        self.member_ver += 1;
         self.read_state
             .unread
             .retain(|_, g| g.as_deref() != Some(gid));
@@ -4495,6 +4669,58 @@ impl App {
             self.sel_channel = None;
         }
         self.cache_dirty = true;
+    }
+
+    /// オンライン状態が入れ替わった人のうち、メンバー欄の作り置き（member_cache）のサーバーのメンバーがいるか。
+    /// 表示中のサーバーではなく作り置きのサーバーで見る（DM を見ている間に変わっても、戻ったときに作り直すため）
+    fn presence_flip_shown(&self, list: &[(String, Presence)]) -> bool {
+        let gid = self.sel_guild.as_deref().unwrap_or(&self.member_cache.gid);
+        let Some(members) = self.members.get(gid) else {
+            return false;
+        };
+        let flipped: HashSet<&str> = list
+            .iter()
+            .filter(|(id, p)| {
+                let was = self
+                    .presences
+                    .get(id)
+                    .is_some_and(|o| o.status != "offline");
+                was != (p.status != "offline")
+            })
+            .map(|(id, _)| id.as_str())
+            .collect();
+        members.iter().any(|m| {
+            m.user
+                .as_ref()
+                .is_some_and(|u| flipped.contains(u.id.as_str()))
+        })
+    }
+
+    /// presences が上限を超えたら、自分・フレンド・DM の相手・読み込み済みのメンバー以外を捨てる
+    fn prune_presences(&mut self) {
+        if self.presences.len() <= PRESENCE_MAX.max(self.presence_prune_at) {
+            return;
+        }
+        let mut keep: HashSet<String> = HashSet::new();
+        keep.extend(self.me.as_ref().map(|u| u.id.clone()));
+        keep.extend(self.friends.relationships.iter().map(|r| r.user.id.clone()));
+        keep.extend(
+            self.dms
+                .iter()
+                .flat_map(|c| c.recipients.iter().map(|u| u.id.clone())),
+        );
+        // 読み込み済みのメンバーは、どのサーバーの人も残す（他のサーバーの人のプロフィールで
+        // オフラインと出ないように）。members はサーバーを抜けると消えるので、これも際限なくは増えない
+        keep.extend(
+            self.members
+                .values()
+                .flatten()
+                .filter_map(|m| m.user.as_ref().map(|u| u.id.clone())),
+        );
+        self.presences.retain(|id, _| keep.contains(id));
+        // 残す人だけで上限近くになる（大きなサーバーを表示中など）ときに毎回捨て直さないよう、次の目安を広げる
+        self.presence_prune_at = self.presences.len() * 2;
+        self.member_ver += 1;
     }
 
     /// サーバーのチャンネルをすべて既読にする
@@ -4550,8 +4776,9 @@ impl App {
         let viewing =
             self.window_focused && self.sel_channel.as_deref() == Some(m.channel_id.as_str());
         let mentioned = self.mentions_me(m);
-        // DM はすべてがメンション扱い（公式と同じ）
-        if !viewing && (mentioned || m.guild_id.is_none()) {
+        // DM はすべてがメンション扱い（公式と同じ）。ただしミュートした DM は数えない
+        let counts_as_dm = m.guild_id.is_none() && !self.dm_muted(&m.channel_id);
+        if !viewing && (mentioned || counts_as_dm) {
             let e = self
                 .read_state
                 .mention_counts
@@ -4559,12 +4786,13 @@ impl App {
                 .or_insert((m.guild_id.clone(), 0));
             e.1 += 1;
         }
-        let Some(gid) = m.guild_id.as_deref() else {
-            return;
-        };
         if viewing {
             return;
         }
+        let Some(gid) = m.guild_id.as_deref() else {
+            self.notify_dm(m);
+            return;
+        };
         let set = self.guild_settings.get(gid).cloned().unwrap_or_default();
         if set.muted_channels.contains(&m.channel_id)
             || self
@@ -4639,6 +4867,65 @@ impl App {
             title,
             body,
             (m.guild_id.clone(), m.channel_id.clone()),
+            self.notify_clicked.clone(),
+            self.waker.clone(),
+        );
+    }
+
+    /// DM 全体、またはその DM がミュートされているか
+    fn dm_muted(&self, channel_id: &str) -> bool {
+        self.guild_settings
+            .get(DM_SETTINGS_KEY)
+            .is_some_and(|s| s.muted || s.muted_channels.contains(channel_id))
+    }
+
+    /// DM の新着をデスクトップ通知に出す（DM 全体・その DM がミュートなら出さない）
+    fn notify_dm(&mut self, m: &Message) {
+        if self.dm_muted(&m.channel_id) {
+            return;
+        }
+        let author = m.author.display().to_string();
+        // グループ DM は名前（なければ「グループ」）も添える
+        let group = self
+            .dms
+            .iter()
+            .find(|c| c.id == m.channel_id)
+            .filter(|c| c.recipients.len() > 1 || c.name.is_some())
+            .map(|c| {
+                c.name
+                    .clone()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| tr!("グループ", "Group", "群组").into())
+            });
+        let title = match group {
+            Some(group) => tr!(
+                "{author}（{group}）",
+                "{author} ({group})",
+                "{author}（{group}）",
+            ),
+            None => author,
+        };
+        let mut body = crate::notify::excerpt(&m.content, 200);
+        if body.is_empty() {
+            body = if m.is_call() {
+                tr!("通話を開始しました", "Started a call", "发起了通话").into()
+            } else if !m.attachments.is_empty() {
+                tr!(
+                    "添付ファイルを送信しました",
+                    "Sent an attachment",
+                    "发送了附件"
+                )
+                .into()
+            } else if !m.sticker_items.is_empty() {
+                tr!("スタンプを送信しました", "Sent a sticker", "发送了贴纸").into()
+            } else {
+                tr!("新しいメッセージ", "New message", "新消息").into()
+            };
+        }
+        crate::notify::show(
+            title,
+            body,
+            (None, m.channel_id.clone()),
             self.notify_clicked.clone(),
             self.waker.clone(),
         );
@@ -4940,9 +5227,7 @@ impl App {
             .as_deref()
             .and_then(|g| self.find_guild_channel(g, &id))
             .is_some_and(|c| c.is_forum() || c.is_voice());
-        if !no_messages
-            && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id))
-        {
+        if !no_messages && (!self.messages.contains_key(&id) || self.stale_channels.contains(&id)) {
             self.load_messages(id.clone());
         }
         if !no_messages {
@@ -5727,6 +6012,11 @@ impl App {
             match action {
                 Action::Notify(..) if notified >= MAX_NOTIFY => {}
                 Action::Send(channel_id, content) => {
+                    // 手で送るときと同じく before_send で止められるようにする（HoldYourTongue など）
+                    if let Some(reason) = self.plugins.check_send(&content, &channel_id) {
+                        self.set_compose_notice(reason);
+                        continue;
+                    }
                     let content = self.plugins.transform("on_send", &content, &channel_id);
                     self.send(Cmd::Send {
                         channel_id,
@@ -5788,8 +6078,8 @@ impl App {
         }
         let guild_id = self.sel_guild.clone();
         let key = net::profile_key(&user.id, guild_id.as_deref());
-        if !self.profiles.contains_key(&key) {
-            self.profiles.insert(key, ProfileState::Loading);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.profiles.entry(key) {
+            e.insert(ProfileState::Loading);
             self.send(Cmd::LoadProfile {
                 user_id: user.id.clone(),
                 guild_id: guild_id.clone(),
@@ -5991,7 +6281,6 @@ pub mod bd_plugins;
 mod channel_create;
 mod moderation;
 pub use channel_create::ChannelDraft;
-mod guild_boost;
 mod guild_profile;
 pub use guild_profile::{GuildProfileEdit, BIO_MAX, NICK_MAX, PRONOUNS_MAX};
 mod official_folders;
@@ -6026,6 +6315,12 @@ pub enum SidePanel {
     Threads,
 }
 
+/// 覚えておくオンライン状態の数の上限。超えたら関係の薄い人から捨てる
+const PRESENCE_MAX: usize = 50_000;
+
+/// guild_settings のうち DM 用の設定（user_guild_settings で guild_id が null の分）を置くキー
+pub const DM_SETTINGS_KEY: &str = "";
+
 /// サーバーごとの自分の通知設定
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GuildSettings {
@@ -6046,9 +6341,13 @@ fn mute_active(v: &serde_json::Value) -> bool {
 }
 
 impl GuildSettings {
-    /// user_guild_settings の1件から（サーバーID, 設定）。DM の分（guild_id が null）は除く
+    /// user_guild_settings の1件から（サーバーID, 設定）。DM の分（guild_id が null）は DM_SETTINGS_KEY で返す
     pub fn parse(v: &serde_json::Value) -> Option<(String, GuildSettings)> {
-        let gid = v["guild_id"].as_str()?.to_string();
+        // キーそのものが無い（空の応答など）ときは設定として扱わない。null だけが DM の分
+        let gid = match v.get("guild_id")? {
+            serde_json::Value::Null => DM_SETTINGS_KEY.to_string(),
+            g => g.as_str()?.to_string(),
+        };
         let muted = mute_active(v);
         let notifications = v["message_notifications"].as_u64().unwrap_or(3).min(3) as u8;
         // 配列のことも、チャンネル ID をキーにしたオブジェクトのこともある

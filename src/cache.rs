@@ -103,6 +103,7 @@ pub fn write_if_current(
 }
 
 /// 一時ファイルに書いてから置き換える（途中で落ちても前の控えが残る）
+#[cfg(test)]
 pub fn write(profile: Option<&str>, bytes: &[u8]) -> std::io::Result<()> {
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     write_unlocked(profile, bytes)

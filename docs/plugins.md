@@ -6,11 +6,11 @@ Riscord プラグイン API 1 は Lua 5.4 を使います。`examples/plugins/he
 
 エントリファイルは以下の任意の項目を持つテーブルを返します。コールバックでエラーが発生すると、そのプラグインは停止し、管理画面にエラーが表示されます。
 
-- `start()` / `stop()`: 有効化時 / 無効化・再読み込み時。
+- `start()` / `stop()`: 有効化時 / 無効化・再読み込み時。`stop()` の中で積んだ操作（状態を戻すなど）も実行されます（終了時を除く）。
 - `voice_panel(call)`: ボイス接続中、左下の接続欄に表示する文字列か `nil` を返します。`call` には `channel_id`、`guild_id`（DM は `nil`）、接続確立からの整数秒 `elapsed_seconds` が入ります。表示更新時に呼ばれるため、副作用を起こさないでください。
 - `on_message(message)`: 新着メッセージ。`message` は `id`, `channel_id`, `guild_id`, `author_id`, `author_name`, `author_username`, `bot`, `content`, `timestamp`, `mention_everyone`, `mentions`（ユーザー ID の配列）, `attachments`（URL の配列）, `reply_to` を持つテーブルです。履歴の読み込みでは呼ばれません。
-- `before_send(content, channel_id)`: 送信を止める理由の文字列を返せます。`nil` は送信を続行します。
-- `on_send(content, channel_id)` / `on_display(content, channel_id)`: 文字列を返すと本文を変更し、`nil` を返すと変更しません。表示加工は表示時に繰り返し呼ばれるため、副作用を起こさないでください。送信加工は手入力の新規メッセージに適用されます。
+- `before_send(content, channel_id)`: 送信を止める理由の文字列を返せます。`nil` は送信を続行します。手入力の送信と、プラグインの `riscord.send_message` の両方に適用されます。
+- `on_send(content, channel_id)` / `on_display(content, channel_id)`: 文字列を返すと本文を変更し、`nil` を返すと変更しません。表示加工は表示時に繰り返し呼ばれるため、副作用を起こさないでください。送信加工は手入力の新規メッセージと、プラグインの `riscord.send_message` に適用されます。
 - `on_typing(channel_id, user_id, name)`: ユーザーの入力開始。
 - `on_presence(user_id, previous_status, status, activity, name)`: プレゼンスの変化。
 - `on_voice(user_id, previous_channel_id, channel_id, guild_id, muted, deafened, name)`: ボイス状態の変化。存在しない ID や名前は空文字です。
@@ -18,19 +18,20 @@ Riscord プラグイン API 1 は Lua 5.4 を使います。`examples/plugins/he
 - `on_edit(message, new_content)`: 本文が編集されたとき。`message` は編集前の内容、`new_content` は編集後の本文です。
 - `commands = { 名前 = function(args, channel_id) ... end }`: チャット欄に `/名前 引数` と入力すると実行します。同名の場合はフォルダ順で先に読み込まれたものが使われます。
 - `message_actions = { { label = "説明", icon = "link", run = function(message) ... end } }`: メッセージにマウスを重ねたときのツールバーに操作を追加します。`icon` は lucide のアイコン名（`link` `hash` `at-sign` `quote` `pin` `tag` `clock` `palette` など。一覧は `src/ui/kit.rs` の `plugin_icon`）で、省略するとパズルのピースになります。
-- `page()`: 専用ページに表示する部品の配列を返します。`{kind="text", label="表示"}`、`{kind="input", label="見出し", action="キー"}`、`{kind="button", label="ボタン", action="操作名"}`、`{kind="switch", label="スイッチ", action="操作名", enabled=true}` が使えます。スイッチ操作も `on_action` に通知されるので、状態を更新して次の `page()` で返してください。
+- `page()`: 専用ページに表示する部品の配列を返します。部品は 100 個までで、超えた分は表示されません（その旨が末尾に出ます）。大事なボタンは先に置き、長い一覧はページに分けてください（同梱の to-do-list を参照）。`{kind="text", label="表示"}`、`{kind="input", label="見出し", action="キー"}`、`{kind="button", label="ボタン", action="操作名"}`、`{kind="switch", label="スイッチ", action="操作名", enabled=true}` が使えます。スイッチ操作も `on_action` に通知されるので、状態を更新して次の `page()` で返してください。
 - `on_action(action, values)`: ページのボタン操作を受け取ります。`values` は入力部品の `action` をキーにした文字列テーブルです。
 
 ホスト API:
 
 - `riscord.api_version`: API バージョン（1）。
 - `riscord.language()`: Riscord の表示言語（`"ja"`・`"en"`・`"zh"` のどれか。`"zh"` は簡体字中国語）。設定で切り替えられるので、ページや表示を作るたびに呼んでください。
-- `riscord.send_message(channel_id, content)`: メッセージを送信待ちに追加します。自動送信にも使えるので、信頼できるプラグインのみ有効にしてください。送信結果の通知は現在ありません。
+- `riscord.send_message(channel_id, content)`: メッセージを送信待ちに追加します。手入力と同じく `before_send` と `on_send` を通ります。自動送信（受信やタイマーなどから送るもの）は全プラグイン合計で 1 分間に 5 件までで、超えるとそのプラグインはエラーで停止します。コマンド・メッセージの操作・ページの操作の中で送ったものは、1 回の操作につき 3 件まで数えません。信頼できるプラグインのみ有効にしてください。送信結果の通知は現在ありません。
 - `riscord.notify(title, body)` / `riscord.show_info(title, body)`: 通知または情報画面を表示します。
 - `riscord.copy(text)` / `riscord.insert(text)`: クリップボードにコピー、または入力欄に挿入します。
-- `riscord.open_url(url)`: `http://`・`https://`・`steam://` の URL を開きます。
+- `riscord.open_url(url)`: `http://`・`https://`・`steam://` の URL を開きます。コマンド・メッセージの操作（`run`）・`on_action` の中でだけ使えます。受信や削除の通知・タイマーなどから呼ぶとエラーになります（本文を URL に入れて外へ送れないようにするため）。
 - `riscord.open_channel(id)` / `riscord.set_status(status)`: チャンネルを開くか、`online`・`idle`・`dnd`・`invisible` に状態を変更します。
 - `riscord.play_sound(name)` / `riscord.speak(text)`: サウンドを再生、またはテキストを読み上げます。
+- `open_url`・`speak`・`set_status`・`copy` は全プラグイン合計で 1 分間に 20 回までです。超えた分は黙って捨てられます。
 - `riscord.now()`: Unix 時刻のミリ秒を返します。`riscord.date(format, seconds, utc)` は指定時刻（秒、省略時は現在）を整形します。
 - `riscord.me()`: `id`, `name`, `status`, `channel_id`, `guild_id`, `voice_channel_id` を含む現在の状態を返します。
 - `riscord.set_timeout(milliseconds, function() ... end)`: 一度だけ実行するタイマー。最短 100 ミリ秒、最長 24 時間、プラグインあたり最大 100 個です。

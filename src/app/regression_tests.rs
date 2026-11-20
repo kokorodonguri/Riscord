@@ -135,6 +135,52 @@ fn member_chunks_preserve_order_and_latest_updates() {
 }
 
 #[test]
+fn member_removal_does_not_corrupt_the_reused_index() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let member = |id: &str, name: &str| Member {
+        user: Some(User {
+            public_flags: 0,
+            id: id.into(),
+            username: name.into(),
+            global_name: None,
+            avatar: None,
+            premium_type: None,
+            bot: false,
+            avatar_decoration_data: None,
+        }),
+        nick: None,
+        avatar: None,
+        avatar_decoration_data: None,
+        roles: vec![],
+    };
+    tx.send(Event::GuildMembers(
+        "a".into(),
+        vec![member("1", "one"), member("2", "two"), member("3", "three")],
+    ))
+    .unwrap();
+    // 同じ描画の中で、抜けた人を消してから次の塊が届く（索引は消す前の位置のまま）
+    tx.send(Event::Gateway {
+        t: "GUILD_MEMBER_REMOVE".into(),
+        d: serde_json::json!({"guild_id": "a", "user": {"id": "1"}}),
+    })
+    .unwrap();
+    tx.send(Event::GuildMembers(
+        "a".into(),
+        vec![member("3", "three!"), member("2", "two!")],
+    ))
+    .unwrap();
+    app.poll();
+    let a: Vec<_> = app.members["a"]
+        .iter()
+        .map(|m| (m.user.as_ref().unwrap().id.as_str(), m.display()))
+        .collect();
+    assert_eq!(a, [("2", "two!"), ("3", "three!")]);
+}
+
+#[test]
 fn member_index_reuses_then_expires_and_handles_interleaved_guilds() {
     let mut app = App::default();
     let (tx, ev) = std::sync::mpsc::channel();
@@ -594,6 +640,12 @@ fn file_picker_result_stays_with_its_original_channel() {
     assert!(app.status.contains("元のチャンネル"));
     app.sel_channel = Some("original".into());
     app.take_picked_files();
+    // 読み込みは別スレッドなので、届くまで受け取りを繰り返す
+    let start = std::time::Instant::now();
+    while app.uploads.is_empty() && start.elapsed() < std::time::Duration::from_secs(5) {
+        app.poll_uploads();
+        std::thread::yield_now();
+    }
     assert_eq!(app.uploads.len(), 1);
     assert_eq!(app.uploads[0].data, b"selected file");
     assert!(app.picked_files.is_none());
@@ -2171,6 +2223,21 @@ fn avatar_and_decoration_urls_resolve_user_and_guild_overrides() {
 }
 
 #[test]
+fn dm_notification_settings_are_kept() {
+    // guild_id が null の分は DM の設定。以前は捨てていたため DM のミュートを守れなかった
+    let (gid, s) = GuildSettings::parse(&serde_json::json!({
+        "guild_id": null,
+        "channel_overrides": [{"channel_id": "dm1", "muted": true}]
+    }))
+    .unwrap();
+    assert_eq!(gid, crate::app::DM_SETTINGS_KEY);
+    assert!(s.muted_channels.contains("dm1"));
+    // 本文が空・JSON でない応答（Null）や guild_id の無い値を DM の設定と取り違えない
+    assert!(GuildSettings::parse(&serde_json::Value::Null).is_none());
+    assert!(GuildSettings::parse(&serde_json::json!({"muted": false})).is_none());
+}
+
+#[test]
 fn muted_channels_are_read_and_hidden_when_asked() {
     let (gid, s) = GuildSettings::parse(&serde_json::json!({
         "guild_id": "g1",
@@ -2483,4 +2550,37 @@ fn translation_in_same_language_is_not_shown() {
         app.translator.messages[&("c".into(), "1".into())].1,
         "Hello"
     );
+}
+
+#[test]
+fn dm_list_response_keeps_events_received_while_loading() {
+    let mut app = App::default();
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let dm = |id: &str, last: &str| {
+        serde_json::json!({"id": id, "type": 1, "last_message_id": last,
+            "recipients": [{"id": format!("u{id}"), "username": "x"}]})
+    };
+    // 一覧の取得中に、新しい DM ができて、別の DM が閉じられた
+    tx.send(Event::Gateway {
+        t: "CHANNEL_CREATE".into(),
+        d: dm("20", "300"),
+    })
+    .unwrap();
+    tx.send(Event::Gateway {
+        t: "CHANNEL_DELETE".into(),
+        d: serde_json::json!({"id": "21", "type": 1}),
+    })
+    .unwrap();
+    // そのあとに、取得を始めた時点の一覧が届く
+    let list: Vec<Channel> = [dm("21", "200"), dm("22", "100")]
+        .into_iter()
+        .map(|v| serde_json::from_value(v).unwrap())
+        .collect();
+    tx.send(Event::Dms(list)).unwrap();
+    app.poll();
+    let ids: Vec<_> = app.dms.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, ["20", "22"]);
+    assert!(app.dms_loaded);
 }

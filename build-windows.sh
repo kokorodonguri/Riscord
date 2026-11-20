@@ -1,12 +1,16 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # リモートのUbuntu (cargo-xwin入り) でWindows版をビルドして dist/ に持ってくる
 # リモートに必要なもの: rustup + cargo-xwin、~/.local/llvm18（clang-cl・llvm-rc）、cmake、ninja
-set -e
+set -euo pipefail
 : "${HOST:?Set HOST to the remote SSH destination}"
 cd "$(dirname "$0")"
-tar --exclude=target --exclude=dist --exclude=.serena -czf - . | ssh "$HOST" 'rm -rf ~/build/riscord && mkdir -p ~/build/riscord && tar -xzf - -C ~/build/riscord'
-ssh "$HOST" 'sh -s' <<'EOF'
-set -e
+# 未コミットの変更も含めて送る。.git と android/local.properties（SDK のパスなど手元の設定）は送らない。
+# .git がないとリモートの build.rs がコミットを読めないので、GITHUB_SHA として渡す
+sha="$(git rev-parse HEAD 2>/dev/null || true)"
+tar --exclude=./target --exclude=./dist --exclude=./.serena --exclude=./.git --exclude=./.claude \
+  --exclude=local.properties -czf - . | ssh "$HOST" 'rm -rf ~/build/riscord && mkdir -p ~/build/riscord && tar -xzf - -C ~/build/riscord'
+ssh "$HOST" "GITHUB_SHA='$sha' bash -s" <<'EOF'
+set -euo pipefail
 . ~/.cargo/env
 export PATH=$HOME/.local/bin:$HOME/.local/llvm18/bin:$PATH
 # Opus の CMake は clang-cl に SSE4.1/AVX2 用のフラグを付けないので、その部分を外して別にビルドしておく
@@ -28,7 +32,8 @@ fi
 [ -f "$OPUS_OUT/lib/m.lib" ] || llvm-ar rcs "$OPUS_OUT/lib/m.lib"
 export OPUS_LIB_DIR=$OPUS_OUT OPUS_STATIC=1
 cd ~/build/riscord
-cargo xwin build --release --target x86_64-pc-windows-msvc 2>&1 | grep -v "warning: ring@" | tail -5
+# pipefail で cargo の失敗をそのまま返す（grep が何も出さなくても失敗にしないよう || true で包む）
+cargo xwin build --release --target x86_64-pc-windows-msvc 2>&1 | { grep -v "warning: ring@" || true; } | tail -5
 EOF
 mkdir -p dist
 scp -q "$HOST:build/riscord/target/x86_64-pc-windows-msvc/release/riscord.exe" dist/

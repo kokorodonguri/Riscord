@@ -15,6 +15,26 @@ android {
         versionName = "0.4.0"
         ndk { abiFilters += "arm64-v8a" }
     }
+    // release の署名鍵は環境変数から読む（CI では secrets）。無い環境では未署名の release しか作れない
+    val releaseKeystore = System.getenv("RISCORD_ANDROID_KEYSTORE")
+    signingConfigs {
+        if (!releaseKeystore.isNullOrEmpty()) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("RISCORD_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RISCORD_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("RISCORD_ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        // 利用者に配るのは release。debuggable にしないので、adb からアプリのデータ（トークン）を読まれない
+        release {
+            isDebuggable = false
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+        }
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -371,6 +371,11 @@ impl Reorder {
         self.drain(now, false)
     }
 
+    /// 配信者の SSRC が変わったときに、前の番号を忘れる
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     fn drain(&mut self, now: std::time::Instant, mut force: bool) -> Vec<VideoPacket> {
         let mut out = Vec::new();
         while !self.pending.is_empty() {
@@ -433,6 +438,11 @@ pub enum Push {
 }
 
 impl Depacketizer {
+    /// 配信者の SSRC が変わったときに、組み立て途中のものと前の番号を捨てる
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     pub fn push(&mut self, seq: u16, timestamp: u32, marker: bool, payload: &[u8]) -> Push {
         let mut lost = false;
         if let Some(n) = self.next_seq {
@@ -542,6 +552,34 @@ impl Depacketizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_forgets_old_sequence_numbers() {
+        let t = std::time::Instant::now();
+        let packet = |seq| VideoPacket {
+            seq,
+            timestamp: 1,
+            marker: true,
+            payload: vec![0x65, 1, 2],
+        };
+        let mut r = Reorder::default();
+        assert_eq!(r.push(packet(40000), t).len(), 1);
+        // 新しい SSRC では番号が飛ぶ。前の番号のままだと古いものとして捨てられる
+        assert!(r.push(packet(10000), t).is_empty());
+        r.reset();
+        assert_eq!(r.push(packet(10000), t).len(), 1);
+
+        let mut d = Depacketizer::default();
+        assert!(matches!(
+            d.push(40000, 1, true, &[0x65, 1, 2]),
+            Push::Frame(_)
+        ));
+        d.reset();
+        assert!(matches!(
+            d.push(10000, 2, true, &[0x65, 1, 2]),
+            Push::Frame(_)
+        ));
+    }
 
     #[test]
     fn reorder_handles_gap_wrap_duplicates_and_timeout() {

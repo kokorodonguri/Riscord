@@ -258,7 +258,7 @@ impl Rich {
     pub fn element_with(
         self,
         id: impl Into<ElementId>,
-        on_spoiler: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+        on_spoiler: Option<SpoilerFn>,
     ) -> AnyElement {
         let id = id.into();
         if self.links.is_empty()
@@ -292,7 +292,7 @@ impl Rich {
                     *PENDING_MENTION.lock().unwrap() = Some(url[MENTION_LINK.len()..].to_string());
                     window.refresh();
                 }
-                Some(url) => cx.open_url(url),
+                Some(url) => crate::app::open_link(cx, url),
                 None => {
                     if let Some(f) = &on_spoiler {
                         f(window, cx)
@@ -313,6 +313,9 @@ impl Rich {
 }
 
 /// ClickableMentions: 押せるメンションのリンク先の印（後ろはユーザー ID）
+/// スポイラーを開いたときに呼ぶ
+type SpoilerFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
 pub const MENTION_LINK: &str = "riscord-mention:";
 /// StickerEmojiPreview: 押された絵文字の大きい画像（Root の描画で開く）
 pub static PENDING_PREVIEW: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -415,7 +418,7 @@ fn embed_line(
             t.id(id)
                 .cursor_pointer()
                 .hover(|s| s.underline())
-                .on_click(move |_, _, cx| cx.open_url(&u))
+                .on_click(move |_, _, cx| crate::app::open_link(cx, &u))
                 .into_any_element()
         }
         None => t.into_any_element(),
@@ -467,7 +470,7 @@ fn file_card(id: SharedString, a: &model::Attachment, cx: &mut Context<Root>) ->
             .id(SharedString::from(format!("{id}-name")))
             .cursor_pointer()
             .hover(|s| s.underline())
-            .on_click(move |_, _, cx| cx.open_url(&open)),
+            .on_click(move |_, _, cx| crate::app::open_link(cx, &open)),
     );
     if let Some(size) = a.size {
         info = info.child(text(human_size(size), 12.0, MUTED()));
@@ -531,7 +534,7 @@ fn image_box(
             let open = open.clone();
             move |this, _, _, cx| {
                 if video {
-                    cx.open_url(&open);
+                    crate::app::open_link(cx, &open);
                 } else {
                     this.open_image_preview(open.clone());
                     cx.notify();
@@ -1567,6 +1570,14 @@ impl Root {
         let c = &self.body_cache[&m.id];
         let pre = self.app.bd_pre_mentions(&c.displayed, m, roles);
         let content = resolve_mentions(&pre, m, &self.app.channels, roles);
+        // メンションの無い本文（多くのメッセージ）はどちらも手を加えず借りたまま返す。
+        // それは displayed だけで決まるので、一度解析していれば本文を毎フレームハッシュし直さなくてよい
+        if c.resolved != 0
+            && matches!(pre, std::borrow::Cow::Borrowed(_))
+            && matches!(content, std::borrow::Cow::Borrowed(_))
+        {
+            return c.blocks.clone();
+        }
         let resolved = hash(&|h| content.hash(h)).max(1);
         if c.resolved == resolved {
             return c.blocks.clone();
@@ -1585,7 +1596,7 @@ impl Root {
         let blocks = self.body_blocks(m);
         let edited = m.edited_timestamp.is_some();
         let revealed = self.revealed.contains(&m.id);
-        let on_spoiler: Rc<dyn Fn(&mut Window, &mut App)> = {
+        let on_spoiler: SpoilerFn = {
             let (root, id) = (cx.entity().downgrade(), m.id.clone());
             Rc::new(move |_, cx| {
                 let _ = root.update(cx, |this, cx| {
@@ -1748,6 +1759,7 @@ impl Root {
     }
 
     /// 文の塊1つ。カスタム絵文字があれば画像を文中に並べる
+    #[allow(clippy::too_many_arguments)]
     fn text_block(
         &mut self,
         key: &str,
@@ -1756,7 +1768,7 @@ impl Root {
         fs: f32,
         edited: bool,
         revealed: bool,
-        on_spoiler: Rc<dyn Fn(&mut Window, &mut App)>,
+        on_spoiler: SpoilerFn,
     ) -> Div {
         enum Piece<'a> {
             Text(Rich),
@@ -2385,7 +2397,7 @@ impl Root {
                 .id(SharedString::from(format!("video-open-{key}")))
                 .cursor_pointer()
                 .child(text(tr!("開く", "Open", "打开"), 12.0, LINK()))
-                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&link))),
+                .on_click(cx.listener(move |_, _, _, cx| crate::app::open_link(cx, &link))),
         );
         content.child(controls)
     }

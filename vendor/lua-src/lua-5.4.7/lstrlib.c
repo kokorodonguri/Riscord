@@ -147,6 +147,38 @@ static int str_upper (lua_State *L) {
 }
 
 
+/*
+** Riscord: a per-call budget for work done inside C string functions, which
+** the VM instruction hook cannot see. The host stores the remaining budget in
+** the registry before each plugin call; when the key is absent there is no
+** limit (stock behaviour).
+*/
+#define RISCORD_WORK_KEY "riscord.strwork"
+#define PATTERN_WORK_WEIGHT 16  /* one pattern step costs about 16 byte compares */
+
+static lua_Integer getwork (lua_State *L) {
+  lua_Integer w = LUA_MAXINTEGER;
+  if (lua_getfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY) == LUA_TNUMBER)
+    w = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  return w;
+}
+
+static void chargework (lua_State *L, lua_Integer used) {
+  lua_Integer w;
+  if (lua_getfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY) != LUA_TNUMBER) {
+    lua_pop(L, 1);
+    return;
+  }
+  w = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  if (l_unlikely(used > w))
+    luaL_error(L, "string work exceeds limit");
+  lua_pushinteger(L, w - used);
+  lua_setfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY);
+}
+
+
 static int str_rep (lua_State *L) {
   size_t l, lsep;
   const char *s = luaL_checklstring(L, 1, &l);
@@ -161,7 +193,9 @@ static int str_rep (lua_State *L) {
   else {
     size_t totallen = (size_t)n * l + (size_t)(n - 1) * lsep;
     luaL_Buffer b;
-    char *p = luaL_buffinitsize(L, &b, totallen);
+    char *p;
+    chargework(L, (lua_Integer)totallen);
+    p = luaL_buffinitsize(L, &b, totallen);
     while (n-- > 1) {  /* first n-1 copies (followed by separator) */
       memcpy(p, s, l * sizeof(char)); p += l;
       if (lsep > 0) {  /* empty 'memcpy' is not that cheap */
@@ -364,6 +398,7 @@ typedef struct MatchState {
   lua_State *L;
   int matchdepth;  /* control for recursive depth (to avoid C stack overflow) */
   unsigned int work;  /* total pattern matching work, shared across attempts */
+  unsigned int worksettled;  /* value of 'work' when last charged to the budget */
   unsigned char level;  /* total number of captures (finished or unfinished) */
   struct {
     const char *init;
@@ -374,8 +409,26 @@ typedef struct MatchState {
 
 /* A VM instruction hook cannot interrupt this C pattern matcher. */
 static void patternwork (MatchState *ms) {
-  if (l_unlikely(ms->work-- == 0))
+  /* check before decrementing: a post-decrement would wrap 'work' to UINT_MAX
+     and a gmatch iterator, whose state outlives the error, would then run
+     almost unbounded on its next call */
+  if (l_unlikely(ms->work == 0))
     luaL_error(ms->L, "pattern matching exceeds work limit");
+  ms->work--;
+}
+
+/* give a match state the allowance left in the current call's shared budget */
+static void refillwork (MatchState *ms) {
+  lua_Integer left = getwork(ms->L) / PATTERN_WORK_WEIGHT;
+  ms->work = left < 1000000 ? (unsigned int)(left > 0 ? left : 0) : 1000000;
+  ms->worksettled = ms->work;
+}
+
+/* charge the pattern work done since the last settle to the shared budget */
+static void settlework (MatchState *ms) {
+  lua_Integer used = (lua_Integer)(ms->worksettled - ms->work);
+  ms->worksettled = ms->work;
+  chargework(ms->L, used * PATTERN_WORK_WEIGHT);
 }
 
 /* recursive function */
@@ -682,24 +735,36 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
 
 
 
-static const char *lmemfind (const char *s1, size_t l1,
+/* naive search is O(l1*l2), so every compare is charged to the budget */
+static const char *lmemfind (lua_State *L, const char *s1, size_t l1,
                                const char *s2, size_t l2) {
   if (l2 == 0) return s1;  /* empty strings are everywhere */
   else if (l2 > l1) return NULL;  /* avoids a negative 'l1' */
   else {
     const char *init;  /* to search for a '*s2' inside 's1' */
+    const char *res = NULL;
+    lua_Integer left = getwork(L);
+    lua_Integer used = 0;
     l2--;  /* 1st char will be checked by 'memchr' */
     l1 = l1-l2;  /* 's2' cannot be found after that */
     while (l1 > 0 && (init = (const char *)memchr(s1, *s2, l1)) != NULL) {
+      used += (lua_Integer)(init - s1) + 1 + (lua_Integer)l2;
+      if (l_unlikely(used > left))
+        luaL_error(L, "string work exceeds limit");
       init++;   /* 1st char is already checked */
-      if (memcmp(init, s2+1, l2) == 0)
-        return init-1;
+      if (memcmp(init, s2+1, l2) == 0) {
+        res = init-1;
+        break;
+      }
       else {  /* correct 'l1' and 's1' to try again */
         l1 -= init-s1;
         s1 = init;
       }
     }
-    return NULL;  /* not found */
+    if (res == NULL)
+      used += (lua_Integer)l1;  /* the last memchr scanned the rest */
+    chargework(L, used);
+    return res;
   }
 }
 
@@ -771,8 +836,8 @@ static void prepstate (MatchState *ms, lua_State *L,
   if (ls > 1024 * 1024 || lp > 256)
     luaL_error(L, "pattern input exceeds size limit");
   ms->L = L;
-  ms->work = 1000000;
   ms->matchdepth = MAXCCALLS;
+  refillwork(ms);
   ms->src_init = s;
   ms->src_end = s + ls;
   ms->p_end = p + lp;
@@ -799,7 +864,7 @@ static int str_find_aux (lua_State *L, int find) {
   /* explicit request or no special characters? */
   if (find && (lua_toboolean(L, 4) || nospecials(p, lp))) {
     /* do a plain search */
-    const char *s2 = lmemfind(s + init, ls - init, p, lp);
+    const char *s2 = lmemfind(L, s + init, ls - init, p, lp);
     if (s2) {
       lua_pushinteger(L, (s2 - s) + 1);
       lua_pushinteger(L, (s2 - s) + lp);
@@ -818,6 +883,7 @@ static int str_find_aux (lua_State *L, int find) {
       const char *res;
       reprepstate(&ms);
       if ((res=match(&ms, s1, p)) != NULL) {
+        settlework(&ms);
         if (find) {
           lua_pushinteger(L, (s1 - s) + 1);  /* start */
           lua_pushinteger(L, res - s);   /* end */
@@ -827,6 +893,7 @@ static int str_find_aux (lua_State *L, int find) {
           return push_captures(&ms, s1, res);
       }
     } while (s1++ < ms.src_end && !anchor);
+    settlework(&ms);
   }
   luaL_pushfail(L);  /* not found */
   return 1;
@@ -856,14 +923,18 @@ static int gmatch_aux (lua_State *L) {
   GMatchState *gm = (GMatchState *)lua_touserdata(L, lua_upvalueindex(3));
   const char *src;
   gm->ms.L = L;
+  /* the iterator may be resumed in a later plugin call: take this call's budget */
+  refillwork(&gm->ms);
   for (src = gm->src; src <= gm->ms.src_end; src++) {
     const char *e;
     reprepstate(&gm->ms);
     if ((e = match(&gm->ms, src, gm->p)) != NULL && e != gm->lastmatch) {
       gm->src = gm->lastmatch = e;
+      settlework(&gm->ms);
       return push_captures(&gm->ms, src, e);
     }
   }
+  settlework(&gm->ms);
   return 0;  /* not found */
 }
 
@@ -989,6 +1060,7 @@ static int str_gsub (lua_State *L) {
     else break;  /* end of subject */
     if (anchor) break;
   }
+  settlework(&ms);
   if (!changed)  /* no changes? */
     lua_pushvalue(L, 1);  /* return original string */
   else {  /* something changed */

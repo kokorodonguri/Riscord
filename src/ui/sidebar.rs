@@ -410,6 +410,13 @@ impl Root {
         let wide = a.plugins.on("display-servers-as-channels");
         WIDE_RAIL.store(wide, std::sync::atomic::Ordering::Relaxed);
         let unread = a.unread_guilds();
+        // だれかがボイスチャンネルにいるサーバー（アイコンにスピーカーを付ける）
+        let in_voice: std::collections::HashSet<&str> = a
+            .voice_states
+            .values()
+            .filter(|v| v.channel_id.is_some())
+            .filter_map(|v| v.guild_id.as_deref())
+            .collect();
         let mut col = div()
             .id("rail")
             .w(z(if wide { 220.0 } else { 72.0 }))
@@ -628,6 +635,14 @@ impl Root {
                                     )),
                             )
                             .when(count > 0, |d| d.child(mention_badge(count)))
+                            .when(
+                                folder.collapsed
+                                    && folder
+                                        .guild_ids
+                                        .iter()
+                                        .any(|id| in_voice.contains(id.as_str())),
+                                |d| d.child(voice_badge()),
+                            )
                             .when(count == 0 && has_unread, |d| {
                                 d.child(
                                     div()
@@ -711,6 +726,7 @@ impl Root {
                     false,
                     a.bd_guild_tip(g),
                 )
+                .when(in_voice.contains(g.id.as_str()), |d| d.child(voice_badge()))
                 // ドラッグして別のサーバーの上で離すと、そこへ動かす（並びは settings.json に残す）
                 .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
                 .drag_over::<GuildDrag>(|s, _, _, _| s.bg(HOVER()).rounded(z(12.0)))
@@ -1974,6 +1990,21 @@ pub fn live_badge() -> Div {
         .rounded(z(4.0))
         .bg(RED())
         .child(text("LIVE", 10.0, WHITE()).font_weight(FontWeight::BOLD))
+}
+
+/// ボイスチャンネルに人がいるサーバーの印（アイコン右上のスピーカー）
+fn voice_badge() -> Div {
+    div()
+        .absolute()
+        .top(z(2.0))
+        .right(z(12.0))
+        .size(z(20.0))
+        .rounded_full()
+        .bg(opaque(BG()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon(IconName::Volume2, 12.0, WHITE()))
 }
 
 /// サーバーアイコンの右下の、未読メンション数の赤い印（レールの地の色で 2px 縁取って、アイコンから切り抜いたように見せる）

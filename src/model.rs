@@ -114,9 +114,13 @@ pub struct Member {
     pub avatar_decoration_data: Option<AvatarDecorationData>,
     #[serde(default)]
     pub roles: Vec<String>,
+    /// タイムアウトが明ける時刻（RFC 3339）。過ぎていれば、またはなければタイムアウトではない
+    #[serde(default)]
+    pub communication_disabled_until: Option<String>,
 }
 
 impl Member {
+
     pub fn display(&self) -> &str {
         self.nick
             .as_deref()
@@ -182,6 +186,12 @@ fn bits(s: &str) -> u64 {
 }
 
 /// サーバー全体での自分の権限を @everyone と自分のロールから出す
+/// Discord の ID（snowflake）として正しい形か。数字だけで 1〜20 桁。
+/// API のパスに入れる ID は、外から来たもの（プラグイン・本文のリンク）ならこれで確かめる
+pub fn is_snowflake(s: &str) -> bool {
+    (1..=20).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit())
+}
+
 pub fn base_permissions(guild_id: &str, roles: &[Role], my_roles: &[String]) -> u64 {
     roles
         .iter()
@@ -901,6 +911,69 @@ pub struct Message {
     pub log: Option<Box<LogMark>>,
 }
 
+/// MESSAGE_UPDATE で届いた、本文・埋め込み・ピン以外の変更。届いた項目だけ Some
+#[derive(Clone, Debug, Default)]
+pub struct MessageEdit {
+    pub mentions: Option<Vec<User>>,
+    pub mention_roles: Option<Vec<String>>,
+    pub mention_everyone: Option<bool>,
+    pub attachments: Option<Vec<Attachment>>,
+    /// 投票の更新（締め切り・集計）。キーが無ければ None、null なら Some(None)
+    pub poll: Option<Option<Poll>>,
+    pub flags: Option<u64>,
+    pub edited_timestamp: Option<String>,
+}
+
+impl MessageEdit {
+    /// MESSAGE_UPDATE の d から読む。どれも無ければ None
+    pub fn from_update(d: &serde_json::Value) -> Option<Box<Self>> {
+        fn get<T: serde::de::DeserializeOwned>(d: &serde_json::Value, k: &str) -> Option<T> {
+            d.get(k).filter(|v| !v.is_null()).and_then(|v| T::deserialize(v).ok())
+        }
+        let e = Self {
+            mentions: get(d, "mentions"),
+            mention_roles: get(d, "mention_roles"),
+            mention_everyone: get(d, "mention_everyone"),
+            attachments: get(d, "attachments"),
+            poll: d.get("poll").map(|v| Poll::deserialize(v).ok()),
+            flags: get(d, "flags"),
+            edited_timestamp: get(d, "edited_timestamp"),
+        };
+        let any = e.mentions.is_some()
+            || e.mention_roles.is_some()
+            || e.mention_everyone.is_some()
+            || e.attachments.is_some()
+            || e.poll.is_some()
+            || e.flags.is_some()
+            || e.edited_timestamp.is_some();
+        any.then(|| Box::new(e))
+    }
+
+    pub fn apply(&self, m: &mut Message) {
+        if let Some(v) = &self.mentions {
+            m.mentions = v.clone();
+        }
+        if let Some(v) = &self.mention_roles {
+            m.mention_roles = v.clone();
+        }
+        if let Some(v) = self.mention_everyone {
+            m.mention_everyone = v;
+        }
+        if let Some(v) = &self.attachments {
+            m.attachments = v.clone();
+        }
+        if let Some(v) = &self.poll {
+            m.poll = v.clone();
+        }
+        if let Some(v) = self.flags {
+            m.flags = v;
+        }
+        if let Some(v) = &self.edited_timestamp {
+            m.edited_timestamp = Some(v.clone());
+        }
+    }
+}
+
 /// MessageLogger が付ける印
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Hash, PartialEq)]
 pub struct LogMark {
@@ -964,6 +1037,31 @@ impl VoiceState {
             self_stream: v["self_stream"].as_bool().unwrap_or(false),
             user,
         })
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn update_brings_mentions_and_attachments() {
+        let mut m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1", "channel_id": "c", "author": { "id": "a", "username": "a" },
+            "timestamp": "t", "attachments": [{ "id": "9", "filename": "x.png", "url": "u", "proxy_url": "u" }]
+        }))
+        .unwrap();
+        let d = serde_json::json!({
+            "id": "1", "channel_id": "c", "content": "hi <@2>",
+            "mentions": [{ "id": "2", "username": "bob" }],
+            "attachments": [], "edited_timestamp": "2026-01-01T00:00:00+00:00"
+        });
+        MessageEdit::from_update(&d).unwrap().apply(&mut m);
+        assert_eq!(m.mentions.len(), 1);
+        assert!(m.attachments.is_empty());
+        assert_eq!(m.edited_timestamp.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        // 本文・ピンだけの更新では何も変えない
+        assert!(MessageEdit::from_update(&serde_json::json!({ "id": "1", "pinned": true })).is_none());
     }
 }
 

@@ -171,8 +171,9 @@ impl Packetizer {
     }
 
     fn seal(&mut self, cipher: &Cipher, head: &[u8], body: &[u8]) -> Option<Vec<u8>> {
+        // 同じ鍵で nonce を使い回さないよう、カウンターが一周する手前で送るのをやめる
         let c = self.counter;
-        self.counter = self.counter.wrapping_add(1);
+        self.counter = self.counter.checked_add(1)?;
         cipher.seal(head, body, c)
     }
 

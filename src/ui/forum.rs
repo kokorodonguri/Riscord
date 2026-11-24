@@ -155,7 +155,10 @@ impl Root {
                 let Some(e) = this.upgrade() else {
                     return div().into_any_element();
                 };
-                e.update(cx, |r, cx| r.forum_item(ix, cx))
+                e.update(cx, |r, cx| {
+                    apply_pane(&r.pane_style);
+                    r.forum_item(ix, cx)
+                })
             })
             .flex_1(),
         )
@@ -450,7 +453,10 @@ impl Root {
                     let Some(e) = this.upgrade() else {
                         return div().into_any_element();
                     };
-                    e.update(cx, |r, cx| r.thread_item(ix, cx))
+                    e.update(cx, |r, cx| {
+                        apply_pane(&r.pane_style);
+                        r.thread_item(ix, cx)
+                    })
                 })
                 .flex_1(),
             )

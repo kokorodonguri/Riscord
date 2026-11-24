@@ -558,32 +558,126 @@ pub fn popup_shadow() -> Vec<BoxShadow> {
     }]
 }
 
-/// コードを出す等幅フォントのファミリー名
-pub fn mono_family() -> SharedString {
-    static FAMILY: std::sync::OnceLock<SharedString> = std::sync::OnceLock::new();
-    FAMILY
-        .get_or_init(|| {
-            #[cfg(all(unix, not(target_os = "macos")))]
-            {
-                let found = std::process::Command::new("fc-match")
+/// 等幅フォントの既定（調べ終わるまでと、見つからなかったとき）
+fn mono_fallback() -> SharedString {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "DejaVu Sans Mono".into()
+    }
+    #[cfg(windows)]
+    {
+        "Consolas".into()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "Menlo".into()
+    }
+}
+
+static MONO_FAMILY: std::sync::OnceLock<SharedString> = std::sync::OnceLock::new();
+/// 調べ終えて既定と違う名前になった（描き直しで行の高さを測り直す合図）
+static MONO_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 等幅フォントの名前を別スレッドで調べ始める（fc-match を UI スレッドで待たない）。起動時に 1 回呼ぶ
+pub fn prefetch_mono_family(waker: crate::wake::Waker) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("mono-font".into())
+            .spawn(move || {
+                #[cfg(all(unix, not(target_os = "macos")))]
+                let family: SharedString = std::process::Command::new("fc-match")
                     .args(["-f", "%{family[0]}", "monospace"])
                     .output()
                     .ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok());
-                found
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "DejaVu Sans Mono".into())
-                    .into()
-            }
-            #[cfg(windows)]
-            {
-                "Consolas".into()
-            }
-            #[cfg(target_os = "macos")]
-            {
-                "Menlo".into()
-            }
-        })
-        .clone()
+                    .map(SharedString::from)
+                    .unwrap_or_else(mono_fallback);
+                #[cfg(not(all(unix, not(target_os = "macos"))))]
+                let family = mono_fallback();
+                let changed = family != mono_fallback();
+                if MONO_FAMILY.set(family).is_ok() && changed {
+                    MONO_CHANGED.store(true, std::sync::atomic::Ordering::Release);
+                    waker.wake();
+                }
+            });
+    });
+}
+
+/// 等幅フォントの名前が調べ終わって変わったか（一度だけ true）
+pub fn take_mono_changed() -> bool {
+    MONO_CHANGED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// コードを出す等幅フォントのファミリー名（調べ終わるまでは既定の名前）
+pub fn mono_family() -> SharedString {
+    MONO_FAMILY.get().cloned().unwrap_or_else(mono_fallback)
+}
+
+thread_local! {
+    /// いま描いている区画（Root）の印。0 は未設定
+    static PANE: Cell<u64> = const { Cell::new(0) };
+}
+
+/// いま描いている区画の印（押したときに、どの区画で押されたかを知らせるのに使う）
+pub fn current_pane() -> u64 {
+    PANE.with(|p| p.get())
+}
+
+pub fn set_current_pane(id: u64) {
+    PANE.with(|p| p.set(id));
+}
+
+/// 分割表示で、区画ごとの色・部品の上書き・拡大率。
+/// 一覧（list / uniform_list）の行は区画の描画より後（prepaint）に作られるので、
+/// 行を作る前に apply して自分の区画の値に戻す
+#[derive(Clone)]
+pub struct PaneStyle(std::rc::Rc<PaneStyleInner>);
+
+struct PaneStyleInner {
+    id: u64,
+    colors: Option<Vec<Color32>>,
+    parts: Option<Vec<crate::theme::PartStyle>>,
+    zoom: f32,
+}
+
+impl PaneStyle {
+    pub fn new(
+        id: u64,
+        colors: Option<Vec<Color32>>,
+        parts: Option<Vec<crate::theme::PartStyle>>,
+        zoom: f32,
+    ) -> Self {
+        PaneStyle(std::rc::Rc::new(PaneStyleInner {
+            id,
+            colors,
+            parts,
+            zoom,
+        }))
+    }
+
+    /// この区画の値にする（もうこの区画のものなら何もしない）
+    pub fn apply(&self) {
+        let p = &self.0;
+        if current_pane() == p.id {
+            return;
+        }
+        if let Some(c) = &p.colors {
+            crate::theme::set_colors(c);
+        }
+        if let Some(parts) = &p.parts {
+            crate::theme::set_parts(parts);
+        }
+        set_zoom(p.zoom);
+        set_current_pane(p.id);
+    }
+}
+
+/// 分割表示なら区画の値に戻す（分割していなければ None で何もしない）
+pub fn apply_pane(style: &Option<PaneStyle>) {
+    if let Some(s) = style {
+        s.apply();
+    }
 }

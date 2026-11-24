@@ -32,7 +32,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         NativeBridge.setLanguage(currentLang.code)
         enableEdgeToEdge(statusBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),navigationBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
-        NotificationLink.channelId(intent)?.let {(application as RiscordApplication).chatModel.openFromNotification(it)}
+        // 回転などで作り直されたときは、開いた通知のチャンネルへ戻さない（新しい通知は onNewIntent で受ける）
+        if(savedInstanceState==null) NotificationLink.channelId(intent)?.let {(application as RiscordApplication).chatModel.openFromNotification(it)}
         setContent {RiscordTheme {Riscord((application as RiscordApplication).chatModel)}}
     }
     override fun onNewIntent(intent:Intent) {

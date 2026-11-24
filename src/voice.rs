@@ -67,8 +67,11 @@ pub struct VoiceCtl {
     pub transmitting: AtomicBool,
     pub input_device: Mutex<Option<String>>,
     pub output_device: Mutex<Option<String>>,
-    /// デバイス変更などで音声ストリームを作り直す
+    /// デバイス変更などで音声ストリームを作り直す（立てると次の見回りで restart_gen に変わる）
     pub restart: AtomicBool,
+    /// 作り直しの世代。通話用とマイクテスト用の AudioIo がそれぞれ最後に見た値を覚え、
+    /// 両方とも作り直せるようにする（restart を swap で消費すると片方しか受け取れない）
+    restart_gen: std::sync::atomic::AtomicU64,
     /// 自分以外の話している人 (user_id)
     pub speaking: Mutex<HashSet<String>>,
     /// 視聴中の画面共有の最新の 1 枚（src/golive）
@@ -97,6 +100,7 @@ impl Default for VoiceCtl {
             input_device: Mutex::new(None),
             output_device: Mutex::new(None),
             restart: AtomicBool::new(false),
+            restart_gen: std::sync::atomic::AtomicU64::new(0),
             speaking: Mutex::new(HashSet::new()),
             #[cfg(not(target_os = "android"))]
             screen: Arc::default(),
@@ -114,6 +118,17 @@ impl VoiceCtl {
     }
     pub fn set_in_gain(&self, v: f32) {
         f32_store(&self.in_gain, v)
+    }
+    /// 音声ストリームの作り直しを頼む（動いている AudioIo すべてが作り直す）
+    pub fn request_restart(&self) {
+        self.restart_gen.fetch_add(1, Relaxed);
+    }
+    /// restart フラグを世代に繰り入れ、今の世代を返す
+    fn restart_generation(&self) -> u64 {
+        if self.restart.swap(false, Relaxed) {
+            self.restart_gen.fetch_add(1, Relaxed);
+        }
+        self.restart_gen.load(Relaxed)
     }
     /// 今の通話の番号（play_effect_in で、取得を始めたときの通話かを確かめる）
     pub fn call_generation(&self) -> u64 {
@@ -388,8 +403,11 @@ impl AudioIo {
         let thread = std::thread::spawn(move || {
             let mut input = None;
             let mut output = None;
+            let mut seen_gen = ctl.restart_generation();
             while !stop2.load(Relaxed) {
-                if ctl.restart.swap(false, Relaxed) {
+                let g = ctl.restart_generation();
+                if g != seen_gen {
+                    seen_gen = g;
                     input = None;
                     output = None;
                 }
@@ -408,7 +426,7 @@ impl AudioIo {
                     }
                 }
                 let opened = Instant::now();
-                while !stop2.load(Relaxed) && !ctl.restart.load(Relaxed) {
+                while !stop2.load(Relaxed) && ctl.restart_generation() == seen_gen {
                     if (input.is_none() || (out.is_some() && output.is_none()))
                         && opened.elapsed() >= Duration::from_secs(5)
                     {
@@ -497,7 +515,7 @@ fn open_streams(
             let restart = ctl.clone();
             let err = move |e| {
                 eprintln!("audio input: {e}");
-                restart.restart.store(true, Relaxed);
+                restart.request_restart();
             };
             let s = match fmt {
                 cpal::SampleFormat::F32 => {
@@ -600,7 +618,7 @@ fn open_streams(
             let restart = ctl.clone();
             let err = move |e| {
                 eprintln!("audio output: {e}");
-                restart.restart.store(true, Relaxed);
+                restart.request_restart();
             };
             let s = match fmt {
                 cpal::SampleFormat::F32 => dev.build_output_stream::<f32, _, _>(
@@ -1104,6 +1122,24 @@ impl VoiceSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_reaches_every_audio_io() {
+        // 通話用とマイクテスト用の 2 つが、同じ作り直しの頼みをどちらも受け取る
+        let ctl = VoiceCtl::default();
+        let (mut call_seen, mut test_seen) = (ctl.restart_generation(), ctl.restart_generation());
+        ctl.restart.store(true, Relaxed);
+        let g = ctl.restart_generation();
+        assert_ne!(g, call_seen);
+        call_seen = g;
+        let g = ctl.restart_generation();
+        assert_ne!(g, test_seen);
+        test_seen = g;
+        assert_eq!(call_seen, test_seen);
+        ctl.request_restart();
+        assert_ne!(ctl.restart_generation(), call_seen);
+        assert_ne!(ctl.restart_generation(), test_seen);
+    }
 
     #[test]
     fn mic_source_never_waits_and_buffers_before_reading() {

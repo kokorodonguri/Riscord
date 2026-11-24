@@ -19,12 +19,15 @@ pub struct VoiceInvite {
     pub sending: HashSet<String>,
     pub sent: HashSet<String>,
     pub failed: HashSet<String>,
+    /// 開くたびに変わる番号。前に開いていた窓へ送った招待の結果を、この窓に反映しない
+    generation: u64,
 }
 
 /// 結果を待っているリクエストが何のためのものか。窓を閉じた後に届いた結果も取り違えない
 enum Pending {
     Invite(String),
-    Send(String),
+    /// 送った窓の番号（VoiceInvite::generation）と DM チャンネル
+    Send(u64, String),
 }
 
 #[derive(Default)]
@@ -37,6 +40,8 @@ pub struct VoiceView {
     /// 作った招待コード（チャンネル → コード）。開き直すたびに新しく作らない
     codes: HashMap<String, String>,
     pending: HashMap<u64, Pending>,
+    /// 最後に開いた招待の窓の番号
+    invite_gen: u64,
 }
 
 pub fn invite_link(code: &str) -> String {
@@ -58,9 +63,11 @@ impl App {
     /// 「ボイスに招待」を開く。同じチャンネルで作ったコードがあれば使い回す
     pub fn open_voice_invite(&mut self, guild_id: &str, channel_id: &str) {
         self.voice_view.activity_open = false;
+        self.voice_view.invite_gen += 1;
         let mut inv = VoiceInvite {
             guild_id: guild_id.to_string(),
             channel_id: channel_id.to_string(),
+            generation: self.voice_view.invite_gen,
             ..Default::default()
         };
         if let Some(code) = self.voice_view.codes.get(channel_id) {
@@ -127,13 +134,14 @@ impl App {
         if inv.sending.contains(dm_channel_id) || inv.sent.contains(dm_channel_id) {
             return;
         }
+        let generation = inv.generation;
         let id = self.api(net::ApiCall::SendMessage {
             channel_id: dm_channel_id.to_string(),
             body: serde_json::json!({ "content": invite_link(&code) }),
         });
         self.voice_view
             .pending
-            .insert(id, Pending::Send(dm_channel_id.to_string()));
+            .insert(id, Pending::Send(generation, dm_channel_id.to_string()));
         if let Some(inv) = self.voice_view.invite.as_mut() {
             inv.failed.remove(dm_channel_id);
             inv.sending.insert(dm_channel_id.to_string());
@@ -194,12 +202,18 @@ impl App {
                     }
                 }
             }
-            Pending::Send(dm) => {
+            Pending::Send(generation, dm) => {
                 let ok = result.is_ok();
                 if let Err(e) = &result {
                     eprintln!("招待を送れませんでした: {e}");
                 }
-                match self.voice_view.invite.as_mut() {
+                // 送った後に閉じて開き直した窓（別のチャンネルかもしれない）には反映しない
+                match self
+                    .voice_view
+                    .invite
+                    .as_mut()
+                    .filter(|i| i.generation == generation)
+                {
                     Some(inv) => {
                         inv.sending.remove(&dm);
                         if ok {
@@ -309,6 +323,25 @@ mod tests {
         let inv = app.voice_view.invite.as_ref().unwrap();
         assert!(inv.sent.contains("dm1") && inv.failed.contains("dm2"));
         assert!(inv.sending.is_empty());
+    }
+
+    #[test]
+    fn invite_send_result_for_closed_window_is_not_shown_in_new_one() {
+        let (mut app, mut rx) = app_with_backend();
+        app.open_voice_invite("g", "v1");
+        let id = api_ids(&mut rx)[0];
+        app.voice_view_result(id, Ok(serde_json::json!({ "code": "xyz" })));
+        app.send_voice_invite("dm1");
+        let send = api_ids(&mut rx)[0];
+        // 応答の前に閉じて、別のチャンネルの窓を開く
+        app.close_voice_invite();
+        app.open_voice_invite("g", "v2");
+        api_ids(&mut rx);
+        app.voice_view_result(send, Ok(serde_json::json!({})));
+        let inv = app.voice_view.invite.as_ref().unwrap();
+        assert_eq!(inv.channel_id, "v2");
+        assert!(inv.sent.is_empty() && inv.failed.is_empty() && inv.sending.is_empty());
+        assert!(!app.is_voice_view_request(send));
     }
 
     #[test]

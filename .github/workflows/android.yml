@@ -21,9 +21,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # stable のままだと実行するたびに違う版でビルドされうるので、具体的な版に固定する（上げるときは全ワークフローで揃える）
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: aarch64-linux-android
       # 署名して配る release を作るときはキャッシュを使わない（他の実行が書いたキャッシュを成果物に混ぜない）
       - if: env.BUILD_RELEASE != 'true'

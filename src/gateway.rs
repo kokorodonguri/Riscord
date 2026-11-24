@@ -100,6 +100,37 @@ pub(crate) enum SessionEnd {
     Closed(u16),
 }
 
+/// 1 回の送信をこれ以上待たない。相手が無応答で送信バッファが埋まると、TCP の再送が諦めるまで
+/// （数分〜十数分）抜けられず、その間ハートビートの判定も止まるため
+const SEND_TIMEOUT: Duration = Duration::from_secs(20);
+/// スリープ明けなど、ハートビートの間が大きく空いたあとは、この時間で ACK が来なければ切れたとみなす
+const WAKE_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// 切断中に溜めておくコマンドの上限（超えたら古いものから捨てる）
+const MAX_PENDING: usize = 500;
+/// スリープ明けを確かめる間隔と、止まっていたとみなす実時計のずれ
+const WAKE_CHECK: Duration = Duration::from_secs(5);
+const WAKE_JUMP: Duration = Duration::from_secs(10);
+
+/// これより大きいフレームは、ワーカーを手放してから展開・解析する
+const HEAVY_FRAME: usize = 256 * 1024;
+
+fn heavy<T>(big: bool, f: impl FnOnce() -> T) -> T {
+    let multi = tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+    if big && multi {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
+async fn send_timed(socket: &mut Socket, msg: Message) -> Result<()> {
+    tokio::time::timeout(SEND_TIMEOUT, socket.send(msg))
+        .await
+        .context("Gateway send timed out")??;
+    Ok(())
+}
+
 /// Drive outbound messages, heartbeats and gateway frames for either client.
 pub(crate) async fn run_session(
     mut socket: Socket,
@@ -114,6 +145,13 @@ pub(crate) async fn run_session(
     // スリープから戻ったときに、取りこぼした分をまとめて打たない（ACK を待たずに切断扱いになるため）
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut acknowledged = true;
+    // スリープ明けを見つける: 実時計だけが大きく進んでいたら、その間止まっていた。
+    // Linux の単調時計（tokio の時計）はスリープ中に進まないので、次のハートビートは復帰から最大 1 周期後になる。
+    // それを待たずにすぐ打ち、短い時間で ACK を確かめる
+    let mut wake_check = tokio::time::interval(WAKE_CHECK);
+    wake_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_check = (std::time::SystemTime::now(), tokio::time::Instant::now());
+    let mut ack_deadline: Option<tokio::time::Instant> = None;
     let mut ready = false;
     let mut commands_open = true;
     // この接続で送った回数（identify / resume の 1 回を含む）
@@ -136,9 +174,9 @@ pub(crate) async fn run_session(
                     continue;
                 }
                 limit.record();
-                if let Err(e) = socket.send(Message::Text(command.to_string().into())).await {
+                if let Err(e) = send_timed(&mut socket, Message::Text(command.to_string().into())).await {
                     session.keep_unsent(at, command);
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
             command = commands.recv(), if commands_open => {
@@ -148,18 +186,36 @@ pub(crate) async fn run_session(
                     None => commands_open = false,
                 }
             }
+            _ = tokio::time::sleep_until(ack_deadline.unwrap_or_else(tokio::time::Instant::now)), if ack_deadline.is_some() => {
+                bail!("Gateway heartbeat timed out after wake");
+            }
+            _ = wake_check.tick() => {
+                let now = (std::time::SystemTime::now(), tokio::time::Instant::now());
+                let wall = now.0.duration_since(last_check.0).unwrap_or_default();
+                let mono = now.1.duration_since(last_check.1);
+                last_check = now;
+                if wall > mono + WAKE_JUMP && ack_deadline.is_none() {
+                    acknowledged = false;
+                    ack_deadline = Some(now.1 + WAKE_ACK_TIMEOUT);
+                    limit.record();
+                    send_timed(&mut socket, Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?;
+                }
+            }
             _ = heartbeat.tick() => {
                 if !acknowledged { bail!("Gateway heartbeat timed out"); }
                 acknowledged = false;
                 limit.record();
-                socket.send(Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?;
+                send_timed(&mut socket, Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?;
             }
             frame = socket.next() => {
                 let frame = frame.context("Gateway disconnected")??;
                 if let Message::Close(close) = frame {
                     return Ok(SessionEnd::Closed(close.map(|c| u16::from(c.code)).unwrap_or(1000)));
                 }
-                let Some(frame): Option<GatewayFrame> = decode_frame_as(&frame, &mut inflater)? else { continue };
+                // 数 MB ある READY などは展開と解析に時間がかかる。そのあいだ同じワーカーの他のタスク
+                // （REST・音声）が待たされないよう、マルチスレッドのランタイムなら手放してから行う
+                let big = match &frame { Message::Binary(b) => b.len() > HEAVY_FRAME, Message::Text(t) => t.len() > HEAVY_FRAME, _ => false };
+                let Some(frame): Option<GatewayFrame> = heavy(big, || decode_frame_as(&frame, &mut inflater))? else { continue };
                 if let Some(seq) = frame.s.as_i64() { session.seq = Some(seq); }
                 match opcode(frame.op.as_u64()) {
                     Opcode::Dispatch => {
@@ -175,12 +231,16 @@ pub(crate) async fn run_session(
                             Some("RESUMED") => ready = true,
                             _ => {}
                         }
-                        dispatch(&frame);
+                        let big = frame.d.as_deref().is_some_and(|d| d.get().len() > HEAVY_FRAME);
+                        heavy(big, || dispatch(&frame));
                     }
-                    Opcode::Heartbeat => socket.send(Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?,
+                    Opcode::Heartbeat => send_timed(&mut socket, Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?,
                     Opcode::Reconnect => return Ok(SessionEnd::Resume),
                     Opcode::InvalidSession => return Ok(if frame.d.as_deref().is_some_and(|d| d.get().trim() == "true") { SessionEnd::Resume } else { SessionEnd::Reidentify }),
-                    Opcode::HeartbeatAck => acknowledged = true,
+                    Opcode::HeartbeatAck => {
+                        acknowledged = true;
+                        ack_deadline = None;
+                    }
                     _ => {}
                 }
             }
@@ -338,6 +398,9 @@ impl GatewaySession {
                 }
                 !subs.is_empty()
             });
+        }
+        if self.pending.len() >= MAX_PENDING {
+            self.pending.pop_front();
         }
         self.pending
             .push_back((tokio::time::Instant::now(), command));

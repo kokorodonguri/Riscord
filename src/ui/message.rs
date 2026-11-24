@@ -288,10 +288,15 @@ impl Rich {
         let urls2 = urls.clone();
         let ranges2 = ranges.clone();
         let clickable = ranges.iter().cloned().chain(spoilers).collect();
+        let pane = current_pane();
         InteractiveText::new(id, styled)
             .on_click(clickable, move |i, window, cx| match urls.get(i) {
                 Some(url) if url.starts_with(MENTION_LINK) => {
-                    *PENDING_MENTION.lock().unwrap() = Some(url[MENTION_LINK.len()..].to_string());
+                    post_pending(
+                        &PENDING_MENTION,
+                        pane,
+                        url[MENTION_LINK.len()..].to_string(),
+                    );
                     window.refresh();
                 }
                 Some(url) => crate::app::open_link(cx, url),
@@ -335,10 +340,25 @@ fn masked_url_end(after: &str) -> Option<usize> {
 }
 
 pub const MENTION_LINK: &str = "riscord-mention:";
-/// StickerEmojiPreview: 押された絵文字の大きい画像（Root の描画で開く）
-pub static PENDING_PREVIEW: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// 押されたものを Root へ渡す口（押した区画の印, 中身）。分割表示で別の区画が取らないよう印を付ける
+pub type Pending = std::sync::Mutex<Option<(u64, String)>>;
 /// 押されたメンションのユーザー ID（Root の描画で開く）
-pub static PENDING_MENTION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub static PENDING_MENTION: Pending = std::sync::Mutex::new(None);
+
+/// pane の区画で押されたものとして置く（pane は要素を作ったときの current_pane()）
+pub fn post_pending(slot: &Pending, pane: u64, value: String) {
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((pane, value));
+}
+
+/// その区画で押されたものだけ取り出す（ほかの区画のものは残す）
+pub fn take_pending(slot: &Pending, pane: u64) -> Option<String> {
+    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if g.as_ref().is_some_and(|(p, _)| *p == pane) {
+        g.take().map(|(_, v)| v)
+    } else {
+        None
+    }
+}
 
 /// メッセージのツールバーで、1 行（slots 個）に収まるよう (並べるクイックリアクションの数, プラグインの操作の数) を決める。
 /// 本体のボタン（base 個）は常に並べ、プラグインの操作があれば「…」かボタン 1 つ分を残す
@@ -1392,7 +1412,7 @@ impl Root {
                             .remove(&key)
                             .is_some_and(|(original, _)| original == message.content)
                         {
-                            this.app.plugins.revision = this.app.plugins.revision.wrapping_add(1);
+                            this.app.translator.version = this.app.translator.version.wrapping_add(1);
                         } else {
                             let language = this.app.plugins.translation_target();
                             let target = crate::translator::Target::Message {
@@ -2000,8 +2020,13 @@ impl Root {
                             .tooltip(tip(format!(":{name}:")))
                             .when(only_emoji, |d| d.mr(z(4.0)))
                             .when(emoji_preview, |d| {
-                                d.cursor_pointer().on_click(move |_, window, _| {
-                                    *PENDING_PREVIEW.lock().unwrap() = Some(big.clone());
+                                // StickerEmojiPreview: 押した区画（Root）で大きい画像を開く
+                                let root = self.this.clone();
+                                d.cursor_pointer().on_click(move |_, window, cx| {
+                                    let _ = root.update(cx, |r, cx| {
+                                        r.open_image_preview(big.clone());
+                                        cx.notify();
+                                    });
                                     window.refresh();
                                 })
                             }),
@@ -2512,8 +2537,12 @@ impl Root {
                             st.id,
                             if st.format_type == 4 { "gif" } else { "png" }
                         );
-                        d.cursor_pointer().on_click(move |_, window, _| {
-                            *PENDING_PREVIEW.lock().unwrap() = Some(big.clone());
+                        let root = self.this.clone();
+                        d.cursor_pointer().on_click(move |_, window, cx| {
+                            let _ = root.update(cx, |r, cx| {
+                                r.open_image_preview(big.clone());
+                                cx.notify();
+                            });
                             window.refresh();
                         })
                     },

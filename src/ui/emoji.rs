@@ -154,6 +154,7 @@ impl Root {
             "emoji_grid",
             count,
             cx.processor(move |this: &mut Root, range: Range<usize>, _, cx| {
+                apply_pane(&this.pane_style);
                 range
                     .filter_map(|r| Some((r, rows.get(r)?)))
                     .map(|(r, row)| match row {
@@ -298,10 +299,15 @@ impl Root {
         Some((start..cursor, name.to_string(), hits))
     }
 
-    /// 補完中のキー（↑↓ で選ぶ、Tab / Enter で決める、Esc でやめる）。補完していなければ何もしない
-    pub fn emoji_ac_key(&mut self, key: AcKey, window: &mut Window, cx: &mut Context<Self>) {
+    /// 補完中のキー（↑↓ で選ぶ、Tab / Enter で決める、Esc でやめる）。補完していなければ何もしないで false
+    pub fn emoji_ac_key(
+        &mut self,
+        key: AcKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some((range, name, hits)) = self.emoji_ac(window, cx) else {
-            return;
+            return false;
         };
         cx.stop_propagation();
         let n = hits.len();
@@ -315,6 +321,7 @@ impl Root {
             AcKey::Dismiss => self.emoji_ac_dismissed = Some((range.start, name)),
         }
         cx.notify();
+        true
     }
 
     /// 入力欄の上に出す補完の候補

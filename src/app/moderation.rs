@@ -6,6 +6,7 @@ use chrono::TimeZone;
 const KICK_MEMBERS: u64 = 1 << 1;
 const BAN_MEMBERS: u64 = 1 << 2;
 const ADMINISTRATOR: u64 = 1 << 3;
+const READ_MESSAGE_HISTORY: u64 = 1 << 16;
 const MANAGE_GUILD: u64 = 1 << 5;
 const VIEW_AUDIT_LOG: u64 = 1 << 7;
 const MANAGE_EVENTS: u64 = 1 << 33;
@@ -709,18 +710,39 @@ impl App {
         if g.owner {
             return Some(u64::MAX);
         }
+        // ロール一覧（@everyone を含む）があれば自前で計算する。一覧にない自分のロールは
+        // 消されたものなので数えない（起動時の古い値に戻らないように）
         let p = match (self.roles.get(guild_id), self.my_roles.get(guild_id)) {
-            (Some(roles), Some(my_roles))
-                if roles.iter().any(|role| role.id == guild_id)
-                    && my_roles
-                        .iter()
-                        .all(|id| roles.iter().any(|role| &role.id == id)) =>
-            {
-                model::base_permissions(guild_id, roles, my_roles)
+            (Some(roles), Some(my_roles)) if roles.iter().any(|role| role.id == guild_id) => {
+                let mine: Vec<String> = my_roles
+                    .iter()
+                    .filter(|id| roles.iter().any(|role| &role.id == *id))
+                    .cloned()
+                    .collect();
+                model::base_permissions(guild_id, roles, &mine)
             }
             _ => g.permissions.as_deref()?.parse().ok()?,
         };
-        Some(if p & ADMINISTRATOR != 0 { u64::MAX } else { p })
+        if p & ADMINISTRATOR != 0 {
+            return Some(u64::MAX);
+        }
+        Some(self.timeout_mask(guild_id, p))
+    }
+
+    /// タイムアウト中は、見ることと履歴を読むこと以外できない（管理者・オーナーは対象外）
+    pub fn timeout_mask(&self, guild_id: &str, p: u64) -> u64 {
+        let timed_out = self
+            .my_timeout
+            .get(guild_id)
+            .and_then(|t| t.as_deref())
+            .is_some_and(|t| {
+                chrono::DateTime::parse_from_rfc3339(t).is_ok_and(|t| t > chrono::Utc::now())
+            });
+        if timed_out {
+            p & (model::VIEW_CHANNEL | READ_MESSAGE_HISTORY)
+        } else {
+            p
+        }
     }
 
     fn may(&self, guild_id: &str, bits: u64) -> bool {

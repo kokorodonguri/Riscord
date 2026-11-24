@@ -10,6 +10,11 @@ import org.json.JSONObject
 class NativeBridgeTest {
     // コアのエラー文は日本語で確かめる
     @org.junit.Before fun japanese() = NativeBridge.setLanguage("ja")
+    /** Discord まで届くか。オフラインの環境では、実際の通信が要るテストを飛ばす */
+    private fun discordReachable():Boolean = try {
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress("discord.com",443),3000) }
+        true
+    } catch(e:java.io.IOException) { false }
     @Test fun nativeSessionLifecycleAndUnicodeErrors() {
         val id=NativeBridge.create()
         assertTrue(id>0)
@@ -39,6 +44,7 @@ class NativeBridgeTest {
         }
     }
     @Test fun qrLoginCreatesScannableModules() {
+        org.junit.Assume.assumeTrue("Discord に届かないので飛ばします",discordReachable())
         val id=NativeBridge.create()
         try {
             assertTrue(JSONObject(NativeBridge.call(id,"{\"op\":\"login\",\"mode\":\"qr\"}")).getBoolean("ok"))
@@ -62,6 +68,7 @@ class NativeBridgeTest {
         } finally { NativeBridge.destroy(id) }
     }
     @Test fun rustTlsCanReachDiscordAndRejectInvalidToken() {
+        org.junit.Assume.assumeTrue("Discord に届かないので飛ばします",discordReachable())
         val id=NativeBridge.create()
         try {
             val result=JSONObject(NativeBridge.call(id,"{\"op\":\"connect\",\"token\":\"riscord-invalid-test-token\"}"))

@@ -111,6 +111,45 @@ fn patch(m: &mut Message, found: &HashMap<&str, &Member>) -> bool {
 }
 
 /// メッセージに付ける member には user を入れない（Discord の形と同じ。author と重複する）
+impl App {
+    /// GUILD_MEMBER_UPDATE: 手元のメンバーと、その人のメッセージに付けた情報を新しくする
+    /// （ニックネーム・ロールの色・サーバー別アバターが古いまま残らないように）
+    pub(super) fn apply_member_update(&mut self, gid: &str, member: Member) {
+        let Some(uid) = member.user.as_ref().map(|u| u.id.clone()) else {
+            return;
+        };
+        if let Some(list) = self.members.get_mut(gid) {
+            if let Some(m) = list
+                .iter_mut()
+                .find(|m| m.user.as_ref().is_some_and(|u| u.id == uid))
+            {
+                *m = member.clone();
+                self.member_ver += 1;
+            }
+        }
+        let stripped = strip_user(&member);
+        let mut changed = false;
+        let channels: Vec<String> = self.messages.keys().cloned().collect();
+        for cid in channels {
+            if self.guild_of_channel(&cid).as_deref() != Some(gid) {
+                continue;
+            }
+            let Some(list) = self.messages.get_mut(&cid) else {
+                continue;
+            };
+            for m in list.iter_mut() {
+                if m.author.id == uid && m.member.is_some() {
+                    m.member = Some(stripped.clone());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.bump_msgs();
+        }
+    }
+}
+
 fn strip_user(m: &Member) -> Member {
     Member {
         user: None,

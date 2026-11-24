@@ -116,7 +116,11 @@ impl App {
                 .unwrap_or(ch),
             _ => ch,
         };
-        Some(model::channel_permissions(ch, gid, base, my_roles, me))
+        let p = model::channel_permissions(ch, gid, base, my_roles, me);
+        if p == u64::MAX {
+            return Some(p);
+        }
+        Some(self.timeout_mask(gid, p))
     }
 
     /// サーバーのチャンネルかスレッドを探す
@@ -624,6 +628,7 @@ mod tests {
             content: None,
             embeds: None,
             pinned: Some(false),
+            edit: None,
         })
         .unwrap();
         app.poll();

@@ -1255,6 +1255,7 @@ pub enum MessageChange {
         content: Option<String>,
         embeds: Option<Vec<Embed>>,
         pinned: Option<bool>,
+        edit: Option<Box<model::MessageEdit>>,
     },
     Delete(String),
     Reaction {
@@ -1285,6 +1286,7 @@ impl MessageChange {
                 content,
                 embeds,
                 pinned,
+                edit,
             } => {
                 if let Some(message) = messages.iter_mut().find(|m| m.id == id) {
                     if let Some(content) = content {
@@ -1292,6 +1294,9 @@ impl MessageChange {
                             message.content = content;
                             message.edited_timestamp = Some(String::new());
                         }
+                    }
+                    if let Some(edit) = edit {
+                        edit.apply(message);
                     }
                     if let Some(embeds) = embeds {
                         message.embeds = embeds;
@@ -1664,6 +1669,8 @@ pub struct App {
     /// ボイスチャンネルの画面（招待・アクティビティの案内・接続の失敗）
     pub voice_view: VoiceView,
     pub recent_sound: Option<(String, std::time::Instant)>,
+    /// 送信中のサウンドボードの音（リクエスト ID → 送ったボイスチャンネル, 音）。画面を閉じても成功したら鳴らす
+    pub sounds_sending: HashMap<u64, (String, Sound)>,
     pub friends: Friends,
     pub poll_draft: Option<PollDraft>,
     pub folder_edit: Option<String>,
@@ -1699,6 +1706,12 @@ pub struct App {
     pub cache_saved: Option<(std::time::Instant, u64)>,
     /// 控えを出したまま接続できなかったとき、この時刻にもう一度つなぐ
     pub login_retry_at: Option<std::time::Instant>,
+    /// 続けて失敗した回数。つなぎ直すまでの時間をこれで延ばす（締め出し中に叩き続けない）
+    pub login_failures: u32,
+    /// サーバーごとの、自分のタイムアウトが明ける時刻（GUILD_MEMBER_UPDATE・READY から）
+    pub my_timeout: HashMap<String, Option<String>>,
+    /// このバックエンドで READY を一度受け取った。二度目以降は一から identify し直したということ
+    pub gateway_ready_seen: bool,
     /// 前回書いたあと、控えに入る中身が変わったかもしれない
     pub cache_dirty: bool,
     /// 設定のうち、すぐには書かないもの（最後に開いたチャンネル）が変わった。控えと一緒に書く
@@ -1709,6 +1722,15 @@ pub struct App {
 pub const CACHE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// 控えを出したまま接続できなかったとき、つなぎ直すまでの時間
 pub const LOGIN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// つなぎ直すまでの時間の上限
+pub const LOGIN_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// n 回続けて失敗したあと、次につなぐまでの時間。5 秒から倍々に延ばし、5 分で止める
+pub fn login_retry_delay(failures: u32) -> std::time::Duration {
+    LOGIN_RETRY_DELAY
+        .saturating_mul(1u32 << failures.min(6))
+        .min(LOGIN_RETRY_MAX)
+}
 
 /// msg_rev の元。ログアウトで App を作り直しても前の値に戻らないよう、プロセスで1つ
 static MSG_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -1987,6 +2009,7 @@ impl App {
     }
 
     fn connect(&mut self, token: String) {
+        self.gateway_ready_seen = false;
         self.voice.set_ctx(self.waker.clone());
         self.apply_voice_settings();
         let (cmd, ev) = net::spawn(
@@ -2353,7 +2376,8 @@ impl App {
                                 self.translator
                                     .messages
                                     .insert((channel, id), (original, result));
-                                self.plugins.revision = self.plugins.revision.wrapping_add(1);
+                                // 全行ではなく、翻訳の付いた行だけ測り直す（plugins.revision は上げない）
+                                self.translator.version = self.translator.version.wrapping_add(1);
                             }
                             Err(error) => self.show_toast(&error),
                         }
@@ -2554,11 +2578,30 @@ impl App {
                             self.my_roles.insert(gid.clone(), roles);
                         }
                     }
+                    self.my_timeout.clear();
+                    if let Some(map) = d["my_timeout"].as_object() {
+                        for (gid, until) in map {
+                            self.my_timeout
+                                .insert(gid.clone(), until.as_str().map(String::from));
+                        }
+                    }
                     let rs = &d["read_state"];
                     if let Some(entries) = rs["entries"].as_array().or(rs.as_array()) {
                         let cg = &d["channel_guild"];
+                        let last = &d["channel_last"];
+                        let dm_ids: HashSet<&str> = d["dm_ids"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|v| v.as_str())
+                            .collect();
                         self.read_state.mention_counts.clear();
                         self.read_state.channel_read_rank.clear();
+                        // 未読は READY の既読位置から作り直す（起動前・切断中の新着、他の端末での既読を反映）。
+                        // 既読位置の記録があるチャンネルだけ見る（見たことのない・見えないチャンネルに印を付けない）
+                        if last.is_object() {
+                            self.read_state.unread.clear();
+                        }
                         for e in entries {
                             // read_state_type が 0（チャンネル）以外は通知の既読などなので数えない
                             if e["read_state_type"].as_u64().unwrap_or(0) != 0 {
@@ -2576,13 +2619,28 @@ impl App {
                                         .insert(cid.to_string(), (viewed, last));
                                 }
                             }
-                            let (Some(cid), Some(n)) =
-                                (e["id"].as_str(), e["mention_count"].as_u64())
-                            else {
+                            let Some(cid) = e["id"].as_str() else {
                                 continue;
                             };
-                            if n > 0 {
-                                let gid = cg[cid].as_str().map(String::from);
+                            let gid = cg[cid].as_str().map(String::from);
+                            // どのサーバーのものか分からず DM でもない（アーカイブ済みのスレッドなど）なら数えない。
+                            // 数えると DM の印に足され、DM を開いても消えない
+                            let known = gid.is_some() || dm_ids.contains(cid);
+                            if let (Some(newest), Some(read)) =
+                                (last[cid].as_str(), e["last_message_id"].as_str())
+                            {
+                                if known
+                                    && self.sel_channel.as_deref() != Some(cid)
+                                    && crate::message_log::snowflake_cmp(newest, read)
+                                        == std::cmp::Ordering::Greater
+                                {
+                                    self.read_state.unread.insert(cid.to_string(), gid.clone());
+                                }
+                            }
+                            let Some(n) = e["mention_count"].as_u64() else {
+                                continue;
+                            };
+                            if n > 0 && known {
                                 self.read_state
                                     .mention_counts
                                     .insert(cid.to_string(), (gid, n as u32));
@@ -2639,6 +2697,7 @@ impl App {
                     }
                 }
                 Event::Me(u) => {
+                    self.login_failures = 0;
                     if self.remember && !self.token_input.is_empty() {
                         if let Err(e) = save_token(self.profile.as_deref(), self.token_input.trim())
                         {
@@ -2680,8 +2739,10 @@ impl App {
                     )
                     .into();
                     self.gateway_status = self.status.clone();
-                    self.login_retry_at = Some(std::time::Instant::now() + LOGIN_RETRY_DELAY);
-                    self.repaint_after(LOGIN_RETRY_DELAY);
+                    let delay = login_retry_delay(self.login_failures);
+                    self.login_failures = self.login_failures.saturating_add(1);
+                    self.login_retry_at = Some(std::time::Instant::now() + delay);
+                    self.repaint_after(delay);
                     return;
                 }
                 Event::LoginFailed => {
@@ -2760,13 +2821,27 @@ impl App {
                                             content: Some(message.content.clone()),
                                             embeds: None,
                                             pinned: None,
+                                            edit: None,
                                         });
                                     }
                                 } else {
                                     changes.push(MessageChange::Create(Box::new(message.clone())));
                                 }
                             }
-                            if let Some(list) = self.messages.get_mut(&channel_id) {
+                            let detached_send = submission.editing.is_none() && self.is_detached(&channel_id);
+                            if detached_send {
+                                if let Some(h) = self.history.get_mut(&channel_id) {
+                                    if !h.detached_overflow && !h.detached_new.iter().any(|m| m.id == message.id) {
+                                        if h.detached_new.len() >= MAX_MSGS {
+                                            h.detached_new.clear();
+                                            h.detached_overflow = true;
+                                        } else {
+                                            h.detached_new.push(message.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(list) = self.messages.get_mut(&channel_id).filter(|_| !detached_send) {
                                 if let Some(original) = submission.editing {
                                     if let Some(current) =
                                         list.iter_mut().find(|m| m.id == original.id)
@@ -2861,6 +2936,17 @@ impl App {
                     }
                 }
                 Event::GatewayReady => {
+                    // 切断前に頼んだメンバーの返事（GUILD_MEMBERS_CHUNK）は新しいセッションでは届かない。
+                    // まだ知らない人は頼み直せるようにする（知っている人は頼まない）
+                    self.requested_members.clear();
+                    // 二度目以降の READY は一から identify し直したもの。切断中のサーバーの参加・脱退や
+                    // 新しい DM は再送されないので、一覧を取り直す（最初の一覧は接続時に取っている）
+                    if std::mem::replace(&mut self.gateway_ready_seen, true) {
+                        self.dms_fetched = false;
+                        self.dms_deleted_while_loading.clear();
+                        self.dms_added_while_loading.clear();
+                        self.send(Cmd::ReloadLists);
+                    }
                     // 一からつながったときは購読が消えているので、次の描画で送り直す
                     self.member_sub = None;
                     // 再開できず新しいセッションになった場合、切断中のイベントは再送されない。
@@ -3069,16 +3155,38 @@ impl App {
                         dm.last_message_id = Some(m.id.clone());
                         self.dms.insert(0, dm);
                     }
+                    // サーバーのチャンネル・スレッドの最新 ID も進める（スレッドの並びと、既読位置が古いかの判定に使う）
+                    if let Some(gid) = m.guild_id.as_deref() {
+                        for c in self
+                            .channels
+                            .get_mut(gid)
+                            .into_iter()
+                            .chain(self.threads.get_mut(gid))
+                            .flat_map(|l| l.iter_mut())
+                            .filter(|c| c.id == m.channel_id)
+                        {
+                            let newer = c.last_message_id.as_deref().is_none_or(|old| {
+                                crate::message_log::snowflake_cmp(&m.id, old)
+                                    == std::cmp::Ordering::Greater
+                            });
+                            if newer {
+                                c.last_message_id = Some(m.id.clone());
+                            }
+                        }
+                    }
                     // 途中だけを出している一覧には足さない（間が抜けるため。最新に戻れば読み直す）
                     let detached = self.is_detached(&m.channel_id);
                     if detached {
                         // 続きを読み終えたときに足せるよう溜めておく
                         if let Some(h) = self.history.get_mut(&m.channel_id) {
-                            if h.detached_new.len() >= MAX_MSGS {
-                                h.detached_new.clear();
-                                h.detached_overflow = true;
-                            } else if !h.detached_overflow {
-                                h.detached_new.push(m.clone());
+                            // REST の送信結果とゲートウェイ通知は同じメッセージになり得る。
+                            if !h.detached_new.iter().any(|old| old.id == m.id) {
+                                if h.detached_new.len() >= MAX_MSGS {
+                                    h.detached_new.clear();
+                                    h.detached_overflow = true;
+                                } else if !h.detached_overflow {
+                                    h.detached_new.push(m.clone());
+                                }
                             }
                         }
                     }
@@ -3087,7 +3195,15 @@ impl App {
                         if !list.iter().rev().any(|x| x.id == m.id) {
                             let viewing =
                                 self.sel_channel.as_deref() == Some(m.channel_id.as_str());
-                            list.push(m);
+                            // ふつうは末尾。REST の応答で先に入った自分の発言より古い ID が後から届いたら、ID 順の位置に入れる
+                            let at = list
+                                .iter()
+                                .rposition(|x| {
+                                    crate::message_log::snowflake_cmp(&x.id, &m.id)
+                                        == std::cmp::Ordering::Less
+                                })
+                                .map_or(0, |i| i + 1);
+                            list.insert(at, m);
                             // 表示中のチャンネルは遡って読んだ分を消さない（読んでいる行が消えるため）
                             let cap = if viewing { MAX_HISTORY } else { MAX_MSGS };
                             if list.len() > cap {
@@ -3108,6 +3224,7 @@ impl App {
                     content,
                     embeds,
                     pinned,
+                    edit,
                 } => {
                     self.record_message_change(
                         &channel_id,
@@ -3116,6 +3233,7 @@ impl App {
                             content: content.clone(),
                             embeds: embeds.clone(),
                             pinned,
+                            edit: edit.clone(),
                         },
                     );
                     if let Some(p) = pinned {
@@ -3140,6 +3258,9 @@ impl App {
                         }
                         if let Some(e) = embeds {
                             m.embeds = e;
+                        }
+                        if let Some(edit) = &edit {
+                            edit.apply(m);
                         }
                     }
                 }
@@ -4304,6 +4425,10 @@ impl App {
                     if t == "GUILD_ROLE_DELETE" {
                         if let Some(id) = d["role_id"].as_str() {
                             roles.retain(|role| role.id != id);
+                            // 消えたロールは自分のロールからも外す（残すと権限の計算が古い値に戻る）
+                            if let Some(mine) = self.my_roles.get_mut(guild_id) {
+                                mine.retain(|r| r != id);
+                            }
                         }
                     } else if let Ok(role) = serde_json::from_value::<Role>(d["role"].clone()) {
                         if let Some(old) = roles.iter_mut().find(|old| old.id == role.id) {
@@ -4332,6 +4457,10 @@ impl App {
                         if icon.is_null() || icon.is_string() {
                             guild.icon = icon.as_str().map(str::to_owned);
                         }
+                    }
+                    // オーナーが譲られた（譲った・譲られた）
+                    if let (Some(owner), Some(me)) = (d["owner_id"].as_str(), self.me.as_ref()) {
+                        guild.owner = owner == me.id;
                     }
                 }
                 self.role_admin_event(guild_id);
@@ -4558,6 +4687,15 @@ impl App {
                     .and_then(|a| a.target.as_ref())
                     .is_some_and(|t| Some(t.user_id.as_str()) == user_id);
                 if let Some(gid) = d["guild_id"].as_str() {
+                    if let Ok(member) = serde_json::from_value::<model::Member>(d.clone()) {
+                        if mine {
+                            self.my_timeout.insert(
+                                gid.to_string(),
+                                member.communication_disabled_until.clone(),
+                            );
+                        }
+                        self.apply_member_update(gid, member);
+                    }
                     if mine || target {
                         self.role_admin_event(gid);
                     }
@@ -4790,6 +4928,11 @@ impl App {
             self.leave_channel();
         }
         self.channels.remove(gid);
+        if let Some(threads) = self.threads.remove(gid) {
+            for thread in threads {
+                self.joined_threads.remove(&thread.id);
+            }
+        }
         // そのサーバーのメンバー情報も捨てる（残すとセッション中ずっと増え続ける）
         self.members.remove(gid);
         if self
@@ -4892,13 +5035,20 @@ impl App {
     /// 自分あてのメンションか（@自分・@everyone/@here・自分のロール）
     pub fn mentions_me(&self, m: &Message) -> bool {
         let Some(me) = &self.me else { return false };
-        if m.mentions.iter().any(|u| u.id == me.id) || m.mention_everyone {
+        if m.mentions.iter().any(|u| u.id == me.id) {
             return true;
         }
         let gid = m.guild_id.as_deref().unwrap_or("");
-        self.my_roles
-            .get(gid)
-            .is_some_and(|mine| m.mention_roles.iter().any(|r| mine.contains(r)))
+        // サーバーの通知設定で @everyone・ロールへのメンションを抑えていれば数えない
+        let settings = self.guild_settings.get(gid);
+        if m.mention_everyone && !settings.is_some_and(|s| s.suppress_everyone) {
+            return true;
+        }
+        !settings.is_some_and(|s| s.suppress_roles)
+            && self
+                .my_roles
+                .get(gid)
+                .is_some_and(|mine| m.mention_roles.iter().any(|r| mine.contains(r)))
     }
 
     /// サーバー（None なら DM）の未読メンション数の合計
@@ -6223,6 +6373,9 @@ impl App {
             match action {
                 Action::Notify(..) if notified >= MAX_NOTIFY => {}
                 Action::Send(channel_id, content) => {
+                    if !model::is_snowflake(&channel_id) {
+                        continue;
+                    }
                     // 手で送るときと同じく before_send で止められるようにする（HoldYourTongue など）
                     if let Some(reason) = self.plugins.check_send(&content, &channel_id) {
                         self.set_compose_notice(reason);
@@ -6540,6 +6693,10 @@ pub struct GuildSettings {
     pub notifications: u8,
     /// ミュートしているチャンネル・カテゴリ（channel_overrides から。期限切れは除く）
     pub muted_channels: HashSet<String>,
+    /// @everyone / @here を通知しない
+    pub suppress_everyone: bool,
+    /// ロールへのメンションを通知しない
+    pub suppress_roles: bool,
 }
 
 /// mute_config の期限を過ぎていれば、ミュートは解けている
@@ -6578,6 +6735,8 @@ impl GuildSettings {
                 muted,
                 notifications,
                 muted_channels,
+                suppress_everyone: v["suppress_everyone"].as_bool().unwrap_or(false),
+                suppress_roles: v["suppress_roles"].as_bool().unwrap_or(false),
             },
         ))
     }

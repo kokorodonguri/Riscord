@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - name: windows-x64
-            os: windows-latest
+            os: windows-2025
             target: x86_64-pc-windows-msvc
           - name: windows-arm64
             os: windows-11-arm
@@ -41,6 +41,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -53,9 +55,10 @@ jobs:
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
 
+      # stable のままだと実行するたびに違う版でビルドされうるので、具体的な版に固定する（上げるときは全ワークフローで揃える）
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
 

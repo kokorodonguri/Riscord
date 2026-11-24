@@ -11,6 +11,8 @@ pub mod model;
 pub mod wake;
 
 mod android;
+// デスクトップだけで使う関数（close_command など）もある
+#[allow(dead_code)]
 #[path = "../../../src/gateway.rs"]
 mod gateway;
 #[path = "../../../src/net/inflate.rs"]

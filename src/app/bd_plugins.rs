@@ -592,6 +592,10 @@ impl App {
                 .and_then(|v| v.as_array())
                 .and_then(|a| a.iter().find(|m| m["id"].as_str() == Some(key.1.as_str())))
                 .and_then(|m| serde_json::from_value::<Message>(m.clone()).ok());
+            // 控えは際限なく増やさない（いっぱいなら捨てて取り直す）
+            if self.peeks.len() >= 500 {
+                self.peeks.clear();
+            }
             self.peeks.insert(key, found.map(Box::new));
             self.bump_msgs();
             return true;
@@ -625,6 +629,10 @@ impl App {
                     .trim_end_matches(|c: char| !c.is_ascii_digit())
                     .to_string(),
             );
+            // 他人の本文から取った ID は API のパスに入るので、数字だけのものに限る
+            if !crate::model::is_snowflake(&cid) || !crate::model::is_snowflake(&mid) {
+                continue;
+            }
             let key = (cid.clone(), mid.clone());
             if let Some(found) = self.find_message(&cid, &mid) {
                 out.push((cid, mid, Some(found)));

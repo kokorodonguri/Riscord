@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -68,6 +69,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private var typingSendJob:Job?=null
     private var restoreJob: Job? = null
     private var pauseJob: Job? = null
+    /** pause と resume を頼んだ順に Rust へ届ける */
+    private val gatewayLock = kotlinx.coroutines.sync.Mutex()
     /** チャンネルを開き直したときにすぐ見せる直近のメッセージ。最近使ったものから MESSAGE_CACHE_CHANNELS 件まで */
     private val messageCache=object:LinkedHashMap<String,List<JSONObject>>(16,0.75f,true) {
         override fun removeEldestEntry(eldest:MutableMap.MutableEntry<String,List<JSONObject>>?)=size>MESSAGE_CACHE_CHANNELS
@@ -75,7 +78,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     /** ログイン中のセッションに属する処理。ログアウトでまとめて止め、古いセッションの結果を反映させない */
     private var sessionScope = newSessionScope()
     private fun newSessionScope() = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
-    private var connecting = false
+    /** connect の番号。取り消した・古くなった connect の結果は、番号が違うので捨てる */
+    private var connectAttempt = 0L
     private var pendingChannel: String? = null
     private var foreground = false
     private var gatewayPaused = false
@@ -133,7 +137,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
 
     /** 保存済みトークンで接続する。通信エラーなら再試行し、認証切れのときだけ保存を消す */
     private suspend fun restore() {
-        val token = try { store.load() } catch (e: Exception) {
+        val token = try { withContext(Dispatchers.IO) { store.load() } } catch (e: Exception) {
+            if (e is CancellationException) throw e
             store.clear()
             state.update { it.copy(error = tr("保存済みログインを読み込めませんでした。ログインし直してください。","Couldn't load your saved login. Please log in again.","无法读取已保存的登录信息。请重新登录。")) }
             return
@@ -159,8 +164,10 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     /** 再接続の待機をやめてログイン画面へ（保存したログインは消す） */
     fun cancelRestore() {
         restoreJob?.cancel(); restoreJob = null
+        // 待っている connect の結果を捨てる（あとから終わっても、つながったことにしない）
+        connectAttempt++
         store.clear()
-        state.update { it.copy(restoring = false, error = null, connection = "未接続") }
+        state.update { it.copy(restoring = false, error = null, connection = "未接続", loading = false, loginBusy = false) }
     }
     private fun stopRestore() { restoreJob?.cancel(); restoreJob = null; state.update { it.copy(restoring = false) } }
     fun login(email: String, password: String, code: String) = task {
@@ -176,22 +183,35 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         NativeBridge.request(handle, JSONObject().put("op", "login").put("mode", "qr"))
     }
     fun tokenLogin(token: String) = task { stopRestore(); connect(token.trim(), true) }
+    /** 新しい connect は、待っている古い connect より優先する（古い方の結果は捨てる） */
     private suspend fun connect(token: String, save: Boolean) {
-        if (connecting) return
-        connecting = true
+        val attempt = ++connectAttempt
         val session = handle
+        fun current() = session == handle && attempt == connectAttempt
+        var accepted = false
         state.update { it.copy(loading = true, loginBusy = true, error = null) }
         try {
-            val me = NativeBridge.request(session, JSONObject().put("op", "connect").put("token", token).put("status", state.value.status)) as JSONObject
-            // 待っている間にログアウトされたら、古いトークンを保存したり画面を戻したりしない
-            if (session != handle) return
-            if (save) store.save(token)
+            val me = NativeBridge.request(session, JSONObject().put("op", "connect").put("token", token).put("status", state.value.status).put("attempt", attempt)) as JSONObject
+            // 待っている間にログアウト・取り消し・新しいログインがあったら、古いトークンを保存したり画面を戻したりしない
+            if (!current()) return
+            if (save) withContext(Dispatchers.IO) { store.save(token) }
+            if (!current()) return
+            accepted = true
             gatewayPaused = false
             state.update { it.copy(me = me, loginBusy = false, ticket = null, qr = null) }
             refreshHome()
             pendingChannel?.let { openFromNotification(it) }
+            // 前回オンにしていた常駐をつなぎ直す
+            if (settings.getBoolean("persistent", false) && !state.value.persistent) setPersistent(true, remember = false)
             updateGateway()
-        } finally { if (session == handle) { connecting = false; state.update { it.copy(loading = false, loginBusy = false) } } }
+        } finally {
+            // JNI の connect はコルーチンを取り消しても止まらず、Rust 側ではつながっていることがある。
+            // 採用しなかった connect は止める（新しい connect が始まっていれば Rust 側で何もしない）
+            if (!accepted && session == handle) viewModelScope.launch {
+                runCatching { NativeBridge.request(session, JSONObject().put("op", "disconnect").put("attempt", attempt)) }
+            }
+            if (current()) state.update { it.copy(loading = false, loginBusy = false) }
+        }
     }
     /** トークンが無効になったとき。保存を消してログイン画面へ戻す */
     private fun expire(message: String?) {
@@ -240,15 +260,16 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             pauseJob?.cancel(); pauseJob = null
             if (gatewayPaused) {
                 gatewayPaused = false
-                task { NativeBridge.request(handle, JSONObject().put("op", "resume")) }
+                task { gatewayLock.withLock { NativeBridge.request(handle, JSONObject().put("op", "resume")) } }
             }
         } else if (!gatewayPaused && pauseJob == null) {
             pauseJob = sessionScope.launch {
                 delay(60_000)
-                pauseJob = null
-                runCatching { NativeBridge.request(handle, JSONObject().put("op", "pause")) }
+                // 頼む前に一時停止扱いにする。頼んでいる間に前面に戻ったら、resume が（pause のあとに）送られる
                 gatewayPaused = true
-                state.update { it.copy(connection = "一時停止中") }
+                pauseJob = null
+                gatewayLock.withLock { runCatching { NativeBridge.request(handle, JSONObject().put("op", "pause")) } }
+                if (gatewayPaused) state.update { it.copy(connection = "一時停止中") }
             }
         }
     }
@@ -309,12 +330,36 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 }
                 notifyMessage(d)
                 if (channelId == state.value.channel?.optString("id")) {
-                    state.update { old -> old.copy(messages = (old.messages.filterNot { it.optString("id") == d.optString("id") } + d).sortedBy { it.optString("id").padStart(20, '0') }) }
+                    state.update { old -> old.copy(messages = upsertMessage(old.messages, d)) }
                 }
             }
             "MESSAGE_UPDATE" -> state.update { old -> old.copy(messages = old.messages.map { msg ->
                 if (msg.optString("id") != d.optString("id")) msg else JSONObject(msg.toString()).apply { d.keys().forEach { key -> put(key, d.get(key)) } }
             }) }
+            "MESSAGE_DELETE_BULK" -> {
+                val ids=d.optJSONArray("ids")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }.orEmpty()
+                val channelId=d.optString("channel_id")
+                if(ids.isNotEmpty()) state.update { old -> old.copy(messages = old.messages.filterNot { it.optString("id") in ids && it.optString("channel_id") == channelId }) }
+            }
+            "GUILD_CREATE" -> {
+                val id=d.nonNull("id")
+                if(id!=null && !d.optBoolean("unavailable")) state.update { old ->
+                    val known=old.guilds.firstOrNull { it.optString("id")==id }
+                    val merged=JSONObject(known?.toString() ?: "{}").put("id",id)
+                    d.nonNull("name")?.let { merged.put("name",it) }
+                    merged.put("icon",d.nonNull("icon") ?: JSONObject.NULL)
+                    old.copy(guilds=if(known==null) old.guilds+merged else old.guilds.map { if(it.optString("id")==id) merged else it })
+                }
+            }
+            "GUILD_DELETE" -> {
+                // unavailable は障害で一時的に使えないだけ。抜けた・追い出されたときだけ一覧から消す
+                val id=d.nonNull("id")
+                if(id!=null && !d.optBoolean("unavailable")) {
+                    val open=state.value.guild?.optString("id")==id
+                    state.update { old -> old.copy(guilds=old.guilds.filterNot { it.optString("id")==id }, guildSettings=old.guildSettings-id) }
+                    if(open) selectGuild(null)
+                }
+            }
             "MESSAGE_DELETE" -> state.update { old -> old.copy(messages = old.messages.filterNot { it.optString("id") == d.optString("id") && it.optString("channel_id") == d.optString("channel_id") }) }
             "MESSAGE_POLL_VOTE_ADD", "MESSAGE_POLL_VOTE_REMOVE" -> {
                 val added=v.optString("t")=="MESSAGE_POLL_VOTE_ADD"
@@ -502,7 +547,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
         state.update { old -> old.copy(sending=false, drafts=if(old.drafts[id]==text) old.drafts+(id to "") else old.drafts,
             reply=if(old.channel?.optString("id")==id && old.reply?.optString("id")==s.reply?.optString("id")) null else old.reply,
-            messages=if(old.channel?.optString("id")==id) (old.messages.filterNot { it.optString("id")==message.optString("id") }+message).sortedBy { it.optString("id").padStart(20,'0') } else old.messages) }
+            messages=if(old.channel?.optString("id")==id) upsertMessage(old.messages,message) else old.messages) }
     }
     fun stageAttachment(uri:android.net.Uri, channelId:String?=state.value.channel?.optString("id"), ownerId:String?=state.value.me?.optString("id")) = task {
         val id=channelId ?: return@task
@@ -556,7 +601,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
         state.update { old -> old.copy(sending=false,attachments=if(old.attachments[channel]?.uri==uri) old.attachments-channel else old.attachments,drafts=if(old.drafts[channel]==content) old.drafts+(channel to "") else old.drafts,
             reply=if(old.channel?.optString("id")==channel && old.reply?.optString("id")==snapshot.reply?.optString("id")) null else old.reply,
-            messages=if(old.channel?.optString("id")==channel) (old.messages.filterNot { it.optString("id")==message.optString("id") }+message).sortedBy {it.optString("id").padStart(20,'0')} else old.messages) }
+            messages=if(old.channel?.optString("id")==channel) upsertMessage(old.messages,message) else old.messages) }
     }
     fun edit(message: JSONObject, text: String) = task {
         val id=message.getString("channel_id")
@@ -582,7 +627,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val channel=state.value.incomingCall
         state.update {it.copy(incomingCall=null)}
         cancelIncomingCallNotification()
-        channel?.let {rest("/channels/${it.getString("id")}/call/stop-ringing","POST",JSONObject())}
+        // デスクトップ（src/net/rest.rs の StopRinging）と同じ本文
+        channel?.let {rest("/channels/${it.getString("id")}/call/stop-ringing","POST",JSONObject().put("recipients",JSONObject.NULL))}
     }
     fun leaveVoice() = task {
         try { NativeBridge.request(handle,JSONObject().put("op","voice_leave")) }
@@ -674,11 +720,13 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             selectGuild(guild); openChannel(channel); pendingChannel=null
         }
     }
-    fun setPersistent(enabled: Boolean) {
+    /** remember=false はログアウトなど、利用者の設定は変えずに止めたいとき */
+    fun setPersistent(enabled: Boolean, remember: Boolean = true) {
         val app=getApplication<Application>()
         try {
             val intent=android.content.Intent(app,ConnectionService::class.java)
             if(enabled) app.startForegroundService(intent) else app.stopService(intent)
+            if(remember) settings.edit().putBoolean("persistent",enabled).apply()
             state.update { it.copy(persistent=enabled) }
             updateGateway()
         } catch(e:Exception) { state.update { it.copy(error=tr("通知の接続を開始できませんでした。アプリを開いた状態で再試行してください。","Couldn't start the notification connection. Try again with the app open.","无法启动通知连接。请在打开应用的状态下重试。")) } }
@@ -750,17 +798,17 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         rest(reactionPath(message,key),if(reaction.optBoolean("me")) "DELETE" else "PUT",if(reaction.optBoolean("me")) null else JSONObject())
     }
     private fun reactionPath(message:JSONObject,emoji:String):String {
-        val encoded=java.net.URLEncoder.encode(emoji,"UTF-8").replace("+","%20")
+        val encoded=encodePathSegment(emoji)
         return "/channels/${message.getString("channel_id")}/messages/${message.getString("id")}/reactions/$encoded/@me"
     }
     fun logout() {
         clearTyping();typingTracker.reset()
         restoreJob?.cancel(); restoreJob=null; pauseJob?.cancel(); pauseJob=null; gatewayPaused=false
         val app=getApplication<Application>()
-        app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false); historyJob?.cancel(); channelsJob?.cancel(); profileJob?.cancel(); messageCache.clear(); store.clear()
+        app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false,remember=false); historyJob?.cancel(); channelsJob?.cancel(); profileJob?.cancel(); messageCache.clear(); store.clear()
         app.getSystemService(android.app.NotificationManager::class.java).cancelAll()
         // このセッションで動いている処理を止める（ログアウト後に古い結果で画面やトークンを書き換えない）
-        sessionScope.cancel(); sessionScope=newSessionScope(); connecting=false
+        sessionScope.cancel(); sessionScope=newSessionScope(); connectAttempt++
         val old=handle; handle=NativeBridge.create(); NativeBridge.destroy(old)
         state.value=ChatState(status=state.value.status)
     }
@@ -770,6 +818,31 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
 /** メッセージを覚えておくチャンネルの数と、1 チャンネルあたりのメッセージ数（巡回しても使うメモリが増え続けないように） */
 internal const val MESSAGE_CACHE_CHANNELS=20
 internal const val MESSAGE_CACHE_PER_CHANNEL=100
+/** 開いているチャンネルで覚えておくメッセージの上限。新しいメッセージが届き続けても増え続けないように */
+internal const val MESSAGE_LIMIT=500
+
+/** ID 順の一覧に 1 件入れる（同じ ID は置き換える）。上限を超えたら古いものから捨てる */
+internal fun upsertMessage(list:List<JSONObject>,message:JSONObject,limit:Int=MESSAGE_LIMIT):List<JSONObject> {
+    val id=message.optString("id"); val key=id.padStart(20,'0')
+    val out=ArrayList<JSONObject>(list.size+1)
+    list.filterTo(out) { it.optString("id")!=id }
+    // 届くのはたいてい最新のものなので、後ろから入れる位置を探す
+    var index=out.size
+    while(index>0 && out[index-1].optString("id").padStart(20,'0')>key) index--
+    out.add(index,message)
+    return if(out.size>limit) out.subList(out.size-limit,out.size).toList() else out
+}
+
+/** URL の一部に入れられるようにする。デスクトップ（src/net/rest.rs の encode）と同じく、英数字と - _ . ~ 以外はすべて %XX にする */
+internal fun encodePathSegment(s:String):String {
+    val out=StringBuilder()
+    for(b in s.toByteArray(Charsets.UTF_8)) {
+        val c=(b.toInt() and 0xff).toChar()
+        if(c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c=='-' || c=='_' || c=='.' || c=='~') out.append(c)
+        else out.append('%').append(String.format(java.util.Locale.ROOT,"%02X",b.toInt() and 0xff))
+    }
+    return out.toString()
+}
 
 /** ミュート中か（期限つきのミュートは期限を過ぎていれば解けている） */
 private fun JSONObject.mutedNow():Boolean {

@@ -20,12 +20,52 @@ fn clients() -> &'static Mutex<HashMap<i64, Arc<Client>>> {
 fn lock_clients() -> std::sync::MutexGuard<'static, HashMap<i64, Arc<Client>>> {
     clients().lock().unwrap_or_else(|e| e.into_inner())
 }
+/// エラーを残す。Android では stderr はどこにも出ないので logcat へ書く
+fn log_error(message: &str) {
+    #[cfg(target_os = "android")]
+    {
+        #[link(name = "log")]
+        extern "C" {
+            fn __android_log_write(
+                prio: libc::c_int,
+                tag: *const libc::c_char,
+                text: *const libc::c_char,
+            ) -> libc::c_int;
+        }
+        const ANDROID_LOG_ERROR: libc::c_int = 6;
+        // NUL が入っていると CString にできないので置き換える
+        let text = std::ffi::CString::new(message.replace('\0', "?")).unwrap_or_default();
+        unsafe {
+            __android_log_write(ANDROID_LOG_ERROR, c"riscord".as_ptr(), text.as_ptr());
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    eprintln!("riscord: {message}");
+}
+/// panic の内容（場所とメッセージ）を logcat に残す。catch_unwind で止めても既定のフックは stderr に書くだけなので
+fn install_panic_log() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            log_error(&format!("panic: {info}"));
+            default(info);
+        }));
+    });
+}
 /// JNI の境界で panic を止める（越えるとプロセスがそのまま落ちる）。panic したら fallback を返す
 fn guard<R>(name: &str, fallback: R, f: impl FnOnce() -> R) -> R {
+    install_panic_log();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
-        eprintln!("riscord: {name} で内部エラーが発生しました");
+        log_error(&format!("{name} で内部エラーが発生しました"));
         fallback
     })
+}
+/// JNI の呼び出しに失敗して Java の例外が残っていれば消す（残ったまま JNI を呼ぶと落ちる）
+fn clear_exception(env: &mut JNIEnv) {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
 }
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -71,6 +111,7 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(
     id: jlong,
     input: JString,
 ) -> jstring {
+    install_panic_log();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> anyhow::Result<Value> {
             let input: String = env.get_string(&input)?.into();
@@ -113,7 +154,8 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(
                 "poll" => Ok(client.wait_events(std::time::Duration::from_millis(v["wait_ms"].as_u64().unwrap_or(0).min(30_000))).await),
                 "pause" => { client.pause(); Ok(Value::Null) },
                 "resume" => client.resume(),
-                "connect" => client.connect(v["token"].as_str().unwrap_or_default().into(),v["status"].as_str()).await,
+                "connect" => client.connect(v["token"].as_str().unwrap_or_default().into(),v["status"].as_str(),v["attempt"].as_i64().unwrap_or(0)).await,
+                "disconnect" => { client.disconnect(v["attempt"].as_i64().unwrap_or(0)); Ok(Value::Null) },
                 "login" => { client.login(v["mode"].as_str().unwrap_or("password"),&v); Ok(Value::Null) },
                 #[cfg(unix)]
                 "upload" => {
@@ -131,8 +173,13 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_call(
         Ok(Err(e)) => {
             json!({"ok":false,"error":e.to_string(),"auth":e.is::<crate::mobile::AuthExpired>()})
         }
-        Err(_) => json!({"ok":false,"error":"内部エラーが発生しました"}),
+        Err(_) => {
+            log_error("call で内部エラーが発生しました");
+            json!({"ok":false,"error":"内部エラーが発生しました"})
+        }
     };
+    // get_string などに失敗して例外が残っていると、new_string を呼べない
+    clear_exception(&mut env);
     env.new_string(output.to_string())
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())
@@ -169,7 +216,13 @@ pub extern "system" fn Java_io_github_kokorodonguri_riscord_NativeBridge_setLang
     code: JString,
 ) {
     guard("setLanguage", (), || {
-        let code: String = env.get_string(&code).map(Into::into).unwrap_or_default();
+        let code: String = match env.get_string(&code) {
+            Ok(code) => code.into(),
+            Err(_) => {
+                clear_exception(&mut env);
+                String::new()
+            }
+        };
         crate::i18n::set_setting(crate::i18n::parse_setting(&code).unwrap_or(crate::i18n::EN));
     })
 }

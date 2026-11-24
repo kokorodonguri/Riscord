@@ -26,9 +26,10 @@ jobs:
             libx11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+      # stable のままだと実行するたびに違う版でビルドされうるので、具体的な版に固定する（上げるときは全ワークフローで揃える）
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --release --locked
       # 紹介ページの版番号が Cargo.toml と食い違っていればリリースを止める。
@@ -46,7 +47,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
             bin: riscord.exe
             asset: riscord-windows-x64.exe
@@ -100,9 +101,10 @@ jobs:
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
 
+      # stable のままだと実行するたびに違う版でビルドされうるので、具体的な版に固定する（上げるときは全ワークフローで揃える）
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
 
       # 署名して配る実行ファイルを作るジョブなので rust-cache は使わない（他の実行が書いたキャッシュを成果物に混ぜない）
@@ -135,7 +137,7 @@ jobs:
     permissions:
       contents: write
     needs: [build, test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 自動更新の署名鍵を使うジョブ。environment「release」で保護（承認者・タグの制限）をかけられるようにする
     environment: release
     steps:

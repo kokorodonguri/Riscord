@@ -24,6 +24,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 qrcode = { version = "0.14", default-features = false }
 
+[dev-dependencies]
+# src/gateway.rs のテストで時間を進める（tokio::time::advance・start_paused）
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 songbird = { version = "0.6", default-features = false, features = ["driver", "gateway", "receive", "rustls", "tungstenite"] }
 cpal = "0.18.2"

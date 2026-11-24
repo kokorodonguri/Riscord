@@ -73,6 +73,8 @@ pub struct SendExtra {
 
 pub enum Cmd {
     LoadGuildChannels(String),
+    /// サーバー一覧と DM 一覧を取り直す（一から identify し直したあと）
+    ReloadLists,
     /// メンバー一覧のうち、見えている範囲だけを購読する（公式クライアントと同じ op 37）。
     /// ranges は [先頭, 末尾] の組（例: [[0, 99], [100, 199]]）
     SubscribeMembers {
@@ -238,6 +240,8 @@ pub enum Event {
         content: Option<String>,
         embeds: Option<Vec<Embed>>,
         pinned: Option<bool>,
+        /// 本文・埋め込み・ピン以外の変更（メンション・添付・投票など）
+        edit: Option<Box<crate::model::MessageEdit>>,
     },
     MessageDelete {
         channel_id: String,
@@ -384,12 +388,19 @@ pub fn spawn(
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
     let tx = Tx { tx: ev_tx, ctx };
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        // 作れなかったときに黙って落ちると、画面は「接続中」のまま何も起きないので、失敗として知らせる
+        let rt = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(io_workers())
             .thread_name("net")
             .enable_all()
             .build()
-            .expect("tokio");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("通信の準備に失敗: {e}");
+                return tx.send(Event::LoginFailed);
+            }
+        };
         rt.block_on(run(token, status, tx, cmd_rx, ctl));
     });
     (cmd_tx, ev_rx)
@@ -418,6 +429,7 @@ struct Api {
 
 struct ApiLimits {
     concurrent: tokio::sync::Semaphore,
+    uploads: tokio::sync::Semaphore,
     cooldown: tokio::sync::Mutex<tokio::time::Instant>,
     routes: tokio::sync::Mutex<HashMap<String, tokio::time::Instant>>,
 }
@@ -426,6 +438,7 @@ impl Default for ApiLimits {
     fn default() -> Self {
         Self {
             concurrent: tokio::sync::Semaphore::new(8),
+            uploads: tokio::sync::Semaphore::new(2),
             cooldown: tokio::sync::Mutex::new(tokio::time::Instant::now()),
             routes: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -488,7 +501,7 @@ impl Api {
         path: &str,
         body: Option<&Value>,
     ) -> Result<reqwest::Response> {
-        self.request_with(method, path, |req| match body {
+        self.request_with(method, path, false, |req| match body {
             Some(b) => req.json(b),
             None => req,
         })
@@ -496,14 +509,21 @@ impl Api {
     }
 
     /// build で本文を付ける（429 で再送するたびに作り直す。multipart は使い回せないため）
+    /// upload は添付付きの送信。送り終わるまで時間がかかるので、普通のリクエストとは別の枠で数える
+    /// （大きな添付を並べて送っている間に、既読や履歴の読み込みが待たされないように）
     async fn request_with(
         &self,
         method: reqwest::Method,
         path: &str,
+        upload: bool,
         build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
         const MAX_RETRIES: usize = 3;
-        let route = format!("{} {}", method, path.split('?').next().unwrap_or(path));
+        // パスは discord.com/api の下だけ。".." や "#" で別の場所を指すものは送らない（トークンが付くため）
+        if !path_is_safe(path) {
+            bail!("invalid API path");
+        }
+        let route = route_key(&method, path);
         for attempt in 0..=MAX_RETRIES {
             tokio::time::timeout(Duration::from_secs(120), async {
                 loop {
@@ -525,7 +545,7 @@ impl Api {
             })
             .await?;
             let _permit =
-                tokio::time::timeout(Duration::from_secs(120), self.limits.concurrent.acquire())
+                tokio::time::timeout(Duration::from_secs(120), if upload { &self.limits.uploads } else { &self.limits.concurrent }.acquire())
                     .await??;
             #[cfg(test)]
             let base = self.base_url.as_deref().unwrap_or(API);
@@ -892,7 +912,13 @@ async fn run(
     mut cmd_rx: UnboundedReceiver<Cmd>,
     ctl: Arc<VoiceCtl>,
 ) {
-    let http = api_client(Duration::from_secs(15), Duration::from_secs(30)).expect("http client");
+    let http = match api_client(Duration::from_secs(15), Duration::from_secs(30)) {
+        Ok(http) => http,
+        Err(e) => {
+            eprintln!("通信の準備に失敗: {e:#}");
+            return tx.send(Event::LoginFailed);
+        }
+    };
     let api = Api {
         #[cfg(test)]
         base_url: None,
@@ -919,13 +945,22 @@ async fn run(
     let status = Arc::new(Mutex::new(status));
     let (gw_tx, gw_rx) = unbounded_channel::<Value>();
     let (v_tx, v_rx) = unbounded_channel::<VoiceMsg>();
-    let gateway = tokio::spawn(gateway_loop(
-        token,
-        tx.clone(),
-        gw_rx,
-        status.clone(),
-        v_tx.clone(),
-    ));
+    // ゲートウェイのタスクが panic しても黙って消えないよう、捕まえて知らせる
+    let gateway = {
+        use futures_util::FutureExt;
+        let tx = tx.clone();
+        let task = gateway_loop(token, tx.clone(), gw_rx, status.clone(), v_tx.clone());
+        tokio::spawn(async move {
+            if std::panic::AssertUnwindSafe(task).catch_unwind().await.is_err() {
+                tx.send(Status(tr!("切断", "Disconnected", "已断开").into()));
+                tx.send(Event::Error(tr!(
+                    "ゲートウェイの処理が異常終了しました。再起動してください",
+                    "The gateway connection stopped unexpectedly. Please restart the app",
+                    "网关连接意外停止。请重新启动应用",
+                )));
+            }
+        })
+    };
     let sounds = SoundCache::new(ctl.clone());
     tokio::spawn(voice_task(
         me_id.clone(),
@@ -937,34 +972,7 @@ async fn run(
         ctl,
     ));
 
-    {
-        let (api, tx) = (api.clone(), tx.clone());
-        tokio::spawn(async move {
-            match api.get::<Vec<Guild>>("/users/@me/guilds").await {
-                Ok(g) => {
-                    let mut perms = api.guild_perms.lock().unwrap();
-                    for guild in &g {
-                        perms.insert(guild.id.clone(), if guild.owner { u64::MAX } else { 0 });
-                    }
-                    drop(perms);
-                    tx.send(Event::Guilds(g))
-                }
-                Err(e) => tx.send(Event::Error(tr!(
-                    "サーバー一覧: {e:#}",
-                    "Server list: {e:#}",
-                    "服务器列表：{e:#}",
-                ))),
-            }
-            match api.get::<Vec<Channel>>("/users/@me/channels").await {
-                Ok(c) => tx.send(Event::Dms(c)),
-                Err(e) => tx.send(Event::Error(tr!(
-                    "DM一覧: {e:#}",
-                    "DM list: {e:#}",
-                    "私信列表：{e:#}",
-                ))),
-            }
-        });
-    }
+    tokio::spawn(load_lists(api.clone(), tx.clone()));
 
     // One worker per guild coalesces bursts and repeats if another request arrives
     // while the previous snapshot is in flight.
@@ -972,6 +980,10 @@ async fn run(
     while let Some(cmd) = cmd_rx.recv().await {
         if let Cmd::Shutdown = &cmd {
             break;
+        }
+        if let Cmd::ReloadLists = &cmd {
+            tokio::spawn(load_lists(api.clone(), tx.clone()));
+            continue;
         }
         if let Cmd::LoadGuildChannels(gid) = &cmd {
             if !guild_loads.lock().unwrap().request(gid) {
@@ -1060,7 +1072,9 @@ async fn run(
         let (api, tx) = (api.clone(), tx.clone());
         tokio::spawn(async move {
             let res = match cmd {
-                Cmd::LoadGuildChannels(_) => unreachable!("handled before spawning"),
+                Cmd::LoadGuildChannels(_) | Cmd::ReloadLists => {
+                    unreachable!("handled before spawning")
+                }
                 Cmd::LoadMessages(cid) => match api
                     .get::<Vec<Message>>(&format!("/channels/{cid}/messages?limit={HISTORY_PAGE}"))
                     .await
@@ -1228,7 +1242,7 @@ async fn run(
                                 .map(|(i, (name, _))| json!({ "id": i, "filename": name }))
                                 .collect();
                             let payload = body.to_string();
-                            api.request_with(reqwest::Method::POST, &path, |req| {
+                            api.request_with(reqwest::Method::POST, &path, true, |req| {
                                 req.multipart(upload_form(&payload, &files))
                             })
                             .await
@@ -1273,7 +1287,7 @@ async fn run(
                     } else {
                         // 添付は足すだけ（attachments を書かなければ今の添付は残る）
                         let payload = json!({ "content": content }).to_string();
-                        api.request_with(reqwest::Method::PATCH, &path, |req| {
+                        api.request_with(reqwest::Method::PATCH, &path, true, |req| {
                             req.multipart(upload_form(&payload, &files))
                         })
                         .await
@@ -1587,7 +1601,7 @@ fn nonce() -> String {
     const EPOCH: u64 = 1_420_070_400_000;
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as u64;
     // 時計が 2015 年より前にずれていても桁あふれさせない
     (ms.saturating_sub(EPOCH) << 22).to_string()
@@ -1604,7 +1618,7 @@ fn presence_data(p: &MyPresence) -> Value {
     let start = *STARTED.get_or_init(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as u64
     });
     let activities = if p.activity {
@@ -1917,13 +1931,22 @@ struct ReadyGuild {
     emojis: Value,
     /// チャンネル・スレッドの ID だけ（read_state のチャンネルがどのサーバーのものか知るため）
     #[serde(default)]
-    channels: Vec<IdOnly>,
+    channels: Vec<ReadyChannel>,
     /// 参加中のスレッド（中身ごと。画面のスレッド一覧に使う）
     #[serde(default)]
     threads: Vec<Value>,
     /// 古い形の READY では、自分のメンバー情報がここに入る
     #[serde(default)]
     members: Vec<ReadyMember>,
+}
+
+/// READY のチャンネル。ID と、最新のメッセージ ID（起動前に届いた新着を未読にするため）
+#[derive(serde::Deserialize)]
+struct ReadyChannel {
+    #[serde(default)]
+    id: Value,
+    #[serde(default)]
+    last_message_id: Value,
 }
 
 #[derive(serde::Deserialize)]
@@ -1941,6 +1964,8 @@ struct ReadyMember {
     user: Option<IdOnly>,
     #[serde(default)]
     roles: Vec<Value>,
+    #[serde(default)]
+    communication_disabled_until: Value,
 }
 
 impl ReadyMember {
@@ -1968,6 +1993,9 @@ struct Ready {
     /// guilds と同じ順に、そのサーバーでの自分のメンバー情報
     #[serde(default)]
     merged_members: Vec<Vec<ReadyMember>>,
+    /// DM。ID と最新のメッセージ ID だけ使う
+    #[serde(default)]
+    private_channels: Vec<ReadyChannel>,
     /// スラッシュコマンドの実行で送る（結果のイベントがこのセッションに届く）
     #[serde(default)]
     session_id: Value,
@@ -1992,13 +2020,15 @@ fn dispatch_raw(
         if let Ok(r) = serde_json::from_str::<Ready>(raw.get()) {
             let me = r.user.map(|u| u.id).unwrap_or_default();
             // 自分のメンバー情報だけ残す（dispatch がロールを読む）
-            let member = |m: &ReadyMember| json!({ "user_id": me, "roles": m.roles });
+            let member = |m: &ReadyMember| json!({ "user_id": me, "roles": m.roles, "communication_disabled_until": m.communication_disabled_until });
             let merged: Vec<Value> = r
                 .merged_members
                 .iter()
                 .map(|ms| Value::Array(ms.iter().filter(|m| m.is(&me)).map(member).collect()))
                 .collect();
-            let ids = |v: &[IdOnly]| v.iter().map(|c| json!({ "id": c.id })).collect::<Vec<_>>();
+            let ids = |v: &[ReadyChannel]| {
+                v.iter().map(|c| json!({ "id": c.id, "last_message_id": c.last_message_id })).collect::<Vec<_>>()
+            };
             let guilds = r
                 .guilds
                 .into_iter()
@@ -2023,6 +2053,7 @@ fn dispatch_raw(
                     "user_settings_proto": r.user_settings_proto,
                     "user": { "id": me },
                     "merged_members": merged,
+                    "private_channels": ids(&r.private_channels),
                     "session_id": r.session_id,
                 }),
                 tx,
@@ -2201,6 +2232,18 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                 serde_json::Map::new(),
                 serde_json::Map::new(),
             );
+            let mut my_timeout = serde_json::Map::new();
+            // チャンネル（サーバー・DM）ごとの最新のメッセージ ID と、DM の ID
+            let mut channel_last = serde_json::Map::new();
+            let mut dm_ids = Vec::new();
+            for c in d["private_channels"].as_array().into_iter().flatten() {
+                if let Some(cid) = c["id"].as_str() {
+                    dm_ids.push(Value::from(cid));
+                    if c["last_message_id"].is_string() {
+                        channel_last.insert(cid.into(), c["last_message_id"].clone());
+                    }
+                }
+            }
             for (i, g) in d["guilds"].as_array().into_iter().flatten().enumerate() {
                 let Some(gid) = g["id"].as_str() else {
                     continue;
@@ -2211,6 +2254,9 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                     .find(|m| is_me(m))
                 {
                     my_roles.insert(gid.into(), m["roles"].clone());
+                    if m["communication_disabled_until"].is_string() {
+                        my_timeout.insert(gid.into(), m["communication_disabled_until"].clone());
+                    }
                 }
                 for c in g["channels"]
                     .as_array()
@@ -2220,6 +2266,9 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                 {
                     if let Some(cid) = c["id"].as_str() {
                         channel_guild.insert(cid.into(), gid.into());
+                        if c["last_message_id"].is_string() {
+                            channel_last.insert(cid.into(), c["last_message_id"].clone());
+                        }
                     }
                 }
                 if g["threads"].as_array().is_some_and(|t| !t.is_empty()) {
@@ -2229,6 +2278,11 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
             if !my_roles.is_empty() {
                 extra.insert("my_roles".into(), Value::Object(my_roles));
             }
+            if !my_timeout.is_empty() {
+                extra.insert("my_timeout".into(), Value::Object(my_timeout));
+            }
+            extra.insert("channel_last".into(), Value::Object(channel_last));
+            extra.insert("dm_ids".into(), Value::Array(dm_ids));
             if !channel_guild.is_empty() {
                 extra.insert("channel_guild".into(), Value::Object(channel_guild));
             }
@@ -2419,12 +2473,14 @@ fn dispatch(t: &str, mut d: Value, tx: &Tx, v_tx: &UnboundedSender<VoiceMsg>) {
                     .and_then(|e| serde_json::from_value(e.take()).ok());
                 // ピン留め・解除でも MESSAGE_UPDATE が届く（本文は付かない）
                 let pinned = d["pinned"].as_bool();
+                let edit = crate::model::MessageEdit::from_update(&d);
                 tx.send(Event::MessageUpdate {
                     channel_id: cid,
                     id,
                     content,
                     embeds,
                     pinned,
+                    edit,
                 });
             }
         }
@@ -2510,7 +2566,8 @@ async fn voice_task(
     loop {
         let msg = tokio::select! {
             m = rx.recv() => match m { Some(m) => m, None => return },
-            _ = tick.tick() => {
+            // VC に入っていないときは起きない（毎秒 50 回の空回りをしない）
+            _ = tick.tick(), if session.is_some() => {
                 if let Some(s) = &mut session { s.tick(); }
                 continue;
             }
@@ -2762,6 +2819,94 @@ fn voice_state_is_ours(state_session: Option<&str>, gateway_session: Option<&str
     match (state_session, gateway_session) {
         (Some(state), Some(gateway)) => state == gateway,
         _ => true,
+    }
+}
+
+/// サーバー一覧と DM 一覧を取る（接続時と、一から identify し直したとき）
+async fn load_lists(api: Api, tx: Tx) {
+    match api.get::<Vec<Guild>>("/users/@me/guilds").await {
+        Ok(g) => {
+            let mut perms = api.guild_perms.lock().unwrap();
+            for guild in &g {
+                perms.insert(guild.id.clone(), if guild.owner { u64::MAX } else { 0 });
+            }
+            drop(perms);
+            tx.send(Event::Guilds(g))
+        }
+        Err(e) => tx.send(Event::Error(tr!(
+            "サーバー一覧: {e:#}",
+            "Server list: {e:#}",
+            "服务器列表：{e:#}",
+        ))),
+    }
+    match api.get::<Vec<Channel>>("/users/@me/channels").await {
+        Ok(c) => tx.send(Event::Dms(c)),
+        Err(e) => tx.send(Event::Error(tr!(
+            "DM一覧: {e:#}",
+            "DM list: {e:#}",
+            "私信列表：{e:#}",
+        ))),
+    }
+}
+
+/// API に送ってよいパスか。"/" で始まり、"..", ".", 空の区切り、"#", "\\" を含まない
+fn path_is_safe(path: &str) -> bool {
+    let p = path.split('?').next().unwrap_or(path);
+    p.starts_with('/')
+        && !p.contains(['#', '\\'])
+        && !path.contains('#')
+        && p[1..].split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
+/// 429 の待ちを覚えるキー。Discord のバケットは主要な ID（チャンネル・サーバー・Webhook）ごとなので、
+/// それ以外の ID（メッセージ・ユーザーなど）と絵文字は一つにまとめる。
+/// そうしないとメッセージごとに別のキーになり、429 の待ちが次のリクエストに効かない
+fn route_key(method: &reqwest::Method, path: &str) -> String {
+    let p = path.split('?').next().unwrap_or(path);
+    let segs: Vec<&str> = p.split('/').collect();
+    let mut out = Vec::with_capacity(segs.len());
+    for (i, seg) in segs.iter().enumerate() {
+        let prev = if i > 0 { segs[i - 1] } else { "" };
+        let major = matches!(prev, "channels" | "guilds" | "webhooks");
+        let id_like = crate::model::is_snowflake(seg);
+        if prev == "reactions" {
+            out.push(":emoji");
+        } else if id_like && !major {
+            out.push(":id");
+        } else {
+            out.push(seg);
+        }
+    }
+    format!("{} {}", method, out.join("/"))
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use reqwest::Method;
+
+    #[test]
+    fn rejects_paths_that_escape() {
+        assert!(path_is_safe("/channels/1/messages"));
+        assert!(path_is_safe("/guilds/1/messages/search?content=a%2Fb"));
+        assert!(!path_is_safe("/channels/../../users/@me/x#/messages"));
+        assert!(!path_is_safe("/channels/1/./messages"));
+        assert!(!path_is_safe("/channels//messages"));
+        assert!(!path_is_safe("channels/1"));
+        assert!(!path_is_safe("/channels/1\\x"));
+    }
+
+    #[test]
+    fn route_key_groups_minor_ids() {
+        let a = route_key(&Method::POST, "/channels/1/messages/2/ack");
+        let b = route_key(&Method::POST, "/channels/1/messages/3/ack");
+        assert_eq!(a, b);
+        assert_ne!(a, route_key(&Method::POST, "/channels/9/messages/2/ack"));
+        assert_eq!(
+            route_key(&Method::PUT, "/channels/1/messages/2/reactions/%F0%9F%91%8D/@me"),
+            route_key(&Method::PUT, "/channels/1/messages/5/reactions/x%3A7/@me"),
+        );
+        assert_eq!(route_key(&Method::GET, "/guilds/4/members?limit=1"), "GET /guilds/4/members");
     }
 }
 

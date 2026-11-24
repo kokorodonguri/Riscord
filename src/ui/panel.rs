@@ -109,7 +109,10 @@ impl Root {
                     let Some(e) = this.upgrade() else {
                         return div().into_any_element();
                     };
-                    e.update(cx, |r, cx| r.pin_item(ix, window, cx))
+                    e.update(cx, |r, cx| {
+                        apply_pane(&r.pane_style);
+                        r.pin_item(ix, window, cx)
+                    })
                 })
                 .flex_1(),
             )
@@ -432,7 +435,10 @@ impl Root {
                     let Some(e) = this.upgrade() else {
                         return div().into_any_element();
                     };
-                    e.update(cx, |r, cx| r.search_item(ix, window, cx))
+                    e.update(cx, |r, cx| {
+                        apply_pane(&r.pane_style);
+                        r.search_item(ix, window, cx)
+                    })
                 })
                 .flex_1(),
             )

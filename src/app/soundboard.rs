@@ -163,7 +163,7 @@ impl App {
             return;
         };
         let id = self.role_queue(net::ApiCall::SendSound {
-            channel_id,
+            channel_id: channel_id.clone(),
             sound_id: sound.id.clone(),
             source_guild_id: sound.guild_id.clone(),
         });
@@ -173,7 +173,9 @@ impl App {
             Some(id) => {
                 // 送り始めたときに覚える。REST の応答より先に自分の知らせが届いても、二重に鳴らさない
                 self.recent_sound = Some((sound.id.clone(), std::time::Instant::now()));
-                sb.sending = Some((id, sound));
+                sb.sending = Some((id, sound.clone()));
+                // 画面の状態とは別に覚える。応答の前に閉じても、成功したら自分の端末で鳴らす
+                self.sounds_sending.insert(id, (channel_id, sound));
             }
             None => {
                 sb.error = Some(
@@ -189,7 +191,8 @@ impl App {
     }
 
     pub fn is_soundboard_request(&self, id: u64) -> bool {
-        self.soundboard.as_ref().is_some_and(|sb| {
+        self.sounds_sending.contains_key(&id)
+            || self.soundboard.as_ref().is_some_and(|sb| {
             sb.default_request == Some(id)
                 || sb.guild_request == Some(id)
                 || sb.sending.as_ref().is_some_and(|(n, _)| *n == id)
@@ -197,18 +200,25 @@ impl App {
     }
 
     pub fn soundboard_result(&mut self, id: u64, result: Result<serde_json::Value, String>) {
-        let Some(sb) = self.soundboard.as_mut() else {
-            return;
-        };
-        if sb.sending.as_ref().is_some_and(|(n, _)| *n == id) {
-            let (_, sound) = sb.sending.take().unwrap();
+        if let Some((channel_id, sound)) = self.sounds_sending.remove(&id) {
+            if let Some(sb) = self.soundboard.as_mut() {
+                if sb.sending.as_ref().is_some_and(|(n, _)| *n == id) {
+                    sb.sending = None;
+                }
+            }
             match result {
                 Ok(_) => {
                     // 自分の端末でも鳴らす。届く知らせでは鳴らさない（recent_sound は send_sound で覚えた）
-                    self.send(Cmd::PlaySound {
-                        sound_id: sound.id,
-                        volume: sound.volume,
-                    });
+                    // 応答までに別のチャンネルへ移っていたら鳴らさない
+                    if self
+                        .soundboard_voice()
+                        .is_some_and(|(_, c)| c == channel_id)
+                    {
+                        self.send(Cmd::PlaySound {
+                            sound_id: sound.id,
+                            volume: sound.volume,
+                        });
+                    }
                 }
                 Err(e) => {
                     if self
@@ -218,14 +228,19 @@ impl App {
                     {
                         self.recent_sound = None;
                     }
-                    sb.error = Some(super::pins::api_error_text(
-                        &e,
-                        tr!("鳴らせませんでした", "Couldn't play it", "无法播放"),
-                    ))
+                    if let Some(sb) = self.soundboard.as_mut() {
+                        sb.error = Some(super::pins::api_error_text(
+                            &e,
+                            tr!("鳴らせませんでした", "Couldn't play it", "无法播放"),
+                        ))
+                    }
                 }
             }
             return;
         }
+        let Some(sb) = self.soundboard.as_mut() else {
+            return;
+        };
         let parsed = result.ok().as_ref().and_then(parse_sounds);
         if sb.default_request == Some(id) {
             sb.default_request = None;
@@ -371,6 +386,28 @@ mod tests {
             matches!(rx.try_recv().unwrap(), Cmd::PlaySound { ref sound_id, .. } if sound_id == "7")
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn plays_own_sound_even_if_soundboard_closed_while_sending() {
+        let (mut app, mut rx) = connected(SPEAK | USE_SOUNDBOARD | (1 << 10));
+        app.toggle_soundboard();
+        let (a, _) = api(&mut rx);
+        api(&mut rx);
+        app.soundboard_result(a, Ok(serde_json::json!([{"sound_id":"5","name":"x"}])));
+        app.send_sound("5");
+        let (id, _) = api(&mut rx);
+        // 応答の前に閉じる。自分の知らせは届いても鳴らさない
+        app.toggle_soundboard();
+        assert!(app.soundboard.is_none());
+        app.on_voice_effect(&serde_json::json!({"channel_id":"20","user_id":"10","sound_id":"5"}));
+        assert!(rx.try_recv().is_err());
+        assert!(app.is_soundboard_request(id));
+        app.soundboard_result(id, Ok(serde_json::Value::Null));
+        assert!(
+            matches!(rx.try_recv().unwrap(), Cmd::PlaySound { ref sound_id, .. } if sound_id == "5")
+        );
+        assert!(app.sounds_sending.is_empty());
     }
 
     #[test]

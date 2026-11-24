@@ -261,6 +261,13 @@ pub struct BodyCache {
 /// 本文の控えの上限。
 pub const BODY_CACHE_MAX: usize = 2048;
 
+/// チャンネルの書きかけ（別のチャンネルへ移ったときにしまっておくもの）
+#[derive(Default)]
+pub struct Draft {
+    pub text: String,
+    pub uploads: Vec<crate::clip::Upload>,
+}
+
 /// 入力欄（gpui-component）。中身は AppState の文字列と同期する
 pub struct Inputs {
     pub compose: Entity<TextareaState>,
@@ -422,6 +429,16 @@ pub struct Root {
     pub other: Option<Option<String>>,
     split_vertical: Rc<Cell<bool>>,
     pane_h: f32,
+    /// この区画の印（押したメンション・絵文字をどの区画で押したか見分ける）
+    pub pane_id: u64,
+    /// 分割表示のときの区画の色・拡大率（一覧の行を作る前に戻す）。分割していなければ None
+    pub pane_style: Option<PaneStyle>,
+    /// チャンネルごとの書きかけ（本文・添付）。移ったらしまい、戻ったら出す
+    pub drafts: HashMap<String, Draft>,
+    /// いまの入力欄の中身がどのチャンネルのものか（None = まだ決めていない）
+    draft_at: Option<Option<String>>,
+    /// 入力欄の Esc が日本語入力の変換中に押された（返信・編集の取り消しに使わない）
+    esc_composing: bool,
     /// 右の区画のプロファイルの lock（左はプロセスが起動時に取っている）
     _lock: Option<std::fs::File>,
     _subs: Vec<Subscription>,
@@ -511,7 +528,16 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
         window,
         move |this: &mut Root, state, ev: &InputEvent, window, cx| {
             if let InputEvent::Change = ev {
-                let mut v = state.read(cx).value().to_string();
+                let logic = field(&mut this.app).map(|f| f.clone());
+                let v = match &logic {
+                    Some(l) => changed_value(state, l, window, cx),
+                    None => Some(state.read(cx).value().to_string()),
+                };
+                // 変換中で、ロジック側の変更をまだ合わせられない（確定したら合わせる）
+                let Some(mut v) = v else {
+                    cx.notify();
+                    return;
+                };
                 if let Some(l) = limit {
                     if v.chars().count() > l {
                         v = v.chars().take(l).collect();
@@ -519,6 +545,7 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
                         state.update(cx, |s, cx| s.set_value(v2, window, cx));
                     }
                 }
+                note_synced(state.entity_id(), &v);
                 if let Some(f) = field(&mut this.app) {
                     *f = v;
                 }
@@ -526,6 +553,81 @@ fn bind<M: gpui::component::input::InputModeKind + 'static>(
             }
         },
     )
+}
+
+thread_local! {
+    /// 入力欄ごとの「欄とロジック側の文字列が最後にそろったときの中身」。
+    /// 変換中に写せなかったロジック側の変更を、確定したあとに反映するために覚える
+    static SYNCED: std::cell::RefCell<HashMap<EntityId, String>> = Default::default();
+}
+
+fn note_synced(id: EntityId, s: &str) {
+    SYNCED.with_borrow_mut(|m| match m.get_mut(&id) {
+        Some(v) if v == s => {}
+        Some(v) => s.clone_into(v),
+        None => {
+            m.insert(id, s.to_string());
+        }
+    });
+}
+
+/// 変換中に写せなかったロジック側の変更と、確定後の欄の中身を合わせる。
+/// prev = 最後にそろった中身、logic = ロジック側の今の中身、widget = 確定後の欄の中身。
+/// ロジック側が後ろに足しただけ（貼り付け・プラグインの挿入）なら、確定した文の後ろに足す。
+/// それ以外（送信で空にした・チャンネルを移った等）はロジック側を優先する
+fn merge_pending(prev: &str, logic: &str, widget: &str) -> String {
+    match logic.strip_prefix(prev) {
+        Some(added) => format!("{widget}{added}"),
+        None => logic.to_string(),
+    }
+}
+
+/// 欄が変わったとき、ロジック側に写せていない変更があれば合わせた中身（無ければ None）
+fn pending_merge(id: EntityId, logic: &str, widget: &str) -> Option<String> {
+    if logic == widget {
+        return None;
+    }
+    SYNCED.with_borrow(|m| {
+        m.get(&id)
+            .filter(|prev| prev.as_str() != logic)
+            .map(|prev| merge_pending(prev, logic, widget))
+    })
+}
+
+/// 欄が変わったときにロジック側へ写す中身。ロジック側の保留分があれば合わせて欄にも写す。
+/// まだ変換中で合わせられないなら None（確定したときの変更でもう一度呼ばれる）
+fn changed_value<M: gpui::component::input::InputModeKind + 'static>(
+    e: &Entity<gpui::base::input::InputBaseState<M>>,
+    logic: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<String> {
+    use gpui::EntityInputHandler as _;
+    let value = e.read(cx).value().to_string();
+    let id = e.entity_id();
+    let Some(merged) = pending_merge(id, logic, &value) else {
+        note_synced(id, &value);
+        return Some(value);
+    };
+    if e.update(cx, |st, cx| st.marked_text_range(window, cx).is_some()) {
+        return None;
+    }
+    e.update(cx, |st, cx| {
+        st.set_value(merged.clone(), window, cx);
+        st.set_selected_range(merged.len()..merged.len(), cx);
+    });
+    note_synced(id, &merged);
+    Some(merged)
+}
+
+/// 入力欄が日本語入力の変換中（未確定の文字がある）か
+fn has_marked<M: gpui::component::input::InputModeKind + 'static>(
+    e: &Entity<gpui::base::input::InputBaseState<M>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    use gpui::EntityInputHandler as _;
+    e.update(cx, |st, cx| st.marked_text_range(window, cx).is_some())
 }
 
 /// 文字列が（ロジック側で）変わっていたら入力欄に写す。
@@ -540,15 +642,21 @@ fn sync<M: gpui::component::input::InputModeKind + 'static>(
 ) {
     use gpui::EntityInputHandler as _;
     if e.read(cx).value().as_ref() == s {
+        note_synced(e.entity_id(), s);
         return;
     }
-    e.update(cx, |st, cx| {
+    // 変換中は写さない。ロジック側の変更は、確定したときの変更の通知で合わせる（changed_value）
+    let written = e.update(cx, |st, cx| {
         if st.marked_text_range(window, cx).is_some() {
-            return;
+            return false;
         }
         st.set_value(s.to_string(), window, cx);
         st.set_selected_range(s.len()..s.len(), cx);
+        true
     });
+    if written {
+        note_synced(e.entity_id(), s);
+    }
 }
 
 /// 表示言語に合う既定フォントのファミリー名。中国語なら簡体字の字形のフォント、
@@ -985,7 +1093,11 @@ impl Root {
             window,
             |this: &mut Root, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
-                    let value = state.read(cx).value().to_string();
+                    // 変換中にロジック側が書いた分（貼り付け・プラグインの挿入）は、確定してから合わせる
+                    let Some(value) = changed_value(state, &this.app.input, window, cx) else {
+                        cx.notify();
+                        return;
+                    };
                     let grew = value.len() > this.app.input.len();
                     this.app.input = value;
                     if grew {
@@ -1097,8 +1209,19 @@ impl Root {
                 }
             },
         ));
+        // プッシュトゥトーク: 入力欄に割り当てのあるキーでも押下を拾えるよう、アクションより前に受ける
+        {
+            let (this, win) = (cx.weak_entity(), window.window_handle());
+            subs.push(cx.intercept_keystrokes(move |ev, window, cx| {
+                if window.window_handle() != win {
+                    return;
+                }
+                let _ = this.update(cx, |r, cx| r.on_keystroke_intercept(ev, window, cx));
+            }));
+        }
         // ウィンドウを閉じたときの控えの保存は split::Shell が区画ごとに行う
-        let app = AppState::new(waker, profile);
+        let app = AppState::new(waker.clone(), profile);
+        prefetch_mono_family(waker);
         set_zoom(app.settings.zoom);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -1160,6 +1283,11 @@ impl Root {
             other: None,
             split_vertical,
             pane_h: 0.0,
+            pane_id: cx.entity_id().as_u64(),
+            pane_style: None,
+            drafts: HashMap::new(),
+            draft_at: None,
+            esc_composing: false,
             _lock: lock,
             _subs: subs,
         };
@@ -1283,7 +1411,10 @@ impl Root {
                 crate::theme::set_parts(&t.parts);
             }
             set_zoom(self.app.settings.zoom);
+        } else {
+            self.pane_style = None;
         }
+        set_current_pane(self.pane_id);
         let split = self.other.is_some();
         let vertical = split && self.split_vertical.get();
         let width = f32::from(vp.width);
@@ -1361,11 +1492,8 @@ impl Root {
             self.open_channel(cid);
             window.activate_window();
         }
-        if let Some(url) = crate::ui::message::PENDING_PREVIEW.lock().unwrap().take() {
-            self.open_image_preview(url);
-        }
-        // ClickableMentions: 押されたメンションの人のプロフィールを開く
-        let mention = crate::ui::message::PENDING_MENTION.lock().unwrap().take();
+        // ClickableMentions: 押されたメンションの人のプロフィールを開く（この区画で押されたものだけ）
+        let mention = message::take_pending(&message::PENDING_MENTION, self.pane_id);
         if let Some(uid) = mention {
             let user = self
                 .app
@@ -1394,6 +1522,12 @@ impl Root {
                 self.app.login.qr = Some(st::QrSession::start(&self.app.waker));
             }
         }
+        if take_mono_changed() {
+            // 等幅フォントの名前を調べ終えた（コードの行の高さが変わる）
+            for l in self.lists.values() {
+                l.state.remeasure();
+            }
+        }
         if self.app.font_dirty {
             self.app.font_dirty = false;
             self.apply_fonts(cx);
@@ -1406,6 +1540,16 @@ impl Root {
         if self.app.theme_dirty {
             self.app.theme_dirty = false;
             self.apply_component_theme(window, cx);
+        }
+        if self.other.is_some() {
+            // 一覧の行は後（prepaint）で作られるので、そのときに戻す区画の値を控える
+            let t = self.app.theme_applied.as_ref();
+            self.pane_style = Some(PaneStyle::new(
+                self.pane_id,
+                t.map(|t| t.colors.clone()),
+                t.map(|t| t.parts.clone()),
+                zoom(),
+            ));
         }
         let focused = self.pane_active(window, cx);
         self.app.sync_read_state(focused);
@@ -1436,6 +1580,8 @@ impl Root {
             let keep = &self.app.messages;
             self.lists.retain(|k, _| keep.contains_key(k));
         }
+        // チャンネルを移っていたら書きかけを入れ替える（どの経路で移っても）
+        self.swap_draft();
         // 入力欄（ロジック側で中身を変えたとき）
         sync(&self.inp.compose, &self.app.input, window, cx);
         sync(&self.inp.email, &self.app.login.email, window, cx);
@@ -1635,7 +1781,57 @@ impl Root {
         self.after_nav();
     }
 
+    /// 書きかけをチャンネルごとに控える。移っていたら、前のチャンネルの本文・添付をしまい、
+    /// 移った先のチャンネルの書きかけを出す（本文だけが別のチャンネルへ付いていかないように）
+    fn swap_draft(&mut self) {
+        let a = &mut self.app;
+        let here = a.sel_channel.clone();
+        let Some(at) = self.draft_at.as_ref() else {
+            // 最初は今の中身をそのチャンネルのものとする
+            self.draft_at = Some(here);
+            return;
+        };
+        if *at == here {
+            return;
+        }
+        let old = self.draft_at.replace(here.clone()).flatten();
+        // 編集中の文は書きかけではないので、離れたら捨てる
+        let text = std::mem::take(&mut a.input);
+        let text = if a.editing.is_some() {
+            String::new()
+        } else {
+            text
+        };
+        if a.editing
+            .as_ref()
+            .is_some_and(|m| Some(&m.channel_id) != here.as_ref())
+        {
+            a.editing = None;
+        }
+        let uploads = if old.is_some() && a.upload_channel == old {
+            std::mem::take(&mut a.uploads)
+        } else {
+            Vec::new()
+        };
+        if let Some(old) = old {
+            if text.is_empty() && uploads.is_empty() {
+                self.drafts.remove(&old);
+            } else {
+                self.drafts.insert(old, Draft { text, uploads });
+            }
+        }
+        a.uploads.clear();
+        a.compose_notice = None;
+        a.upload_channel = here.clone();
+        if let Some(d) = here.as_ref().and_then(|c| self.drafts.remove(c)) {
+            a.input = d.text;
+            a.uploads = d.uploads;
+        }
+    }
+
     fn after_nav(&mut self) {
+        // 返信先・添付を片付ける前に、書きかけ（本文・添付）をチャンネルごとにしまう
+        self.swap_draft();
         let a = &mut self.app;
         let here = a.sel_channel.clone();
         if a.editing
@@ -1706,18 +1902,11 @@ impl Root {
     /// 全体のキー操作（入力欄にフォーカスがあっても効くもの）
     fn on_key_capture(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
-        // プッシュトゥトークのキーを決めている間は、そのキーを覚える
-        if self.app.binding_ptt {
-            if k.key != "escape" {
-                self.app.settings.ptt_key = Some(k.key.clone());
-                self.app.save_settings();
-            }
-            self.app.binding_ptt = false;
-            cx.stop_propagation();
-            cx.notify();
+        // プッシュトゥトークの押下とキーの登録は on_keystroke_intercept（アクションより前）で拾う
+        // 入力欄の Esc が変換中のものなら（変換の取り消し）、返信・編集の取り消しやポップアップを閉じるのに使わない
+        if k.key == "escape" && std::mem::take(&mut self.esc_composing) {
             return;
         }
-        self.ptt(&k.key, true);
         if !self.app.in_home() {
             return;
         }
@@ -1849,6 +2038,8 @@ impl Root {
             && m.shift
             && k.key.eq_ignore_ascii_case("v")
             && self.app.plugins.on("paste-and-send")
+            // 変換中は欄の中身を書き換えられない（確定のときに貼った分が消える）ので送らない
+            && !has_marked(&self.inp.compose, window, cx)
         {
             if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                 self.app.input.push_str(&text);
@@ -1881,22 +2072,76 @@ impl Root {
             cx.notify();
             return;
         }
-        // 入力欄で: Esc は返信・編集をやめる、↑ は直前のメッセージを編集
-        if compose_focused {
-            if k.key == "escape" && (self.app.editing.is_some() || self.app.reply_to.is_some()) {
-                self.cancel_compose();
-                cx.stop_propagation();
-                cx.notify();
-            } else if k.key == "up"
-                && !m.modified()
-                && self.app.input.is_empty()
-                && self.app.editing.is_none()
-            {
-                self.edit_last();
-                cx.stop_propagation();
-                cx.notify();
-            }
+        // 入力欄で: Esc は返信・編集をやめる（↑ で直前のメッセージを編集するのは MoveUp のアクションで拾う）
+        if compose_focused
+            && k.key == "escape"
+            && (self.app.editing.is_some() || self.app.reply_to.is_some())
+        {
+            self.cancel_compose();
+            cx.stop_propagation();
+            cx.notify();
         }
+    }
+
+    /// 入力欄が空のときの ↑（MoveUp）: 自分の直前のメッセージを編集する。拾ったら true
+    fn compose_up(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let compose = self.inp.compose.read(cx);
+        if !compose.focus_handle(cx).is_focused(window)
+            || !compose.value().is_empty()
+            || !self.app.input.is_empty()
+            || self.app.editing.is_some()
+            || has_marked(&self.inp.compose, window, cx)
+        {
+            return false;
+        }
+        self.edit_last();
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
+    /// 入力欄の Esc（アクション）を入力欄より先に見る。変換中なら覚えておき、
+    /// あとのキー処理で返信・編集を取り消さない（入力欄が変換を消してから Esc を素通しするため）
+    fn compose_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let focused = self
+            .inp
+            .compose
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        self.esc_composing = focused && has_marked(&self.inp.compose, window, cx);
+        self.esc_composing
+    }
+
+    /// どのキー押下もアクションより前に受ける（プッシュトゥトーク）。
+    /// 入力欄にキーが割り当てられている（↑・Enter・Tab など）と capture_key_down には届かないため
+    fn on_keystroke_intercept(
+        &mut self,
+        ev: &KeystrokeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let k = &ev.keystroke;
+        // 修飾キーだけの「押した」は離したときに合成されるので、押下として扱わない
+        if k.is_modifier_key() {
+            return;
+        }
+        // 分割表示では操作中の区画だけ
+        if self.other.is_some() && !self.focus.contains_focused(window, cx) {
+            return;
+        }
+        // プッシュトゥトークのキーを決めている間は、そのキーを覚える（入力欄などには渡さない）
+        if self.app.binding_ptt {
+            if k.key != "escape" {
+                self.app.settings.ptt_key = Some(k.key.clone());
+                self.app.save_settings();
+            }
+            self.app.binding_ptt = false;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        self.ptt(&k.key, true);
     }
 
     /// どこにもフォーカスが無いときに文字を打ったら入力欄へ（その文字ごと渡す）
@@ -1917,14 +2162,17 @@ impl Root {
         if k.modifiers.control || k.modifiers.alt || k.modifiers.platform {
             return;
         }
-        if let Some(ch) = k
-            .key_char
-            .as_ref()
-            .filter(|c| !c.chars().any(char::is_control))
-        {
-            self.app.input.push_str(ch);
-            self.app.focus_input = true;
-            cx.notify();
+        match type_ahead(&k.key, k.key_char.as_deref()) {
+            TypeAhead::Insert(ch) => {
+                self.app.input.push_str(&ch);
+                self.app.focus_input = true;
+                cx.notify();
+            }
+            TypeAhead::Focus => {
+                self.app.focus_input = true;
+                cx.notify();
+            }
+            TypeAhead::Ignore => {}
         }
     }
 
@@ -2118,36 +2366,43 @@ impl Render for Root {
             // :名前: の補完中は、入力欄より先にキーを受け取る（補完していなければ素通し）
             .capture_action(
                 cx.listener(|this, _: &gpui::base::input::MoveUp, window, cx| {
-                    if !this.command_ac_key(emoji::AcKey::Up, window, cx) {
-                        this.emoji_ac_key(emoji::AcKey::Up, window, cx)
+                    // 補完していなければ、空の入力欄の ↑ で直前のメッセージを編集
+                    if !this.command_ac_key(emoji::AcKey::Up, window, cx)
+                        && !this.emoji_ac_key(emoji::AcKey::Up, window, cx)
+                    {
+                        this.compose_up(window, cx);
                     }
                 }),
             )
             .capture_action(
                 cx.listener(|this, _: &gpui::base::input::MoveDown, window, cx| {
                     if !this.command_ac_key(emoji::AcKey::Down, window, cx) {
-                        this.emoji_ac_key(emoji::AcKey::Down, window, cx)
+                        this.emoji_ac_key(emoji::AcKey::Down, window, cx);
                     }
                 }),
             )
             .capture_action(
                 cx.listener(|this, _: &gpui::base::input::IndentInline, window, cx| {
                     if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) {
-                        this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)
+                        this.emoji_ac_key(emoji::AcKey::Confirm, window, cx);
                     }
                 }),
             )
             .capture_action(
                 cx.listener(|this, _: &gpui::base::input::Enter, window, cx| {
                     if !this.command_ac_key(emoji::AcKey::Confirm, window, cx) {
-                        this.emoji_ac_key(emoji::AcKey::Confirm, window, cx)
+                        this.emoji_ac_key(emoji::AcKey::Confirm, window, cx);
                     }
                 }),
             )
             .capture_action(
                 cx.listener(|this, _: &gpui::base::input::Escape, window, cx| {
+                    // 変換中の Esc は変換の取り消しだけ（補完・コマンド・返信はそのまま）
+                    if this.compose_escape(window, cx) {
+                        return;
+                    }
                     if !this.command_ac_key(emoji::AcKey::Dismiss, window, cx) {
-                        this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx)
+                        this.emoji_ac_key(emoji::AcKey::Dismiss, window, cx);
                     }
                 }),
             )
@@ -2187,6 +2442,78 @@ impl Render for Root {
             }))
             .children(self.window_background())
             .child(content)
+    }
+}
+
+/// どこにもフォーカスが無いときに打ったキーを、入力欄へどう渡すか
+#[derive(Debug, PartialEq)]
+enum TypeAhead {
+    /// その文字を入れて入力欄へ移る
+    Insert(String),
+    /// 文字は入れずに入力欄へ移るだけ（日本語入力などを通すべき文字・変換のキー）
+    Focus,
+    Ignore,
+}
+
+/// フォーカスの無いところで打った文字は入力欄の日本語入力（IME）を通っていない。
+/// ASCII の文字だけをそのまま渡し、それ以外（かな入力の文字など）や変換・かなのキーは
+/// 入力欄へ移るだけにする（続きは入力欄で IME を通して打てる）
+fn type_ahead(key: &str, key_char: Option<&str>) -> TypeAhead {
+    const IME_KEYS: &[&str] = &[
+        "henkan",
+        "muhenkan",
+        "kana",
+        "eisu",
+        "hiragana",
+        "katakana",
+        "hiragana_katakana",
+        "zenkaku",
+        "hankaku",
+        "zenkaku_hankaku",
+        "kanji",
+        "convert",
+        "nonconvert",
+        "lang1",
+        "lang2",
+        "hangul",
+        "hanja",
+        "hangul_hanja",
+        "romaji",
+    ];
+    let lower = key.to_ascii_lowercase();
+    if IME_KEYS.contains(&lower.as_str()) {
+        return TypeAhead::Focus;
+    }
+    match key_char.filter(|c| !c.is_empty() && !c.chars().any(char::is_control)) {
+        Some(c) if c.is_ascii() => TypeAhead::Insert(c.to_string()),
+        Some(_) => TypeAhead::Focus,
+        None => TypeAhead::Ignore,
+    }
+}
+
+#[cfg(test)]
+mod ui_input_tests {
+    use super::{merge_pending, type_ahead, TypeAhead};
+
+    #[test]
+    fn type_ahead_passes_only_ascii() {
+        assert_eq!(type_ahead("a", Some("a")), TypeAhead::Insert("a".into()));
+        assert_eq!(type_ahead("A", Some("A")), TypeAhead::Insert("A".into()));
+        // かな入力の文字は IME を通っていないので入れない
+        assert_eq!(type_ahead("a", Some("ち")), TypeAhead::Focus);
+        assert_eq!(type_ahead("henkan", None), TypeAhead::Focus);
+        assert_eq!(type_ahead("zenkaku_hankaku", None), TypeAhead::Focus);
+        assert_eq!(type_ahead("escape", None), TypeAhead::Ignore);
+        assert_eq!(type_ahead("tab", Some("\t")), TypeAhead::Ignore);
+    }
+
+    #[test]
+    fn pending_logic_edit_is_merged_after_commit() {
+        // 変換中にプラグインが後ろに足した分は、確定した文の後ろに付ける
+        assert_eq!(merge_pending("abc", "abc!!", "abc日本"), "abc日本!!");
+        // 送信で空にした・別の中身にしたなら、ロジック側を優先する
+        assert_eq!(merge_pending("abc", "", "abc日本"), "");
+        assert_eq!(merge_pending("abc", "xyz", "abc日本"), "xyz");
     }
 }
 

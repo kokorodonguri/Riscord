@@ -44,6 +44,8 @@ pub struct Translator {
     pub next_request_id: u64,
     pub outgoing: HashMap<String, u64>,
     pub messages: HashMap<(String, String), (String, String)>,
+    /// messages が変わるたびに増える（メッセージ一覧の作り直しの合図。行ごとの目印は翻訳の中身で決める）
+    pub version: u64,
 }
 impl Default for Translator {
     fn default() -> Self {
@@ -56,6 +58,7 @@ impl Default for Translator {
             next_request_id: 0,
             outgoing: HashMap::new(),
             messages: HashMap::new(),
+            version: 0,
         }
     }
 }

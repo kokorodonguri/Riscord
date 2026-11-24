@@ -22,10 +22,13 @@ fn row_key(
     pt: Option<DateTime<Local>>,
     compact: bool,
     plugin_revision: u64,
+    translation: Option<&str>,
 ) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     m.hash(&mut h);
     plugin_revision.hash(&mut h);
+    // 翻訳はその行だけの違い（届いても、ほかの行は測り直さない）
+    translation.hash(&mut h);
     super::message::row_layout_at(m, prev, t, pt, compact).hash(&mut h);
     h.finish()
 }
@@ -598,7 +601,9 @@ impl Root {
             return col.child(msgs);
         }
         msgs = msgs.child(self.messages_view(prefix, &cname, cx));
-        msgs = msgs.children(self.jump_hint(cx));
+        // Shift+L は文字の欄（入力欄を含む）にいるときは L を打てるよう奪わないので、効くときだけ案内する
+        let key_works = !(!self.focus.is_focused(window) && self.focus.contains_focused(window, cx));
+        msgs = msgs.children(self.jump_hint(key_works, cx));
         col = col.child(msgs);
         if cur.is_some() {
             col = col.child(self.compose(prefix, &cname, window, cx));
@@ -607,7 +612,8 @@ impl Root {
     }
 
     /// 上へさかのぼっている間、下端に出す「最新へ」の案内。押すか Shift+L で一番下へ
-    fn jump_hint(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// （key_works = いま Shift+L が効くか。効かないときはキーの案内を出さない）
+    fn jump_hint(&mut self, key_works: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.scrolled_up() {
             return None;
         }
@@ -634,11 +640,13 @@ impl Root {
                 13.0,
                 TEXT(),
             ))
-            .child(div().px(z(5.0)).rounded(z(4.0)).bg(WIDGET()).child(text(
-                "Shift+L",
-                11.0,
-                MUTED(),
-            )))
+            .when(key_works, |d| {
+                d.child(div().px(z(5.0)).rounded(z(4.0)).bg(WIDGET()).child(text(
+                    "Shift+L",
+                    11.0,
+                    MUTED(),
+                )))
+            })
             .child(icon(IconName::ArrowDown, 14.0, MUTED()));
         Some(
             div()
@@ -1469,6 +1477,7 @@ impl Root {
             (
                 self.app.msg_rev,
                 self.app.plugins.revision,
+                self.app.translator.version,
                 compact,
                 no_access,
                 hist_end,
@@ -1491,8 +1500,16 @@ impl Root {
                 ids.push(0);
             }
             let mut pt = None;
+            let translations = &self.app.translator.messages;
+            let translating = self.app.plugins.translator_enabled() && !translations.is_empty();
             for (i, m) in msgs.iter().enumerate() {
                 let t = crate::app::local_dt(&m.timestamp);
+                // 行の下に出す翻訳（原文が今の本文と同じものだけ）
+                let translation = translating
+                    .then(|| translations.get(&(m.channel_id.clone(), m.id.clone())))
+                    .flatten()
+                    .filter(|(original, _)| original == &m.content)
+                    .map(|(_, t)| t.as_str());
                 keys.push(row_key(
                     m,
                     i.checked_sub(1).map(|j| &msgs[j]),
@@ -1500,6 +1517,7 @@ impl Root {
                     pt,
                     compact,
                     self.app.plugins.revision,
+                    translation,
                 ));
                 ids.push(id_key(&m.id));
                 pt = t;
@@ -1614,6 +1632,8 @@ impl Root {
                         return div().into_any_element();
                     };
                     e.update(cx, |r, cx| {
+                        // 行は区画の描画より後に作るので、この区画の色・拡大率に戻す
+                        apply_pane(&r.pane_style);
                         r.list_item(&cid, ix, n, &prefix, &cname, window, cx)
                     })
                 })

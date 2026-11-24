@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# 引数で cargo のプロファイルを選ぶ（既定は release。debug は手早く試すとき用で、音声の処理が重くなる）
+PROFILE="${1:-release}"
+case "$PROFILE" in
+    release) CARGO_PROFILE_ARGS=(--release); PROFILE_DIR=release ;;
+    debug) CARGO_PROFILE_ARGS=(); PROFILE_DIR=debug ;;
+    *) echo "プロファイルは release か debug です: $PROFILE" >&2; exit 1 ;;
+esac
 SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
 NDK_ROOT="${ANDROID_NDK_HOME:-$SDK_ROOT/ndk/27.2.12479018}"
 if [[ ! -d "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" ]]; then
@@ -16,13 +23,14 @@ set(ANDROID_ABI arm64-v8a CACHE STRING "" FORCE)
 set(ANDROID_PLATFORM android-29 CACHE STRING "" FORCE)
 include("$NDK_ROOT/build/cmake/android.toolchain.cmake")
 CMAKE
-export CMAKE_TOOLCHAIN_FILE="$PWD/target/android-toolchain/android.toolchain.cmake"
-export CMAKE_GENERATOR=Ninja
+# Android 向けのビルドにだけ効かせる（全体に export すると、ホスト向けに cmake で作るものまで Android 向けになる）
+export CMAKE_TOOLCHAIN_FILE_aarch64_linux_android="$PWD/target/android-toolchain/android.toolchain.cmake"
+export CMAKE_GENERATOR_aarch64_linux_android=Ninja
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
 export ANDROID_ABI=arm64-v8a
 export ANDROID_PLATFORM=android-29
 export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
-cargo build -p riscord-core --locked --release --target aarch64-linux-android
+cargo build -p riscord-core --locked ${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"} --target aarch64-linux-android
 mkdir -p android/app/src/main/jniLibs/arm64-v8a
-cp target/aarch64-linux-android/release/libriscord_core.so android/app/src/main/jniLibs/arm64-v8a/
+cp "target/aarch64-linux-android/$PROFILE_DIR/libriscord_core.so" android/app/src/main/jniLibs/arm64-v8a/

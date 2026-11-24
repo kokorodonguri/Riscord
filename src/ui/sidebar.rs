@@ -955,6 +955,7 @@ impl Root {
                             shown.len(),
                             cx.processor(
                                 move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                                    apply_pane(&this.pane_style);
                                     let a = &this.app;
                                     range
                                         .filter_map(|k| a.dms.get(*shown.get(k)?))

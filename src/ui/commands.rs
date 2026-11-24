@@ -61,6 +61,16 @@ impl Root {
             }
             return false;
         }
+        // 候補は入力欄に出すものなので、ほかの欄（検索など）にいるときのキーは奪わない
+        if !self
+            .inp
+            .compose
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            return false;
+        }
         let Some(hits) = self.command_hits().filter(|h| !h.is_empty()) else {
             return false;
         };

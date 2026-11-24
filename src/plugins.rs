@@ -435,7 +435,8 @@ impl Runtime {
         api.set(
             "send_message",
             lua.create_function(move |_, (channel, content): (String, String)| {
-                if channel.len() > 64
+                // ID はそのまま API のパスに入るので、数字だけのものに限る（"../" などで別の API を叩かせない）
+                if !crate::model::is_snowflake(&channel)
                     || content.trim().is_empty()
                     || content.len() > 8000
                     || q.borrow().len() >= 100
@@ -562,7 +563,12 @@ impl Runtime {
                             ))
                         }
                         ("insert", _) => Action::Insert(a),
-                        ("open_channel", _) => Action::OpenChannel(a),
+                        ("open_channel", _) if crate::model::is_snowflake(&a) => {
+                            Action::OpenChannel(a)
+                        }
+                        ("open_channel", _) => {
+                            return Err(mlua::Error::runtime("open_channel: invalid channel id"))
+                        }
                         ("play_sound", _) => Action::Sound(a),
                         ("show_info", _) => Action::Info(a, b.unwrap_or_default()),
                         _ => Action::Speak(a),

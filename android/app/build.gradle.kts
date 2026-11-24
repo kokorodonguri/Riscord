@@ -62,9 +62,23 @@ dependencies {
     implementation("androidx.compose.ui:ui")
 }
 
+// Rust のコア（libriscord_core.so）を作る。入力が変わっていなければ up-to-date で飛ばす。
+// 既定は cargo の release（debug だと音声の処理が重い）。-Priscord.nativeProfile=debug で debug にできる
+val repoRoot = rootProject.projectDir.parentFile
+val nativeProfile = providers.gradleProperty("riscord.nativeProfile").orElse("release")
 val buildRustNative by tasks.registering(Exec::class) {
     onlyIf { !providers.gradleProperty("riscord.usePrebuiltNative").isPresent }
-    workingDir(rootProject.projectDir.parentFile)
-    commandLine("bash", "scripts/build-android-native.sh")
+    workingDir(repoRoot)
+    commandLine("bash", "scripts/build-android-native.sh", nativeProfile.get())
+    inputs.property("profile", nativeProfile)
+    inputs.property("ndk", providers.environmentVariable("ANDROID_NDK_HOME").orElse(""))
+    // riscord-core は src/ のモジュールを #[path] で取り込んでいる
+    inputs.files(
+        File(repoRoot, "Cargo.toml"), File(repoRoot, "Cargo.lock"),
+        File(repoRoot, "crates/riscord-core/Cargo.toml"), File(repoRoot, "scripts/build-android-native.sh"),
+    ).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir(File(repoRoot, "crates/riscord-core/src")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir(File(repoRoot, "src")).withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.file(File(projectDir, "src/main/jniLibs/arm64-v8a/libriscord_core.so"))
 }
 tasks.named("preBuild") { dependsOn(buildRustNative) }

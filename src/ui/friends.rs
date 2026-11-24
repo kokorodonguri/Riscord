@@ -223,6 +223,7 @@ impl Root {
                     rows.len(),
                     cx.processor(
                         move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                            apply_pane(&this.pane_style);
                             range
                                 .filter_map(|i| rows.get(i))
                                 .map(|r| {

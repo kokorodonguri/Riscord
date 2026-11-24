@@ -594,7 +594,8 @@ pub async fn run(
                     Role::Watch { streamer, decoder } => {
                         // RISCORD_DEBUG_STREAM 用: 番号や種類で捨てる前に、届いたものを全部数える
                         stats.udp_in += 1;
-                        let key = if rtp::is_rtcp(pkt) {
+                        // 認証前の生のパケットなので、長さを確かめてから読む（2〜7 バイトの RTCP で落ちないように）
+                        let key = if rtp::is_rtcp(pkt) && pkt.len() >= 8 {
                             (format!("rtcp{}", pkt[1]), u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]))
                         } else if pkt.len() >= 12 {
                             (format!("pt{}", pkt[1] & 0x7F), u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]))

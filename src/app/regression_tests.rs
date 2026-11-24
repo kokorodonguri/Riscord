@@ -39,6 +39,7 @@ fn bench_poll_message_updates() {
                     content: None,
                     embeds: Some(Vec::new()),
                     pinned: None,
+                    edit: None,
                 })
                 .unwrap();
             }
@@ -88,6 +89,7 @@ fn member_chunks_preserve_order_and_latest_updates() {
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
     let member = |id: &str, name: &str| Member {
+        communication_disabled_until: None,
         user: Some(User {
             public_flags: 0,
             id: id.into(),
@@ -121,6 +123,7 @@ fn member_chunks_preserve_order_and_latest_updates() {
                 avatar: None,
                 avatar_decoration_data: None,
                 roles: vec![],
+                communication_disabled_until: None,
             },
         ],
     ))
@@ -141,6 +144,7 @@ fn member_removal_does_not_corrupt_the_reused_index() {
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
     let member = |id: &str, name: &str| Member {
+        communication_disabled_until: None,
         user: Some(User {
             public_flags: 0,
             id: id.into(),
@@ -187,6 +191,7 @@ fn member_index_reuses_then_expires_and_handles_interleaved_guilds() {
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
     let member = |id: &str, name: &str| Member {
+        communication_disabled_until: None,
         user: Some(User {
             public_flags: 0,
             id: id.into(),
@@ -293,6 +298,7 @@ fn loading_messages_replays_gateway_changes_and_prevents_duplicate_requests() {
         content: Some("edited".into()),
         embeds: None,
         pinned: None,
+        edit: None,
     })
     .unwrap();
     tx.send(Event::MessageDelete {
@@ -465,6 +471,7 @@ fn failed_edit_restores_original_target_and_success_keeps_newer_gateway_update()
         content: Some("newer".into()),
         embeds: None,
         pinned: None,
+        edit: None,
     })
     .unwrap();
     tx.send(Event::ComposeResult {
@@ -592,6 +599,27 @@ fn late_message_response_does_not_restore_evicted_channel() {
 }
 
 #[test]
+fn sent_message_does_not_skip_detached_history() {
+    let mut app = bench_app(2);
+    app.history.insert("c".into(), History { newer: true, ..Default::default() });
+    app.compose_submissions.insert("c".into(), ComposeSubmission {
+        content: "sent".into(), reply: None, editing: None, uploads: Vec::new(),
+        failed: false, rejected: None,
+    });
+    let (tx, ev) = std::sync::mpsc::channel();
+    let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.backend = Some(Backend { cmd, ev });
+    let mut sent = app.messages["c"][1].clone();
+    sent.id = "900000".into();
+    tx.send(Event::ComposeResult { channel_id: "c".into(), result: Ok(Some(sent.clone())) }).unwrap();
+    tx.send(Event::MessageCreate(sent)).unwrap();
+    app.poll();
+    assert_eq!(app.messages["c"].last().unwrap().id, "100001");
+    assert_eq!(app.history["c"].detached_new[0].id, "900000");
+    assert_eq!(app.history["c"].detached_new.len(), 1);
+}
+
+#[test]
 fn replaced_and_trimmed_messages_release_stickers() {
     for replace in [true, false] {
         let mut app = bench_app(MAX_MSGS);
@@ -615,7 +643,7 @@ fn replaced_and_trimmed_messages_release_stickers() {
             // 表示中のチャンネルは遡った履歴を消さないので、別のチャンネルを見ている状態にする
             app.sel_channel = None;
             let mut new = app.messages["c"][2].clone();
-            new.id = "new".into();
+            new.id = (100_000 + MAX_MSGS).to_string();
             tx.send(Event::MessageCreate(new)).unwrap();
         }
         app.poll();
@@ -972,6 +1000,7 @@ fn server_member_list_headers_use_group_counts() {
     ));
     let members: Vec<Member> = (0..2)
         .map(|i| Member {
+            communication_disabled_until: None,
             user: Some(User {
                 public_flags: 0,
                 id: format!("m{i}"),
@@ -1268,6 +1297,7 @@ fn message_revision_advances_only_on_message_changes() {
         content: Some("edited".into()),
         embeds: None,
         pinned: None,
+        edit: None,
     })
     .unwrap();
     app.poll();
@@ -2608,6 +2638,7 @@ fn older_page_load_replays_deletes_and_edits() {
         content: Some("new".into()),
         embeds: None,
         pinned: None,
+        edit: None,
     })
     .unwrap();
     tx.send(Event::OlderMessages {

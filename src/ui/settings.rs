@@ -1337,7 +1337,8 @@ impl Root {
             uniform_list(
                 "fontlist",
                 rows.len(),
-                cx.processor(move |_: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                cx.processor(move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                    apply_pane(&this.pane_style);
                     range
                         .filter_map(|i| rows.get(i).map(|row| (i, row)))
                         .map(|(i, (value, label))| {

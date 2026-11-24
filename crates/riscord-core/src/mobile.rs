@@ -24,6 +24,7 @@ const FORWARD: &[&str] = &[
     "MESSAGE_CREATE",
     "MESSAGE_UPDATE",
     "MESSAGE_DELETE",
+    "MESSAGE_DELETE_BULK",
     "MESSAGE_POLL_VOTE_ADD",
     "MESSAGE_POLL_VOTE_REMOVE",
     "MESSAGE_REACTION_ADD",
@@ -32,6 +33,8 @@ const FORWARD: &[&str] = &[
     "CHANNEL_CREATE",
     "CHANNEL_UPDATE",
     "CHANNEL_DELETE",
+    "GUILD_CREATE",
+    "GUILD_DELETE",
     "CALL_CREATE",
     "CALL_UPDATE",
     "CALL_DELETE",
@@ -70,6 +73,10 @@ pub struct Client {
     #[cfg(target_os = "android")]
     voice_task: Mutex<Option<JoinHandle<()>>>,
     login_cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// connect / stop のたびに進める。古い connect が終わってから Gateway や通話を始めないように
+    connect_gen: std::sync::atomic::AtomicU64,
+    /// 画面側が付けた、いまの connect の番号（disconnect で古い接続だけを止めるため）
+    attempt: std::sync::atomic::AtomicI64,
 }
 impl Client {
     pub fn new() -> Arc<Self> {
@@ -83,7 +90,9 @@ impl Client {
             token: Mutex::new(String::new()),
             status: Mutex::new("online".into()),
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(60))
+                // つながるまでと、届くのが止まってからの待ちを分ける（大きい添付の送信は全体では時間がかかる）
+                .connect_timeout(Duration::from_secs(15))
+                .read_timeout(Duration::from_secs(30))
                 .user_agent(concat!("Riscord/", env!("CARGO_PKG_VERSION"), " (Android)"))
                 .build()
                 .expect("http"),
@@ -92,6 +101,8 @@ impl Client {
             task: Mutex::new(None),
             gateway_tx: Mutex::new(None),
             login_cancel: Mutex::new(None),
+            connect_gen: std::sync::atomic::AtomicU64::new(0),
+            attempt: std::sync::atomic::AtomicI64::new(0),
         })
     }
     pub fn push(&self, event: Value) {
@@ -128,6 +139,15 @@ impl Client {
         }
     }
     pub fn stop(&self) {
+        if let Some(c) = self.login_cancel.lock().unwrap().take() {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.stop_connection();
+    }
+    /// 接続（Gateway・通話・トークン）だけを止める。進めているログインはそのまま
+    fn stop_connection(&self) {
+        self.connect_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         #[cfg(target_os = "android")]
         {
             self.voice_tx.lock().unwrap().take();
@@ -136,9 +156,6 @@ impl Client {
             }
         }
         self.pause();
-        if let Some(c) = self.login_cancel.lock().unwrap().take() {
-            c.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
         self.token.lock().unwrap().clear();
         self.notify.notify_one();
     }
@@ -165,6 +182,8 @@ impl Client {
         Ok(Value::Null)
     }
     fn start_gateway(self: &Arc<Self>) {
+        // 前のタスクが残っていれば止めてから（2 本の Gateway が同じトークンでつながらないように）
+        self.pause();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         *self.gateway_tx.lock().unwrap() = Some(tx);
         let client = self.clone();
@@ -208,13 +227,25 @@ impl Client {
             }
         });
     }
-    pub async fn connect(self: &Arc<Self>, token: String, status: Option<&str>) -> Result<Value> {
+    /// attempt は画面側が付ける番号。disconnect で、この connect の結果だけを取り消せる
+    pub async fn connect(
+        self: &Arc<Self>,
+        token: String,
+        status: Option<&str>,
+        attempt: i64,
+    ) -> Result<Value> {
+        use std::sync::atomic::Ordering::SeqCst;
         self.stop();
+        let gen = self.connect_gen.load(SeqCst);
+        self.attempt.store(attempt, SeqCst);
         *self.token.lock().unwrap() = token;
         if let Some(status) = status.filter(|s| valid_status(s)) {
             *self.status.lock().unwrap() = status.into();
         }
         let me = self.api(ApiCall::GetMe).await?;
+        // 待っている間に stop・新しい connect が来た: 古いトークンで Gateway や通話を始めない
+        let current = || self.connect_gen.load(SeqCst) == gen;
+        anyhow::ensure!(current(), "接続は取り消されました");
         #[cfg(target_os = "android")]
         {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -228,7 +259,27 @@ impl Client {
                 Some(tokio::spawn(crate::mobile_voice::run(weak, me, ctl, rx)));
         }
         self.start_gateway();
+        // 始めている間に stop と入れ違いになった: いま始めた分を止める
+        // （新しい connect は GetMe を待っている間なので、そちらの Gateway や通話はまだ無い）
+        if !current() {
+            self.pause();
+            #[cfg(target_os = "android")]
+            {
+                self.voice_tx.lock().unwrap().take();
+                if let Some(t) = self.voice_task.lock().unwrap().take() {
+                    t.abort();
+                }
+            }
+            bail!("接続は取り消されました");
+        }
         Ok(me)
+    }
+    /// attempt の connect がいまの接続なら止める（画面側で取り消した connect が、あとから終わったとき）。
+    /// 新しい connect が始まっていれば何もしない。そのあとに始めたログイン（QR など）は止めない
+    pub fn disconnect(&self, attempt: i64) {
+        if self.attempt.load(std::sync::atomic::Ordering::SeqCst) == attempt {
+            self.stop_connection();
+        }
     }
     pub(crate) fn send_gateway(&self, value: Value) -> Result<()> {
         self.gateway_tx
@@ -284,14 +335,18 @@ impl Client {
             "無効なAPIパス"
         );
         let token = self.token.lock().unwrap().clone();
-        let mut req = self
-            .http
-            .request(method, format!("{API}{path}"))
-            .header("Authorization", token);
-        if let Some(body) = body {
-            req = req.json(&body);
-        }
-        response(req.send().await?).await
+        let url = format!("{API}{path}");
+        send_retrying(|| {
+            let req = self
+                .http
+                .request(method.clone(), &url)
+                .header("Authorization", &token);
+            match &body {
+                Some(body) => req.json(body),
+                None => req,
+            }
+        })
+        .await
     }
     /// 添付を送る。file は呼び出し側から所有権を受け取り、上限まで読む
     pub async fn upload(
@@ -314,62 +369,81 @@ impl Client {
         })
         .await??;
         anyhow::ensure!(bytes.len() as u64 <= UPLOAD_LIMIT, "添付は10MBまでです");
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_owned());
-        let payload = upload_payload(channel, filename, content, reply_to)?;
-        let form = reqwest::multipart::Form::new()
-            .text("payload_json", payload.to_string())
-            .part("files[0]", part);
+        let payload = upload_payload(channel, filename, content, reply_to)?.to_string();
         let token = self.token.lock().unwrap().clone();
-        response(
+        let url = format!("{API}/channels/{channel}/messages");
+        send_retrying(|| {
+            // 送り直すときは作り直す（multipart の本文は使い回せない）
+            let part =
+                reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_owned());
+            let form = reqwest::multipart::Form::new()
+                .text("payload_json", payload.clone())
+                .part("files[0]", part);
             self.http
-                .post(format!("{API}/channels/{channel}/messages"))
-                .header("Authorization", token)
+                .post(&url)
+                .header("Authorization", &token)
                 .multipart(form)
-                .send()
-                .await?,
-        )
+        })
         .await
     }
     async fn gateway(self: Arc<Self>, mut commands: tokio::sync::mpsc::UnboundedReceiver<Value>) {
         let mut session = GatewaySession::default();
-        let mut delay = 1u64;
+        // つながらなかった回数（Hello が届いたら数え直す）と、identify が READY まで行かなかった回数は別に数える
+        // （デスクトップの src/net.rs と同じ考え方）
+        let mut conn_failures: u32 = 0;
+        let mut identify_failures: u32 = 0;
         loop {
             self.push(json!({"t":"CONNECTION","d":{"status":"接続中"}}));
             let mut ready_at = None;
-            let result = self
-                .connection(&mut session, &mut commands, &mut ready_at)
-                .await;
-            // しばらく安定してつながっていたときだけ待ち時間を戻す。
-            // READY の直後に切られ続ける状態で、1 秒おきに identify し続けないように
+            let mut hello = false;
+            // 今回は再開ではなく identify を送る接続か
+            let identifying = session.resumable().is_none();
+            let end = self
+                .connection(&mut session, &mut commands, &mut ready_at, &mut hello)
+                .await
+                .unwrap_or(ConnEnd::Resume);
+            let ready = ready_at.is_some();
+            if hello {
+                conn_failures = 0;
+            }
+            // しばらく安定してつながっていたときだけ identify の待ち時間を戻す。
+            // READY の直後に切られ続ける状態で、数秒おきに identify し続けないように
             if ready_at.is_some_and(|t: std::time::Instant| t.elapsed() >= STABLE_CONNECTION) {
-                delay = 1;
+                identify_failures = 0;
             }
-            let mut reidentify = session.resumable().is_none();
-            if let Err(e) = &result {
-                if let Some(GatewayClosed(code)) = e.downcast_ref::<GatewayClosed>() {
-                    if close_action(*code) == CloseAction::Reidentify {
-                        session.reset_keeping_unsent();
-                        reidentify = true;
+            let identify_failed = identifying && hello && !ready;
+            let wait = match end {
+                ConnEnd::Stopped => return,
+                ConnEnd::Fatal(code) => {
+                    if code == 4004 {
+                        self.push(json!({"t":"AUTH_EXPIRED","d":{}}));
                     }
-                    if close_action(*code) == CloseAction::Fatal {
-                        if *code == 4004 {
-                            self.push(json!({"t":"AUTH_EXPIRED","d":{}}));
-                        }
-                        self.push(json!({"t":"ERROR","d":{"message":if *code==4004 {tr!("認証に失敗しました。ログインし直してください。", "Authentication failed. Please log in again.", "认证失败。请重新登录。").to_string()} else {tr!("接続が拒否されました（{code}）", "Connection refused ({code})", "连接被拒绝（{code}）",)}}}));
-                        self.push(json!({"t":"CONNECTION","d":{"status":"未接続"}}));
-                        break;
-                    }
+                    self.push(json!({"t":"ERROR","d":{"message":if code==4004 {tr!("認証に失敗しました。ログインし直してください。", "Authentication failed. Please log in again.", "认证失败。请重新登录。").to_string()} else {tr!("接続が拒否されました（{code}）", "Connection refused ({code})", "连接被拒绝（{code}）",)}}}));
+                    self.push(json!({"t":"CONNECTION","d":{"status":"未接続"}}));
+                    return;
                 }
-            }
-            self.push(json!({"t":"CONNECTION","d":{"status":"再接続待ち"}}));
-            // 一からログインし直すときは、Discord の推奨どおり少なくとも 1〜5 秒のばらつきを入れる
-            let wait = if reidentify {
-                Duration::from_millis((delay * 1000).max(1000 + rand::random::<u64>() % 4000))
-            } else {
-                Duration::from_secs(delay)
+                // 再開できない: 一からログインし直す。最低 1〜5 秒、失敗が続けば最長 5 分まで延ばす
+                ConnEnd::Reidentify => {
+                    session.reset_keeping_unsent();
+                    identify_failures = identify_failures.saturating_add(1);
+                    reidentify_delay(identify_failures - 1)
+                }
+                ConnEnd::Resume if identify_failed => {
+                    identify_failures = identify_failures.saturating_add(1);
+                    reidentify_delay(identify_failures - 1)
+                }
+                ConnEnd::Resume => reconnect_delay(conn_failures),
             };
-            tokio::time::sleep(wait).await;
-            delay = (delay * 2).min(30);
+            conn_failures = conn_failures.saturating_add(1);
+            self.push(json!({"t":"CONNECTION","d":{"status":"再接続待ち"}}));
+            // 待っている間に届いたコマンドも受け取った時刻つきで溜める（古い VC の参加を後から送らないように）
+            if session
+                .queue_while(&mut commands, tokio::time::sleep(wait))
+                .await
+                .is_none()
+            {
+                return;
+            }
         }
     }
     async fn connection(
@@ -377,7 +451,8 @@ impl Client {
         session: &mut GatewaySession,
         commands: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
         ready_at: &mut Option<std::time::Instant>,
-    ) -> Result<()> {
+        hello: &mut bool,
+    ) -> Result<ConnEnd> {
         let base = session
             .resume_url
             .as_deref()
@@ -387,8 +462,26 @@ impl Client {
             .unwrap_or(GATEWAY)
             .trim_end_matches('/')
             .to_owned();
-        let (mut ws, inflater, period) =
-            crate::gateway::connect_and_hello(&format!("{base}{GATEWAY_QUERY}")).await?;
+        // つながるまで（最長で 1 分ほど）の間に届いたコマンドも、受け取った時刻つきで溜めておく
+        let Some(connection) = session
+            .queue_while(
+                commands,
+                crate::gateway::connect_and_hello(&format!("{base}{GATEWAY_QUERY}")),
+            )
+            .await
+        else {
+            return Ok(ConnEnd::Stopped);
+        };
+        let (mut ws, inflater, period) = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                if let Some(GatewayClosed(code)) = error.downcast_ref::<GatewayClosed>() {
+                    return Ok(ConnEnd::from_close(*code));
+                }
+                return Err(error);
+            }
+        };
+        *hello = true;
         let token = self.token.lock().unwrap().clone();
         let status = self.status.lock().unwrap().clone();
         let identify = if session.resumable().is_none() {
@@ -400,41 +493,107 @@ impl Client {
         let end =
             crate::gateway::run_session(ws, inflater, period, session, commands, true, |frame| {
                 let t = frame.t.as_str().unwrap_or_default();
+                let raw = frame.d.as_deref().map(|d| d.get());
                 if t == "READY" || t == "RESUMED" {
                     *ready_at = Some(std::time::Instant::now());
                     self.push(json!({"t":"CONNECTION","d":{"status":"接続済み"}}));
                 }
-                let data: Value = frame
-                    .d
-                    .as_deref()
-                    .and_then(|d| serde_json::from_str(d.get()).ok())
-                    .unwrap_or(Value::Null);
                 #[cfg(target_os = "android")]
                 match t {
-                    "VOICE_STATE_UPDATE" => {
-                        let _ = self.voice(crate::mobile_voice::Command::State(data.clone()));
+                    "READY" => {
+                        // 新しいセッション。前のセッションの VC は切れている
+                        let sid = raw
+                            .and_then(|d| serde_json::from_str::<ReadySession>(d).ok())
+                            .and_then(|r| r.session_id);
+                        let _ = self.voice(crate::mobile_voice::Command::Ready(sid));
                     }
-                    "VOICE_SERVER_UPDATE" => {
-                        let _ = self.voice(crate::mobile_voice::Command::Server(data.clone()));
+                    "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE" => {
+                        if let Some(data) = raw.and_then(|d| serde_json::from_str::<Value>(d).ok())
+                        {
+                            let _ = self.voice(if t == "VOICE_STATE_UPDATE" {
+                                crate::mobile_voice::Command::State(data)
+                            } else {
+                                crate::mobile_voice::Command::Server(data)
+                            });
+                        }
                     }
                     _ => {}
                 }
-                if let Some(event) = slim_event(json!({"t": t, "d": data})) {
+                if let Some(event) = ui_event(t, raw) {
                     self.push(event);
                 }
             })
             .await?;
-        match end {
-            crate::gateway::SessionEnd::Resume => bail!("Gateway reconnect requested"),
-            crate::gateway::SessionEnd::Reidentify => {
-                session.reset_keeping_unsent();
-                bail!("Gateway session invalid");
-            }
-            crate::gateway::SessionEnd::Closed(code) => Err(GatewayClosed(code).into()),
+        Ok(match end {
+            crate::gateway::SessionEnd::Resume => ConnEnd::Resume,
+            crate::gateway::SessionEnd::Reidentify => ConnEnd::Reidentify,
+            crate::gateway::SessionEnd::Closed(code) => ConnEnd::from_close(code),
+        })
+    }
+}
+
+/// 1 回の接続がどう終わったか
+#[derive(Debug, PartialEq)]
+enum ConnEnd {
+    /// 通信が切れた・再接続を頼まれた: 途中から再開する
+    Resume,
+    /// 再開できない: 一からログインし直す
+    Reidentify,
+    /// つなぎ直しても無駄（トークン無効など）
+    Fatal(u16),
+    /// 閉じるよう頼まれた
+    Stopped,
+}
+impl ConnEnd {
+    fn from_close(code: u16) -> Self {
+        match close_action(code) {
+            CloseAction::Fatal => ConnEnd::Fatal(code),
+            CloseAction::Reidentify => ConnEnd::Reidentify,
+            CloseAction::Resume => ConnEnd::Resume,
         }
     }
 }
-/// 画面へ渡す形 {t, d} にする。使わない種類は None
+
+/// 再接続までの待ち時間。1, 2, 4 … 秒と延ばして 60 秒で止め、同時に大勢がつなぎ直さないよう少しずらす
+fn reconnect_delay(failures: u32) -> Duration {
+    let secs = (1u64 << failures.min(6)).min(60);
+    Duration::from_millis(secs * 1000 + rand::random::<u64>() % 1000)
+}
+
+/// 一からログインし直すまでの待ち時間（デスクトップの reidentify_delay と同じ）。最低 1〜5 秒待ち、
+/// READY まで届かない失敗が続くほど長く待つ（identify は 1 日 1000 回を超えるとトークンが無効にされる）。
+/// 最長 5 分なので、失敗が続いても 1 日 300 回ほどに収まる
+fn reidentify_delay(failures: u32) -> Duration {
+    let floor = 1000 + rand::random::<u64>() % 4000;
+    let backoff = (1u64 << failures.min(9)).min(300) * 1000 + rand::random::<u64>() % 1000;
+    Duration::from_millis(floor.max(backoff))
+}
+
+/// READY のうち使う部分だけ（大きい READY 全体を Value にしない）
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct ReadySession {
+    #[serde(default)]
+    session_id: Option<String>,
+}
+/// GUILD_CREATE / GUILD_DELETE のうち、サーバー一覧に要る部分
+#[derive(serde::Deserialize, serde::Serialize)]
+struct GuildSlim {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    /// 障害で一時的に使えないだけ（抜けたのではない）
+    #[serde(default)]
+    unavailable: bool,
+}
+#[derive(serde::Deserialize)]
+struct ReadySlim {
+    /// { entries: [...] } か、古い形式では配列そのもの
+    #[serde(default)]
+    user_guild_settings: Option<Value>,
+}
 fn upload_payload(
     channel: &str,
     filename: &str,
@@ -456,33 +615,94 @@ fn typing_subscription(guild: &str, channel: &str) -> Value {
     json!({"op":37,"d":{"subscriptions":{(guild):{"typing":true,"activities":false,"threads":false,"channels":{(channel):[[0,99]]}}}}})
 }
 
-fn slim_event(mut v: Value) -> Option<Value> {
-    let t = v["t"].as_str()?.to_owned();
-    let d = v.get_mut("d").map(Value::take).unwrap_or(Value::Null);
+/// 画面へ渡す形 {t, d} にする。使わない種類は None（中身も読まない）。READY は必要な部分だけ型で読む
+fn ui_event(t: &str, raw: Option<&str>) -> Option<Value> {
     if t == "READY" {
-        let settings = &d["user_guild_settings"];
-        let entries = settings["entries"]
-            .as_array()
-            .or(settings.as_array())
-            .cloned()
-            .unwrap_or_default();
+        let settings = raw
+            .and_then(|d| serde_json::from_str::<ReadySlim>(d).ok())
+            .and_then(|r| r.user_guild_settings)
+            .unwrap_or(Value::Null);
+        let entries = match settings {
+            Value::Array(list) => list,
+            Value::Object(mut map) => match map.remove("entries") {
+                Some(Value::Array(list)) => list,
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
         return Some(json!({"t":"READY","d":{"guild_settings":entries}}));
     }
-    FORWARD.contains(&t.as_str()).then(|| json!({"t":t,"d":d}))
+    if !FORWARD.contains(&t) {
+        return None;
+    }
+    // GUILD_CREATE はメンバーやチャンネルまで入っていて大きい。一覧に要る部分だけ渡す
+    if t == "GUILD_CREATE" || t == "GUILD_DELETE" {
+        let g = raw.and_then(|d| serde_json::from_str::<GuildSlim>(d).ok())?;
+        return Some(json!({"t":t,"d":g}));
+    }
+    let d = raw
+        .and_then(|d| serde_json::from_str::<Value>(d).ok())
+        .unwrap_or(Value::Null);
+    Some(json!({"t":t,"d":d}))
 }
-async fn response(r: reqwest::Response) -> Result<Value> {
-    let status = r.status();
-    let bytes = r.bytes().await?;
-    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+/// 429 で送り直す回数と、送り直すまで待ってよい長さ（これより長く待てと言われたら、そのまま利用者に伝える）
+const RATE_LIMIT_RETRIES: usize = 2;
+const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(10);
+
+/// 送って結果を読む。429 なら Retry-After だけ待って送り直す（上限つき）
+async fn send_retrying(build: impl Fn() -> reqwest::RequestBuilder) -> Result<Value> {
+    let mut retries = 0;
+    loop {
+        let r = build().send().await?;
+        let status = r.status();
+        let header_wait = retry_after_header(r.headers());
+        let bytes = r.bytes().await?;
+        let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if status.as_u16() == 429 && retries < RATE_LIMIT_RETRIES {
+            if let Some(wait) = retry_wait(&v, header_wait).filter(|w| *w <= RATE_LIMIT_MAX_WAIT) {
+                retries += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+        }
+        return response(status, &v, header_wait);
+    }
+}
+
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(Duration::from_secs_f64)
+}
+
+/// 本文の retry_after（秒・小数あり）を優先し、無ければ Retry-After ヘッダー
+fn retry_wait(v: &Value, header: Option<Duration>) -> Option<Duration> {
+    v["retry_after"]
+        .as_f64()
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(Duration::from_secs_f64)
+        .or(header)
+}
+
+fn response(
+    status: reqwest::StatusCode,
+    v: &Value,
+    header_wait: Option<Duration>,
+) -> Result<Value> {
     if !status.is_success() {
         match status.as_u16() {
             401 => return Err(AuthExpired.into()),
             413 => bail!("ファイルが大きすぎます（10MBまで）"),
             429 => bail!(
                 "混雑しています。{}秒後に再試行してください。",
-                v["retry_after"]
-                    .as_f64()
-                    .map(|s| s.ceil() as u64)
+                retry_wait(v, header_wait)
+                    .map(|d| d.as_secs_f64().ceil() as u64)
                     .unwrap_or(5)
             ),
             code => bail!(
@@ -491,7 +711,7 @@ async fn response(r: reqwest::Response) -> Result<Value> {
             ),
         }
     }
-    Ok(v)
+    Ok(v.clone())
 }
 fn valid_status(status: &str) -> bool {
     ["online", "idle", "dnd", "invisible"].contains(&status)
@@ -566,23 +786,74 @@ mod tests {
     }
     #[test]
     fn gateway_events_are_slimmed_for_the_ui() {
-        let ready = json!({"op":0,"s":1,"t":"READY","d":{"session_id":"s","guilds":[{"id":"1"}],"user_guild_settings":{"entries":[{"guild_id":"1","muted":true}]}}});
+        let ready = r#"{"session_id":"s","guilds":[{"id":"1"}],"user_guild_settings":{"entries":[{"guild_id":"1","muted":true}]}}"#;
         assert_eq!(
-            slim_event(ready),
+            ui_event("READY", Some(ready)),
             Some(json!({"t":"READY","d":{"guild_settings":[{"guild_id":"1","muted":true}]}}))
         );
+        // 古い形式（配列そのもの）・無いときも READY は渡す
         assert_eq!(
-            slim_event(json!({"op":0,"t":"PRESENCE_UPDATE","d":{}})),
-            None
+            ui_event(
+                "READY",
+                Some(r#"{"user_guild_settings":[{"guild_id":"2"}]}"#)
+            ),
+            Some(json!({"t":"READY","d":{"guild_settings":[{"guild_id":"2"}]}}))
         );
         assert_eq!(
-            slim_event(json!({"op":0,"s":3,"t":"MESSAGE_CREATE","d":{"id":"5"}})),
+            ui_event("READY", Some("{}")),
+            Some(json!({"t":"READY","d":{"guild_settings":[]}}))
+        );
+        assert_eq!(ui_event("PRESENCE_UPDATE", Some("{}")), None);
+        assert_eq!(
+            ui_event("MESSAGE_CREATE", Some(r#"{"id":"5"}"#)),
             Some(json!({"t":"MESSAGE_CREATE","d":{"id":"5"}}))
+        );
+        assert_eq!(
+            ui_event(
+                "MESSAGE_DELETE_BULK",
+                Some(r#"{"ids":["1"],"channel_id":"2"}"#)
+            ),
+            Some(json!({"t":"MESSAGE_DELETE_BULK","d":{"ids":["1"],"channel_id":"2"}}))
+        );
+        assert_eq!(
+            ui_event(
+                "GUILD_CREATE",
+                Some(r#"{"id":"9","name":"g","icon":null,"members":[{"user":{}}],"channels":[]}"#)
+            ),
+            Some(json!({"t":"GUILD_CREATE","d":{"id":"9","name":"g","unavailable":false}}))
+        );
+        assert_eq!(
+            ui_event("GUILD_DELETE", Some(r#"{"id":"9","unavailable":true}"#)),
+            Some(json!({"t":"GUILD_DELETE","d":{"id":"9","unavailable":true}}))
         );
         assert_eq!(close_action(4004), CloseAction::Fatal);
         assert_eq!(close_action(4014), CloseAction::Fatal);
         assert_eq!(close_action(4000), CloseAction::Resume);
         assert_eq!(close_action(1000), CloseAction::Resume);
+    }
+    #[test]
+    fn rate_limit_wait_prefers_the_body_and_falls_back_to_the_header() {
+        let header = Some(Duration::from_secs(3));
+        assert_eq!(
+            retry_wait(&json!({"retry_after":0.5}), header),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(retry_wait(&Value::Null, header), header);
+        assert_eq!(retry_wait(&json!({"retry_after":-1.0}), None), None);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "2".parse().unwrap());
+        assert_eq!(retry_after_header(&headers), Some(Duration::from_secs(2)));
+        let err =
+            response(reqwest::StatusCode::TOO_MANY_REQUESTS, &Value::Null, header).unwrap_err();
+        assert!(err.to_string().contains('3'), "{err}");
+    }
+    #[test]
+    fn reidentify_waits_grow_to_five_minutes() {
+        assert!(reidentify_delay(0) >= Duration::from_secs(1));
+        assert!(reidentify_delay(0) <= Duration::from_secs(6));
+        let longest = reidentify_delay(30);
+        assert!(longest >= Duration::from_secs(300) && longest < Duration::from_secs(302));
+        assert!(reconnect_delay(30) < Duration::from_secs(62));
     }
     #[tokio::test]
     async fn upload_rejects_files_over_the_limit_before_sending() {

@@ -321,8 +321,13 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
     let Some(_lock) = UpdateLock::acquire(exe) else {
         return Ok(Outcome::Busy);
     };
-    if installed_version(exe).as_deref() == Some(version.as_str()) {
-        return Ok(Outcome::Ready(version));
+    // 比べる相手は実行中の版ではなくディスク上の版。別のインスタンスがもっと新しい版に差し替え済みなら、
+    // それより古い（署名は正しい）リリースで上書きしてダウングレードしない。印が読めなければ実行中の版を基準にする
+    let on_disk = installed_version(exe).filter(|v| is_newer(v, CURRENT));
+    if let Some(installed) = on_disk {
+        if !is_newer(&version, &installed) {
+            return Ok(Outcome::Ready(installed));
+        }
     }
     let asset = names
         .iter()
@@ -415,21 +420,32 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
         );
     }
 
-    // 一時ファイルはインスタンスごとの名前にする（落ちたインスタンスの残りと混ざらないように）
-    let new = sibling(
+    // 一時ファイルはインスタンスごとの、予測しにくい名前にする（落ちたインスタンスの残りと混ざらないように、
+    // また他人が先に同じ名前を作っておけないように）。create_new なので既にあれば開かずに失敗する
+    let staging = sibling(
         exe,
-        &format!(".new-{}-{:08x}", std::process::id(), rand::random::<u32>()),
+        &format!(
+            ".new-{}-{:016x}{:016x}",
+            std::process::id(),
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        ),
     );
-    let written = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&new)?;
-        f.write_all(&bytes)?;
-        // rename の前に中身を確実にディスクへ（途中で電源が落ちても壊れた exe を残さない）
-        f.sync_all()
-    })();
+    let mut dir = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::DirBuilderExt;
+        let parent = staging.parent().context("Update directory has no parent")?;
+        if std::fs::metadata(parent)?.permissions().mode() & 0o022 != 0 {
+            bail!("The update directory is writable by other users");
+        }
+        dir.mode(0o700);
+    }
+    dir.create(&staging).context("Can't create update staging directory")?;
+    let staging = UpdateStaging(staging);
+    let new = staging.0.join("executable");
+    let written = write_verified(&new, &bytes, &got);
     if let Err(e) = written {
         let _ = std::fs::remove_file(&new);
         return Err(e).with_context(|| {
@@ -445,9 +461,76 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
         let _ = std::fs::remove_file(&new);
         return Err(e);
     }
+    // 置いたあとの exe が検証したものと同じかを確かめる（確認から rename までの間にすり替えられていないか）。
+    // 違えば .updated を書かないので、他のインスタンスもこの exe を差し替え済みの版とは扱わない
+    if file_sha256(exe).ok().as_deref() != Some(got.as_str()) {
+        bail!(
+            "{}",
+            tr!(
+                "置き換えた実行ファイルの SHA-256 が検証したものと違います",
+                "The replaced executable doesn't match the verified SHA-256",
+                "替换后的可执行文件与验证的 SHA-256 不一致",
+            )
+        );
+    }
     // 他のインスタンスが同じ版を入れ直さないよう、差し替えた版と exe の SHA-256 を書いておく
     let _ = std::fs::write(sibling(exe, ".updated"), updated_marker(&version, &got));
     Ok(Outcome::Ready(version))
+}
+
+/// 更新用の一時ディレクトリは置き換えの成否にかかわらず片付ける。
+struct UpdateStaging(PathBuf);
+
+impl Drop for UpdateStaging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0.join("executable"));
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    std::fs::read(path).map(|b| sha256_hex(&b))
+}
+
+/// 検証済みのバイト列を新しく作ったファイルに書く。権限はパスではなく開いたハンドル経由で付け
+/// （閉じてからパスで chmod すると、その間にすり替えられたファイルに実行権限を付けうる）、
+/// 書いたあとは同じハンドルから読み直して、中身が検証した SHA-256 と同じかを確かめる
+fn write_verified(path: &Path, bytes: &[u8], digest: &str) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // 書き終わるまでは自分だけが読み書きできるようにしておく
+        options.mode(0o600);
+    }
+    let mut f = options.open(path)?;
+    f.write_all(bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // File::set_permissions は Unix では fchmod（ハンドルに対して効く）
+        f.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    }
+    // rename の前に中身を確実にディスクへ（途中で電源が落ちても壊れた exe を残さない）
+    f.sync_all()?;
+    f.seek(SeekFrom::Start(0))?;
+    let mut back = Vec::with_capacity(bytes.len());
+    f.read_to_end(&mut back)?;
+    if sha256_hex(&back) != digest {
+        return Err(std::io::Error::other(
+            "written update does not match the verified SHA-256",
+        ));
+    }
+    Ok(())
 }
 
 /// .updated の中身。「版\nexe の SHA-256」
@@ -478,77 +561,26 @@ fn installed_version(exe: &Path) -> Option<String> {
     Some(version.to_owned())
 }
 
-/// exe の差し替えを 1 インスタンスずつにするロック（exe の隣の .update-lock）。
-/// 中に自分の印を書き、drop で消すのは自分の印のときだけ（取り直された他人のロックを消さない）
+/// OS がプロセス終了時に解放する排他ロック。ロックファイルは削除しない。
+/// 削除すると、別のプロセスが新しいファイルに別のロックを取れてしまう。
 struct UpdateLock {
-    path: PathBuf,
-    token: String,
+    _file: std::fs::File,
 }
 
-/// これより古いロックは、落ちたインスタンスの残りとみなして取り直す
 const UPDATE_LOCK_STALE: Duration = Duration::from_secs(10 * 60);
 
 impl UpdateLock {
-    fn acquire(exe: &Path) -> Option<UpdateLock> {
-        use std::io::Write;
+    fn acquire(exe: &Path) -> Option<Self> {
         let path = sibling(exe, ".update-lock");
-        let token = format!("{}-{:016x}", std::process::id(), rand::random::<u64>());
-        for _ in 0..2 {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut f) => {
-                    if f.write_all(token.as_bytes()).is_err() {
-                        drop(f);
-                        let _ = std::fs::remove_file(&path);
-                        return None;
-                    }
-                    return Some(UpdateLock { path, token });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // 時刻が未来（時計が戻った）なら、いつまでも古くならないので古いとみなす
-                    let stale = std::fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .map(|t| {
-                            t.elapsed().is_ok_and(|age| age > UPDATE_LOCK_STALE)
-                                || t.elapsed().is_err()
-                        })
-                        .unwrap_or(false);
-                    if !stale {
-                        return None;
-                    }
-                    // 古いロックは消さずに別の名前へ移して奪う。rename に成功するのは 1 つだけなので、
-                    // 2 つのインスタンスが同時に「古い」と判断しても、片方が作り直したロックを消さない
-                    let grave = sibling(exe, &format!(".update-lock.stale-{token}"));
-                    if std::fs::rename(&path, &grave).is_err() {
-                        return None;
-                    }
-                    // 古いと判断してから移すまでの間に、他のインスタンスが作り直した新しいロックを
-                    // 移してしまったかもしれない。新しければ（上書きせずに）元へ戻して諦める
-                    let fresh = std::fs::metadata(&grave)
-                        .and_then(|m| m.modified())
-                        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age <= UPDATE_LOCK_STALE));
-                    if fresh {
-                        let _ = std::fs::hard_link(&grave, &path);
-                        let _ = std::fs::remove_file(&grave);
-                        return None;
-                    }
-                    let _ = std::fs::remove_file(&grave);
-                }
-                Err(_) => return None,
-            }
-        }
-        None
-    }
-}
-
-impl Drop for UpdateLock {
-    fn drop(&mut self) {
-        if std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.token) {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .ok()?;
+        file.try_lock().ok()?;
+        Some(Self { _file: file })
     }
 }
 
@@ -580,7 +612,12 @@ fn remove_siblings(exe: &Path, suffix: &str, min_age: Duration) {
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age >= min_age);
         if old {
-            let _ = std::fs::remove_file(entry.path());
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                let _ = std::fs::remove_file(entry.path().join("executable"));
+                let _ = std::fs::remove_dir(entry.path());
+            } else {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
 }
@@ -589,8 +626,7 @@ fn remove_siblings(exe: &Path, suffix: &str, min_age: Duration) {
 fn replace(exe: &Path, new: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(new, std::fs::Permissions::from_mode(0o755))?;
+        // 実行権限は write_verified が開いたハンドル経由で付けてある。
         // 実行中でも rename で置き換えられる（動いているプロセスは古い中身のまま）
         std::fs::rename(new, exe).context(tr!(
             "実行ファイルを置き換えられません",
@@ -613,7 +649,22 @@ fn replace(exe: &Path, new: &Path) -> Result<()> {
             "无法重命名可执行文件"
         ))?;
         if let Err(e) = std::fs::rename(new, exe) {
-            let _ = std::fs::rename(&old, exe);
+            // 旧ファイルを元の名前に戻す。戻せなければ exe の場所に何もない状態なので、エラーとログで知らせる
+            if let Err(restore) = std::fs::rename(&old, exe) {
+                eprintln!(
+                    "自動アップデート: 新しい実行ファイルを置けず、元の実行ファイルも {} から {} に戻せませんでした: {e} / {restore}",
+                    old.display(),
+                    exe.display()
+                );
+                return Err(e).context(tr!(
+                    "新しい実行ファイルを置けず、元の実行ファイルも戻せません（{} を {} に戻してください: {}）",
+                    "Can't place the new executable, and couldn't restore the old one (rename {} back to {}: {})",
+                    "无法放置新的可执行文件，也无法恢复原文件（请将 {} 改回 {}：{}）",
+                    old.display(),
+                    exe.display(),
+                    restore
+                ));
+            }
             return Err(e).context(tr!(
                 "新しい実行ファイルを置けません",
                 "Can't place the new executable",
@@ -649,25 +700,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_lock_is_taken_over_but_others_lock_is_never_removed() {
-        let dir = std::env::temp_dir().join(format!("riscord-update-stale-{}", std::process::id()));
+    fn write_verified_checks_digest_and_refuses_existing_file() {
+        let dir = std::env::temp_dir().join(format!("riscord-update-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("riscord");
-        let lock = sibling(&exe, ".update-lock");
-        // 落ちたインスタンスの古いロック
-        std::fs::write(&lock, "dead").unwrap();
-        let old = std::time::SystemTime::now() - UPDATE_LOCK_STALE - Duration::from_secs(60);
-        std::fs::File::options()
-            .write(true)
-            .open(&lock)
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
-        let a = UpdateLock::acquire(&exe).expect("古いロックは取り直せる");
-        // 他人に取り直されたら、自分の drop では消さない
-        std::fs::write(&lock, "someone else").unwrap();
-        drop(a);
-        assert_eq!(std::fs::read_to_string(&lock).unwrap(), "someone else");
+        let path = dir.join("riscord.new");
+        write_verified(&path, b"build", &sha256_hex(b"build")).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"build");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        // 既にあるファイルには書かない
+        assert!(write_verified(&path, b"build", &sha256_hex(b"build")).is_err());
+        // 中身が検証値と違えば失敗
+        let other = dir.join("other.new");
+        assert!(write_verified(&other, b"build", &sha256_hex(b"different")).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -677,9 +727,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("riscord");
         let a = UpdateLock::acquire(&exe).expect("最初は取れる");
+        let lock_path = sibling(&exe, ".update-lock");
+        std::fs::File::options().write(true).open(&lock_path).unwrap()
+            .set_modified(std::time::SystemTime::now() - UPDATE_LOCK_STALE - Duration::from_secs(60)).unwrap();
         assert!(
             UpdateLock::acquire(&exe).is_none(),
-            "他のインスタンスは待つ"
+            "ロックが古くても所有中は他のインスタンスが取れない"
         );
         drop(a);
         assert!(UpdateLock::acquire(&exe).is_some(), "手放したら取れる");

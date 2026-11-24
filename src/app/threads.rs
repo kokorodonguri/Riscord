@@ -9,6 +9,7 @@ use crate::net::ApiCall;
 /// 1ページの件数（Discord の上限）
 pub const THREAD_PAGE: u32 = 25;
 const THREAD_RETRIES: u8 = 5;
+const MAX_CACHED_ARCHIVED_THREADS: usize = 512;
 
 /// スレッド・投稿の一覧（フォーラムの画面と、チャンネルのスレッド一覧で使う）
 #[derive(Default)]
@@ -108,6 +109,29 @@ impl App {
                 *x = t.clone();
                 v.rev += 1;
             }
+        }
+        // 履歴検索で見たアーカイブ済みスレッドは際限なく増やさない。
+        // 開いている一覧や選択中のスレッドは current_channel から参照されるため残す。
+        let protected: HashSet<&str> = [self.forum.as_ref(), self.thread_panel.as_ref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|v| v.items.iter().map(|c| c.id.as_str()))
+            .chain(self.sel_channel.as_deref())
+            .chain(self.joined_threads.iter().map(String::as_str))
+            .collect();
+        let list = self.threads.get_mut(guild_id).unwrap();
+        let mut archived: Vec<_> = list.iter()
+            .filter(|c| c.archived() && !protected.contains(c.id.as_str()))
+            .map(|c| (thread_activity(c), c.id.clone()))
+            .collect();
+        if archived.len() > MAX_CACHED_ARCHIVED_THREADS {
+            archived.sort_unstable();
+            let excess = archived.len() - MAX_CACHED_ARCHIVED_THREADS;
+            let remove: HashSet<_> = archived.into_iter()
+                .take(excess)
+                .map(|(_, id)| id)
+                .collect();
+            list.retain(|c| !remove.contains(&c.id));
         }
     }
 
@@ -798,6 +822,20 @@ mod tests {
         .unwrap();
         app.poll();
         assert!(!app.joined_threads.contains("3"));
+    }
+
+    #[test]
+    fn archived_cache_is_bounded_and_guild_removal_clears_membership() {
+        let (mut app, _tx, _rx) = harness();
+        app.joined_threads.insert("1".into());
+        for id in 1..=MAX_CACHED_ARCHIVED_THREADS + 2 {
+            app.upsert_thread("g", serde_json::from_value(thread(&id.to_string(), "c", true)).unwrap());
+        }
+        assert_eq!(app.threads["g"].len(), MAX_CACHED_ARCHIVED_THREADS + 1);
+        assert!(app.threads["g"].iter().any(|c| c.id == "1"));
+        app.remove_guild("g");
+        assert!(!app.threads.contains_key("g"));
+        assert!(!app.joined_threads.contains("1"));
     }
 
     #[test]

@@ -66,6 +66,10 @@ gstreamer-video = "0.23"
 # 画面共有で共有する画面を選ぶ（xdg-desktop-portal の ScreenCast）。rfd と同じ版
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 
+[dev-dependencies]
+# src/gateway.rs のテストで時間を進める（tokio::time::advance・start_paused）
+tokio = { version = "1", features = ["test-util"] }
+
 [profile.release]
 lto = "thin"
 strip = true

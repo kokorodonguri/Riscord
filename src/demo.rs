@@ -235,6 +235,7 @@ pub fn spawn(waker: Waker) -> (UnboundedSender<Cmd>, Receiver<Event>) {
                     let members: Vec<Member> = all
                         .iter()
                         .map(|u| Member {
+                            communication_disabled_until: None,
                             user: Some(u.clone()),
                             nick: None,
                             avatar: None,

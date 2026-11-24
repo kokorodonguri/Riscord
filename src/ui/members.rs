@@ -122,7 +122,10 @@ impl Root {
                     let Some(e) = this.upgrade() else {
                         return div().into_any_element();
                     };
-                    e.update(cx, |r, cx| r.member_row(ix, cx))
+                    e.update(cx, |r, cx| {
+                        apply_pane(&r.pane_style);
+                        r.member_row(ix, cx)
+                    })
                 })
                 .flex_1()
                 .pb(z(8.0)),

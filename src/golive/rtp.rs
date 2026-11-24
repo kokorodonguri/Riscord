@@ -116,39 +116,33 @@ impl Packetizer {
         Packetizer {
             ssrc,
             seq: rand::random(),
-            counter: rand::random(),
+            // Discord のサーバーは nonce が前より大きいかを見ているようで、乱数から始めると
+            // 映像の RTP を受け付けないことがあった。公式や他の実装と同じく 0 から数える
+            counter: 0,
         }
     }
 
-    fn header(&mut self, marker: bool, timestamp: u32) -> [u8; 16] {
-        let mut h = [0u8; 16];
-        // V=2, X=1（拡張ヘッダあり）
-        h[0] = 0x90;
+    fn header(&mut self, marker: bool, timestamp: u32) -> [u8; 12] {
+        let mut h = [0u8; 12];
+        // V=2。拡張ヘッダーは付けない（付けると Discord のサーバーが映像を受け付けなかった）
+        h[0] = 0x80;
         h[1] = PT_H264 | if marker { 0x80 } else { 0 };
         h[2..4].copy_from_slice(&self.seq.to_be_bytes());
         self.seq = self.seq.wrapping_add(1);
         h[4..8].copy_from_slice(&timestamp.to_be_bytes());
         h[8..12].copy_from_slice(&self.ssrc.to_be_bytes());
-        // 一バイト形式の拡張 (0xBEDE)、長さ 1 ワード
-        h[12] = 0xBE;
-        h[13] = 0xDE;
-        h[14] = 0;
-        h[15] = 1;
         h
     }
 
     /// timestamp は 90kHz。frame は Annex B（開始コード付き）。暗号化済みのパケットを返す
     pub fn packetize(&mut self, cipher: &Cipher, frame: &[u8], timestamp: u32) -> Vec<Vec<u8>> {
-        // 拡張の中身: playout-delay (id 5, 3 バイト) を 0 にして、すぐ表示してもらう
-        const EXT: [u8; 4] = [0x52, 0, 0, 0];
         let nalus = split_annexb(frame);
         let mut out = Vec::new();
         for (i, nalu) in nalus.iter().enumerate() {
             let last_nal = i + 1 == nalus.len();
             if nalu.len() <= MTU {
                 let head = self.header(last_nal, timestamp);
-                let mut body = Vec::with_capacity(4 + nalu.len());
-                body.extend_from_slice(&EXT);
+                let mut body = Vec::with_capacity(nalu.len());
                 body.extend_from_slice(nalu);
                 if let Some(p) = self.seal(cipher, &head, &body) {
                     out.push(p);
@@ -161,8 +155,7 @@ impl Packetizer {
                     let first = j == 0;
                     let end = j + 1 == chunks.len();
                     let head = self.header(last_nal && end, timestamp);
-                    let mut body = Vec::with_capacity(6 + chunk.len());
-                    body.extend_from_slice(&EXT);
+                    let mut body = Vec::with_capacity(2 + chunk.len());
                     body.push((nal0 & 0xE0) | 28);
                     body.push(
                         if first { 0x80 } else { 0 } | if end { 0x40 } else { 0 } | (nal0 & 0x1F),
@@ -202,6 +195,32 @@ pub fn pli(sender: u32, media: u32) -> [u8; 12] {
     p[4..8].copy_from_slice(&sender.to_be_bytes());
     p[8..12].copy_from_slice(&media.to_be_bytes());
     p
+}
+
+/// RTCP の送信者レポート（SR）。ssrc は自分の映像の SSRC、ntp は (秒, 秒の小数 / 2^32)。
+/// Discord のサーバーは、これが来ない映像を視聴者に流さないことがある
+pub fn sender_report(ssrc: u32, ntp: (u32, u32), rtp_ts: u32, packets: u32, octets: u32) -> [u8; 28] {
+    let mut p = [0u8; 28];
+    p[0] = 0x80; // V=2, RC=0
+    p[1] = 200; // SR
+    p[2..4].copy_from_slice(&6u16.to_be_bytes());
+    p[4..8].copy_from_slice(&ssrc.to_be_bytes());
+    p[8..12].copy_from_slice(&ntp.0.to_be_bytes());
+    p[12..16].copy_from_slice(&ntp.1.to_be_bytes());
+    p[16..20].copy_from_slice(&rtp_ts.to_be_bytes());
+    p[20..24].copy_from_slice(&packets.to_be_bytes());
+    p[24..28].copy_from_slice(&octets.to_be_bytes());
+    p
+}
+
+/// 今の時刻を NTP 形式（1900 年からの秒, 小数部 / 2^32）にする
+pub fn ntp_now() -> (u32, u32) {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = d.as_secs().wrapping_add(2_208_988_800) as u32;
+    let frac = ((d.subsec_nanos() as u64) << 32) / 1_000_000_000;
+    (secs, frac as u32)
 }
 
 /// Annex B を NAL ごとに分ける（開始コードは含めない）

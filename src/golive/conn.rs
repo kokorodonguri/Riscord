@@ -400,6 +400,13 @@ pub async fn run(
             capture,
             ..
         } => {
+            // 公式と同じく、配信中（speaking 2）を伝えてから映像の情報を送る
+            send_json(
+                &mut ws,
+                5,
+                json!({ "speaking": 2, "delay": 0, "ssrc": ssrc }),
+            )
+            .await?;
             send_json(
                 &mut ws,
                 12,
@@ -411,12 +418,6 @@ pub async fn run(
                         "max_resolution": { "type": "fixed", "width": q.width, "height": q.height },
                     }],
                 }),
-            )
-            .await?;
-            send_json(
-                &mut ws,
-                5,
-                json!({ "speaking": 2, "delay": 0, "ssrc": ssrc }),
             )
             .await?;
             capture.force_keyframe();
@@ -447,6 +448,12 @@ pub async fn run(
     let mut keepalive = Instant::now();
     let mut heartbeat_pending = false;
     let started = Instant::now();
+    // RISCORD_DEBUG_STREAM 用: 配信で送ったものの数（映らないときにどこで止まっているかを見る）
+    let mut sent = SendStats::default();
+    let mut last_stats = Instant::now();
+    // 送信者レポート（SR）用: 最後に送ったフレームの RTP 時刻と、その時刻
+    let mut last_frame: Option<(u32, Instant)> = None;
+    let mut last_sr = Instant::now();
 
     loop {
         tokio::select! {
@@ -472,10 +479,36 @@ pub async fn run(
                     k[..4].copy_from_slice(&ssrc.to_be_bytes());
                     let _ = udp.send(&k).await;
                 }
+                if last_stats.elapsed() > Duration::from_secs(2) {
+                    last_stats = Instant::now();
+                    match &role {
+                        Role::Broadcast { .. } => debug(format_args!(
+                            "send: {sent:?} dave={} ready={} users={:?}",
+                            dave.version, dave.encrypt_ready(), dave.users
+                        )),
+                        Role::Watch { .. } => debug(format_args!(
+                            "watch: {stats:?} streamer_video={streamer_video:?} dave={} got_key={got_key}",
+                            dave.version
+                        )),
+                    }
+                }
                 match &role {
                     Role::Broadcast { capture, .. } => {
                         if let Some(e) = capture.error() {
                             bail!(e);
+                        }
+                        // 約 1 秒ごとに送信者レポートを送る（公式クライアントや他の実装も送っている）
+                        if let Some((ts, at)) = last_frame {
+                            if last_sr.elapsed() >= Duration::from_secs(1) {
+                                last_sr = Instant::now();
+                                let rtp_ts = ts.wrapping_add((at.elapsed().as_micros() * 90 / 1000) as u32);
+                                // RTP と同じ nonce の数え方を使う（別々に数えると、サーバーが小さい方を古いものとして捨てる）
+                                let sr = rtp::sender_report(video_ssrc, rtp::ntp_now(), rtp_ts, sent.packets, sent.payload_bytes as u32);
+                                if let Some(p) = packetizer.seal_rtcp(&cipher, &sr) {
+                                    let _ = udp.send(&p).await;
+                                    sent.reports += 1;
+                                }
+                            }
                         }
                     }
                     Role::Watch { decoder, .. } => {
@@ -540,12 +573,39 @@ pub async fn run(
                 let pkt = &buf[..n];
                 match &mut role {
                     Role::Broadcast { capture, .. } => {
+                        // RISCORD_DEBUG_STREAM 用: サーバーから何が返ってきているか
+                        sent.udp_in += 1;
+                        if rtp::is_rtcp(pkt) {
+                            let ok = cipher.open(pkt, 8).is_some();
+                            if ok { sent.rtcp_ok += 1 } else { sent.rtcp_bad += 1 }
+                            let kind = (pkt[1], pkt[0] & 0x1F);
+                            if kind == (206, 1) || kind == (206, 4) {
+                                sent.pli_in += 1;
+                            }
+                            if !sent.rtcp_kinds.contains(&kind) && sent.rtcp_kinds.len() < 16 {
+                                sent.rtcp_kinds.push(kind);
+                            }
+                        }
                         if rtp::is_rtcp(pkt) && rtp::rtcp_wants_keyframe(&cipher, pkt, video_ssrc) && last_pli.elapsed() > Duration::from_millis(500) {
                             last_pli = Instant::now();
                             capture.force_keyframe();
                         }
                     }
                     Role::Watch { streamer, decoder } => {
+                        // RISCORD_DEBUG_STREAM 用: 番号や種類で捨てる前に、届いたものを全部数える
+                        stats.udp_in += 1;
+                        let key = if rtp::is_rtcp(pkt) {
+                            (format!("rtcp{}", pkt[1]), u32::from_be_bytes([pkt[4], pkt[5], pkt[6], pkt[7]]))
+                        } else if pkt.len() >= 12 {
+                            (format!("pt{}", pkt[1] & 0x7F), u32::from_be_bytes([pkt[8], pkt[9], pkt[10], pkt[11]]))
+                        } else {
+                            (format!("short{}", pkt.len()), 0)
+                        };
+                        if let Some(c) = stats.seen.iter_mut().find(|(k, _)| *k == key) {
+                            c.1 += 1;
+                        } else if stats.seen.len() < 12 {
+                            stats.seen.push((key, 1));
+                        }
                         let Some(r) = rtp::parse_rtp(pkt) else { continue };
                         if r.pt != rtp::PT_H264 {
                             // 音声と再送は映像の代わりにならないので数えない
@@ -570,14 +630,23 @@ pub async fn run(
             }
             e = recv_frame(&mut role) => {
                 let Some(e) = e else { bail!("{}", tr!("画面の取り込みが止まりました", "Screen capture stopped", "屏幕捕获已停止",)) };
+                sent.frames += 1;
+                sent.keyframes += e.keyframe as u32;
                 let data = if dave.version != 0 {
                     if !dave.encrypt_ready() {
                         // まだ鍵がそろっていない（視聴者がいない間など）
+                        sent.not_ready += 1;
                         continue;
                     }
                     match dave.session.as_mut().unwrap().encrypt(MediaType::VIDEO, Codec::H264, &e.data) {
                         Ok(d) => d.into_owned(),
-                        Err(_) => continue,
+                        Err(err) => {
+                            if sent.encrypt_failed == 0 {
+                                debug(format_args!("DAVE encrypt failed: {err:?}"));
+                            }
+                            sent.encrypt_failed += 1;
+                            continue;
+                        }
                     }
                 } else {
                     e.data
@@ -586,12 +655,16 @@ pub async fn run(
                     if i > 0 && i % 16 == 0 {
                         sleep(Duration::from_millis(1)).await;
                     }
+                    sent.packets += 1;
+                    sent.bytes += p.len() as u64;
                     udp.send(&p).await.context(tr!(
                         "配信の映像を送信できません",
                         "Can't send the stream video",
                         "无法发送直播画面"
                     ))?;
                 }
+                sent.payload_bytes += data.len() as u64;
+                last_frame = Some((e.rtp_ts, Instant::now()));
                 if !live {
                     live = true;
                     report(Report::Live);
@@ -664,9 +737,34 @@ fn consume_watch_packets(
     }
 }
 
+/// 配信で送ったものの数（RISCORD_DEBUG_STREAM 用）
+#[derive(Debug, Default)]
+struct SendStats {
+    frames: u32,
+    keyframes: u32,
+    not_ready: u32,
+    encrypt_failed: u32,
+    packets: u32,
+    bytes: u64,
+    payload_bytes: u64,
+    reports: u32,
+    /// サーバーから届いた UDP（RTCP の受信レポートなど）
+    udp_in: u32,
+    rtcp_ok: u32,
+    rtcp_bad: u32,
+    /// 届いた RTCP の (packet type, fmt)
+    rtcp_kinds: Vec<(u8, u8)>,
+    /// サーバーからのキーフレーム要求（PLI / FIR）
+    pli_in: u32,
+}
+
 /// 視聴で受け取ったものの数（映らないときに、どこで止まっているかを知らせる）
 #[derive(Debug, Default)]
 struct WatchStats {
+    /// 届いた UDP 全部（RISCORD_DEBUG_STREAM 用）
+    udp_in: u32,
+    /// 届いたものの (種類, SSRC) ごとの数
+    seen: Vec<((String, u32), u32)>,
     /// 配信者の H264 の RTP
     rtp: u32,
     /// H264 以外の payload type

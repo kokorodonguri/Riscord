@@ -77,7 +77,7 @@ mod platform {
     use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
     use std::os::fd::{AsRawFd, OwnedFd};
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
     use std::sync::{Arc, Mutex};
 
     /// ポータルで選んだ画面・ウィンドウ
@@ -349,6 +349,7 @@ mod platform {
     pub struct Decoder {
         pipeline: gst::Element,
         src: gst_app::AppSrc,
+        received_frame: Arc<AtomicBool>,
     }
 
     /// デコーダーの手前にためておける量。これを超えたら捨てる（デコードが追いつかないとき）
@@ -379,7 +380,7 @@ mod platform {
                     "找不到 H264 解码器（请安装 gst-libav 或 openh264）"
                 ))?;
             let desc = format!(
-                "appsrc name=src is-live=true do-timestamp=true format=time max-bytes={DECODER_QUEUE_BYTES} caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! videoscale ! video/x-raw,format=BGRA,width=[16,1920],height=[16,1080],pixel-aspect-ratio=1/1 ! appsink name=sink max-buffers=1 drop=true sync=false"
+                "appsrc name=src is-live=true do-timestamp=true format=time max-bytes={DECODER_QUEUE_BYTES} caps=video/x-h264,stream-format=byte-stream,alignment=au ! h264parse ! {dec} ! videoconvert ! video/x-raw,format=BGRA ! appsink name=sink max-buffers=1 drop=true sync=false"
             );
             let pipeline = gst::parse::launch(&desc).map_err(|e| {
                 tr!(
@@ -404,6 +405,8 @@ mod platform {
                     "Missing appsink",
                     "缺少 appsink"
                 ))?;
+            let received_frame = Arc::new(AtomicBool::new(false));
+            let frame_ready = received_frame.clone();
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |sink| {
@@ -413,6 +416,7 @@ mod platform {
                             let mut slot = latest.lock().unwrap();
                             if current.load(Relaxed) == generation {
                                 *slot = Some(f);
+                                frame_ready.store(true, Relaxed);
                                 drop(slot);
                                 waker.wake();
                             }
@@ -429,7 +433,15 @@ mod platform {
                     "无法播放视频：{e}",
                 ));
             }
-            Ok(Decoder { pipeline, src })
+            Ok(Decoder {
+                pipeline,
+                src,
+                received_frame,
+            })
+        }
+
+        pub fn has_frame(&self) -> bool {
+            self.received_frame.load(Relaxed)
         }
 
         /// アクセスユニットを渡す。デコードが追いつかずたまりすぎていたら捨てて false。
@@ -447,8 +459,9 @@ mod platform {
             if queued > 0 && queued + au.len() as u64 > max {
                 return false;
             }
-            let _ = self.src.push_buffer(gst::Buffer::from_mut_slice(au));
-            true
+            self.src
+                .push_buffer(gst::Buffer::from_mut_slice(au))
+                .is_ok()
         }
 
         pub fn error(&self) -> Option<String> {
@@ -517,7 +530,8 @@ mod platform {
                 .build()
                 .unwrap();
             rt.block_on(async {
-                let q = Quality::fit(Some((640, 360)), 640, 360, 15);
+                // 縦長の配信も高さを切り詰めたり正方形に変形したりしない。
+                let q = Quality::fit(Some((360, 1280)), 360, 1280, 15);
                 let (tx, mut rx) = tokio::sync::mpsc::channel(32);
                 let cap =
                     Capture::with_source("videotestsrc is-live=true num-buffers=30", None, q, tx)
@@ -563,8 +577,8 @@ mod platform {
                 }
                 assert!(dec.error().is_none(), "{:?}", dec.error());
                 let f = latest.lock().unwrap().take().expect("デコードされた画像");
-                assert_eq!((f.width, f.height), (640, 360));
-                assert_eq!(f.data.len(), 640 * 360 * 4);
+                assert_eq!((f.width, f.height), (360, 1280));
+                assert_eq!(f.data.len(), 360 * 1280 * 4);
             });
         }
     }
@@ -624,6 +638,9 @@ mod platform {
         }
         pub fn push(&self, _: Vec<u8>, _: bool) -> bool {
             true
+        }
+        pub fn has_frame(&self) -> bool {
+            false
         }
         pub fn error(&self) -> Option<String> {
             None

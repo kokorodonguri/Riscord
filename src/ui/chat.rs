@@ -1012,7 +1012,7 @@ impl Root {
             .unwrap_or_else(|| uid.clone());
         let h = (self.pane_h * 0.55).clamp(180.0, 720.0);
         let screen = match &self.stream_image {
-            Some((_, frame)) => div().size_full().child(
+            Some((_, frame)) => div().absolute().inset_0().child(
                 img(frame.clone())
                     .id("stream-frame")
                     .size_full()
@@ -1075,7 +1075,7 @@ impl Root {
                 .flex()
                 .flex_col()
                 .child(head)
-                .child(div().flex_1().min_h_0().child(screen))
+                .child(div().relative().flex_1().min_h_0().overflow_hidden().child(screen))
                 .into_any_element(),
         )
     }

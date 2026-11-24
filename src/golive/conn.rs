@@ -166,7 +166,7 @@ pub async fn run(
             "session_id": p.session_id,
             "token": p.token,
             "video": true,
-            "streams": [{ "type": "screen", "rid": "100", "quality": 100 }],
+            "streams": [{ "type": "video", "rid": "100", "quality": 100 }],
             "max_dave_protocol_version": davey::DAVE_PROTOCOL_VERSION,
         }),
     )
@@ -462,9 +462,7 @@ pub async fn run(
             _ = reorder_tick.tick(), if matches!(&role, Role::Watch { .. }) => {
                 if let Role::Watch { streamer, decoder } = &role {
                     let packets = reorder.flush(std::time::Instant::now());
-                    if consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats, &mut live) {
-                        report(Report::Live);
-                    }
+                    consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats);
                 }
             }
             _ = tick.tick() => {
@@ -483,6 +481,10 @@ pub async fn run(
                     Role::Watch { decoder, .. } => {
                         if let Some(e) = decoder.error() {
                             bail!(e);
+                        }
+                        if !live && decoder.has_frame() {
+                            live = true;
+                            report(Report::Live);
                         }
                         // キーフレームが来るまで頼み続ける
                         if !got_key && last_pli.elapsed() > Duration::from_secs(1) {
@@ -562,9 +564,7 @@ pub async fn run(
                             continue;
                         };
                         let packets = reorder.push(rtp::VideoPacket { seq: r.seq, timestamp: r.timestamp, marker: r.marker, payload }, std::time::Instant::now());
-                        if consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats, &mut live) {
-                            report(Report::Live);
-                        }
+                        consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats);
                     }
                 }
             }
@@ -582,8 +582,15 @@ pub async fn run(
                 } else {
                     e.data
                 };
-                for p in packetizer.packetize(&cipher, &data, e.rtp_ts) {
-                    let _ = udp.send(&p).await;
+                for (i, p) in packetizer.packetize(&cipher, &data, e.rtp_ts).into_iter().enumerate() {
+                    if i > 0 && i % 16 == 0 {
+                        sleep(Duration::from_millis(1)).await;
+                    }
+                    udp.send(&p).await.context(tr!(
+                        "配信の映像を送信できません",
+                        "Can't send the stream video",
+                        "无法发送直播画面"
+                    ))?;
                 }
                 if !live {
                     live = true;
@@ -617,9 +624,7 @@ fn consume_watch_packets(
     decoder: &Decoder,
     got_key: &mut bool,
     stats: &mut WatchStats,
-    live: &mut bool,
-) -> bool {
-    let mut became_live = false;
+) {
     for packet in packets {
         match depack.push(packet.seq, packet.timestamp, packet.marker, &packet.payload) {
             Push::Frame(au) => {
@@ -652,16 +657,11 @@ fn consume_watch_packets(
                     *got_key = false;
                     continue;
                 }
-                if !*live {
-                    *live = true;
-                    became_live = true;
-                }
             }
             Push::Lost => *got_key = false,
             Push::None => {}
         }
     }
-    became_live
 }
 
 /// 視聴で受け取ったものの数（映らないときに、どこで止まっているかを知らせる）
@@ -720,6 +720,14 @@ impl WatchStats {
         }
         if dave_version != 0 && self.dave_fail >= self.frames {
             return tr!("エンドツーエンド暗号（DAVE）の鍵がそろわず、配信の映像を解けません", "End-to-end encryption (DAVE) keys are incomplete, so the stream video can't be decrypted", "端到端加密（DAVE）的密钥不完整，无法解密直播画面").into();
+        }
+        if self.frames > self.dave_fail + self.no_key {
+            return tr!(
+                "配信の映像をデコードできません",
+                "Can't decode the stream video",
+                "无法解码直播画面"
+            )
+            .into();
         }
         tr!(
             "配信のキーフレームが届きません",

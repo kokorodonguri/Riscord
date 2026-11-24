@@ -512,44 +512,80 @@ impl Manager {
             session_id: place.session_id.to_string(),
             user_id: me,
         };
-        let role = if mine {
+        // GStreamer の初期化・プラグイン探し・Playing への切り替えは数百 ms 〜数秒かかることがあるので、
+        // ボイスの処理を回しているワーカーではなく spawn_blocking で作る。結果は Ended で返す（id で古いものは捨てる）
+        let build: Box<dyn FnOnce() -> Result<conn::Role, String> + Send> = if mine {
             let Some(source) = s.source.take() else {
                 return;
             };
             let q = s.quality.fit(source.size);
-            let (tx, rx) = tokio::sync::mpsc::channel(8);
-            match media::Capture::start(source, q, tx) {
-                Ok(capture) => conn::Role::Broadcast {
+            Box::new(move || {
+                let (tx, rx) = tokio::sync::mpsc::channel(8);
+                media::Capture::start(source, q, tx).map(|capture| conn::Role::Broadcast {
                     capture,
                     frames: rx,
                     quality: q,
-                },
-                Err(e) => {
-                    self.stop_broadcast(Some(e));
-                    return;
-                }
-            }
+                })
+            })
         } else {
             let streamer = key_user(&s.key).and_then(|u| u.parse().ok()).unwrap_or(0);
             self.frame_gen.store(s.id, Relaxed);
-            match media::Decoder::new(
+            let (frame, waker, frame_gen, id) = (
                 self.frame.clone(),
                 self.waker.clone(),
                 self.frame_gen.clone(),
                 s.id,
-            ) {
-                Ok(decoder) => conn::Role::Watch { streamer, decoder },
-                Err(e) => {
-                    self.stop_watch(Some(e));
-                    return;
-                }
-            }
+            );
+            Box::new(move || {
+                media::Decoder::new(frame, waker, frame_gen, id)
+                    .map(|decoder| conn::Role::Watch { streamer, decoder })
+            })
         };
-        let (stop_tx, stop_rx) = oneshot::channel();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
         s.stop = Some(stop_tx);
         let (id, back) = (s.id, self.back.clone());
         tokio::spawn(async move {
             use futures_util::FutureExt;
+            let role = match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                tokio::task::spawn_blocking(build),
+            )
+            .await
+            {
+                Ok(Ok(Ok(role))) => role,
+                Ok(Ok(Err(e))) => return back(Msg::Ended(id, Some(e))),
+                Err(_) => {
+                    return back(Msg::Ended(
+                        id,
+                        Some(
+                            tr!(
+                                "配信の準備がタイムアウトしました",
+                                "Preparing the stream timed out",
+                                "直播准备超时"
+                            )
+                            .to_string(),
+                        ),
+                    ))
+                }
+                Ok(Err(_)) => {
+                    return back(Msg::Ended(
+                        id,
+                        Some(
+                            tr!(
+                                "配信の準備が異常終了しました",
+                                "Preparing the stream crashed",
+                                "直播准备异常终止"
+                            )
+                            .to_string(),
+                        ),
+                    ))
+                }
+            };
+            // 作っている間に止められた（Session ごと捨てられた）なら、つながずに片付ける
+            if !matches!(stop_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
+                drop(role);
+                return;
+            }
             let b2 = back.clone();
             let r = std::panic::AssertUnwindSafe(conn::run(
                 params,

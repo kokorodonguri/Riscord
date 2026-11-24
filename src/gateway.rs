@@ -288,10 +288,29 @@ fn subscribed_guilds(
 }
 
 impl GatewaySession {
-    fn keep_unsent(&mut self, at: tokio::time::Instant, command: serde_json::Value) {
-        if is_voice_state(&command) && !self.pending.iter().any(|(_, c)| is_voice_state(c)) {
-            self.pending.push_front((at, command));
+    /// 送れなかったコマンドを、つなぎ直したあとに送れるよう先頭へ戻す。
+    /// VC の状態・自分の見え方（presence）・購読も持ち越す。ただし同じ意味の新しいものが
+    /// もう溜まっていれば、古い方は戻さない（queue と同じ考え方）
+    fn keep_unsent(&mut self, at: tokio::time::Instant, mut command: serde_json::Value) {
+        let op = command["op"].as_u64();
+        if matches!(op, Some(3 | 4)) && self.pending.iter().any(|(_, c)| c["op"].as_u64() == op) {
+            return;
         }
+        if subscribed_guilds(&command).is_some() {
+            let newer: std::collections::HashSet<String> = self
+                .pending
+                .iter()
+                .filter_map(|(_, c)| subscribed_guilds(c))
+                .flat_map(|g| g.keys().cloned())
+                .collect();
+            if let Some(subs) = command["d"]["subscriptions"].as_object_mut() {
+                subs.retain(|g, _| !newer.contains(g));
+                if subs.is_empty() {
+                    return;
+                }
+            }
+        }
+        self.pending.push_front((at, command));
     }
 
     /// 送るコマンドを溜める。後から来たものと同じ意味の古いものは捨てる:
@@ -420,8 +439,6 @@ mod tests {
             ..Default::default()
         };
         let now = tokio::time::Instant::now();
-        s.keep_unsent(now, serde_json::json!({"op": 3, "d": {}}));
-        assert!(s.pending.is_empty(), "送れなかった op 4 以外は持ち越さない");
         s.queue(serde_json::json!({"op": 4, "n": 1}));
         s.queue(serde_json::json!({"op": 4, "n": 2}));
         s.keep_unsent(now, serde_json::json!({"op": 4, "n": 0}));
@@ -429,6 +446,30 @@ mod tests {
         assert!(s.resumable().is_none());
         assert_eq!(s.pending.len(), 1);
         assert_eq!(s.pending[0].1["n"], 2, "最新の 1 件だけ");
+    }
+
+    /// 送れなかった presence と購読も持ち越す。新しいものが溜まっていればそちらを優先する
+    #[tokio::test]
+    async fn unsent_presence_and_subscriptions_are_carried_over() {
+        let mut s = GatewaySession::default();
+        let now = tokio::time::Instant::now();
+        s.keep_unsent(now, serde_json::json!({"op": 3, "d": {"status": "idle"}}));
+        assert_eq!(s.pending.len(), 1);
+        s.queue(serde_json::json!({"op": 3, "d": {"status": "dnd"}}));
+        s.keep_unsent(now, serde_json::json!({"op": 3, "d": {"status": "online"}}));
+        let statuses: Vec<_> = s.pending.iter().map(|(_, c)| c["d"]["status"].clone()).collect();
+        assert_eq!(statuses, ["dnd"], "新しい presence があれば古いものは戻さない");
+
+        let mut s = GatewaySession::default();
+        s.queue(serde_json::json!({"op": 37, "d": {"subscriptions": {"a": {"n": 2}}}}));
+        s.keep_unsent(
+            now,
+            serde_json::json!({"op": 37, "d": {"subscriptions": {"a": {"n": 1}, "b": {"n": 1}}}}),
+        );
+        assert_eq!(s.pending.len(), 2);
+        let kept = &s.pending[0].1["d"]["subscriptions"];
+        assert!(kept.get("a").is_none(), "新しい購読があるサーバーは戻さない");
+        assert_eq!(kept["b"]["n"], 1);
     }
 
     #[tokio::test]

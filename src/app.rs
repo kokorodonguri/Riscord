@@ -1933,7 +1933,9 @@ impl App {
         let screen_w = self.screen_w;
         let settings = std::mem::take(&mut self.settings);
         let (applied, watch) = (self.theme_applied.take(), self.theme_watch.take());
-        let plugins = std::mem::take(&mut self.plugins);
+        let mut plugins = std::mem::take(&mut self.plugins);
+        // プラグインは動かしたままにするが、前のアカウントの情報と予約していた操作は捨てる
+        plugins.end_session();
         let message_log = std::mem::take(&mut self.message_log);
         let profile = self.profile.take();
         *self = App {
@@ -6187,13 +6189,16 @@ impl App {
     /// プラグインから読める本体の状態を更新する
     pub fn sync_plugin_host(&mut self) {
         let mut h = self.plugins.host.borrow_mut();
-        if let Some(me) = &self.me {
-            if h.me_id != me.id {
-                h.me_id = me.id.clone();
-            }
-            if h.me_name != me.display() {
-                h.me_name = me.display().to_owned();
-            }
+        let (id, name) = self
+            .me
+            .as_ref()
+            .map_or(("", ""), |me| (me.id.as_str(), me.display()));
+        // ログインしていなければ空にする（前のアカウントの情報をプラグインに見せ続けない）
+        if h.me_id != id {
+            h.me_id = id.to_owned();
+        }
+        if h.me_name != name {
+            h.me_name = name.to_owned();
         }
         if h.status != self.settings.status {
             h.status = self.settings.status.clone();

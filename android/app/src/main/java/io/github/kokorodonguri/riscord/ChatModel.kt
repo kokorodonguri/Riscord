@@ -68,7 +68,13 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private var typingSendJob:Job?=null
     private var restoreJob: Job? = null
     private var pauseJob: Job? = null
-    private val messageCache=mutableMapOf<String,List<JSONObject>>()
+    /** チャンネルを開き直したときにすぐ見せる直近のメッセージ。最近使ったものから MESSAGE_CACHE_CHANNELS 件まで */
+    private val messageCache=object:LinkedHashMap<String,List<JSONObject>>(16,0.75f,true) {
+        override fun removeEldestEntry(eldest:MutableMap.MutableEntry<String,List<JSONObject>>?)=size>MESSAGE_CACHE_CHANNELS
+    }
+    /** ログイン中のセッションに属する処理。ログアウトでまとめて止め、古いセッションの結果を反映させない */
+    private var sessionScope = newSessionScope()
+    private fun newSessionScope() = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
     private var connecting = false
     private var pendingChannel: String? = null
     private var foreground = false
@@ -77,7 +83,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private var homeRefreshVersion = 0L
     init {
         state.update { it.copy(status=settings.getString("status","online") ?: "online") }
-        if(restoreSession) restoreJob = viewModelScope.launch { restore() }
+        if(restoreSession) restoreJob = sessionScope.launch { restore() }
         viewModelScope.launch {
             while (isActive) {
                 try {
@@ -100,7 +106,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     }
     private fun task(block: suspend () -> Unit) {
         val session=handle
-        viewModelScope.launch {
+        sessionScope.launch {
         try { block() } catch (e: Exception) {
             if (e is CancellationException) throw e
             if (session!=handle) return@launch
@@ -173,16 +179,19 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private suspend fun connect(token: String, save: Boolean) {
         if (connecting) return
         connecting = true
+        val session = handle
         state.update { it.copy(loading = true, loginBusy = true, error = null) }
         try {
-            val me = NativeBridge.request(handle, JSONObject().put("op", "connect").put("token", token).put("status", state.value.status)) as JSONObject
+            val me = NativeBridge.request(session, JSONObject().put("op", "connect").put("token", token).put("status", state.value.status)) as JSONObject
+            // 待っている間にログアウトされたら、古いトークンを保存したり画面を戻したりしない
+            if (session != handle) return
             if (save) store.save(token)
             gatewayPaused = false
             state.update { it.copy(me = me, loginBusy = false, ticket = null, qr = null) }
             refreshHome()
             pendingChannel?.let { openFromNotification(it) }
             updateGateway()
-        } finally { connecting = false; state.update { it.copy(loading = false, loginBusy = false) } }
+        } finally { if (session == handle) { connecting = false; state.update { it.copy(loading = false, loginBusy = false) } } }
     }
     /** トークンが無効になったとき。保存を消してログイン画面へ戻す */
     private fun expire(message: String?) {
@@ -234,7 +243,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 task { NativeBridge.request(handle, JSONObject().put("op", "resume")) }
             }
         } else if (!gatewayPaused && pauseJob == null) {
-            pauseJob = viewModelScope.launch {
+            pauseJob = sessionScope.launch {
                 delay(60_000)
                 pauseJob = null
                 runCatching { NativeBridge.request(handle, JSONObject().put("op", "pause")) }
@@ -342,7 +351,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val channel=state.value.channel?.optString("id")
         state.update {it.copy(typing=if(channel==null) null else typingTracker.label())}
         if(channel==null) return
-        typingExpiryJob=viewModelScope.launch {
+        typingExpiryJob=sessionScope.launch {
             while(state.value.channel?.optString("id")==channel) {
                 val wait=typingTracker.nextExpiry() ?: break
                 delay(wait)
@@ -359,14 +368,14 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val s=state.value
         val guild=s.guild?.optString("id") ?: return
         val channel=s.channel?.optString("id") ?: return
-        viewModelScope.launch {
+        sessionScope.launch {
             try {NativeBridge.request(handle,JSONObject().put("op","subscribe_typing").put("guild",guild).put("channel",channel))}
             catch(e:Exception) {if(e is CancellationException) throw e}
         }
     }
     private fun notifyTyping(channel:String) {
         if(state.value.me==null||typingSendJob?.isActive==true||!typingTracker.reserveSend(channel)) return
-        typingSendJob=viewModelScope.launch {
+        typingSendJob=sessionScope.launch {
             try {rest("/channels/$channel/typing","POST")}
             catch(e:Exception) {if(e is CancellationException) throw e} // Best effort; keep composing on failure.
         }
@@ -390,7 +399,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private fun refreshChannels(guild:JSONObject) {
         channelsJob?.cancel()
         state.update {it.copy(channelLoadFailed=false,loading=if(it.channel==null) true else it.loading,error=if(it.error==CHANNEL_LOAD_ERROR) null else it.error)}
-        channelsJob=viewModelScope.launch {
+        channelsJob=sessionScope.launch {
             try { loadChannels(guild) }
             catch (e: CancellationException) { throw e }
             catch (e: AuthExpiredException) { expire(e.message) }
@@ -409,7 +418,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         currentCoroutineContext().ensureActive()
         if (state.value.guild?.optString("id") == guild.optString("id")) state.update { it.copy(channels = channels, loading = if(it.channel==null) false else it.loading) }
     }
-    private fun cacheMessages() {state.value.channel?.optString("id")?.let {messageCache[it]=state.value.messages}}
+    private fun cacheMessages() {state.value.channel?.optString("id")?.let {messageCache[it]=state.value.messages.takeLast(MESSAGE_CACHE_PER_CHANNEL)}}
     fun openChannel(channel: JSONObject) {
         clearTyping()
         cacheMessages()
@@ -422,7 +431,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private fun loadLatestMessages(id:String) {
         historyJob?.cancel()
         state.update {it.copy(loading=true,messageLoadFailed=false,error=if(it.error==MESSAGE_LOAD_ERROR || it.error==OLDER_LOAD_ERROR) null else it.error)}
-        historyJob = viewModelScope.launch { try { refreshMessages(id) } catch(e: Exception) {
+        historyJob = sessionScope.launch { try { refreshMessages(id) } catch(e: Exception) {
             if(e is CancellationException) throw e
             if(e is AuthExpiredException) { expire(e.message); return@launch }
             if(state.value.channel?.optString("id")==id) state.update { it.copy(error = if(it.messages.isEmpty()) it.error else MESSAGE_LOAD_ERROR, loading = false,messageLoadFailed=true) }
@@ -450,7 +459,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val s=state.value; val id=s.channel?.optString("id") ?: return
         if (s.loading || s.messageLoadFailed || !s.hasMore) return
         state.update { it.copy(loading = true,error=if(it.error==OLDER_LOAD_ERROR) null else it.error) }
-        historyJob=viewModelScope.launch {
+        historyJob=sessionScope.launch {
             try { refreshMessages(id,s.messages.firstOrNull()?.optString("id")) }
             catch (e: CancellationException) { throw e }
             catch (e: AuthExpiredException) { expire(e.message) }
@@ -601,7 +610,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val id=state.value.me?.optString("id") ?: return
         profileJob?.cancel()
         state.update { it.copy(profile=null,profileLoading=true,profileError=null) }
-        profileJob=viewModelScope.launch {
+        profileJob=sessionScope.launch {
             try {
                 val profile=rest("/users/$id/profile") as JSONObject
                 currentCoroutineContext().ensureActive()
@@ -621,7 +630,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(s.profileSaving || s.profile==null || name.isBlank()) return
         val userId=s.me?.optString("id") ?: return
         state.update { it.copy(profileSaving=true,profileError=null) }
-        profileJob=viewModelScope.launch {
+        profileJob=sessionScope.launch {
             var savedAny=false
             try {
                 if(name!=s.me?.label()) {
@@ -750,11 +759,17 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val app=getApplication<Application>()
         app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false); historyJob?.cancel(); channelsJob?.cancel(); profileJob?.cancel(); messageCache.clear(); store.clear()
         app.getSystemService(android.app.NotificationManager::class.java).cancelAll()
+        // このセッションで動いている処理を止める（ログアウト後に古い結果で画面やトークンを書き換えない）
+        sessionScope.cancel(); sessionScope=newSessionScope(); connecting=false
         val old=handle; handle=NativeBridge.create(); NativeBridge.destroy(old)
         state.value=ChatState(status=state.value.status)
     }
     override fun onCleared() { NativeBridge.destroy(handle) }
 }
+
+/** メッセージを覚えておくチャンネルの数と、1 チャンネルあたりのメッセージ数（巡回しても使うメモリが増え続けないように） */
+internal const val MESSAGE_CACHE_CHANNELS=20
+internal const val MESSAGE_CACHE_PER_CHANNEL=100
 
 /** ミュート中か（期限つきのミュートは期限を過ぎていれば解けている） */
 private fun JSONObject.mutedNow():Boolean {

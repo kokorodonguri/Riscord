@@ -1785,7 +1785,7 @@ impl Root {
                     action_button(
                         "enable_all_plugins",
                         IconName::Check,
-                        tr!("すべてオン", "Turn All On", "全部开启"),
+                        tr!("同梱をすべてオン", "Turn All Bundled On", "开启全部内置插件"),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app

@@ -697,6 +697,8 @@ impl Plugins {
             self.stopped_actions.extend(p.stop());
         }
         self.entries.clear();
+        // 読み込みの途中で抜けても、消えたプラグインを指す索引を残さない（最後に作り直す）
+        self.index.clear();
         self.errors.clear();
         self.selected = None;
         self.options_cache.borrow_mut().clear();
@@ -726,13 +728,27 @@ impl Plugins {
             }
             self.entries.push(bundled);
         }
+        self.load_external(enabled, &mut seen);
+        self.index = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.manifest.id.clone(), i))
+            .collect();
+    }
+    /// プラグインのフォルダから、ユーザーが追加したプラグインを読み込む（reload の続き）
+    fn load_external(&mut self, enabled: &[String], seen: &mut std::collections::HashSet<String>) {
         let dir = directory();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             self.errors.push(e.to_string());
             return;
         }
-        let Ok(iter) = std::fs::read_dir(&dir) else {
-            return;
+        let iter = match std::fs::read_dir(&dir) {
+            Ok(iter) => iter,
+            Err(e) => {
+                self.errors.push(format!("{}: {e}", dir.display()));
+                return;
+            }
         };
         let mut paths: Vec<_> = iter
             .flatten()
@@ -790,15 +806,10 @@ impl Plugins {
                 Err(e) => self.errors.push(format!("{}: {e:#}", path.display())),
             }
         }
-        self.index = self
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.manifest.id.clone(), i))
-            .collect();
     }
     /// Set all discovered plugins at once without restarting those already running.
-    /// オンにするときは、本文を外部のサービスへ送るプラグイン（EXTERNAL_PLUGINS）を含めない。これらは個別にオンにする
+    /// オンにするのは同梱プラグインだけ。本文を外部のサービスへ送るもの（EXTERNAL_PLUGINS）と、
+    /// ユーザーがフォルダに追加したプラグイン（中身を確かめていない Lua）は含めず、個別にオンにしてもらう
     pub fn set_all(&mut self, on: bool, enabled: &mut Vec<String>) {
         self.dirty();
         self.actions_cache = None;
@@ -806,7 +817,9 @@ impl Plugins {
         self.revision = self.revision.wrapping_add(1);
         if on {
             for plugin in &mut self.entries {
-                if EXTERNAL_PLUGINS.contains(&plugin.manifest.id.as_str()) {
+                if plugin.bundled_source.is_none()
+                    || EXTERNAL_PLUGINS.contains(&plugin.manifest.id.as_str())
+                {
                     continue;
                 }
                 if !enabled.contains(&plugin.manifest.id) {
@@ -1049,6 +1062,26 @@ impl Plugins {
             self.revision = self.revision.wrapping_add(1);
             self.actions_cache = None;
         }
+    }
+    /// ログアウトしたとき。前のアカウントの情報・タイマー・送信待ちの操作を捨てる
+    /// （次にログインしたアカウントで、前のアカウントの続きが動かないように）
+    pub fn end_session(&mut self) {
+        let status = self.host.borrow().status.clone();
+        *self.host.borrow_mut() = HostInfo {
+            status,
+            ..Default::default()
+        };
+        for p in &self.entries {
+            if let Some(r) = &p.runtime {
+                r.timers.borrow_mut().clear();
+                r.queue.borrow_mut().clear();
+            }
+        }
+        self.stopped_actions.clear();
+        self.actions_cache = None;
+        self.recent_sends.clear();
+        self.recent_effects.clear();
+        self.recent_notices.clear();
     }
     /// エラーで止まったプラグインの名前（前回から増えた分）。表示の更新も済ませる
     pub fn take_stopped(&mut self) -> Vec<String> {
@@ -1784,6 +1817,38 @@ mod tests {
         assert!(enabled.is_empty());
         assert!(plugins.entries.iter().all(|plugin| !plugin.running()));
         assert!(plugins.selected.is_none());
+    }
+    /// 「すべてオン」はユーザーが追加したプラグイン（中身を確かめていない Lua）を起動しない
+    #[test]
+    fn set_all_skips_user_added_plugins() {
+        let mut plugins = Plugins::default();
+        for (id, bundled) in [("bundled-one", true), ("user-added", false)] {
+            let manifest = Manifest {
+                id: id.into(),
+                name: id.into(),
+                version: "1".into(),
+                description: String::new(),
+                api: 1,
+                entry: "main.lua".into(),
+                description_en: String::new(),
+                description_zh: String::new(),
+                bd: false,
+            };
+            plugins.entries.push(Plugin {
+                manifest,
+                error: None,
+                runtime: None,
+                path: PathBuf::new(),
+                failed: false,
+                waker: Default::default(),
+                bundled_source: bundled.then_some("return {}"),
+            });
+        }
+        let mut enabled = Vec::new();
+        plugins.set_all(true, &mut enabled);
+        assert_eq!(enabled, ["bundled-one"]);
+        assert!(plugins.entries[0].running());
+        assert!(!plugins.entries[1].running());
     }
     #[test]
     fn bundled_call_timer_renders_and_can_be_disabled() {

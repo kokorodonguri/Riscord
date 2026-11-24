@@ -617,12 +617,13 @@ pub async fn run(
                         if streamer_video.is_some_and(|v| v != r.ssrc) {
                             continue;
                         }
-                        streamer_video.get_or_insert(r.ssrc);
                         stats.rtp += 1;
                         let Some(payload) = r.decrypt(&cipher) else {
                             stats.transport_fail += 1;
                             continue;
                         };
+                        // 認証が通ってから配信者の SSRC として覚える（偽のパケットで正しい SSRC を締め出さない）
+                        streamer_video.get_or_insert(r.ssrc);
                         let packets = reorder.push(rtp::VideoPacket { seq: r.seq, timestamp: r.timestamp, marker: r.marker, payload }, std::time::Instant::now());
                         consume_watch_packets(packets, &mut depack, &mut dave, *streamer, decoder, &mut got_key, &mut stats);
                     }

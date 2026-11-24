@@ -58,6 +58,9 @@ pub struct MessageLog {
     order: VecDeque<String>,
     loaded: bool,
     dirty_since: Option<Instant>,
+    /// 保存に続けて失敗した回数と、次に試してよい時刻（失敗したら間を空けて試し直す）
+    save_failures: u32,
+    retry_at: Option<Instant>,
     /// 記録が変わるたびに増える（一覧画面の描き直し用）
     pub revision: u64,
     /// 記録を置くファイル（アカウントのフォルダの message-log.json）。空なら保存しない
@@ -295,13 +298,23 @@ impl MessageLog {
         if elapsed < SAVE_DELAY {
             return Some(SAVE_DELAY - elapsed);
         }
-        self.flush();
-        None
+        if let Some(at) = self.retry_at {
+            let now = Instant::now();
+            if now < at {
+                return Some(at - now);
+            }
+        }
+        if self.flush() {
+            None
+        } else {
+            self.retry_at.map(|at| at.saturating_duration_since(Instant::now()))
+        }
     }
 
-    pub fn flush(&mut self) {
-        if self.dirty_since.take().is_none() {
-            return;
+    /// 変更があれば書き出す。書けなかったら変更ありのまま残して false（間を空けて試し直す）
+    pub fn flush(&mut self) -> bool {
+        if self.dirty_since.is_none() {
+            return true;
         }
         let stored = Stored {
             owner: self.owner.clone(),
@@ -309,10 +322,12 @@ impl MessageLog {
             edited: self.edited.values().cloned().collect(),
         };
         let Ok(bytes) = serde_json::to_vec(&stored) else {
-            return;
+            return self.save_failed();
         };
         if self.path.as_os_str().is_empty() {
-            return;
+            // 保存先がない（保存しない設定）。変更は残さない
+            self.dirty_since = None;
+            return true;
         }
         let p = self.path.clone();
         if let Some(dir) = p.parent() {
@@ -338,9 +353,27 @@ impl MessageLog {
             file.write_all(&bytes)?;
             std::fs::rename(&tmp, &p)
         };
-        if let Err(e) = save() {
-            eprintln!("メッセージの記録を保存できませんでした: {e}");
+        match save() {
+            Ok(()) => {
+                self.dirty_since = None;
+                self.save_failures = 0;
+                self.retry_at = None;
+                true
+            }
+            Err(e) => {
+                eprintln!("メッセージの記録を保存できませんでした: {e}");
+                self.save_failed()
+            }
         }
+    }
+
+    /// 保存に失敗した。変更ありのまま、3 秒・6 秒…と間を延ばして（最長 1 分）試し直す
+    fn save_failed(&mut self) -> bool {
+        self.save_failures = self.save_failures.saturating_add(1);
+        let wait = (SAVE_DELAY * 2u32.saturating_pow(self.save_failures - 1).min(20))
+            .min(Duration::from_secs(60));
+        self.retry_at = Some(Instant::now() + wait);
+        false
     }
 }
 
@@ -409,6 +442,29 @@ mod tests {
         assert_eq!(old, ["最初", "二回目"]);
         assert_eq!(l.edited["1"].message.content, "三回目");
         l.dirty_since = None;
+    }
+
+    /// 書き込みに失敗しても変更ありのまま残し、間を空けて試し直す。書けたら変更なしになる
+    #[test]
+    fn failed_save_keeps_changes_and_retries() {
+        let dir = std::env::temp_dir().join(format!("riscord-log-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 親が「ファイル」なので書けない
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let mut l = log();
+        l.path = blocker.join("message-log.json");
+        l.on_delete(&msg("1", "消された"));
+        assert!(!l.flush());
+        assert!(l.dirty_since.is_some());
+        // すぐには試し直さない
+        assert!(l.save_if_due().is_some_and(|d| d > Duration::ZERO));
+        l.path = dir.join("message-log.json");
+        assert!(l.flush());
+        assert!(l.dirty_since.is_none());
+        assert!(l.path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

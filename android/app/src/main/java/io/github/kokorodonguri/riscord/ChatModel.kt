@@ -683,7 +683,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(!shouldNotify(message,s)) return
         val app=getApplication<Application>()
         if(!canNotify(app)) return
-        val intent=android.content.Intent(app,MainActivity::class.java).putExtra("channel_id",channelId).addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val intent=NotificationLink.openChannel(app,channelId)
         val open=android.app.PendingIntent.getActivity(app,channelId.hashCode(),intent,android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
         val notification=android.app.Notification.Builder(app,"messages").setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(message.optJSONObject("author")?.label() ?: tr("メッセージ","Message","消息"))

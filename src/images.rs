@@ -41,14 +41,14 @@ pub enum Img {
 }
 
 enum Entry {
-    Pending(Arc<()>),
+    Pending(Arc<()>, bool),
     Ready(Arc<RenderImage>),
     Failed(Instant),
 }
 
 // 同じ URI を捨てて再取得した場合、古い非同期処理は新しい要求を完了できない。
 fn is_current_request(entry: Option<&Entry>, request: &Arc<()>) -> bool {
-    matches!(entry, Some(Entry::Pending(current)) if Arc::ptr_eq(current, request))
+    matches!(entry, Some(Entry::Pending(current, _)) if Arc::ptr_eq(current, request))
 }
 
 struct Store {
@@ -61,6 +61,7 @@ struct Store {
     http: reqwest::Client,
     decode: Arc<tokio::sync::Semaphore>,
     downloads: tokio::sync::Semaphore,
+    priority_downloads: tokio::sync::Semaphore,
 }
 
 fn store() -> &'static Store {
@@ -80,6 +81,7 @@ fn store() -> &'static Store {
         http: image_client(Duration::from_secs(30)).expect("http client"),
         decode: Arc::new(tokio::sync::Semaphore::new(decoders())),
         downloads: tokio::sync::Semaphore::new(DOWNLOADS),
+        priority_downloads: tokio::sync::Semaphore::new(2),
     })
 }
 
@@ -98,19 +100,24 @@ pub fn set_waker(w: Waker) {
 
 /// 画像を返す。まだなら読み込みを始めて Pending
 pub fn get(uri: &str) -> Img {
-    get_variant(uri, false)
+    get_variant(uri, false, false)
+}
+
+/// Prioritize message author avatars over other image downloads.
+pub fn get_priority(uri: &str) -> Img {
+    get_variant(uri, false, true)
 }
 
 /// Full-screen images use a separate, higher-resolution cache entry.
 pub fn get_preview(uri: &str) -> Img {
-    get_variant(uri, true)
+    get_variant(uri, true, false)
 }
 
 fn preview_key(uri: &str) -> String {
     format!("preview:{uri}")
 }
 
-fn get_variant(uri: &str, preview: bool) -> Img {
+fn get_variant(uri: &str, preview: bool, priority: bool) -> Img {
     let s = store();
     let key = if preview {
         preview_key(uri)
@@ -131,18 +138,24 @@ fn get_variant(uri: &str, preview: bool) -> Img {
     drop(order);
     match cache.get(&key) {
         Some(Entry::Ready(i)) => return Img::Ready(i.clone()),
-        Some(Entry::Pending(_)) => return Img::Pending,
+        Some(Entry::Pending(_, was_priority)) if !priority || *was_priority => return Img::Pending,
+        Some(Entry::Pending(_, _)) => {}
         Some(Entry::Failed(at)) if at.elapsed() < RETRY_DELAY => return Img::Failed,
         Some(Entry::Failed(_)) => {}
         None => {}
     }
     let request = Arc::new(());
-    cache.insert(key.clone(), Entry::Pending(request.clone()));
+    cache.insert(key.clone(), Entry::Pending(request.clone(), priority));
     drop(cache);
     let uri = uri.to_string();
     s.rt.spawn(async move {
         let s = store();
-        let Ok(_download_permit) = s.downloads.acquire().await else {
+        let semaphore = if priority {
+            &s.priority_downloads
+        } else {
+            &s.downloads
+        };
+        let Ok(_download_permit) = semaphore.acquire().await else {
             return;
         };
         // キューで待っている間に破棄された要求は通信を開始しない。
@@ -240,7 +253,7 @@ fn get_variant(uri: &str, preview: bool) -> Img {
 pub fn peek(uri: &str) -> Img {
     match store().cache.lock().unwrap().get(uri) {
         Some(Entry::Ready(i)) => Img::Ready(i.clone()),
-        Some(Entry::Pending(_)) => Img::Pending,
+        Some(Entry::Pending(_, _)) => Img::Pending,
         Some(Entry::Failed(_)) => Img::Failed,
         None => Img::Pending,
     }
@@ -254,6 +267,48 @@ pub fn forget(uri: &str) {
     if let Some(Entry::Ready(i)) = cache.remove(uri) {
         s.dropped.lock().unwrap().push(i);
     }
+}
+
+/// 画像を「使っている」App の数。キャッシュは全体で 1 つなので、分割表示で別のアカウントが
+/// 同じ画像を出していても、片方がチャンネルを捨てたときに解放しないよう数える
+fn holders() -> &'static Mutex<HashMap<String, usize>> {
+    static H: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    H.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// App がこの画像を使い始めた（同じ App からは 1 回だけ呼ぶ）
+pub fn hold(uri: &str) {
+    *holders()
+        .lock()
+        .unwrap()
+        .entry(uri.to_string())
+        .or_default() += 1;
+}
+
+/// App がこの画像を使わなくなった。どの App も使っていなければキャッシュから捨てる
+pub fn unhold(uri: &str) {
+    let last = {
+        let mut h = holders().lock().unwrap();
+        match h.get_mut(uri) {
+            Some(n) if *n > 1 => {
+                *n -= 1;
+                false
+            }
+            _ => {
+                h.remove(uri);
+                true
+            }
+        }
+    };
+    if last {
+        forget(uri);
+    }
+}
+
+/// 画像を使っている App の数（テスト用）
+#[cfg(test)]
+pub fn holder_count(uri: &str) -> usize {
+    holders().lock().unwrap().get(uri).copied().unwrap_or(0)
 }
 
 pub fn forget_preview(uri: &str) {
@@ -577,8 +632,8 @@ mod tests {
         let uri = "https://example.invalid/preview-cache-test.png";
         let request = Arc::new(());
         let mut cache = store().cache.lock().unwrap();
-        cache.insert(uri.into(), Entry::Pending(request.clone()));
-        cache.insert(preview_key(uri), Entry::Pending(request));
+        cache.insert(uri.into(), Entry::Pending(request.clone(), false));
+        cache.insert(preview_key(uri), Entry::Pending(request, false));
         drop(cache);
 
         forget_preview(uri);
@@ -788,11 +843,11 @@ mod request_tests {
         let old = Arc::new(());
         let new = Arc::new(());
         let mut cache = HashMap::new();
-        cache.insert("image", Entry::Pending(old.clone()));
+        cache.insert("image", Entry::Pending(old.clone(), false));
         assert!(is_current_request(cache.get("image"), &old));
         cache.remove("image");
         assert!(!is_current_request(cache.get("image"), &old));
-        cache.insert("image", Entry::Pending(new.clone()));
+        cache.insert("image", Entry::Pending(new.clone(), false));
         assert!(!is_current_request(cache.get("image"), &old));
         assert!(is_current_request(cache.get("image"), &new));
         cache.insert("image", Entry::Failed(Instant::now()));

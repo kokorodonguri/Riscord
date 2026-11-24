@@ -88,6 +88,9 @@ pub fn save_token(profile: Option<&str>, token: &str) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600); // 自分だけ読める
     }
+    // Windows では ACL を設定せず、置き場所（%APPDATA% の下）から継承した ACL のままにする。
+    // 既定では本人・SYSTEM・Administrators だけが読める。本人だけに絞るには windows-sys を直接の依存に
+    // 加える必要があるので、今は見送っている（OS の資格情報ストアへの移行も、ログアウトされる利用者が出るため将来の課題）
     let mut file = opts.open(&p)?;
     #[cfg(unix)]
     {
@@ -873,6 +876,9 @@ pub struct ServerMemberList {
     pub channel_id: String,
     /// 一覧の ID（見える人が同じチャンネルは同じ一覧）。最初の SYNC で決まり、違う ID の差分は無視する
     pub list_id: Option<String>,
+    /// 前のチャンネルの一覧の ID。チャンネルを移った直後は前の一覧の SYNC が遅れて届くことがあるので、
+    /// この ID で決まった一覧は仮とし、別の ID の SYNC が来たらそちらに乗り換える
+    pub prev_list_id: Option<String>,
     pub groups: Vec<(String, u32)>,
     /// 行ごとの中身。None はまだ届いていない
     pub items: Vec<Option<net::ListItem>>,
@@ -889,9 +895,16 @@ impl ServerMemberList {
         groups: Vec<(String, u32)>,
         ops: Vec<net::ListOp>,
     ) -> bool {
+        let has_sync = ops.iter().any(|o| matches!(o, net::ListOp::Sync { .. }));
         match &self.list_id {
+            // 前のチャンネルの一覧で仮に決まっていたら、新しいチャンネルの一覧の SYNC で置き換える
+            Some(id) if id != list_id && has_sync && self.prev_list_id.as_ref() == Some(id) => {
+                self.items.clear();
+                self.groups.clear();
+                self.prev_list_id = None;
+            }
             Some(id) if id != list_id => return false,
-            None if !ops.iter().any(|o| matches!(o, net::ListOp::Sync { .. })) => return false,
+            None if !has_sync => return false,
             _ => {}
         }
         self.list_id = Some(list_id.to_string());
@@ -1152,6 +1165,11 @@ pub struct History {
     /// 続きの読み込み中の起点（このIDより後を頼んでいる）
     pub pending_newer: Option<String>,
     pub newer_retry_at: Option<std::time::Instant>,
+    /// つながっていない一覧を出している間に届いた新着（続きを読み終えて最新とつながったら足す。
+    /// 最後の続きのページを作ってから処理するまでに届いた分が抜けないように）
+    pub detached_new: Vec<Message>,
+    /// 新着を溜めきれなかった（最新とつながったら読み直す）
+    pub detached_overflow: bool,
     /// 古いページの読み込み中に届いた変更（応答が古い内容で上書きしないよう、届いたら当て直す）
     pub older_changes: Vec<MessageChange>,
 }
@@ -1425,6 +1443,10 @@ pub struct App {
     pub dm_lookups: HashSet<u64>,
     /// DM 一覧を取得している間に閉じた DM（届いた一覧から除く）
     pub dms_deleted_while_loading: HashSet<String>,
+    /// DM 一覧を取得している間にゲートウェイなどで増えた DM（届いた一覧になくても残す）
+    pub dms_added_while_loading: HashSet<String>,
+    /// この接続で DM 一覧が実際に届いたか（前回の控えを出しているだけのときは false）
+    pub dms_fetched: bool,
     pub channels: HashMap<String, Vec<Channel>>,
     pub roles: HashMap<String, Vec<Role>>,
     pub members: HashMap<String, Vec<Member>>,
@@ -1474,6 +1496,8 @@ pub struct App {
     pub hide_dm_profile: bool,
     /// メンバー・ロール・オンライン状態が変わるたびに増える（メンバーリストの作り直しの合図）
     pub member_ver: u64,
+    /// チャンネル名・ロール名が変わるたびに増える（本文の <#id>・<@&id> の名前の入れ直しの合図）
+    pub names_ver: u64,
     pub member_cache: MemberListCache,
     pub sel_guild: Option<String>, // None = DM
     pub sel_channel: Option<String>,
@@ -1544,6 +1568,8 @@ pub struct App {
     pub typing: HashMap<String, Vec<(String, String, std::time::Instant)>>,
     /// サーバーごとの自分の通知設定（READY と USER_GUILD_SETTINGS_UPDATE から）
     pub guild_settings: HashMap<String, GuildSettings>,
+    /// 先に反映した通知設定の変更の要求と、変える前の値（失敗したら戻す。None は設定が無かった）
+    pub guild_settings_pending: HashMap<u64, (String, Option<GuildSettings>)>,
     /// サーバーごとの自分のロール（ロールへのメンションを見分ける）
     pub my_roles: HashMap<String, Vec<String>>,
     /// ウィンドウにフォーカスがあるか（見ているチャンネルの通知は出さない）
@@ -1743,6 +1769,7 @@ impl App {
             self.channels.insert(gid, chans);
         }
         self.roles.extend(s.roles);
+        self.names_ver = self.names_ver.wrapping_add(1);
         for (cid, list) in s.messages {
             self.stale_channels.insert(cid.clone());
             self.history.insert(cid.clone(), History::default());
@@ -1897,8 +1924,10 @@ impl App {
 
     pub fn reset(&mut self) {
         // 会話に紐づく画像と、読み込み中の要求を破棄する。
-        for uri in self.channel_images.values().flatten() {
-            images::forget(uri);
+        // ほかの App（分割表示の別アカウント）が使っている画像は残す
+        let uris: HashSet<&String> = self.channel_images.values().flatten().collect();
+        for uri in uris {
+            images::unhold(uri);
         }
         let waker = self.waker.clone();
         let screen_w = self.screen_w;
@@ -2618,6 +2647,8 @@ impl App {
                     self.token_input.clear();
                     // 別アカウントの一覧に名前を出すため、プロファイルのフォルダに覚えておく
                     crate::profile::remember_account(self.profile.as_deref(), u.display());
+                    // 前に別のアカウントでログインしていたら、そのアカウントの削除・編集の記録を捨てる
+                    self.message_log.set_owner(&u.id);
                     self.me = Some(u);
                     self.status = self.gateway_status.clone();
                 }
@@ -2781,22 +2812,27 @@ impl App {
                 Event::Dms(mut d) => {
                     // 一覧の取得中に届いたイベントを、古い一覧で消さない
                     // （取得中に閉じた DM は除き、取得中に増えた DM は残す）
+                    // 前回の控えの DM はまるごとは残さない（オフライン中に他の端末で閉じた DM が
+                    // 消えずに残り、控えにまた保存されてしまうため）
                     let deleted = std::mem::take(&mut self.dms_deleted_while_loading);
+                    let added = std::mem::take(&mut self.dms_added_while_loading);
                     d.retain(|c| !deleted.contains(&c.id));
                     for c in std::mem::take(&mut self.dms) {
-                        if !d.iter().any(|x| x.id == c.id) {
+                        if added.contains(&c.id) && !d.iter().any(|x| x.id == c.id) {
                             d.push(c);
                         }
                     }
                     d.sort_by_cached_key(|c| std::cmp::Reverse(c.last_id()));
                     self.dms = d;
                     self.dms_loaded = true;
+                    self.dms_fetched = true;
                 }
                 Event::GuildChannels(gid, mut c) => {
                     // 表示順（テキスト→ボイス、position順）に一度だけ並べておく
                     c.sort_by_key(|c| (c.is_voice(), c.position));
                     self.stale_guilds.remove(&gid);
                     self.channels.insert(gid.clone(), c);
+                    self.names_ver = self.names_ver.wrapping_add(1);
                     // チャンネル一覧が届く前にサーバーを選んでいたら、ここで最後に開いたチャンネルを開く
                     if self.sel_guild.as_deref() == Some(gid.as_str()) && self.sel_channel.is_none()
                     {
@@ -2808,6 +2844,7 @@ impl App {
                 Event::GuildRoles(gid, roles) => {
                     self.roles.insert(gid, roles);
                     self.member_ver += 1;
+                    self.names_ver = self.names_ver.wrapping_add(1);
                 }
                 Event::MemberList {
                     guild_id,
@@ -3032,6 +3069,17 @@ impl App {
                     }
                     // 途中だけを出している一覧には足さない（間が抜けるため。最新に戻れば読み直す）
                     let detached = self.is_detached(&m.channel_id);
+                    if detached {
+                        // 続きを読み終えたときに足せるよう溜めておく
+                        if let Some(h) = self.history.get_mut(&m.channel_id) {
+                            if h.detached_new.len() >= MAX_MSGS {
+                                h.detached_new.clear();
+                                h.detached_overflow = true;
+                            } else if !h.detached_overflow {
+                                h.detached_new.push(m.clone());
+                            }
+                        }
+                    }
                     if let Some(list) = self.messages.get_mut(&m.channel_id).filter(|_| !detached) {
                         // 重複は自分の送信の折り返しなので末尾側から探す
                         if !list.iter().rev().any(|x| x.id == m.id) {
@@ -3565,6 +3613,7 @@ impl App {
         if self.bd_api_result(id, &result) {
             return;
         }
+        self.guild_settings_result(id, result.is_ok());
         // 仮の行で足した DM を、取り直したチャンネルで置き換える（失敗したら仮の行のまま）
         if self.dm_lookups.remove(&id) {
             if let Ok(v) = &result {
@@ -4071,6 +4120,16 @@ impl App {
                 h.older_changes.push(change.clone());
             }
         }
+        // つながっていない一覧の間に溜めた新着にも、削除・編集を当てておく
+        if let Some(h) = self
+            .history
+            .get_mut(channel_id)
+            .filter(|h| h.newer && !h.detached_new.is_empty())
+        {
+            if !matches!(change, MessageChange::Create(_)) {
+                change.clone().apply(&mut h.detached_new);
+            }
+        }
         if let Some(changes) = self.pending_message_loads.get_mut(channel_id) {
             changes.push(change);
         }
@@ -4238,6 +4297,7 @@ impl App {
                             .get(guild_id)
                             .is_some_and(|roles| roles.iter().any(|r| r == id))
                 });
+                self.names_ver = self.names_ver.wrapping_add(1);
                 if let Some(roles) = self.roles.get_mut(guild_id) {
                     if t == "GUILD_ROLE_DELETE" {
                         if let Some(id) = d["role_id"].as_str() {
@@ -4738,6 +4798,7 @@ impl App {
             self.member_index = None;
         }
         self.roles.remove(gid);
+        self.names_ver = self.names_ver.wrapping_add(1);
         self.requested_members.remove(gid);
         self.member_lists.remove(gid);
         self.member_ver += 1;
@@ -5020,6 +5081,7 @@ impl App {
         muted: Option<bool>,
         notifications: Option<u8>,
     ) {
+        let prev = self.guild_settings.get(gid).cloned();
         let s = self.guild_settings.entry(gid.to_string()).or_default();
         let mut body = serde_json::Map::new();
         if let Some(m) = muted {
@@ -5036,10 +5098,42 @@ impl App {
             s.notifications = n;
             body.insert("message_notifications".into(), n.into());
         }
-        self.api(net::ApiCall::ModifyGuildSettings {
+        let id = self.api(net::ApiCall::ModifyGuildSettings {
             guild_id: gid.to_string(),
             settings: serde_json::Value::Object(body),
         });
+        self.guild_settings_pending
+            .insert(id, (gid.to_string(), prev));
+    }
+
+    /// 通知設定の変更の結果。失敗したら先に反映した値を戻す
+    fn guild_settings_result(&mut self, id: u64, ok: bool) {
+        let Some((gid, prev)) = self.guild_settings_pending.remove(&id) else {
+            return;
+        };
+        if ok {
+            return;
+        }
+        // あとから同じサーバーへ頼んだ変更がまだ返っていなければ、そちらの「変える前」を
+        // この失敗の前の値にしておく（今の画面はあとの変更の値なので触らない）
+        if let Some((_, later)) = self
+            .guild_settings_pending
+            .iter_mut()
+            .filter(|(k, (g, _))| **k > id && *g == gid)
+            .min_by_key(|(k, _)| **k)
+            .map(|(_, v)| v)
+        {
+            *later = prev;
+            return;
+        }
+        match prev {
+            Some(p) => {
+                self.guild_settings.insert(gid, p);
+            }
+            None => {
+                self.guild_settings.remove(&gid);
+            }
+        }
     }
 
     /// サーバーの招待リンクを作ってコピーする（見えている最初のテキストチャンネルで作る）
@@ -5367,7 +5461,7 @@ impl App {
             if let Some(uris) = self.channel_images.remove(&old) {
                 for uri in uris {
                     if !self.channel_images.values().any(|s| s.contains(&uri)) {
-                        images::forget(&uri);
+                        images::unhold(&uri);
                     }
                 }
             }
@@ -5443,10 +5537,15 @@ impl App {
                 .is_some_and(|l| l.channel_id == cid)
         {
             // 別のチャンネルの一覧は、新しい一覧が届くまで出さない
+            let prev_list_id = self
+                .member_lists
+                .get(&gid)
+                .and_then(|l| l.list_id.clone().or_else(|| l.prev_list_id.clone()));
             self.member_lists.insert(
                 gid.clone(),
                 ServerMemberList {
                     channel_id: cid.clone(),
+                    prev_list_id,
                     ..Default::default()
                 },
             );

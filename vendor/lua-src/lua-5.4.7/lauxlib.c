@@ -648,6 +648,39 @@ LUALIB_API char *luaL_buffinitsize (lua_State *L, luaL_Buffer *B, size_t sz) {
 
 
 /*
+** Riscord: 命令数のフックが届かない C のライブラリ関数（文字列・表・utf8）の作業量の予算。
+** ホストは呼び出しのたびに残りを registry に入れる。キーがなければ上限なし（元の動き）。
+** 1 単位はおよそ 1 バイトの比較・複写
+*/
+#define RISCORD_WORK_KEY "riscord.strwork"
+
+LUALIB_API lua_Integer luaL_workleft (lua_State *L) {
+  lua_Integer w = LUA_MAXINTEGER;
+  if (lua_getfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY) == LUA_TNUMBER)
+    w = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  return w;
+}
+
+
+LUALIB_API void luaL_chargework (lua_State *L, lua_Integer used) {
+  lua_Integer w;
+  if (lua_getfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY) != LUA_TNUMBER) {
+    lua_pop(L, 1);
+    return;
+  }
+  w = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  if (used < 0) used = LUA_MAXINTEGER;  /* 桁あふれした見積もりは上限を超えたものとする */
+  if (l_unlikely(used > w))
+    luaL_error(L, "library work exceeds limit");
+  lua_pushinteger(L, w - used);
+  lua_setfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY);
+}
+
+
+
+/*
 ** {======================================================
 ** Reference system
 ** =======================================================

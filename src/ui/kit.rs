@@ -151,8 +151,40 @@ pub fn with_decoration(av: Div, size: f32, deco_url: Option<&str>) -> Div {
 
 /// 画像が読めればそれを、無理なら頭文字入りの図形を出す
 pub fn avatar(url: Option<&str>, size: f32, fallback: &str, radius: f32, bg: Color32) -> Div {
+    avatar_with_loader(url, size, fallback, radius, bg, loaded)
+}
+
+/// Message avatars get a dedicated download slot so they appear promptly.
+pub fn priority_avatar(
+    url: Option<&str>,
+    size: f32,
+    fallback: &str,
+    radius: f32,
+    bg: Color32,
+) -> Div {
+    avatar_with_loader(
+        url,
+        size,
+        fallback,
+        radius,
+        bg,
+        |uri| match images::get_priority(uri) {
+            Img::Ready(i) => Some(i),
+            _ => None,
+        },
+    )
+}
+
+fn avatar_with_loader(
+    url: Option<&str>,
+    size: f32,
+    fallback: &str,
+    radius: f32,
+    bg: Color32,
+    load: impl FnOnce(&str) -> Option<std::sync::Arc<RenderImage>>,
+) -> Div {
     let base = div().size(z(size)).flex_none().rounded(z(radius));
-    match url.and_then(loaded) {
+    match url.and_then(load) {
         Some(i) => base.child(
             img(i)
                 .size_full()

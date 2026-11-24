@@ -89,6 +89,16 @@ static const char *utf8_decode (const char *s, utfint *val, int strict) {
 
 
 /*
+** Riscord: 長さに比例する処理を作業量の予算（lauxlib.c の luaL_chargework）に数える。
+** 小さな処理は命令数の上限で抑えられるので数えない
+*/
+static void chargelen (lua_State *L, lua_Integer n, lua_Integer weight) {
+  if (n > 64)
+    luaL_chargework(L, n > LUA_MAXINTEGER / weight ? LUA_MAXINTEGER : n * weight);
+}
+
+
+/*
 ** utf8len(s [, i [, j [, lax]]]) --> number of characters that
 ** start in the range [i,j], or nil + current position if 's' is not
 ** well formed in that interval
@@ -104,6 +114,8 @@ static int utflen (lua_State *L) {
                    "initial position out of bounds");
   luaL_argcheck(L, --posj < (lua_Integer)len, 3,
                    "final position out of bounds");
+  if (posi <= posj)
+    chargelen(L, posj - posi + 1, 2);
   while (posi <= posj) {
     const char *s1 = utf8_decode(s + posi, NULL, !lax);
     if (s1 == NULL) {  /* conversion error? */
@@ -138,6 +150,7 @@ static int codepoint (lua_State *L) {
     return luaL_error(L, "string slice too long");
   n = (int)(pose -  posi) + 1;  /* upper bound for number of returns */
   luaL_checkstack(L, n, "string slice too long");
+  chargelen(L, n, 8);  /* 1 個ずつ値を積む */
   n = 0;  /* count the number of returns */
   se = s + pose;  /* string end */
   for (s += posi - 1; s < se;) {
@@ -169,6 +182,7 @@ static int utfchar (lua_State *L) {
   else {
     int i;
     luaL_Buffer b;
+    chargelen(L, n, 16);  /* 1 文字ずつ文字列を作る */
     luaL_buffinit(L, &b);
     for (i = 1; i <= n; i++) {
       pushutfchar(L, i);

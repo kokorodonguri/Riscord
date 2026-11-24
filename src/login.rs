@@ -94,7 +94,7 @@ pub fn start_qr(ctx: &Waker) -> (Receiver<LoginEvent>, Arc<AtomicBool>) {
     let rx = spawn(ctx, move |tx| async move {
         if let Err(e) = remote_auth(&tx, &c).await {
             if !c.load(Relaxed) {
-                eprintln!("QR ログイン失敗: {e:#}");
+                eprintln!("QR ログイン失敗: {}", error_summary(&e));
                 tx.send(LoginEvent::QrEnded(
                     tr!(
                         "QR コードを用意できませんでした。通信状態を確認して、作り直してください。",
@@ -107,6 +107,57 @@ pub fn start_qr(ctx: &Waker) -> (Receiver<LoginEvent>, Arc<AtomicBool>) {
         }
     });
     (rx, cancel)
+}
+
+/// QR ログインの失敗をログに出すための短い要約。応答の本文・チケット・トークンが混ざらないよう、
+/// エラーの種類と HTTP の状態だけにする
+fn error_summary(e: &anyhow::Error) -> String {
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    for cause in e.chain() {
+        if let Some(r) = cause.downcast_ref::<reqwest::Error>() {
+            return reqwest_summary(r);
+        }
+        if let Some(w) = cause.downcast_ref::<WsError>() {
+            return match w {
+                WsError::Http(resp) => format!("WebSocket HTTP {}", resp.status().as_u16()),
+                _ => "WebSocket の通信エラー".into(),
+            };
+        }
+        if cause.is::<serde_json::Error>() {
+            return "応答の JSON を読めない".into();
+        }
+        if cause.is::<base64::DecodeError>() {
+            return "Base64 を読めない".into();
+        }
+        if cause.is::<std::string::FromUtf8Error>() {
+            return "UTF-8 として読めない".into();
+        }
+        if cause.is::<rsa::Error>() {
+            return "鍵の生成・復号に失敗".into();
+        }
+    }
+    // 残りは remote_auth の中で anyhow! で作った決まった文言か、鍵や URL の組み立ての失敗で、
+    // 応答の中身は入らない
+    e.to_string()
+}
+
+/// reqwest の失敗の要約（URL や本文は出さない）
+fn reqwest_summary(e: &reqwest::Error) -> String {
+    if let Some(status) = e.status() {
+        return format!("HTTP {}", status.as_u16());
+    }
+    let kind = if e.is_timeout() {
+        "期限切れ"
+    } else if e.is_connect() {
+        "接続できない"
+    } else if e.is_decode() {
+        "応答を読めない"
+    } else if e.is_body() {
+        "本文の送受信に失敗"
+    } else {
+        "通信エラー"
+    };
+    kind.into()
 }
 
 async fn remote_auth(tx: &Tx, cancel: &AtomicBool) -> Result<()> {
@@ -343,7 +394,7 @@ pub fn mfa(ctx: &Waker, ticket: String, code: String) -> Receiver<LoginEvent> {
 /// JSON を送り、成功なら応答を返す。失敗なら利用者向けの理由
 async fn post(url: &str, body: &Value) -> std::result::Result<Value, String> {
     let r = http().post(url).json(body).send().await.map_err(|e| {
-        eprintln!("ログイン通信失敗: {e:#}");
+        eprintln!("ログイン通信失敗: {}", reqwest_summary(&e));
         tr!(
             "Discord に接続できませんでした。通信状態を確認してください。",
             "Couldn't connect to Discord. Check your connection.",

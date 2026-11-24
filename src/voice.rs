@@ -993,6 +993,24 @@ impl VoiceSession {
         token: &str,
         user_id: &str,
     ) -> Result<()> {
+        self.begin_connect(guild_id, channel_id, endpoint, session_id, token, user_id)?
+            .await?;
+        self.finish_connect();
+        Ok(())
+    }
+
+    /// 接続を始め、つながるまで待つ future を返す。future は self を借りないので、
+    /// 別のタスクで待てる（songbird は 10 秒 × 5 回まで試すので、呼ぶ側の処理を止めないように）。
+    /// Ok で終わったら finish_connect を呼ぶ。待っている間に leave すれば試行は打ち切られる
+    pub fn begin_connect(
+        &mut self,
+        guild_id: Option<&str>,
+        channel_id: &str,
+        endpoint: &str,
+        session_id: &str,
+        token: &str,
+        user_id: &str,
+    ) -> Result<impl std::future::Future<Output = Result<()>> + Send + 'static> {
         let id = |s: &str| -> Result<NonZeroU64> {
             s.parse::<NonZeroU64>().map_err(|_| {
                 anyhow!(
@@ -1014,13 +1032,25 @@ impl VoiceSession {
             user_id: id(user_id)?.into(),
         };
         self.users.lock().unwrap().clear();
-        self.driver.connect(info).await?;
-        if self.io.is_none() {
-            if let Some(t) = self.closing.take() {
+        let connecting = self.driver.connect(info);
+        // 前の通話の音声スレッドが止まりきるのも待つ（次に音声を開くときにデバイスを取り合わない）
+        let closing = if self.io.is_none() {
+            self.closing.take()
+        } else {
+            None
+        };
+        Ok(async move {
+            connecting.await?;
+            if let Some(t) = closing {
                 // デバイスを閉じ終わるまで数秒かかることがあるので、非同期のワーカーでは待たない
                 let _ = tokio::task::spawn_blocking(move || t.join()).await;
             }
-        }
+            Ok(())
+        })
+    }
+
+    /// begin_connect の future が Ok で終わったあとに呼ぶ。音声を開いてマイクを流し始める
+    pub fn finish_connect(&mut self) {
         // 前の通話の音声スレッドが止まりきってから空にする（止まる直前に積んだ音を次の通話で流さない）
         self.mic.clear();
         self.out.clear();
@@ -1036,7 +1066,6 @@ impl VoiceSession {
         self.driver.play_only_input(input);
         self.muted = true;
         self.driver.mute(true);
-        Ok(())
     }
 
     pub fn leave(&mut self) {

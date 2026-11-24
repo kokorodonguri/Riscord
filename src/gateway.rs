@@ -116,39 +116,42 @@ pub(crate) async fn run_session(
     let mut acknowledged = true;
     let mut ready = false;
     let mut commands_open = true;
+    // この接続で送った回数（identify / resume の 1 回を含む）
+    let mut limit = SendLimit::default();
+    limit.record();
     loop {
+        // 閉じるよう頼まれていて、送れるものを送り終えた（送れない状態なら待たない）
+        if session.closing && (session.pending.is_empty() || !(ready || !wait_until_ready)) {
+            let _ = socket.close(None).await;
+            return Ok(SessionEnd::Closed(1000));
+        }
+        // 溜まったコマンドは READY / RESUMED のあとに、1 分あたりの上限を超えないように送る
+        let send_at =
+            ((ready || !wait_until_ready) && !session.pending.is_empty()).then(|| limit.next_at());
         tokio::select! {
-            // 前のセッションで送れなかった VC の状態（op 4）。切断中のイベントの再送が終わる
-            // READY / RESUMED のあとに送る。古すぎるものは今の状態と食い違いうるので捨てる
-            _ = std::future::ready(()), if ready && session.unsent.is_some() => {
-                if let Some((at, command)) = session.unsent.take() {
-                    if at.elapsed() <= UNSENT_TTL {
-                        if let Err(e) = socket.send(Message::Text(command.to_string().into())).await {
-                            session.unsent = Some((at, command));
-                            return Err(e.into());
-                        }
-                    }
+            _ = tokio::time::sleep_until(send_at.unwrap_or_else(tokio::time::Instant::now)), if send_at.is_some() => {
+                let Some((at, command)) = session.pending.pop_front() else { continue };
+                // 古すぎる VC の状態は、その間に VC から外されていても入り直してしまうので捨てる
+                if is_voice_state(&command) && at.elapsed() > UNSENT_TTL {
+                    continue;
+                }
+                limit.record();
+                if let Err(e) = socket.send(Message::Text(command.to_string().into())).await {
+                    session.keep_unsent(at, command);
+                    return Err(e.into());
                 }
             }
-            command = commands.recv(), if commands_open && (!wait_until_ready || ready) => {
-                if let Some(command) = command {
-                    // 新しい VC の状態を送るなら、持ち越していた古い分は要らない（順番の入れ替わりを防ぐ）
-                    if is_voice_state(&command) {
-                        session.unsent = None;
-                    }
-                    if let Err(e) = socket.send(Message::Text(command.to_string().into())).await {
-                        session.keep_unsent(command);
-                        return Err(e.into());
-                    }
-                } else if wait_until_ready {
-                    bail!("Gateway command channel closed");
-                } else {
-                    commands_open = false;
+            command = commands.recv(), if commands_open => {
+                match command {
+                    Some(command) => session.queue(command),
+                    None if wait_until_ready => bail!("Gateway command channel closed"),
+                    None => commands_open = false,
                 }
             }
             _ = heartbeat.tick() => {
                 if !acknowledged { bail!("Gateway heartbeat timed out"); }
                 acknowledged = false;
+                limit.record();
                 socket.send(Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?;
             }
             frame = socket.next() => {
@@ -213,30 +216,144 @@ pub(crate) struct GatewaySession {
     pub id: Option<String>,
     pub seq: Option<i64>,
     pub resume_url: Option<String>,
-    /// 切断で送れなかった VC の状態（op 4）と、送ろうとした時刻。次のセッションで READY のあとに送る。
-    /// ほかのコマンドは持ち越さない（op 3 は identify に今の状態が入り、購読は READY のあとに送り直すため）
-    pub unsent: Option<(std::time::Instant, serde_json::Value)>,
+    /// まだ送っていないコマンドと、受け取った時刻。READY / RESUMED のあとに古い順に送る。
+    /// 送るのに失敗したものは VC の状態（op 4）だけ戻す（op 3 は identify に今の状態が入り、
+    /// 購読は READY のあとに送り直すため）
+    pub pending: std::collections::VecDeque<(tokio::time::Instant, serde_json::Value)>,
+    /// close_command を受け取った（ログアウト）。つなぎ直さない
+    pub closing: bool,
 }
 
-/// 持ち越した op 4 を送ってよい時間。これより古いと、その間に VC から外されていても入り直してしまう
+/// 溜めておいた op 4 を送ってよい時間。これより古いと、その間に VC から外されていても入り直してしまう
 const UNSENT_TTL: Duration = Duration::from_secs(30);
+
+/// 1 接続で 60 秒あたりに送ってよい回数。Discord の上限は 120 で、超えると 4008 で切られる。
+/// ハートビートはこの数に入れたうえで止めないので、少し余らせておく
+const SEND_LIMIT: usize = 110;
+const SEND_WINDOW: Duration = Duration::from_secs(60);
+
+/// 直近 60 秒に送った時刻
+#[derive(Default)]
+struct SendLimit(std::collections::VecDeque<tokio::time::Instant>);
+
+impl SendLimit {
+    fn record(&mut self) {
+        let now = tokio::time::Instant::now();
+        while self
+            .0
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= SEND_WINDOW)
+        {
+            self.0.pop_front();
+        }
+        self.0.push_back(now);
+    }
+    /// 次のコマンドを送ってよい時刻
+    fn next_at(&self) -> tokio::time::Instant {
+        let now = tokio::time::Instant::now();
+        let recent: Vec<_> = self
+            .0
+            .iter()
+            .filter(|t| now.duration_since(**t) < SEND_WINDOW)
+            .collect();
+        match recent.len().checked_sub(SEND_LIMIT) {
+            // 上限まで送った: 超えた分の最初の 1 回が窓から外れるまで待つ
+            Some(over) => *recent[over] + SEND_WINDOW,
+            None => now,
+        }
+    }
+}
 
 fn is_voice_state(command: &serde_json::Value) -> bool {
     command["op"].as_u64() == Some(4)
 }
 
+/// ゲートウェイを閉じてほしいときにコマンドの代わりに送るもの（Discord には送らない）。
+/// 溜まっている分（VC から抜ける op 4 など）を送れる状態なら送ってから閉じる
+pub(crate) fn close_command() -> serde_json::Value {
+    serde_json::json!({ "riscord": "close" })
+}
+
+fn is_close_command(command: &serde_json::Value) -> bool {
+    command["riscord"] == "close"
+}
+
+/// op 37 の購読先のサーバー
+fn subscribed_guilds(
+    command: &serde_json::Value,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    (command["op"].as_u64() == Some(37))
+        .then(|| command["d"]["subscriptions"].as_object())
+        .flatten()
+}
+
 impl GatewaySession {
-    fn keep_unsent(&mut self, command: serde_json::Value) {
-        if is_voice_state(&command) {
-            self.unsent = Some((std::time::Instant::now(), command));
+    fn keep_unsent(&mut self, at: tokio::time::Instant, command: serde_json::Value) {
+        if is_voice_state(&command) && !self.pending.iter().any(|(_, c)| is_voice_state(c)) {
+            self.pending.push_front((at, command));
+        }
+    }
+
+    /// 送るコマンドを溜める。後から来たものと同じ意味の古いものは捨てる:
+    /// VC の状態（op 4）と自分の見え方（op 3）は最新の 1 件、購読（op 37）はサーバーごとに最新のもの
+    pub fn queue(&mut self, command: serde_json::Value) {
+        if is_close_command(&command) {
+            self.closing = true;
+            return;
+        }
+        let op = command["op"].as_u64();
+        if matches!(op, Some(3 | 4)) {
+            self.pending.retain(|(_, c)| c["op"].as_u64() != op);
+        }
+        if let Some(guilds) = subscribed_guilds(&command) {
+            let guilds: Vec<String> = guilds.keys().cloned().collect();
+            self.pending.retain_mut(|(_, c)| {
+                if c["op"] != 37 {
+                    return true;
+                }
+                let Some(subs) = c["d"]["subscriptions"].as_object_mut() else {
+                    return true;
+                };
+                for g in &guilds {
+                    subs.remove(g);
+                }
+                !subs.is_empty()
+            });
+        }
+        self.pending
+            .push_back((tokio::time::Instant::now(), command));
+    }
+
+    /// fut が終わるまで、届いたコマンドを溜めながら待つ（つなぎ直しを待つ間・接続中も、受け取った時刻を残す）。
+    /// 閉じるよう頼まれたら待つのをやめて None
+    pub async fn queue_while<F: std::future::Future>(
+        &mut self,
+        commands: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        fut: F,
+    ) -> Option<F::Output> {
+        tokio::pin!(fut);
+        let mut open = true;
+        loop {
+            if self.closing {
+                return None;
+            }
+            tokio::select! {
+                out = &mut fut => return Some(out),
+                command = commands.recv(), if open => match command {
+                    Some(command) => self.queue(command),
+                    None => open = false,
+                },
+            }
         }
     }
 
     /// 一からログインし直すときの状態。セッションは捨てるが、送れなかったコマンドは残す
     pub fn reset_keeping_unsent(&mut self) {
-        let unsent = std::mem::take(&mut self.unsent);
+        let pending = std::mem::take(&mut self.pending);
+        let closing = self.closing;
         *self = GatewaySession {
-            unsent,
+            pending,
+            closing,
             ..Default::default()
         };
     }
@@ -295,21 +412,147 @@ pub(crate) fn heartbeat_period(ms: Option<u64>) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn only_the_latest_voice_state_is_carried_over() {
+    #[tokio::test]
+    async fn only_the_latest_voice_state_is_carried_over() {
         let mut s = GatewaySession {
             id: Some("x".into()),
             seq: Some(5),
             ..Default::default()
         };
-        s.keep_unsent(serde_json::json!({"op": 3, "d": {}}));
-        assert!(s.unsent.is_none(), "op 4 以外は持ち越さない");
-        s.keep_unsent(serde_json::json!({"op": 4, "n": 1}));
-        s.keep_unsent(serde_json::json!({"op": 4, "n": 2}));
+        let now = tokio::time::Instant::now();
+        s.keep_unsent(now, serde_json::json!({"op": 3, "d": {}}));
+        assert!(s.pending.is_empty(), "送れなかった op 4 以外は持ち越さない");
+        s.queue(serde_json::json!({"op": 4, "n": 1}));
+        s.queue(serde_json::json!({"op": 4, "n": 2}));
+        s.keep_unsent(now, serde_json::json!({"op": 4, "n": 0}));
         s.reset_keeping_unsent();
         assert!(s.resumable().is_none());
-        assert_eq!(s.unsent.as_ref().unwrap().1["n"], 2, "最新の 1 件だけ");
+        assert_eq!(s.pending.len(), 1);
+        assert_eq!(s.pending[0].1["n"], 2, "最新の 1 件だけ");
     }
+
+    #[tokio::test]
+    async fn queued_commands_are_coalesced() {
+        let mut s = GatewaySession::default();
+        let sub = |g: &str, n: u32| {
+            let mut subs = serde_json::Map::new();
+            subs.insert(g.into(), serde_json::json!({ "n": n }));
+            serde_json::json!({ "op": 37, "d": { "subscriptions": subs } })
+        };
+        s.queue(sub("a", 1));
+        s.queue(serde_json::json!({ "op": 3, "d": { "status": "idle" } }));
+        s.queue(sub("b", 1));
+        s.queue(serde_json::json!({ "op": 14, "d": {} }));
+        s.queue(sub("a", 2));
+        s.queue(serde_json::json!({ "op": 3, "d": { "status": "dnd" } }));
+        let left: Vec<_> = s.pending.iter().map(|(_, c)| c.clone()).collect();
+        assert_eq!(
+            left,
+            [
+                sub("b", 1),
+                serde_json::json!({ "op": 14, "d": {} }),
+                sub("a", 2),
+                serde_json::json!({ "op": 3, "d": { "status": "dnd" } }),
+            ]
+        );
+        assert!(!s.closing);
+        s.queue(close_command());
+        assert!(
+            s.closing,
+            "閉じる合図は Discord へ送るコマンドとして積まない"
+        );
+        assert_eq!(s.pending.len(), 4);
+        s.reset_keeping_unsent();
+        assert!(s.closing, "一からつなぎ直すときも閉じる合図は残す");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_limit_waits_for_the_window() {
+        let mut limit = SendLimit::default();
+        let start = tokio::time::Instant::now();
+        for _ in 0..SEND_LIMIT {
+            assert_eq!(limit.next_at(), tokio::time::Instant::now());
+            limit.record();
+            tokio::time::advance(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            limit.next_at(),
+            start + SEND_WINDOW,
+            "最初の 1 回が外れるまで待つ"
+        );
+        tokio::time::advance(SEND_WINDOW).await;
+        assert_eq!(limit.next_at(), tokio::time::Instant::now());
+    }
+
+    #[tokio::test]
+    async fn queue_while_keeps_commands_and_stops_on_close() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut s = GatewaySession::default();
+        tx.send(serde_json::json!({ "op": 4, "d": {} })).unwrap();
+        let waited = s
+            .queue_while(&mut rx, tokio::time::sleep(Duration::from_millis(20)))
+            .await;
+        assert!(waited.is_some());
+        assert_eq!(
+            s.pending.len(),
+            1,
+            "待っている間に届いたものを時刻つきで溜める"
+        );
+        tx.send(close_command()).unwrap();
+        let waited = tokio::time::timeout(
+            Duration::from_secs(5),
+            s.queue_while(&mut rx, std::future::pending::<()>()),
+        )
+        .await
+        .expect("閉じる合図で待つのをやめる");
+        assert!(waited.is_none());
+    }
+
+    #[tokio::test]
+    async fn close_command_flushes_then_closes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ws.send(Message::Text(
+                r#"{"op":10,"d":{"heartbeat_interval":45000}}"#.into(),
+            ))
+            .await
+            .unwrap();
+            ws.send(Message::Text(
+                r#"{"op":0,"s":1,"t":"READY","d":{"session_id":"abc"}}"#.into(),
+            ))
+            .await
+            .unwrap();
+            let sent = ws.next().await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(sent.to_text().unwrap()).unwrap()["op"],
+                4,
+                "閉じる前に溜まっていた op 4 を送る"
+            );
+            assert!(matches!(ws.next().await, Some(Ok(Message::Close(_)))));
+        });
+        let (ws, inflater, period) = connect_and_hello(&format!("ws://{addr}")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(serde_json::json!({"op": 4, "d": {"channel_id": null}}))
+            .unwrap();
+        let mut session = GatewaySession::default();
+        // READY のあとに閉じるよう頼む（READY の前なら送れないので待たずに閉じる）
+        let end = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_session(ws, inflater, period, &mut session, &mut rx, true, |_| {
+                tx.send(close_command()).unwrap();
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(end, SessionEnd::Closed(1000));
+        assert!(session.closing);
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn shared_handshake_reads_hello_and_preserves_close_code() {
         use futures_util::SinkExt;

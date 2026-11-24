@@ -165,6 +165,7 @@ impl App {
 
     /// サーバーのチャンネルを足す・置き換える（一覧の並び: テキスト→ボイス、position 順）
     pub(super) fn upsert_guild_channel(&mut self, guild_id: &str, c: Channel) {
+        self.names_ver = self.names_ver.wrapping_add(1);
         let Some(list) = self.channels.get_mut(guild_id) else {
             // 一覧をまだ読んでいなければ、開いたときに読む
             return;
@@ -182,8 +183,9 @@ impl App {
             // DM を閉じた・グループから抜けた
             let Some(id) = d["id"].as_str() else { return };
             self.dms.retain(|c| c.id != id);
-            if !self.dms_loaded {
+            if !self.dms_fetched {
                 self.dms_deleted_while_loading.insert(id.to_owned());
+                self.dms_added_while_loading.remove(id);
             }
             self.read_state.unread.remove(id);
             self.read_state.mention_counts.remove(id);
@@ -216,8 +218,17 @@ impl App {
                     .iter()
                     .position(|x| x.last_id() < c.last_id())
                     .unwrap_or(self.dms.len());
+                self.note_dm_added(&c.id);
                 self.dms.insert(at, c);
             }
+        }
+    }
+
+    /// DM 一覧の取得中に DM が増えたら覚えておく（届いた一覧で消さないため）
+    pub(super) fn note_dm_added(&mut self, id: &str) {
+        if !self.dms_fetched {
+            self.dms_deleted_while_loading.remove(id);
+            self.dms_added_while_loading.insert(id.to_owned());
         }
     }
 
@@ -234,6 +245,7 @@ impl App {
             "last_message_id": m.id,
         });
         if let Ok(c) = serde_json::from_value::<Channel>(placeholder) {
+            self.note_dm_added(&c.id);
             self.dms.insert(0, c);
             // 種類（グループ DM か）・名前・参加者を正しくするため取り直す
             let id = self.api(net::ApiCall::GetChannel(m.channel_id.clone()));
@@ -247,6 +259,8 @@ impl App {
             self.on_dm_channel_event(t, d);
             return;
         };
+        // チャンネル名が変わるかもしれない
+        self.names_ver = self.names_ver.wrapping_add(1);
         if t == "CHANNEL_DELETE" {
             let Some(id) = d["id"].as_str() else { return };
             if let Some(list) = self.channels.get_mut(&gid) {

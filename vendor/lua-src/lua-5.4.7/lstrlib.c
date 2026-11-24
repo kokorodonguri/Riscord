@@ -97,13 +97,37 @@ static size_t getendpos (lua_State *L, int arg, lua_Integer def,
 }
 
 
+/*
+** Riscord: a per-call budget for work done inside C string functions, which
+** the VM instruction hook cannot see. The budget itself lives in lauxlib.c
+** (luaL_workleft / luaL_chargework) and is shared with ltablib and lutf8lib.
+*/
+#define PATTERN_WORK_WEIGHT 16  /* one pattern step costs about 16 byte compares */
+/* 小さな処理は命令数の上限で抑えられるので数えない（registry を引く手間を省く） */
+#define FREE_WORK 64
+
+#define getwork(L) luaL_workleft(L)
+
+static void chargework (lua_State *L, lua_Integer used) {
+  luaL_chargework(L, used);
+}
+
+/* 長さに比例する処理（大文字・小文字・反転・切り出しなど）を数える */
+static void chargelen (lua_State *L, size_t len) {
+  if (len > FREE_WORK)
+    chargework(L, (lua_Integer)len);
+}
+
+
 static int str_sub (lua_State *L) {
   size_t l;
   const char *s = luaL_checklstring(L, 1, &l);
   size_t start = posrelatI(luaL_checkinteger(L, 2), l);
   size_t end = getendpos(L, 3, -1, l);
-  if (start <= end)
+  if (start <= end) {
+    chargelen(L, (end - start) + 1);
     lua_pushlstring(L, s + start - 1, (end - start) + 1);
+  }
   else lua_pushliteral(L, "");
   return 1;
 }
@@ -113,7 +137,9 @@ static int str_reverse (lua_State *L) {
   size_t l, i;
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
-  char *p = luaL_buffinitsize(L, &b, l);
+  char *p;
+  chargelen(L, l);
+  p = luaL_buffinitsize(L, &b, l);
   for (i = 0; i < l; i++)
     p[i] = s[l - i - 1];
   luaL_pushresultsize(&b, l);
@@ -126,7 +152,9 @@ static int str_lower (lua_State *L) {
   size_t i;
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
-  char *p = luaL_buffinitsize(L, &b, l);
+  char *p;
+  chargelen(L, l);
+  p = luaL_buffinitsize(L, &b, l);
   for (i=0; i<l; i++)
     p[i] = tolower(uchar(s[i]));
   luaL_pushresultsize(&b, l);
@@ -139,43 +167,13 @@ static int str_upper (lua_State *L) {
   size_t i;
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
-  char *p = luaL_buffinitsize(L, &b, l);
+  char *p;
+  chargelen(L, l);
+  p = luaL_buffinitsize(L, &b, l);
   for (i=0; i<l; i++)
     p[i] = toupper(uchar(s[i]));
   luaL_pushresultsize(&b, l);
   return 1;
-}
-
-
-/*
-** Riscord: a per-call budget for work done inside C string functions, which
-** the VM instruction hook cannot see. The host stores the remaining budget in
-** the registry before each plugin call; when the key is absent there is no
-** limit (stock behaviour).
-*/
-#define RISCORD_WORK_KEY "riscord.strwork"
-#define PATTERN_WORK_WEIGHT 16  /* one pattern step costs about 16 byte compares */
-
-static lua_Integer getwork (lua_State *L) {
-  lua_Integer w = LUA_MAXINTEGER;
-  if (lua_getfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY) == LUA_TNUMBER)
-    w = lua_tointeger(L, -1);
-  lua_pop(L, 1);
-  return w;
-}
-
-static void chargework (lua_State *L, lua_Integer used) {
-  lua_Integer w;
-  if (lua_getfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY) != LUA_TNUMBER) {
-    lua_pop(L, 1);
-    return;
-  }
-  w = lua_tointeger(L, -1);
-  lua_pop(L, 1);
-  if (l_unlikely(used > w))
-    luaL_error(L, "string work exceeds limit");
-  lua_pushinteger(L, w - used);
-  lua_setfield(L, LUA_REGISTRYINDEX, RISCORD_WORK_KEY);
 }
 
 
@@ -222,6 +220,7 @@ static int str_byte (lua_State *L) {
     return luaL_error(L, "string slice too long");
   n = (int)(pose -  posi) + 1;
   luaL_checkstack(L, n, "string slice too long");
+  chargelen(L, (size_t)n * 8);  /* 1 個ずつ値を積むので 1 バイトの複写より重い */
   for (i=0; i<n; i++)
     lua_pushinteger(L, uchar(s[posi+i-1]));
   return n;
@@ -232,7 +231,9 @@ static int str_char (lua_State *L) {
   int n = lua_gettop(L);  /* number of arguments */
   int i;
   luaL_Buffer b;
-  char *p = luaL_buffinitsize(L, &b, n);
+  char *p;
+  chargelen(L, (size_t)n * 8);
+  p = luaL_buffinitsize(L, &b, n);
   for (i=1; i<=n; i++) {
     lua_Unsigned c = (lua_Unsigned)luaL_checkinteger(L, i);
     luaL_argcheck(L, c <= (lua_Unsigned)UCHAR_MAX, i, "value out of range");
@@ -1462,6 +1463,7 @@ static int str_format (lua_State *L) {
       luaL_addsize(&b, nb);
     }
   }
+  chargelen(L, luaL_bufflen(&b) + sfl);  /* Riscord: 書式と結果の長さを数える */
   luaL_pushresult(&b);
   return 1;
 }
@@ -1690,7 +1692,8 @@ static void copywithendian (char *dest, const char *src,
 static int str_pack (lua_State *L) {
   luaL_Buffer b;
   Header h;
-  const char *fmt = luaL_checkstring(L, 1);  /* format string */
+  size_t lfmt;
+  const char *fmt = luaL_checklstring(L, 1, &lfmt);  /* format string */
   int arg = 1;  /* current argument to pack */
   size_t totalsize = 0;  /* accumulate total size of result */
   initheader(L, &h);
@@ -1781,6 +1784,7 @@ static int str_pack (lua_State *L) {
         break;
     }
   }
+  chargelen(L, luaL_bufflen(&b) + lfmt);  /* Riscord: 書式と結果の長さを数える */
   luaL_pushresult(&b);
   return 1;
 }
@@ -1842,12 +1846,15 @@ static lua_Integer unpackint (lua_State *L, const char *str,
 
 static int str_unpack (lua_State *L) {
   Header h;
-  const char *fmt = luaL_checkstring(L, 1);
+  size_t lfmt;
+  const char *fmt = luaL_checklstring(L, 1, &lfmt);
   size_t ld;
   const char *data = luaL_checklstring(L, 2, &ld);
   size_t pos = posrelatI(luaL_optinteger(L, 3, 1), ld) - 1;
   int n = 0;  /* number of results */
+  size_t pos0;
   luaL_argcheck(L, pos <= ld, 3, "initial position out of string");
+  pos0 = pos;
   initheader(L, &h);
   while (*fmt != '\0') {
     int size, ntoalign;
@@ -1909,6 +1916,7 @@ static int str_unpack (lua_State *L) {
     }
     pos += size;
   }
+  chargelen(L, (pos - pos0) + lfmt);  /* Riscord: 書式と読んだ長さを数える */
   lua_pushinteger(L, pos + 1);  /* next position */
   return n + 1;
 }

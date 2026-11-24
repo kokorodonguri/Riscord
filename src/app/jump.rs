@@ -246,6 +246,38 @@ impl App {
         }
         let have: HashSet<String> = list.iter().map(|m| m.id.clone()).collect();
         list.extend(page.into_iter().filter(|m| !have.contains(&m.id)));
+        // 最新とつながった: 一覧を出している間に届いた新着を足す
+        // （最後のページを作ってから届いた分は、ページに入らず新着としてしか届かないため）
+        let mut reload = false;
+        if let Some(h) = self.history.get_mut(&channel_id).filter(|h| !h.newer) {
+            reload = std::mem::take(&mut h.detached_overflow);
+            let buffered = std::mem::take(&mut h.detached_new);
+            if !reload {
+                let have: HashSet<String> = list.iter().map(|m| m.id.clone()).collect();
+                let mut added = false;
+                for m in buffered {
+                    if !have.contains(&m.id) {
+                        list.push(m);
+                        added = true;
+                    }
+                }
+                if added {
+                    list.sort_by(|a, b| id_order(&a.id, &b.id));
+                }
+            }
+        }
+        if reload {
+            // 溜めきれなかったので最新を読み直す（つながっていない扱いに戻して読み直しを待つ）
+            if let Some(h) = self.history.get_mut(&channel_id) {
+                h.newer = true;
+            }
+            self.load_messages(channel_id);
+            self.bump_msgs();
+            return;
+        }
+        let Some(list) = self.messages.get_mut(&channel_id) else {
+            return;
+        };
         if list.len() > MAX_HISTORY {
             let cut = list.len() - MAX_HISTORY;
             list.drain(..cut);
@@ -388,7 +420,8 @@ mod tests {
         tx.send(api(call, page(500050..500060))).unwrap();
         app.poll();
         assert!(!app.is_detached("c"));
-        assert_eq!(app.messages["c"].last().unwrap().id, "500059");
+        assert!(app.messages["c"].iter().any(|m| m.id == "500059"));
+        assert_eq!(app.messages["c"].last().unwrap().id, "900001");
     }
 
     #[test]

@@ -32,12 +32,31 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         NativeBridge.setLanguage(currentLang.code)
         enableEdgeToEdge(statusBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),navigationBarStyle=SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
-        intent.getStringExtra("channel_id")?.let {(application as RiscordApplication).chatModel.openFromNotification(it)}
+        NotificationLink.channelId(intent)?.let {(application as RiscordApplication).chatModel.openFromNotification(it)}
         setContent {RiscordTheme {Riscord((application as RiscordApplication).chatModel)}}
     }
     override fun onNewIntent(intent:Intent) {
         super.onNewIntent(intent);setIntent(intent)
-        intent.getStringExtra("channel_id")?.let {(application as RiscordApplication).chatModel.openFromNotification(it)}
+        NotificationLink.channelId(intent)?.let {(application as RiscordApplication).chatModel.openFromNotification(it)}
+    }
+}
+// MainActivity はランチャーから開くため exported。他のアプリも Intent を送れるので、通知のタップだと確かめてからチャンネルを開く。
+// 通知の PendingIntent にだけ、このプロセスで作った推測できない合言葉を入れる。プロセスが作り直されると古い通知の
+// 合言葉は合わなくなり、そのタップではアプリを開くだけになる
+internal object NotificationLink {
+    private const val EXTRA_CHANNEL="channel_id"
+    private const val EXTRA_TOKEN="riscord_notification_token"
+    private val token:String=ByteArray(32).also {java.security.SecureRandom().nextBytes(it)}.joinToString("") {"%02x".format(it)}
+    fun openChannel(context:android.content.Context,channelId:String):Intent=
+        Intent(context,MainActivity::class.java).putExtra(EXTRA_CHANNEL,channelId).putExtra(EXTRA_TOKEN,token).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    fun channelId(intent:Intent?):String? {
+        if(intent==null) return null
+        // 他のアプリが壊れた extras を送ってきても落ちないようにする
+        return try {
+            val given=intent.getStringExtra(EXTRA_TOKEN) ?: return null
+            if(!java.security.MessageDigest.isEqual(given.toByteArray(),token.toByteArray())) return null
+            intent.getStringExtra(EXTRA_CHANNEL)
+        } catch(e:RuntimeException) { null }
     }
 }
 @Composable internal fun RiscordTheme(content:@Composable ()->Unit) {

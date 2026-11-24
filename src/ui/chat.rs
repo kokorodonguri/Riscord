@@ -2250,7 +2250,7 @@ impl Root {
             );
         // PreviewMessage: 送る前に、記法を解いた見た目を出す
         if self.app.plugins.on("preview-message") && !self.app.input.trim().is_empty() {
-            let rich = super::message::preview_rich(&self.app.input, true);
+            let rich = super::message::preview_rich_cached(&self.app.input, true);
             boxed = boxed.child(
                 div()
                     .id("compose_preview_box")

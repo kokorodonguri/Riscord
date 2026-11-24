@@ -34,6 +34,9 @@ pub struct Edited {
 
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
+    /// 記録したアカウントのユーザー ID（古い記録には無い）
+    #[serde(default)]
+    owner: Option<String>,
     #[serde(default)]
     deleted: Vec<Deleted>,
     #[serde(default)]
@@ -59,6 +62,8 @@ pub struct MessageLog {
     pub revision: u64,
     /// 記録を置くファイル（アカウントのフォルダの message-log.json）。空なら保存しない
     pub path: PathBuf,
+    /// 記録しているアカウントのユーザー ID。別のアカウントでログインし直したら記録を捨てる
+    owner: Option<String>,
 }
 
 pub fn path_for(profile: Option<&str>) -> PathBuf {
@@ -112,6 +117,15 @@ impl MessageLog {
         else {
             return;
         };
+        // 別のアカウントの記録は読まない（次に保存するとき今のアカウントの記録で上書きされる）
+        if let (Some(me), Some(owner)) = (&self.owner, &stored.owner) {
+            if me != owner {
+                return;
+            }
+        }
+        if self.owner.is_none() {
+            self.owner = stored.owner;
+        }
         self.deleted = stored
             .deleted
             .into_iter()
@@ -123,6 +137,32 @@ impl MessageLog {
             .map(|e| (e.message.id.clone(), e))
             .collect();
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// ログインしたアカウントを伝える。前と違うアカウントなら、前のアカウントの記録と覚えた本文を捨てる
+    pub fn set_owner(&mut self, user_id: &str) {
+        match self.owner.as_deref() {
+            Some(id) if id == user_id => return,
+            Some(_) => {
+                self.deleted.clear();
+                self.edited.clear();
+                self.cache.clear();
+                self.order.clear();
+                self.owner = Some(user_id.to_string());
+                self.revision = self.revision.wrapping_add(1);
+                if self.loaded {
+                    // 前のアカウントの記録がファイルに残らないよう書き直す
+                    self.dirty_since.get_or_insert_with(Instant::now);
+                }
+            }
+            None => {
+                self.owner = Some(user_id.to_string());
+                // 持ち主の無い古い記録に持ち主を書き足す
+                if self.loaded && !(self.deleted.is_empty() && self.edited.is_empty()) {
+                    self.dirty_since.get_or_insert_with(Instant::now);
+                }
+            }
+        }
     }
 
     /// 受け取ったメッセージを覚える（後で削除・編集されたときに本文が分かるように）
@@ -264,6 +304,7 @@ impl MessageLog {
             return;
         }
         let stored = Stored {
+            owner: self.owner.clone(),
             deleted: self.deleted.values().cloned().collect(),
             edited: self.edited.values().cloned().collect(),
         };
@@ -413,6 +454,37 @@ mod tests {
         assert!(log.deleted.is_empty());
         drop(log);
         assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 別のアカウントでログインし直したら、前のアカウントの記録を出さない（ファイルからも読まない）
+    #[test]
+    fn other_account_does_not_see_previous_log() {
+        let dir = std::env::temp_dir().join(format!("riscord-log-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("message-log.json");
+        let mut a = log();
+        a.path = path.clone();
+        a.set_owner("A");
+        a.remember(&msg("9", "覚えた本文"));
+        a.on_delete(&msg("1", "A の DM"));
+        a.flush();
+        // 同じ記録のまま B でログイン
+        a.set_owner("B");
+        assert!(a.deleted.is_empty() && a.cached("9").is_none());
+        a.dirty_since = None;
+        // 起動し直して B でログインしてから読んでも、A の記録は出ない
+        let mut b = MessageLog::default();
+        b.path = path.clone();
+        b.set_owner("B");
+        b.ensure_loaded();
+        assert!(b.deleted.is_empty());
+        // A なら読める
+        let mut a2 = MessageLog::default();
+        a2.path = path.clone();
+        a2.set_owner("A");
+        a2.ensure_loaded();
+        assert!(a2.deleted.contains_key("1"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

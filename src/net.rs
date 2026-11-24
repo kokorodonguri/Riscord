@@ -133,6 +133,9 @@ pub enum Cmd {
         ring: bool,
     },
     LeaveVoice,
+    /// ログアウト: VC から抜け（op 4）、ゲートウェイを閉じてから通信を終える（長くても約 2 秒）。
+    /// 送らずに Cmd の送り手を捨てたときも同じように片付ける
+    Shutdown,
     /// ミュート・スピーカーミュートが変わったのを Discord に伝える
     VoiceFlags,
     /// 着信を拒否する
@@ -290,6 +293,15 @@ enum VoiceMsg {
     State(Value),
     Server(Value),
     Stream(crate::golive::Msg),
+    /// ボイスサーバーへの接続を待っていたタスクの結果。gen が今の試行と違えば古いので捨てる
+    Connected {
+        gen: u64,
+        result: Result<(), String>,
+    },
+    /// ゲートウェイに一からログインし直した（READY。RESUMED では送らない）。session_id はそのセッションのもの
+    Ready(Option<String>),
+    /// ログアウト: VC から抜け（op 4 を送り）、済んだら知らせて終わる
+    Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
 #[derive(Clone)]
@@ -907,7 +919,7 @@ async fn run(
     let status = Arc::new(Mutex::new(status));
     let (gw_tx, gw_rx) = unbounded_channel::<Value>();
     let (v_tx, v_rx) = unbounded_channel::<VoiceMsg>();
-    tokio::spawn(gateway_loop(
+    let gateway = tokio::spawn(gateway_loop(
         token,
         tx.clone(),
         gw_rx,
@@ -958,6 +970,9 @@ async fn run(
     // while the previous snapshot is in flight.
     let guild_loads = Arc::new(Mutex::new(GuildLoads::default()));
     while let Some(cmd) = cmd_rx.recv().await {
+        if let Cmd::Shutdown = &cmd {
+            break;
+        }
         if let Cmd::LoadGuildChannels(gid) = &cmd {
             if !guild_loads.lock().unwrap().request(gid) {
                 continue;
@@ -1093,6 +1108,7 @@ async fn run(
                 | Cmd::SetActivity(_)
                 | Cmd::JoinVoice { .. }
                 | Cmd::LeaveVoice
+                | Cmd::Shutdown
                 | Cmd::VoiceFlags
                 | Cmd::Gateway(_)
                 | Cmd::StartStream(_)
@@ -1285,7 +1301,30 @@ async fn run(
             }
         });
     }
+    shutdown(&v_tx, &gw_tx, gateway).await;
 }
+
+/// ログアウト・終了の片付け。VC から抜ける op 4 を voice_task に送らせ、それを送ってからゲートウェイを閉じる。
+/// gw_tx は voice_task と配信が持ったままなので、送り手が無くなるのを待つのではなく、閉じる合図を送る。
+/// つながっていないときなどに止まらないよう、全体で SHUTDOWN_WAIT までしか待たない
+async fn shutdown(
+    v_tx: &UnboundedSender<VoiceMsg>,
+    gw_tx: &UnboundedSender<Value>,
+    gateway: tokio::task::JoinHandle<()>,
+) {
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_WAIT;
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    if v_tx.send(VoiceMsg::Shutdown(done_tx)).is_ok() {
+        let _ = tokio::time::timeout_at(deadline, done_rx).await;
+    }
+    let _ = gw_tx.send(crate::gateway::close_command());
+    let abort = gateway.abort_handle();
+    if tokio::time::timeout_at(deadline, gateway).await.is_err() {
+        abort.abort();
+    }
+}
+
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 async fn load_guild_channels(api: &Api, tx: &Tx, me: &str, gid: String) -> Result<()> {
     let channel_path = format!("/guilds/{gid}/channels");
@@ -1609,7 +1648,7 @@ async fn gateway_loop(
             GatewayEnd::Resume
         });
         // 画面側が閉じた（ログアウト・終了）ならつなぎ直さない
-        if out.is_closed() {
+        if session.closing || out.is_closed() {
             return;
         }
         // Discord まで届いた（Hello を受けた）なら、つなぎ直しの待ち時間を最初に戻す
@@ -1646,7 +1685,14 @@ async fn gateway_loop(
             "连接已断开。{} 秒后重新连接…",
             wait.as_secs().max(1)
         )));
-        tokio::time::sleep(wait).await;
+        // 待っている間に届いたコマンドも受け取った時刻つきで溜める（古い VC の参加を後から送らないように）
+        if session
+            .queue_while(&mut out, tokio::time::sleep(wait))
+            .await
+            .is_none()
+        {
+            return;
+        }
     }
 }
 
@@ -1739,7 +1785,15 @@ async fn gateway_once_at(
         ),
         _ => gateway.to_string(),
     };
-    let (mut ws, inflater, period) = match crate::gateway::connect_and_hello(&url).await {
+    // つながるまで（最長で 1 分ほど）の間に届いたコマンドも、受け取った時刻つきで溜めておく
+    let Some(connection) = session
+        .queue_while(out, crate::gateway::connect_and_hello(&url))
+        .await
+    else {
+        // ログアウトで閉じるよう頼まれた
+        return Ok(GatewayEnd::Resume);
+    };
+    let (mut ws, inflater, period) = match connection {
         Ok(connection) => connection,
         Err(error) => {
             if let Some(crate::gateway::GatewayClosed(code)) = error.downcast_ref() {
@@ -1777,6 +1831,17 @@ async fn gateway_once_at(
             "READY" => {
                 *ready = true;
                 tx.send(Event::GatewayReady);
+                // 一からログインし直した: 前のセッションの VC の接続は無くなっている
+                #[derive(serde::Deserialize)]
+                struct ReadySession {
+                    session_id: Option<String>,
+                }
+                let session_id = frame
+                    .d
+                    .as_deref()
+                    .and_then(|d| serde_json::from_str::<ReadySession>(d.get()).ok())
+                    .and_then(|r| r.session_id);
+                let _ = v_tx.send(VoiceMsg::Ready(session_id));
             }
             "RESUMED" => {
                 *ready = true;
@@ -2415,7 +2480,7 @@ async fn voice_task(
 ) {
     let mut session: Option<VoiceSession> = None;
     let mut stream = {
-        let (tx, ctl2) = (tx.clone(), ctl.clone());
+        let (tx, ctl2, v_tx) = (tx.clone(), ctl.clone(), v_tx.clone());
         let waker = crate::wake::Waker::new(move |d| match d {
             None => ctl2.waker().wake(),
             Some(d) => ctl2.waker().wake_after(d),
@@ -2432,8 +2497,13 @@ async fn voice_task(
         )
     };
     let mut session_id: Option<String> = None;
+    // READY で教わった、このクライアントのゲートウェイの session_id。自分の VOICE_STATE_UPDATE でも
+    // これと違うものはほかの端末のもの
+    let mut gateway_session: Option<String> = None;
     let mut target: Option<Target> = None;
     let mut ringing: Option<tokio::task::JoinHandle<()>> = None;
+    // ボイスサーバーへの接続の試行番号。入り直し・抜けたら進め、古い試行の結果を捨てる
+    let mut connect_gen: u64 = 0;
     let mut tick = tokio::time::interval(Duration::from_millis(20));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -2466,6 +2536,7 @@ async fn voice_task(
                     task.abort();
                 }
                 stream.stop_all();
+                connect_gen += 1;
                 if let Some(s) = &mut session {
                     s.leave();
                 }
@@ -2490,6 +2561,7 @@ async fn voice_task(
                     task.abort();
                 }
                 stream.stop_all();
+                connect_gen += 1;
                 if let Some(t) = target.take() {
                     let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
                 }
@@ -2498,8 +2570,49 @@ async fn voice_task(
                 }
                 tx.send(Event::Voice(VoiceStatus::Disconnected));
             }
+            VoiceMsg::Shutdown(done) => {
+                if let Some(task) = ringing.take() {
+                    task.abort();
+                }
+                stream.stop_all();
+                if let Some(t) = target.take() {
+                    let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
+                }
+                if let Some(s) = &mut session {
+                    s.leave();
+                }
+                let _ = done.send(());
+                return;
+            }
             VoiceMsg::Flags => {
                 if let Some(t) = &target {
+                    let _ = gw_tx.send(voice_state_payload(
+                        t.guild_id.as_deref(),
+                        Some(&t.channel_id),
+                        &ctl,
+                    ));
+                }
+            }
+            VoiceMsg::Ready(sid) => {
+                gateway_session = sid;
+                let Some(t) = &target else { continue };
+                if t.connected {
+                    // 前のセッションごと VC の接続は切れている（Discord 側では古いセッションの状態が消える）。
+                    // 入り直しの op 4 は送らない（その間にほかの端末で入っていたら奪ってしまう）
+                    if let Some(task) = ringing.take() {
+                        task.abort();
+                    }
+                    stream.stop_all();
+                    connect_gen += 1;
+                    target = None;
+                    if let Some(s) = &mut session {
+                        s.leave();
+                    }
+                    tx.send(Event::Voice(VoiceStatus::Disconnected));
+                } else {
+                    // 入ろうとしている途中: 自分で押した操作なので、新しいセッションで頼み直す
+                    // （前のセッションで送った op 4 は無効になっている）
+                    session_id = None;
                     let _ = gw_tx.send(voice_state_payload(
                         t.guild_id.as_deref(),
                         Some(&t.channel_id),
@@ -2511,15 +2624,34 @@ async fn voice_task(
                 if d["user_id"].as_str() != Some(me_id.as_str()) {
                     continue;
                 }
-                session_id = d["session_id"].as_str().map(String::from);
+                let sid = d["session_id"].as_str();
+                if !voice_state_is_ours(sid, gateway_session.as_deref()) {
+                    // ほかの端末の VC の状態。入ったのなら VC はそちらに移ったので、手元だけ抜ける
+                    // （op 4 で抜けるとほかの端末を追い出してしまう）
+                    if d["channel_id"].is_string() && target.is_some() {
+                        if let Some(task) = ringing.take() {
+                            task.abort();
+                        }
+                        stream.stop_all();
+                        connect_gen += 1;
+                        target = None;
+                        if let Some(s) = &mut session {
+                            s.leave();
+                        }
+                        tx.send(Event::Voice(VoiceStatus::Disconnected));
+                    }
+                    continue;
+                }
+                session_id = sid.map(String::from);
                 match d["channel_id"].as_str() {
-                    // 他の端末で抜けた・切断された
+                    // 抜けた・切断された
                     None => {
                         if let Some(task) = ringing.take() {
                             task.abort();
                         }
                         stream.stop_all();
                         if target.take().is_some() {
+                            connect_gen += 1;
                             if let Some(s) = &mut session {
                                 s.leave();
                             }
@@ -2552,18 +2684,40 @@ async fn voice_task(
                     continue;
                 };
                 let s = session.get_or_insert_with(|| VoiceSession::new(ctl.clone()));
-                match s
-                    .connect(
-                        t.guild_id.as_deref(),
-                        &t.channel_id,
-                        endpoint,
-                        sid,
-                        token,
-                        &me_id,
-                    )
-                    .await
-                {
+                connect_gen += 1;
+                let gen = connect_gen;
+                // つながるまで（songbird は最長で 10 秒 × 5 回）ここで待つと、抜ける・ミュートなどの操作と
+                // 20ms ごとの送信の切り替えが止まるので、別のタスクで待って結果を Connected で受け取る
+                let result = match s.begin_connect(
+                    t.guild_id.as_deref(),
+                    &t.channel_id,
+                    endpoint,
+                    sid,
+                    token,
+                    &me_id,
+                ) {
+                    Ok(connecting) => {
+                        let v_tx = v_tx.clone();
+                        tokio::spawn(async move {
+                            let result = connecting.await.map_err(|e| format!("{e:#}"));
+                            let _ = v_tx.send(VoiceMsg::Connected { gen, result });
+                        });
+                        continue;
+                    }
+                    Err(e) => Err(format!("{e:#}")),
+                };
+                let _ = v_tx.send(VoiceMsg::Connected { gen, result });
+            }
+            VoiceMsg::Connected { gen, result } => {
+                if gen != connect_gen {
+                    continue;
+                }
+                let (Some(t), Some(s)) = (&mut target, &mut session) else {
+                    continue;
+                };
+                match result {
                     Ok(()) => {
+                        s.finish_connect();
                         t.connected = true;
                         tx.send(Event::Voice(VoiceStatus::Connected {
                             guild_id: t.guild_id.clone(),
@@ -2592,13 +2746,22 @@ async fn voice_task(
                     Err(e) => {
                         stream.stop_all();
                         s.leave();
-                        tx.send(Event::Voice(VoiceStatus::Error(format!("{e:#}"))));
+                        tx.send(Event::Voice(VoiceStatus::Error(e)));
                         let _ = gw_tx.send(voice_state_payload(t.guild_id.as_deref(), None, &ctl));
                         target = None;
                     }
                 }
             }
         }
+    }
+}
+
+/// 自分の VOICE_STATE_UPDATE が、このクライアントのセッションのものか。
+/// READY の session_id をまだ知らない・届いた状態に session_id が無いときは、従来どおり自分のものとして扱う
+fn voice_state_is_ours(state_session: Option<&str>, gateway_session: Option<&str>) -> bool {
+    match (state_session, gateway_session) {
+        (Some(state), Some(gateway)) => state == gateway,
+        _ => true,
     }
 }
 

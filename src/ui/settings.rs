@@ -2176,38 +2176,29 @@ impl Root {
         /// 一度に並べる件数
         const SHOWN: usize = 200;
         self.app.message_log.ensure_loaded();
-        let a = &self.app;
-        let me = a.me.as_ref().map(|u| u.id.as_str());
-        let log = &a.message_log;
-        let ping =
-            |m: &crate::model::Message| me.is_some_and(|me| m.mentions.iter().any(|u| u.id == me));
-        let pings = log.deleted.values().filter(|d| ping(&d.message)).count();
-        let counts = [log.deleted.len(), log.edited.len(), pings];
         let tab = self.log_tab.min(2);
-        // Sort borrowed records first; only format the rows actually displayed.
-        enum LogEntry<'a> {
-            Deleted(&'a crate::message_log::Deleted),
-            Edited(&'a crate::message_log::Edited),
+        // 並べ替えは記録が変わったときだけやり直す（最大 3000 件を毎フレーム並べないように）
+        let key = (
+            self.app.message_log.revision,
+            tab,
+            self.app.me.as_ref().map(|u| u.id.clone()),
+        );
+        if self.log_order.as_ref().is_none_or(|c| c.key != key) {
+            self.log_order = Some(log_order(&self.app, key, SHOWN));
         }
-        impl LogEntry<'_> {
-            fn at(&self) -> &str {
-                match self {
-                    Self::Deleted(d) => &d.at,
-                    Self::Edited(e) => e.history.last().map_or("", |h| h.at.as_str()),
-                }
-            }
-        }
-        let mut entries: Vec<LogEntry<'_>> = match tab {
-            1 => log.edited.values().map(LogEntry::Edited).collect(),
-            _ => log
-                .deleted
-                .values()
-                .filter(|d| tab == 0 || ping(&d.message))
-                .map(LogEntry::Deleted)
-                .collect(),
-        };
-        entries.sort_by(|x, y| y.at().cmp(x.at()));
-        let total = entries.len();
+        let a = &self.app;
+        let log = &a.message_log;
+        let order = self.log_order.as_ref().unwrap();
+        let counts = order.counts;
+        let entries: Vec<LogEntry<'_>> = order
+            .ids
+            .iter()
+            .filter_map(|id| match tab {
+                1 => log.edited.get(id).map(LogEntry::Edited),
+                _ => log.deleted.get(id).map(LogEntry::Deleted),
+            })
+            .collect();
+        let total = order.total;
         let mut tabs = div()
             .mt(z(24.0))
             .flex()
@@ -3208,4 +3199,65 @@ fn profile_preview(me: &crate::model::User, draft: &ProfileDraft, w: f32) -> Div
                 ),
         )
         .child(info)
+}
+
+/// MessageLogger のログ一覧の 1 件（並べ替えは借りたまま行い、出す行だけ組み立てる）
+enum LogEntry<'a> {
+    Deleted(&'a crate::message_log::Deleted),
+    Edited(&'a crate::message_log::Edited),
+}
+
+impl LogEntry<'_> {
+    fn at(&self) -> &str {
+        match self {
+            Self::Deleted(d) => &d.at,
+            Self::Edited(e) => e.history.last().map_or("", |h| h.at.as_str()),
+        }
+    }
+}
+
+/// MessageLogger のログ一覧の並び（記録の版・種類・自分の ID が同じあいだ使い回す）
+pub struct LogOrder {
+    pub key: (u64, usize, Option<String>),
+    /// 新しい順に、出す分だけの ID
+    pub ids: Vec<String>,
+    /// この種類の全件数
+    pub total: usize,
+    /// 削除・編集・ゴーストピンそれぞれの件数
+    pub counts: [usize; 3],
+}
+
+fn log_order(a: &crate::app::App, key: (u64, usize, Option<String>), shown: usize) -> LogOrder {
+    let log = &a.message_log;
+    let me = key.2.as_deref();
+    let tab = key.1;
+    let ping =
+        |m: &crate::model::Message| me.is_some_and(|me| m.mentions.iter().any(|u| u.id == me));
+    let pings = log.deleted.values().filter(|d| ping(&d.message)).count();
+    let counts = [log.deleted.len(), log.edited.len(), pings];
+    let mut entries: Vec<LogEntry<'_>> = match tab {
+        1 => log.edited.values().map(LogEntry::Edited).collect(),
+        _ => log
+            .deleted
+            .values()
+            .filter(|d| tab == 0 || ping(&d.message))
+            .map(LogEntry::Deleted)
+            .collect(),
+    };
+    entries.sort_by(|x, y| y.at().cmp(x.at()));
+    let total = entries.len();
+    let ids = entries
+        .into_iter()
+        .take(shown)
+        .map(|e| match e {
+            LogEntry::Deleted(d) => d.message.id.clone(),
+            LogEntry::Edited(e) => e.message.id.clone(),
+        })
+        .collect();
+    LogOrder {
+        key,
+        ids,
+        total,
+        counts,
+    }
 }

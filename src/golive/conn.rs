@@ -166,7 +166,7 @@ pub async fn run(
             "session_id": p.session_id,
             "token": p.token,
             "video": true,
-            "streams": [{ "type": "video", "rid": "100", "quality": 100 }],
+            "streams": [{ "type": "screen", "rid": "100", "quality": 100 }],
             "max_dave_protocol_version": davey::DAVE_PROTOCOL_VERSION,
         }),
     )

@@ -243,12 +243,18 @@ pub struct MsgList {
 /// メッセージ本文を描く前の形（プラグインの表示加工 → メンションの名前 → 記法の分解）の控え。
 /// 見えている行は描き直すたびに Lua の呼び出しと記法の解析をしていたので、元が同じ間は使い回す
 pub struct BodyCache {
-    /// 本文・チャンネル・プラグインの状態（revision）の目印。変わったら表示加工をやり直す
-    pub src: u64,
+    /// 元の本文・チャンネル・プラグインの状態（revision）。変わったら表示加工をやり直す
+    /// （本文は毎フレームハッシュせず、そのまま比べる。長さが違えばすぐ分かる）
+    pub content: String,
+    pub channel_id: String,
+    pub plugin_rev: u64,
     /// on_display を通した後の本文
     pub displayed: String,
     /// メンションの名前を入れた後の本文の目印（チャンネル名・ロール名が変わったら解析し直す）
     pub resolved: u64,
+    /// 最後にメンションの名前を入れたときのチャンネル名・ロール名の版とロール一覧。
+    /// MentionFix などで本文を書き換えない（借りたまま）ときは、これが同じなら入れ直さない
+    pub names_key: Option<(u64, usize, usize)>,
     pub blocks: Rc<[crate::markdown::Block]>,
 }
 
@@ -390,6 +396,8 @@ pub struct Root {
     pub plugins_only_enabled: bool,
     /// MessageLogger のログ一覧で選んでいる種類（0 = 削除、1 = 編集、2 = ゴーストピン）
     pub log_tab: usize,
+    /// MessageLogger のログ一覧の並び（記録が変わるまで使い回す）
+    pub log_order: Option<settings::LogOrder>,
     /// 「別のアカウント」で削除を押したプロファイル（もう一度押すと消す）
     pub confirm_profile_delete: Option<String>,
     pub settings_scroll: ScrollHandle,
@@ -1135,6 +1143,7 @@ impl Root {
             plugin_filter_sub: None,
             plugins_only_enabled: false,
             log_tab: 0,
+            log_order: None,
             confirm_profile_delete: None,
             settings_scroll: ScrollHandle::new(),
             font_family: default_family(),
@@ -1856,14 +1865,16 @@ impl Root {
             cx.notify();
             return;
         }
-        // Shift+L: 最新のメッセージへ。案内が出ているときだけで、入力中の文字の L は打てるようにする
+        // Shift+L: 最新のメッセージへ。案内が出ているときだけで、文字の欄にいるときは L を打てるようにする
+        // （空の入力欄で最初に打った L を奪わないよう、入力欄が空でも奪わない）
         if m.shift
             && !m.control
             && !m.alt
             && !m.platform
             && k.key.eq_ignore_ascii_case("l")
             && self.scrolled_up()
-            && (!compose_focused || self.app.input.is_empty())
+            && !text_focused
+            && !compose_focused
         {
             self.jump_to_latest();
             cx.stop_propagation();

@@ -74,7 +74,7 @@ fn call_length(d: chrono::Duration) -> String {
 }
 
 /// 文字と、色や太さを変える範囲・押せるリンクの範囲（バイト位置）
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Rich {
     pub text: String,
     pub styles: Vec<(Range<usize>, HighlightStyle)>,
@@ -376,6 +376,37 @@ pub fn tag_elements(tags: &[crate::app::bd_display::Tag], key: &str) -> Vec<AnyE
         .collect()
 }
 
+/// 記法を解いた結果の控え（返信のプレビュー・埋め込みの本文・入力欄のプレビューは毎フレーム描くので、
+/// 同じ文字なら解析し直さない）。キーは種類・文字・スポイラーを開いたか・使う色
+fn cached_rich(kind: u8, s: &str, revealed: bool, build: impl FnOnce() -> Rich) -> Rich {
+    use std::hash::{Hash, Hasher};
+    /// 控えの上限（超えたら全部捨てて作り直す）
+    const MAX: usize = 512;
+    thread_local! {
+        static CACHE: std::cell::RefCell<HashMap<u64, Rich>> = Default::default();
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (kind, s, revealed, WHITE(), WIDGET(), LINK()).hash(&mut h);
+    let key = h.finish();
+    if let Some(r) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return r;
+    }
+    let r = build();
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= MAX {
+            c.clear();
+        }
+        c.insert(key, r.clone());
+    });
+    r
+}
+
+/// preview_rich の控えつき版
+pub fn preview_rich_cached(content: &str, revealed: bool) -> Rich {
+    cached_rich(0, content, revealed, || preview_rich(content, revealed))
+}
+
 /// 返信のプレビュー用に、本文を記法を解いた1行にする。リンクは色だけで、押せない
 pub fn preview_rich(content: &str, revealed: bool) -> Rich {
     let mut r = Rich::default();
@@ -419,10 +450,13 @@ fn embed_text(
     revealed: bool,
     on_spoiler: &SpoilerFn,
 ) -> Div {
-    let mut r = Rich::default();
-    for span in md::inline(s) {
-        r.span(&span, revealed);
-    }
+    let r = cached_rich(1, s, revealed, || {
+        let mut r = Rich::default();
+        for span in md::inline(s) {
+            r.span(&span, revealed);
+        }
+        r
+    });
     div()
         .text_size(z(size))
         .text_color(color)
@@ -622,17 +656,23 @@ impl Root {
             return;
         };
         // 毎フレーム見えている画像の数だけ呼ばれるので、覚え済みならキーも作らない
-        if let Some(set) = self.app.channel_images.get_mut(cid) {
-            if !set.contains(uri) {
-                set.insert(uri.to_string());
-            }
-        } else {
-            self.app
-                .channel_images
-                .entry(cid.clone())
-                .or_default()
-                .insert(uri.to_string());
+        if self
+            .app
+            .channel_images
+            .get(cid)
+            .is_some_and(|set| set.contains(uri))
+        {
+            return;
         }
+        // この App で初めて使う画像なら、使っている印を付ける（ほかの App が捨てても残るように）
+        if !self.app.channel_images.values().any(|s| s.contains(uri)) {
+            crate::images::hold(uri);
+        }
+        self.app
+            .channel_images
+            .entry(cid.clone())
+            .or_default()
+            .insert(uri.to_string());
     }
 
     pub fn message_row(
@@ -909,7 +949,7 @@ impl Root {
                 let deco = decoration_for(&m.author, m.member.as_ref());
                 let author = author.clone();
                 with_decoration(
-                    avatar(
+                    priority_avatar(
                         Some(&url),
                         40.0,
                         m.author.display(),
@@ -1500,7 +1540,7 @@ impl Root {
         let mut rich = Rich::default();
         let body = if !r.content.is_empty() {
             let content = resolve_mentions(&r.content, r, &self.app.channels, roles);
-            rich = preview_rich(&content, self.revealed.contains(&r.id));
+            rich = preview_rich_cached(&content, self.revealed.contains(&r.id));
             String::new()
         } else if !r.attachments.is_empty() {
             tr!("添付ファイル", "Attachment", "附件").to_string()
@@ -1566,8 +1606,10 @@ impl Root {
             f(&mut h);
             h.finish()
         };
-        let src = hash(&|h| (&m.content, &m.channel_id, self.app.plugins.revision).hash(h));
-        if self.body_cache.get(&m.id).is_none_or(|c| c.src != src) {
+        let plugin_rev = self.app.plugins.revision;
+        if self.body_cache.get(&m.id).is_none_or(|c| {
+            c.plugin_rev != plugin_rev || c.content != m.content || c.channel_id != m.channel_id
+        }) {
             // 表示加工（Lua）は本文かプラグインの状態が変わったときだけ呼ぶ
             let displayed = self
                 .app
@@ -1584,28 +1626,44 @@ impl Root {
             self.body_cache.insert(
                 m.id.clone(),
                 super::BodyCache {
-                    src,
+                    content: m.content.clone(),
+                    channel_id: m.channel_id.clone(),
+                    plugin_rev,
                     displayed,
                     resolved: 0,
+                    names_key: None,
                     blocks: Rc::from([]),
                 },
             );
         }
         // メンションの名前（チャンネル名・ロール名）は後から変わるので毎回入れ直し、結果が変わったときだけ解析し直す
         let roles = self.guild_roles();
+        let names_key = (self.app.names_ver, roles.as_ptr() as usize, roles.len());
         let c = &self.body_cache[&m.id];
+        // 名前の版が前と同じなら、毎フレームの名前の入れ直し（文字列の組み立て）をしない
+        if c.resolved != 0 && c.names_key == Some(names_key) {
+            return c.blocks.clone();
+        }
         let pre = self.app.bd_pre_mentions(&c.displayed, m, roles);
         let content = resolve_mentions(&pre, m, &self.app.channels, roles);
         // メンションの無い本文（多くのメッセージ）はどちらも手を加えず借りたまま返す。
         // それは displayed だけで決まるので、一度解析していれば本文を毎フレームハッシュし直さなくてよい
-        if c.resolved != 0
-            && matches!(pre, std::borrow::Cow::Borrowed(_))
-            && matches!(content, std::borrow::Cow::Borrowed(_))
-        {
-            return c.blocks.clone();
-        }
-        let resolved = hash(&|h| content.hash(h)).max(1);
+        // MentionFix などで本文を書き換えたときは、ほかのユーザーの名前（版を数えていない）にもよるので毎回入れ直す
+        let stable = matches!(pre, std::borrow::Cow::Borrowed(_));
+        let unchanged =
+            c.resolved != 0 && stable && matches!(content, std::borrow::Cow::Borrowed(_));
+        let resolved = if unchanged {
+            c.resolved
+        } else {
+            hash(&|h| content.hash(h)).max(1)
+        };
         if c.resolved == resolved {
+            drop(content);
+            drop(pre);
+            let c = self.body_cache.get_mut(&m.id).unwrap();
+            if stable {
+                c.names_key = Some(names_key);
+            }
             return c.blocks.clone();
         }
         let blocks: Rc<[md::Block]> = md::blocks(&content).into();
@@ -1613,6 +1671,7 @@ impl Root {
         drop(pre);
         let c = self.body_cache.get_mut(&m.id).unwrap();
         c.resolved = resolved;
+        c.names_key = stable.then_some(names_key);
         c.blocks = blocks.clone();
         blocks
     }

@@ -887,6 +887,7 @@ impl App {
                 Some(roles) => {
                     self.roles.insert(admin.guild_id.clone(), roles.clone());
                     self.member_ver = self.member_ver.wrapping_add(1);
+                    self.names_ver = self.names_ver.wrapping_add(1);
                     admin.roles = Some(roles);
                 }
                 None => {

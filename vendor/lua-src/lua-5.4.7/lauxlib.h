@@ -221,6 +221,12 @@ LUALIB_API void (luaL_pushresult) (luaL_Buffer *B);
 LUALIB_API void (luaL_pushresultsize) (luaL_Buffer *B, size_t sz);
 LUALIB_API char *(luaL_buffinitsize) (lua_State *L, luaL_Buffer *B, size_t sz);
 
+/*
+** Riscord: C のライブラリ関数の作業量の予算（lauxlib.c を参照）
+*/
+LUALIB_API lua_Integer (luaL_workleft) (lua_State *L);
+LUALIB_API void (luaL_chargework) (lua_State *L, lua_Integer used);
+
 #define luaL_prepbuffer(B)	luaL_prepbuffsize(B, LUAL_BUFFERSIZE)
 
 /* }====================================================== */

@@ -310,6 +310,7 @@ impl App {
                     {
                         let cid = channel.id.clone();
                         if !self.dms.iter().any(|c| c.id == cid) {
+                            self.note_dm_added(&cid);
                             self.dms.insert(0, channel);
                         }
                         if self.friends.open

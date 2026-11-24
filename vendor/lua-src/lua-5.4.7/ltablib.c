@@ -58,6 +58,21 @@ static void checktab (lua_State *L, int arg, int what) {
 }
 
 
+/*
+** Riscord: 要素を 1 つずつ読み書きする処理の作業量（lauxlib.c の luaL_chargework）。
+** 1 要素の読み書きはおよそ 8 バイトの複写、並べ替えの 1 回の比較はおよそ 32 と数える
+*/
+#define ELEM_WORK_WEIGHT 8
+#define SORT_WORK_WEIGHT 32
+/* 小さな処理は命令数の上限で抑えられるので数えない（registry を引く手間を省く） */
+#define FREE_ELEMS 8
+
+static void chargeelems (lua_State *L, lua_Integer n, lua_Integer weight) {
+  if (n > FREE_ELEMS)
+    luaL_chargework(L, n > LUA_MAXINTEGER / weight ? LUA_MAXINTEGER : n * weight);
+}
+
+
 static int tinsert (lua_State *L) {
   lua_Integer pos;  /* where to insert new element */
   lua_Integer e = aux_getn(L, 1, TAB_RW);
@@ -73,6 +88,7 @@ static int tinsert (lua_State *L) {
       /* check whether 'pos' is in [1, e] */
       luaL_argcheck(L, (lua_Unsigned)pos - 1u < (lua_Unsigned)e, 2,
                        "position out of bounds");
+      chargeelems(L, e - pos, ELEM_WORK_WEIGHT);
       for (i = e; i > pos; i--) {  /* move up elements */
         lua_geti(L, 1, i - 1);
         lua_seti(L, 1, i);  /* t[i] = t[i - 1] */
@@ -95,6 +111,8 @@ static int tremove (lua_State *L) {
     /* check whether 'pos' is in [1, size + 1] */
     luaL_argcheck(L, (lua_Unsigned)pos - 1u <= (lua_Unsigned)size, 2,
                      "position out of bounds");
+  if (pos < size)
+    chargeelems(L, size - pos, ELEM_WORK_WEIGHT);
   lua_geti(L, 1, pos);  /* result = t[pos] */
   for ( ; pos < size; pos++) {
     lua_geti(L, 1, pos + 1);
@@ -126,6 +144,7 @@ static int tmove (lua_State *L) {
     n = e - f + 1;  /* number of elements to move */
     luaL_argcheck(L, t <= LUA_MAXINTEGER - n + 1, 4,
                   "destination wrap around");
+    chargeelems(L, n, ELEM_WORK_WEIGHT);
     if (t > e || t <= f || (tt != 1 && !lua_compare(L, 1, tt, LUA_OPEQ))) {
       for (i = 0; i < n; i++) {
         lua_geti(L, 1, f + i);
@@ -160,6 +179,13 @@ static int tconcat (lua_State *L) {
   const char *sep = luaL_optlstring(L, 2, "", &lsep);
   lua_Integer i = luaL_optinteger(L, 3, 1);
   last = luaL_optinteger(L, 4, last);
+  /* 要素の数（差は桁あふれしないよう符号なしで求める） */
+  if (i <= last) {
+    lua_Unsigned cnt = (lua_Unsigned)last - (lua_Unsigned)i;
+    chargeelems(L, cnt >= (lua_Unsigned)LUA_MAXINTEGER ? LUA_MAXINTEGER
+                                                       : (lua_Integer)cnt + 1,
+                ELEM_WORK_WEIGHT);
+  }
   luaL_buffinit(L, &b);
   for (; i < last; i++) {
     addfield(L, &b, i);
@@ -167,6 +193,8 @@ static int tconcat (lua_State *L) {
   }
   if (i == last)  /* add last value (if interval was not empty) */
     addfield(L, &b, i);
+  if (luaL_bufflen(&b) > 64)  /* Riscord: 結果の長さも数える */
+    luaL_chargework(L, (lua_Integer)luaL_bufflen(&b));
   luaL_pushresult(&b);
   return 1;
 }
@@ -200,6 +228,7 @@ static int tunpack (lua_State *L) {
   if (l_unlikely(n >= (unsigned int)INT_MAX  ||
                  !lua_checkstack(L, (int)(++n))))
     return luaL_error(L, "too many results to unpack");
+  chargeelems(L, (lua_Integer)n, ELEM_WORK_WEIGHT);
   for (; i < e; i++) {  /* push arg[i..e - 1] (to avoid overflows) */
     lua_geti(L, 1, i);
   }
@@ -374,6 +403,8 @@ static void auxsort (lua_State *L, IdxT lo, IdxT up,
     }
     if (up - lo == 2)  /* only 3 elements? */
       return;  /* already sorted */
+    /* Riscord: 分割は区間の長さに比例する。最悪の並びでも比較の数だけ数える */
+    chargeelems(L, (lua_Integer)(up - lo), SORT_WORK_WEIGHT);
     lua_geti(L, 1, p);  /* get middle element (Pivot) */
     lua_pushvalue(L, -1);  /* push Pivot */
     lua_geti(L, 1, up - 1);  /* push a[up - 1] */

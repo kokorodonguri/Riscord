@@ -59,6 +59,7 @@ impl std::error::Error for AuthExpired {}
 use crate::gateway::{close_action, CloseAction, GatewayClosed, GatewaySession};
 
 pub struct Client {
+    lifecycle: Mutex<()>,
     token: Mutex<String>,
     status: Mutex<String>,
     http: reqwest::Client,
@@ -77,10 +78,12 @@ pub struct Client {
     connect_gen: std::sync::atomic::AtomicU64,
     /// 画面側が付けた、いまの connect の番号（disconnect で古い接続だけを止めるため）
     attempt: std::sync::atomic::AtomicI64,
+    cancelled_through: std::sync::atomic::AtomicI64,
 }
 impl Client {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
+            lifecycle: Mutex::new(()),
             #[cfg(target_os = "android")]
             voice_ctl: Arc::new(crate::voice::VoiceCtl::default()),
             #[cfg(target_os = "android")]
@@ -103,6 +106,7 @@ impl Client {
             login_cancel: Mutex::new(None),
             connect_gen: std::sync::atomic::AtomicU64::new(0),
             attempt: std::sync::atomic::AtomicI64::new(0),
+            cancelled_through: std::sync::atomic::AtomicI64::new(-1),
         })
     }
     pub fn push(&self, event: Value) {
@@ -139,6 +143,7 @@ impl Client {
         }
     }
     pub fn stop(&self) {
+        let _guard = self.lifecycle.lock().unwrap();
         if let Some(c) = self.login_cancel.lock().unwrap().take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -155,12 +160,16 @@ impl Client {
                 t.abort();
             }
         }
-        self.pause();
+        self.pause_inner();
         self.token.lock().unwrap().clear();
         self.notify.notify_one();
     }
     /// Gateway だけを切る（トークンと通話は残す）。画面を閉じて常駐しないときに使う
     pub fn pause(&self) {
+        let _guard = self.lifecycle.lock().unwrap();
+        self.pause_inner();
+    }
+    fn pause_inner(&self) {
         if let Some(task) = self.task.lock().unwrap().take() {
             task.abort();
         }
@@ -168,22 +177,23 @@ impl Client {
     }
     /// pause した Gateway をつなぎ直す
     pub fn resume(self: &Arc<Self>) -> Result<Value> {
+        let _guard = self.lifecycle.lock().unwrap();
         anyhow::ensure!(!self.token.lock().unwrap().is_empty(), "接続されていません");
         // 致命的な切断で Gateway のタスクが終わっていても、つなぎ直せるようにする
-        if self
+        let needs_start = self
             .task
             .lock()
             .unwrap()
             .as_ref()
-            .is_none_or(|t| t.is_finished())
-        {
+            .is_none_or(|t| t.is_finished());
+        if needs_start {
             self.start_gateway();
         }
         Ok(Value::Null)
     }
     fn start_gateway(self: &Arc<Self>) {
         // 前のタスクが残っていれば止めてから（2 本の Gateway が同じトークンでつながらないように）
-        self.pause();
+        self.pause_inner();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         *self.gateway_tx.lock().unwrap() = Some(tx);
         let client = self.clone();
@@ -235,17 +245,32 @@ impl Client {
         attempt: i64,
     ) -> Result<Value> {
         use std::sync::atomic::Ordering::SeqCst;
-        self.stop();
-        let gen = self.connect_gen.load(SeqCst);
-        self.attempt.store(attempt, SeqCst);
-        *self.token.lock().unwrap() = token;
-        if let Some(status) = status.filter(|s| valid_status(s)) {
-            *self.status.lock().unwrap() = status.into();
-        }
+        let gen = {
+            let _guard = self.lifecycle.lock().unwrap();
+            anyhow::ensure!(
+                attempt >= self.attempt.load(SeqCst)
+                    && attempt > self.cancelled_through.load(SeqCst),
+                "接続は取り消されました"
+            );
+            if let Some(c) = self.login_cancel.lock().unwrap().take() {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.stop_connection();
+            let gen = self.connect_gen.load(SeqCst);
+            self.attempt.store(attempt, SeqCst);
+            *self.token.lock().unwrap() = token;
+            if let Some(status) = status.filter(|s| valid_status(s)) {
+                *self.status.lock().unwrap() = status.into();
+            }
+            gen
+        };
         let me = self.api(ApiCall::GetMe).await?;
         // 待っている間に stop・新しい connect が来た: 古いトークンで Gateway や通話を始めない
-        let current = || self.connect_gen.load(SeqCst) == gen;
-        anyhow::ensure!(current(), "接続は取り消されました");
+        let _guard = self.lifecycle.lock().unwrap();
+        anyhow::ensure!(
+            self.connect_gen.load(SeqCst) == gen,
+            "接続は取り消されました"
+        );
         #[cfg(target_os = "android")]
         {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -259,24 +284,14 @@ impl Client {
                 Some(tokio::spawn(crate::mobile_voice::run(weak, me, ctl, rx)));
         }
         self.start_gateway();
-        // 始めている間に stop と入れ違いになった: いま始めた分を止める
-        // （新しい connect は GetMe を待っている間なので、そちらの Gateway や通話はまだ無い）
-        if !current() {
-            self.pause();
-            #[cfg(target_os = "android")]
-            {
-                self.voice_tx.lock().unwrap().take();
-                if let Some(t) = self.voice_task.lock().unwrap().take() {
-                    t.abort();
-                }
-            }
-            bail!("接続は取り消されました");
-        }
         Ok(me)
     }
     /// attempt の connect がいまの接続なら止める（画面側で取り消した connect が、あとから終わったとき）。
     /// 新しい connect が始まっていれば何もしない。そのあとに始めたログイン（QR など）は止めない
     pub fn disconnect(&self, attempt: i64) {
+        let _guard = self.lifecycle.lock().unwrap();
+        self.cancelled_through
+            .fetch_max(attempt, std::sync::atomic::Ordering::SeqCst);
         if self.attempt.load(std::sync::atomic::Ordering::SeqCst) == attempt {
             self.stop_connection();
         }
@@ -678,7 +693,7 @@ fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> 
         .parse::<f64>()
         .ok()
         .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(Duration::from_secs_f64)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
 }
 
 /// 本文の retry_after（秒・小数あり）を優先し、無ければ Retry-After ヘッダー
@@ -686,7 +701,7 @@ fn retry_wait(v: &Value, header: Option<Duration>) -> Option<Duration> {
     v["retry_after"]
         .as_f64()
         .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(Duration::from_secs_f64)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .or(header)
 }
 
@@ -746,6 +761,20 @@ mod tests {
     }
 
     use super::*;
+    #[tokio::test]
+    async fn stale_disconnect_cannot_stop_newer_connection_and_cancelled_attempt_cannot_start() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let client = Client::new();
+        client.attempt.store(2, SeqCst);
+        *client.token.lock().unwrap() = "new-session".into();
+        client.disconnect(1);
+        assert_eq!(&*client.token.lock().unwrap(), "new-session");
+        assert!(client.connect("stale".into(), None, 1).await.is_err());
+        assert_eq!(&*client.token.lock().unwrap(), "new-session");
+        client.disconnect(3);
+        assert!(client.connect("cancelled".into(), None, 3).await.is_err());
+        assert_eq!(&*client.token.lock().unwrap(), "new-session");
+    }
     #[test]
     fn event_overflow_requests_resync_and_drain_consumes_events() {
         let c = Client::new();
@@ -840,9 +869,12 @@ mod tests {
         );
         assert_eq!(retry_wait(&Value::Null, header), header);
         assert_eq!(retry_wait(&json!({"retry_after":-1.0}), None), None);
+        assert_eq!(retry_wait(&json!({"retry_after":1e100}), header), header);
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, "2".parse().unwrap());
         assert_eq!(retry_after_header(&headers), Some(Duration::from_secs(2)));
+        headers.insert(reqwest::header::RETRY_AFTER, "1e100".parse().unwrap());
+        assert_eq!(retry_after_header(&headers), None);
         let err =
             response(reqwest::StatusCode::TOO_MANY_REQUESTS, &Value::Null, header).unwrap_err();
         assert!(err.to_string().contains('3'), "{err}");

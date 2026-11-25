@@ -1002,6 +1002,7 @@ impl VoiceSession {
     }
 
     /// guild_id が無い（DM通話）ときは channel_id をサーバーIDとして使う
+    #[allow(dead_code)]
     pub async fn connect(
         &mut self,
         guild_id: Option<&str>,

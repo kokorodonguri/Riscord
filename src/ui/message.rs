@@ -288,15 +288,16 @@ impl Rich {
         let urls2 = urls.clone();
         let ranges2 = ranges.clone();
         let clickable = ranges.iter().cloned().chain(spoilers).collect();
-        let pane = current_pane();
+        let pending = pending_for_pane(current_pane());
         InteractiveText::new(id, styled)
             .on_click(clickable, move |i, window, cx| match urls.get(i) {
                 Some(url) if url.starts_with(MENTION_LINK) => {
-                    post_pending(
-                        &PENDING_MENTION,
-                        pane,
-                        url[MENTION_LINK.len()..].to_string(),
-                    );
+                    if let Some(queue) = &pending {
+                        queue
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push_back(url[MENTION_LINK.len()..].to_string());
+                    }
                     window.refresh();
                 }
                 Some(url) => crate::app::open_link(cx, url),
@@ -340,24 +341,19 @@ fn masked_url_end(after: &str) -> Option<usize> {
 }
 
 pub const MENTION_LINK: &str = "riscord-mention:";
-/// 押されたものを Root へ渡す口（押した区画の印, 中身）。分割表示で別の区画が取らないよう印を付ける
-pub type Pending = std::sync::Mutex<Option<(u64, String)>>;
-/// 押されたメンションのユーザー ID（Root の描画で開く）
-pub static PENDING_MENTION: Pending = std::sync::Mutex::new(None);
-
-/// pane の区画で押されたものとして置く（pane は要素を作ったときの current_pane()）
-pub fn post_pending(slot: &Pending, pane: u64, value: String) {
-    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((pane, value));
+pub type MentionQueue = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>;
+thread_local! {
+    static MENTION_QUEUES: std::cell::RefCell<std::collections::HashMap<u64, std::sync::Weak<std::sync::Mutex<std::collections::VecDeque<String>>>>> = Default::default();
 }
-
-/// その区画で押されたものだけ取り出す（ほかの区画のものは残す）
-pub fn take_pending(slot: &Pending, pane: u64) -> Option<String> {
-    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
-    if g.as_ref().is_some_and(|(p, _)| *p == pane) {
-        g.take().map(|(_, v)| v)
-    } else {
-        None
-    }
+pub fn register_mention_queue(pane: u64, queue: &MentionQueue) {
+    MENTION_QUEUES.with(|queues| {
+        let mut queues = queues.borrow_mut();
+        queues.retain(|_, q| q.strong_count() != 0);
+        queues.insert(pane, std::sync::Arc::downgrade(queue));
+    });
+}
+fn pending_for_pane(pane: u64) -> Option<MentionQueue> {
+    MENTION_QUEUES.with(|queues| queues.borrow().get(&pane).and_then(|q| q.upgrade()))
 }
 
 /// メッセージのツールバーで、1 行（slots 個）に収まるよう (並べるクイックリアクションの数, プラグインの操作の数) を決める。
@@ -1412,7 +1408,8 @@ impl Root {
                             .remove(&key)
                             .is_some_and(|(original, _)| original == message.content)
                         {
-                            this.app.translator.version = this.app.translator.version.wrapping_add(1);
+                            this.app.translator.version =
+                                this.app.translator.version.wrapping_add(1);
                         } else {
                             let language = this.app.plugins.translation_target();
                             let target = crate::translator::Target::Message {
@@ -2826,6 +2823,31 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mention_queues_are_isolated_and_do_not_overwrite_clicks() {
+        let first: super::MentionQueue = Default::default();
+        let second: super::MentionQueue = Default::default();
+        super::register_mention_queue(101, &first);
+        super::register_mention_queue(102, &second);
+        let post = |pane, value: &str| {
+            super::pending_for_pane(pane)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .push_back(value.to_owned());
+        };
+        post(101, "first");
+        post(102, "other");
+        post(101, "second");
+        assert_eq!(
+            first.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(second.lock().unwrap().pop_front().as_deref(), Some("other"));
+        drop(first);
+        assert!(super::pending_for_pane(101).is_none());
+    }
+
     #[test]
     fn masked_link_keeps_balanced_parens_in_url() {
         let after = "https://en.wikipedia.org/wiki/Foo_(bar)) 続き";

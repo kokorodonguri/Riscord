@@ -71,6 +71,11 @@ import java.time.Duration
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(state=list,reverseLayout=true,contentPadding=PaddingValues(top=12.dp,bottom=12.dp),modifier=Modifier.fillMaxSize().semantics {contentDescription=tr("メッセージ履歴","Message history","消息历史")}) {
+                if(s.hasNewer) item("newer") {
+                    Box(Modifier.fillMaxWidth().padding(vertical=8.dp),contentAlignment=Alignment.Center) {
+                        TextButton(onClick=model::newer,enabled=!s.loading) { Text(tr("新しいメッセージを読み込む","Load newer messages","加载较新的消息")) }
+                    }
+                }
                 itemsIndexed(s.messages.asReversed(),key={_,message->message.getString("id")}) {reverseIndex,message->
                     val index=s.messages.lastIndex-reverseIndex
                     val older=s.messages.getOrNull(index-1)
@@ -98,7 +103,7 @@ import java.time.Duration
                     }
                 }
             }
-            if(!nearBottom&&s.messages.isNotEmpty()) SmallFloatingActionButton(onClick={scope.launch {list.animateScrollToItem(0);followLatest=true}},containerColor=MobileRaised,contentColor=Color.White,modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp)) {MobileIcon(Glyph.Down,tr("最新のメッセージへ","Jump to latest","跳到最新消息"))}
+            if((!nearBottom||s.hasNewer)&&s.messages.isNotEmpty()) SmallFloatingActionButton(onClick={if(s.hasNewer) model.latest(); scope.launch {list.animateScrollToItem(0);followLatest=true}},containerColor=MobileRaised,contentColor=Color.White,modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp)) {MobileIcon(Glyph.Down,tr("最新のメッセージへ","Jump to latest","跳到最新消息"))}
         }
         MessageComposer(s,model,focus,onPickAttachment)
     }

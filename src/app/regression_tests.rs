@@ -601,17 +601,34 @@ fn late_message_response_does_not_restore_evicted_channel() {
 #[test]
 fn sent_message_does_not_skip_detached_history() {
     let mut app = bench_app(2);
-    app.history.insert("c".into(), History { newer: true, ..Default::default() });
-    app.compose_submissions.insert("c".into(), ComposeSubmission {
-        content: "sent".into(), reply: None, editing: None, uploads: Vec::new(),
-        failed: false, rejected: None,
-    });
+    app.history.insert(
+        "c".into(),
+        History {
+            newer: true,
+            ..Default::default()
+        },
+    );
+    app.compose_submissions.insert(
+        "c".into(),
+        ComposeSubmission {
+            content: "sent".into(),
+            reply: None,
+            editing: None,
+            uploads: Vec::new(),
+            failed: false,
+            rejected: None,
+        },
+    );
     let (tx, ev) = std::sync::mpsc::channel();
     let (cmd, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.backend = Some(Backend { cmd, ev });
     let mut sent = app.messages["c"][1].clone();
     sent.id = "900000".into();
-    tx.send(Event::ComposeResult { channel_id: "c".into(), result: Ok(Some(sent.clone())) }).unwrap();
+    tx.send(Event::ComposeResult {
+        channel_id: "c".into(),
+        result: Ok(Some(sent.clone())),
+    })
+    .unwrap();
     tx.send(Event::MessageCreate(sent)).unwrap();
     app.poll();
     assert_eq!(app.messages["c"].last().unwrap().id, "100001");

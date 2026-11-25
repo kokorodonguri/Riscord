@@ -137,6 +137,7 @@ pub enum Cmd {
     LeaveVoice,
     /// ログアウト: VC から抜け（op 4）、ゲートウェイを閉じてから通信を終える（長くても約 2 秒）。
     /// 送らずに Cmd の送り手を捨てたときも同じように片付ける
+    #[allow(dead_code)]
     Shutdown,
     /// ミュート・スピーカーミュートが変わったのを Discord に伝える
     VoiceFlags,
@@ -544,9 +545,16 @@ impl Api {
                 }
             })
             .await?;
-            let _permit =
-                tokio::time::timeout(Duration::from_secs(120), if upload { &self.limits.uploads } else { &self.limits.concurrent }.acquire())
-                    .await??;
+            let _permit = tokio::time::timeout(
+                Duration::from_secs(120),
+                if upload {
+                    &self.limits.uploads
+                } else {
+                    &self.limits.concurrent
+                }
+                .acquire(),
+            )
+            .await??;
             #[cfg(test)]
             let base = self.base_url.as_deref().unwrap_or(API);
             #[cfg(not(test))]
@@ -951,7 +959,11 @@ async fn run(
         let tx = tx.clone();
         let task = gateway_loop(token, tx.clone(), gw_rx, status.clone(), v_tx.clone());
         tokio::spawn(async move {
-            if std::panic::AssertUnwindSafe(task).catch_unwind().await.is_err() {
+            if std::panic::AssertUnwindSafe(task)
+                .catch_unwind()
+                .await
+                .is_err()
+            {
                 tx.send(Status(tr!("切断", "Disconnected", "已断开").into()));
                 tx.send(Event::Error(tr!(
                     "ゲートウェイの処理が異常終了しました。再起動してください",
@@ -2027,7 +2039,9 @@ fn dispatch_raw(
                 .map(|ms| Value::Array(ms.iter().filter(|m| m.is(&me)).map(member).collect()))
                 .collect();
             let ids = |v: &[ReadyChannel]| {
-                v.iter().map(|c| json!({ "id": c.id, "last_message_id": c.last_message_id })).collect::<Vec<_>>()
+                v.iter()
+                    .map(|c| json!({ "id": c.id, "last_message_id": c.last_message_id }))
+                    .collect::<Vec<_>>()
             };
             let guilds = r
                 .guilds
@@ -2855,7 +2869,9 @@ fn path_is_safe(path: &str) -> bool {
     p.starts_with('/')
         && !p.contains(['#', '\\'])
         && !path.contains('#')
-        && p[1..].split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && p[1..]
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
 /// 429 の待ちを覚えるキー。Discord のバケットは主要な ID（チャンネル・サーバー・Webhook）ごとなので、
@@ -2903,10 +2919,16 @@ mod path_tests {
         assert_eq!(a, b);
         assert_ne!(a, route_key(&Method::POST, "/channels/9/messages/2/ack"));
         assert_eq!(
-            route_key(&Method::PUT, "/channels/1/messages/2/reactions/%F0%9F%91%8D/@me"),
+            route_key(
+                &Method::PUT,
+                "/channels/1/messages/2/reactions/%F0%9F%91%8D/@me"
+            ),
             route_key(&Method::PUT, "/channels/1/messages/5/reactions/x%3A7/@me"),
         );
-        assert_eq!(route_key(&Method::GET, "/guilds/4/members?limit=1"), "GET /guilds/4/members");
+        assert_eq!(
+            route_key(&Method::GET, "/guilds/4/members?limit=1"),
+            "GET /guilds/4/members"
+        );
     }
 }
 

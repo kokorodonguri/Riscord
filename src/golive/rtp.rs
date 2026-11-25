@@ -200,7 +200,13 @@ pub fn pli(sender: u32, media: u32) -> [u8; 12] {
 
 /// RTCP の送信者レポート（SR）。ssrc は自分の映像の SSRC、ntp は (秒, 秒の小数 / 2^32)。
 /// Discord のサーバーは、これが来ない映像を視聴者に流さないことがある
-pub fn sender_report(ssrc: u32, ntp: (u32, u32), rtp_ts: u32, packets: u32, octets: u32) -> [u8; 28] {
+pub fn sender_report(
+    ssrc: u32,
+    ntp: (u32, u32),
+    rtp_ts: u32,
+    packets: u32,
+    octets: u32,
+) -> [u8; 28] {
     let mut p = [0u8; 28];
     p[0] = 0x80; // V=2, RC=0
     p[1] = 200; // SR

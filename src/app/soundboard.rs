@@ -193,10 +193,10 @@ impl App {
     pub fn is_soundboard_request(&self, id: u64) -> bool {
         self.sounds_sending.contains_key(&id)
             || self.soundboard.as_ref().is_some_and(|sb| {
-            sb.default_request == Some(id)
-                || sb.guild_request == Some(id)
-                || sb.sending.as_ref().is_some_and(|(n, _)| *n == id)
-        })
+                sb.default_request == Some(id)
+                    || sb.guild_request == Some(id)
+                    || sb.sending.as_ref().is_some_and(|(n, _)| *n == id)
+            })
     }
 
     pub fn soundboard_result(&mut self, id: u64, result: Result<serde_json::Value, String>) {

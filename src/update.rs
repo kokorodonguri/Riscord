@@ -386,40 +386,6 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
     verify_update(key, &version, name, &want, &signature)?;
 
     set(Status::Downloading(version.clone()), waker);
-    let response = http
-        .get(&asset.browser_download_url)
-        .timeout(Duration::from_secs(600))
-        .send()
-        .await?
-        .error_for_status()?;
-    let bytes = bounded_body(response, asset.size).await?;
-    if bytes.len() as u64 != asset.size {
-        bail!(
-            "{}",
-            tr!(
-                "ダウンロードしたサイズが合いません（{} / {} バイト）",
-                "The downloaded size doesn't match ({} / {} bytes)",
-                "下载的大小不匹配（{} / {} 字节）",
-                bytes.len(),
-                asset.size
-            )
-        );
-    }
-    let got: String = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if got != want {
-        bail!(
-            "{}",
-            tr!(
-                "ダウンロードしたファイルの SHA-256 が合いません",
-                "The SHA-256 of the downloaded file doesn't match",
-                "下载文件的 SHA-256 不匹配",
-            )
-        );
-    }
-
     // 一時ファイルはインスタンスごとの、予測しにくい名前にする（落ちたインスタンスの残りと混ざらないように、
     // また他人が先に同じ名前を作っておけないように）。create_new なので既にあれば開かずに失敗する
     let staging = sibling(
@@ -434,29 +400,26 @@ async fn run(exe: &Path, names: &[&str], waker: &Waker) -> Result<Outcome> {
     let mut dir = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt;
         let parent = staging.parent().context("Update directory has no parent")?;
         if std::fs::metadata(parent)?.permissions().mode() & 0o022 != 0 {
             bail!("The update directory is writable by other users");
         }
         dir.mode(0o700);
     }
-    dir.create(&staging).context("Can't create update staging directory")?;
+    dir.create(&staging)
+        .context("Can't create update staging directory")?;
     let staging = UpdateStaging(staging);
     let new = staging.0.join("executable");
-    let written = write_verified(&new, &bytes, &got);
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&new);
-        return Err(e).with_context(|| {
-            tr!(
-                "{} に書き込めません",
-                "Can't write to {}",
-                "无法写入 {}",
-                new.display()
-            )
-        });
-    }
+    let response = http
+        .get(&asset.browser_download_url)
+        .timeout(Duration::from_secs(600))
+        .send()
+        .await?
+        .error_for_status()?;
+    download_verified(response, &new, asset.size, &want).await?;
+    let got = want;
     if let Err(e) = replace(exe, &new) {
         let _ = std::fs::remove_file(&new);
         return Err(e);
@@ -488,6 +451,7 @@ impl Drop for UpdateStaging {
     }
 }
 
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -496,12 +460,71 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn file_sha256(path: &Path) -> std::io::Result<String> {
-    std::fs::read(path).map(|b| sha256_hex(&b))
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+async fn download_verified(
+    mut response: reqwest::Response,
+    path: &Path,
+    expected_size: u64,
+    expected_digest: &str,
+) -> Result<()> {
+    use std::io::Write;
+    if response.content_length().is_some_and(|n| n > expected_size) {
+        bail!("Update asset exceeds expected size");
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let mut hash = Sha256::new();
+    let mut size = 0u64;
+    while let Some(chunk) = response.chunk().await? {
+        size = size
+            .checked_add(chunk.len() as u64)
+            .context("Update asset is too large")?;
+        if size > expected_size {
+            bail!("Update asset exceeds expected size");
+        }
+        hash.update(&chunk);
+        file.write_all(&chunk)?;
+    }
+    let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if size != expected_size || digest != expected_digest {
+        bail!("Downloaded update size or SHA-256 does not match");
+    }
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    }
+    drop(file);
+    if file_sha256(path)? != expected_digest {
+        bail!("Written update SHA-256 does not match");
+    }
+    Ok(())
 }
 
 /// 検証済みのバイト列を新しく作ったファイルに書く。権限はパスではなく開いたハンドル経由で付け
 /// （閉じてからパスで chmod すると、その間にすり替えられたファイルに実行権限を付けうる）、
 /// 書いたあとは同じハンドルから読み直して、中身が検証した SHA-256 と同じかを確かめる
+#[cfg(test)]
 fn write_verified(path: &Path, bytes: &[u8], digest: &str) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let mut options = std::fs::OpenOptions::new();
@@ -548,12 +571,7 @@ fn installed_version(exe: &Path) -> Option<String> {
         let _ = std::fs::remove_file(&marker);
         return None;
     };
-    let current = std::fs::read(exe).ok().map(|b| {
-        Sha256::digest(&b)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    });
+    let current = file_sha256(exe).ok();
     if current.as_deref() != Some(&digest.to_ascii_lowercase()) {
         let _ = std::fs::remove_file(&marker);
         return None;
@@ -699,6 +717,64 @@ fn notify_ready(version: &str) {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn streamed_update_checks_length_digest_and_existing_files() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("riscord-stream-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n").unwrap();
+            }
+        });
+        let client = reqwest::Client::new();
+        let url = format!("http://{address}/");
+        let file = dir.join("asset");
+        let _ = std::fs::remove_file(&file);
+        download_verified(
+            client.get(&url).send().await.unwrap(),
+            &file,
+            6,
+            &sha256_hex(b"abcdef"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"abcdef");
+        assert!(download_verified(
+            client.get(&url).send().await.unwrap(),
+            &file,
+            6,
+            &sha256_hex(b"abcdef")
+        )
+        .await
+        .is_err());
+        std::fs::remove_file(&file).unwrap();
+        assert!(download_verified(
+            client.get(&url).send().await.unwrap(),
+            &file,
+            5,
+            &sha256_hex(b"abcdef")
+        )
+        .await
+        .is_err());
+        std::fs::remove_file(&file).unwrap();
+        assert!(download_verified(
+            client.get(&url).send().await.unwrap(),
+            &file,
+            6,
+            &sha256_hex(b"wrong")
+        )
+        .await
+        .is_err());
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn write_verified_checks_digest_and_refuses_existing_file() {
         let dir = std::env::temp_dir().join(format!("riscord-update-write-{}", std::process::id()));
@@ -728,8 +804,14 @@ mod tests {
         let exe = dir.join("riscord");
         let a = UpdateLock::acquire(&exe).expect("最初は取れる");
         let lock_path = sibling(&exe, ".update-lock");
-        std::fs::File::options().write(true).open(&lock_path).unwrap()
-            .set_modified(std::time::SystemTime::now() - UPDATE_LOCK_STALE - Duration::from_secs(60)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&lock_path)
+            .unwrap()
+            .set_modified(
+                std::time::SystemTime::now() - UPDATE_LOCK_STALE - Duration::from_secs(60),
+            )
+            .unwrap();
         assert!(
             UpdateLock::acquire(&exe).is_none(),
             "ロックが古くても所有中は他のインスタンスが取れない"

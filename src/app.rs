@@ -2828,10 +2828,13 @@ impl App {
                                     changes.push(MessageChange::Create(Box::new(message.clone())));
                                 }
                             }
-                            let detached_send = submission.editing.is_none() && self.is_detached(&channel_id);
+                            let detached_send =
+                                submission.editing.is_none() && self.is_detached(&channel_id);
                             if detached_send {
                                 if let Some(h) = self.history.get_mut(&channel_id) {
-                                    if !h.detached_overflow && !h.detached_new.iter().any(|m| m.id == message.id) {
+                                    if !h.detached_overflow
+                                        && !h.detached_new.iter().any(|m| m.id == message.id)
+                                    {
                                         if h.detached_new.len() >= MAX_MSGS {
                                             h.detached_new.clear();
                                             h.detached_overflow = true;
@@ -2841,7 +2844,11 @@ impl App {
                                     }
                                 }
                             }
-                            if let Some(list) = self.messages.get_mut(&channel_id).filter(|_| !detached_send) {
+                            if let Some(list) = self
+                                .messages
+                                .get_mut(&channel_id)
+                                .filter(|_| !detached_send)
+                            {
                                 if let Some(original) = submission.editing {
                                     if let Some(current) =
                                         list.iter_mut().find(|m| m.id == original.id)

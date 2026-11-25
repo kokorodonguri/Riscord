@@ -145,7 +145,7 @@ impl MessageLog {
     /// ログインしたアカウントを伝える。前と違うアカウントなら、前のアカウントの記録と覚えた本文を捨てる
     pub fn set_owner(&mut self, user_id: &str) {
         match self.owner.as_deref() {
-            Some(id) if id == user_id => return,
+            Some(id) if id == user_id => (),
             Some(_) => {
                 self.deleted.clear();
                 self.edited.clear();
@@ -307,7 +307,8 @@ impl MessageLog {
         if self.flush() {
             None
         } else {
-            self.retry_at.map(|at| at.saturating_duration_since(Instant::now()))
+            self.retry_at
+                .map(|at| at.saturating_duration_since(Instant::now()))
         }
     }
 

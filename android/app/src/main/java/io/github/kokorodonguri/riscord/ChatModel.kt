@@ -47,7 +47,7 @@ data class ChatState(
     val incomingCall:JSONObject? = null,
     val voiceStatus:String = "未接続", val voiceChannel:String? = null, val mute:Boolean=false, val deaf:Boolean=false, val speaker:Boolean=false,
     val persistent: Boolean = false,
-    val hasMore: Boolean = true, val typing: String? = null,
+    val hasMore: Boolean = true, val hasNewer: Boolean = false, val typing: String? = null,
     /** 保存済みログインで再接続を試みている間 true（ログイン画面ではなく待機画面を出す） */
     val restoring: Boolean = false,
     val status: String = "online",
@@ -79,7 +79,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     private var sessionScope = newSessionScope()
     private fun newSessionScope() = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
     /** connect の番号。取り消した・古くなった connect の結果は、番号が違うので捨てる */
-    private var connectAttempt = 0L
+    private val tokenGate = SessionTokenGate()
+    private var messageArrivalVersion = 0L
     private var pendingChannel: String? = null
     private var foreground = false
     private var gatewayPaused = false
@@ -137,9 +138,11 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
 
     /** 保存済みトークンで接続する。通信エラーなら再試行し、認証切れのときだけ保存を消す */
     private suspend fun restore() {
-        val token = try { withContext(Dispatchers.IO) { store.load() } } catch (e: Exception) {
+        val restoreGeneration = tokenGate.current()
+        val token = try { withContext(Dispatchers.IO) { tokenGate.store { store.load() } } } catch (e: Exception) {
             if (e is CancellationException) throw e
-            store.clear()
+            currentCoroutineContext().ensureActive()
+            tokenGate.ifCurrent(restoreGeneration) { store.clear() }
             state.update { it.copy(error = tr("保存済みログインを読み込めませんでした。ログインし直してください。","Couldn't load your saved login. Please log in again.","无法读取已保存的登录信息。请重新登录。")) }
             return
         } ?: return
@@ -150,7 +153,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 connect(token, false)
                 if (state.value.me != null) { state.update { it.copy(restoring = false, error = null) }; return }
             } catch (e: AuthExpiredException) {
-                store.clear()
+                currentCoroutineContext().ensureActive()
+                tokenGate.store { if (runCatching { store.load() }.getOrNull() == token) store.clear() }
                 state.update { it.copy(restoring = false, error = e.message) }
                 return
             } catch (e: Exception) {
@@ -165,8 +169,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     fun cancelRestore() {
         restoreJob?.cancel(); restoreJob = null
         // 待っている connect の結果を捨てる（あとから終わっても、つながったことにしない）
-        connectAttempt++
-        store.clear()
+        tokenGate.invalidateAndClear { store.clear() }
         state.update { it.copy(restoring = false, error = null, connection = "未接続", loading = false, loginBusy = false) }
     }
     private fun stopRestore() { restoreJob?.cancel(); restoreJob = null; state.update { it.copy(restoring = false) } }
@@ -185,16 +188,18 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
     fun tokenLogin(token: String) = task { stopRestore(); connect(token.trim(), true) }
     /** 新しい connect は、待っている古い connect より優先する（古い方の結果は捨てる） */
     private suspend fun connect(token: String, save: Boolean) {
-        val attempt = ++connectAttempt
+        val attempt = tokenGate.next()
         val session = handle
-        fun current() = session == handle && attempt == connectAttempt
+        fun current() = session == handle && attempt == tokenGate.current()
         var accepted = false
         state.update { it.copy(loading = true, loginBusy = true, error = null) }
         try {
             val me = NativeBridge.request(session, JSONObject().put("op", "connect").put("token", token).put("status", state.value.status).put("attempt", attempt)) as JSONObject
             // 待っている間にログアウト・取り消し・新しいログインがあったら、古いトークンを保存したり画面を戻したりしない
             if (!current()) return
-            if (save) withContext(Dispatchers.IO) { store.save(token) }
+            if (save) withContext(Dispatchers.IO) {
+                tokenGate.ifCurrent(attempt) { store.save(token) }
+            }
             if (!current()) return
             accepted = true
             gatewayPaused = false
@@ -330,7 +335,8 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
                 }
                 notifyMessage(d)
                 if (channelId == state.value.channel?.optString("id")) {
-                    state.update { old -> old.copy(messages = upsertMessage(old.messages, d)) }
+                    messageArrivalVersion++
+                    state.update { old -> if(old.hasNewer && old.messages.none { it.optString("id")==d.optString("id") }) old else old.copy(messages = upsertMessage(old.messages, d)) }
                 }
             }
             "MESSAGE_UPDATE" -> state.update { old -> old.copy(messages = old.messages.map { msg ->
@@ -469,7 +475,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         cacheMessages()
         historyJob?.cancel()
         val id=channel.getString("id")
-        state.update { it.copy(channel = channel, lastChannelId=id, messages = messageCache[id].orEmpty(), loading = true, hasMore = true, messageLoadFailed=false, reply = null, editing=null,editDraft="",typing = null, unreadChannels=it.unreadChannels-id) }
+        state.update { it.copy(channel = channel, lastChannelId=id, messages = messageCache[id].orEmpty(), loading = true, hasMore = true, hasNewer = false, messageLoadFailed=false, reply = null, editing=null,editDraft="",typing = null, unreadChannels=it.unreadChannels-id) }
         subscribeTyping()
         loadLatestMessages(id)
     }
@@ -486,18 +492,16 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         val s=state.value
         if(!s.loading && s.messageLoadFailed) s.channel?.optString("id")?.let(::loadLatestMessages)
     }
-    private suspend fun refreshMessages(id: String, before: String? = null) {
-        val list = (rest("/channels/$id/messages?limit=50" + (before?.let { "&before=$it" } ?: "")) as JSONArray).objects()
+    private suspend fun refreshMessages(id: String, before: String? = null, after: String? = null) {
+        val arrivalAtStart = messageArrivalVersion
+        val list = (rest("/channels/$id/messages?limit=50" + (before?.let { "&before=$it" } ?: after?.let { "&after=$it" } ?: "")) as JSONArray).objects()
         currentCoroutineContext().ensureActive()
         if (state.value.channel?.optString("id") == id) state.update { old ->
-            val fetchedMax = list.maxOfOrNull { it.optString("id").padStart(20, '0') }
-            val fetchedMin = list.minOfOrNull { it.optString("id").padStart(20, '0') }
-            val retained = if(before != null) old.messages else old.messages.filter {
-                val key=it.optString("id").padStart(20,'0')
-                fetchedMin!=null && fetchedMax!=null && (key<fetchedMin || key>fetchedMax)
-            }
-            val merged = (list + retained).distinctBy { it.optString("id") }.sortedBy { it.optString("id").padStart(20, '0') }
-            old.copy(messages = merged, loading = false, hasMore = list.size == 50,messageLoadFailed=if(before==null) false else old.messageLoadFailed)
+            val page = mergeHistoryWindow(old.messages, list, before != null, after != null,
+                old.hasMore, old.hasNewer, arrivalAtStart != messageArrivalVersion, MESSAGE_LIMIT, 50) { it.optString("id") }
+            old.copy(messages = page.items, loading = false,
+                hasMore = page.hasOlder, hasNewer = page.hasNewer,
+                messageLoadFailed=if(before==null && after==null) false else old.messageLoadFailed)
         }
     }
     fun older() {
@@ -514,6 +518,18 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
             }
         }
     }
+    fun newer() {
+        val s=state.value; val id=s.channel?.optString("id") ?: return
+        if(s.loading || !s.hasNewer || s.messages.isEmpty()) return
+        state.update { it.copy(loading=true) }
+        historyJob=sessionScope.launch {
+            try { refreshMessages(id, after=s.messages.last().optString("id")) }
+            catch(e:CancellationException) { throw e }
+            catch(e:AuthExpiredException) { expire(e.message) }
+            catch(e:Exception) { if(state.value.channel?.optString("id")==id) state.update { it.copy(loading=false,error=MESSAGE_LOAD_ERROR) } }
+        }
+    }
+    fun latest() { state.value.channel?.optString("id")?.let(::loadLatestMessages) }
     fun back() {
         clearTyping(); cacheMessages(); historyJob?.cancel()
         val guild=state.value.guild
@@ -547,7 +563,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
         state.update { old -> old.copy(sending=false, drafts=if(old.drafts[id]==text) old.drafts+(id to "") else old.drafts,
             reply=if(old.channel?.optString("id")==id && old.reply?.optString("id")==s.reply?.optString("id")) null else old.reply,
-            messages=if(old.channel?.optString("id")==id) upsertMessage(old.messages,message) else old.messages) }
+            messages=if(old.channel?.optString("id")==id && !old.hasNewer) upsertMessage(old.messages,message) else old.messages) }
     }
     fun stageAttachment(uri:android.net.Uri, channelId:String?=state.value.channel?.optString("id"), ownerId:String?=state.value.me?.optString("id")) = task {
         val id=channelId ?: return@task
@@ -601,7 +617,7 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         if(session!=handle || state.value.me?.optString("id")!=owner) return@sendingTask
         state.update { old -> old.copy(sending=false,attachments=if(old.attachments[channel]?.uri==uri) old.attachments-channel else old.attachments,drafts=if(old.drafts[channel]==content) old.drafts+(channel to "") else old.drafts,
             reply=if(old.channel?.optString("id")==channel && old.reply?.optString("id")==snapshot.reply?.optString("id")) null else old.reply,
-            messages=if(old.channel?.optString("id")==channel) upsertMessage(old.messages,message) else old.messages) }
+            messages=if(old.channel?.optString("id")==channel && !old.hasNewer) upsertMessage(old.messages,message) else old.messages) }
     }
     fun edit(message: JSONObject, text: String) = task {
         val id=message.getString("channel_id")
@@ -805,10 +821,11 @@ class ChatModel(app: Application, restoreSession:Boolean=true,
         clearTyping();typingTracker.reset()
         restoreJob?.cancel(); restoreJob=null; pauseJob?.cancel(); pauseJob=null; gatewayPaused=false
         val app=getApplication<Application>()
-        app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false,remember=false); historyJob?.cancel(); channelsJob?.cancel(); profileJob?.cancel(); messageCache.clear(); store.clear()
+        app.stopService(android.content.Intent(app,CallService::class.java)); setPersistent(false,remember=false); historyJob?.cancel(); channelsJob?.cancel(); profileJob?.cancel(); messageCache.clear()
+        tokenGate.invalidateAndClear { store.clear() }
         app.getSystemService(android.app.NotificationManager::class.java).cancelAll()
         // このセッションで動いている処理を止める（ログアウト後に古い結果で画面やトークンを書き換えない）
-        sessionScope.cancel(); sessionScope=newSessionScope(); connectAttempt++
+        sessionScope.cancel(); sessionScope=newSessionScope()
         val old=handle; handle=NativeBridge.create(); NativeBridge.destroy(old)
         state.value=ChatState(status=state.value.status)
     }

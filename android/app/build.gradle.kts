@@ -11,8 +11,8 @@ android {
         minSdk = 29
         targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 400
-        versionName = "0.4.0"
+        versionCode = 401
+        versionName = "0.4.1"
         ndk { abiFilters += "arm64-v8a" }
     }
     // release の署名鍵は環境変数から読む（CI では secrets）。無い環境では未署名の release しか作れない

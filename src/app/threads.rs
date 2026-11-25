@@ -120,14 +120,16 @@ impl App {
             .chain(self.joined_threads.iter().map(String::as_str))
             .collect();
         let list = self.threads.get_mut(guild_id).unwrap();
-        let mut archived: Vec<_> = list.iter()
+        let mut archived: Vec<_> = list
+            .iter()
             .filter(|c| c.archived() && !protected.contains(c.id.as_str()))
             .map(|c| (thread_activity(c), c.id.clone()))
             .collect();
         if archived.len() > MAX_CACHED_ARCHIVED_THREADS {
             archived.sort_unstable();
             let excess = archived.len() - MAX_CACHED_ARCHIVED_THREADS;
-            let remove: HashSet<_> = archived.into_iter()
+            let remove: HashSet<_> = archived
+                .into_iter()
                 .take(excess)
                 .map(|(_, id)| id)
                 .collect();
@@ -829,7 +831,10 @@ mod tests {
         let (mut app, _tx, _rx) = harness();
         app.joined_threads.insert("1".into());
         for id in 1..=MAX_CACHED_ARCHIVED_THREADS + 2 {
-            app.upsert_thread("g", serde_json::from_value(thread(&id.to_string(), "c", true)).unwrap());
+            app.upsert_thread(
+                "g",
+                serde_json::from_value(thread(&id.to_string(), "c", true)).unwrap(),
+            );
         }
         assert_eq!(app.threads["g"].len(), MAX_CACHED_ARCHIVED_THREADS + 1);
         assert!(app.threads["g"].iter().any(|c| c.id == "1"));

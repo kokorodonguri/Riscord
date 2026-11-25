@@ -602,7 +602,8 @@ impl Root {
         }
         msgs = msgs.child(self.messages_view(prefix, &cname, cx));
         // Shift+L は文字の欄（入力欄を含む）にいるときは L を打てるよう奪わないので、効くときだけ案内する
-        let key_works = !(!self.focus.is_focused(window) && self.focus.contains_focused(window, cx));
+        let key_works =
+            !(!self.focus.is_focused(window) && self.focus.contains_focused(window, cx));
         msgs = msgs.children(self.jump_hint(key_works, cx));
         col = col.child(msgs);
         if cur.is_some() {
@@ -1083,7 +1084,14 @@ impl Root {
                 .flex()
                 .flex_col()
                 .child(head)
-                .child(div().relative().flex_1().min_h_0().overflow_hidden().child(screen))
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .child(screen),
+                )
                 .into_any_element(),
         )
     }

@@ -284,9 +284,11 @@ impl App {
                 // カテゴリ自身が見えなくても、見える子チャンネルがあれば見出しとして残す（一覧の読み込みと同じ扱い）
                 let category_with_children = c.kind == Channel::CATEGORY
                     && self.channels.get(&gid).is_some_and(|list| {
-                        list.iter().any(|x| x.parent_id.as_deref() == Some(c.id.as_str()))
+                        list.iter()
+                            .any(|x| x.parent_id.as_deref() == Some(c.id.as_str()))
                     });
-                if !category_with_children && !crate::model::can_view(&c, &gid, base, roles, &me.id) {
+                if !category_with_children && !crate::model::can_view(&c, &gid, base, roles, &me.id)
+                {
                     if let Some(list) = self.channels.get_mut(&gid) {
                         list.retain(|old| old.id != c.id);
                     }

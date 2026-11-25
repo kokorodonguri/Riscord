@@ -108,6 +108,48 @@ class MobileUxTest {
         Assert.assertNull(model.state.value.error)
         screenshot("older-history-recovered")
     }
+    @Test fun historyWindowKeepsOlderPageAndCanLoadNewerAgain() {
+        val older=(1..50).map { message(it) }
+        val newer=(501..550).map { message(it) }
+        restHandler={path,_,_->
+            JSONArray().apply {
+                when {
+                    path.contains("&before=") -> older.asReversed().forEach { put(it) }
+                    path.contains("&after=") -> newer.asReversed().forEach { put(it) }
+                    else -> error("unexpected history request: $path")
+                }
+            }
+        }
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(channel=dm,messages=(51..550).map { message(it) },hasMore=true)
+            model.older()
+        }
+        compose.waitUntil(5000) {!model.state.value.loading && model.state.value.hasNewer}
+        Assert.assertEquals(500,model.state.value.messages.size)
+        Assert.assertEquals(message(1).getString("id"),model.state.value.messages.first().getString("id"))
+        Assert.assertEquals(message(500).getString("id"),model.state.value.messages.last().getString("id"))
+        compose.runOnUiThread {model.newer()}
+        compose.waitUntil(5000) {!model.state.value.loading && model.state.value.messages.last().getString("id")==message(550).getString("id")}
+        Assert.assertEquals(500,model.state.value.messages.size)
+        Assert.assertEquals(message(51).getString("id"),model.state.value.messages.first().getString("id"))
+        Assert.assertTrue(model.state.value.hasMore)
+    }
+    @Test fun evictingTheNewestPageKeepsTheVisibleMessageInPlace() {
+        restHandler={path,_,_->
+            check(path.contains("&before="))
+            JSONArray().apply {(1..50).reversed().forEach { put(message(it)) }}
+        }
+        compose.runOnUiThread {
+            model.state.value=model.state.value.copy(channel=dm,messages=(51..550).map { message(it) },hasMore=true)
+        }
+        render()
+        compose.onNodeWithContentDescription("メッセージ履歴").performScrollToNode(hasText("過去 60"))
+        val before=compose.onNodeWithText("過去 60").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+        compose.runOnIdle { model.older() }
+        compose.waitUntil(5000) { !model.state.value.loading && model.state.value.hasNewer }
+        val after=compose.onNodeWithText("過去 60").assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+        Assert.assertEquals(before,after,2f)
+    }
     @Test fun loadingOlderMessagesDoesNotClearAnUnrelatedError() {
         val gate=kotlinx.coroutines.CompletableDeferred<JSONArray>()
         restHandler={_,_,_->gate.await()}

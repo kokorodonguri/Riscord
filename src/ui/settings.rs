@@ -1337,35 +1337,41 @@ impl Root {
             uniform_list(
                 "fontlist",
                 rows.len(),
-                cx.processor(move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
-                    apply_pane(&this.pane_style);
-                    range
-                        .filter_map(|i| rows.get(i).map(|row| (i, row)))
-                        .map(|(i, (value, label))| {
-                            let value = value.clone();
-                            let on = selected_font == value;
-                            div()
-                                .id(("fontrow", i))
-                                .h(z(32.0))
-                                .px(z(8.0))
-                                .rounded(z(6.0))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .when(on, |x| x.bg(SELECTED()))
-                                .hover(|s| s.bg(if on { SELECTED() } else { HOVER() }))
-                                .child(line(label.clone(), 14.0, if on { WHITE() } else { TEXT() }))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if this.app.settings.font != value {
-                                        this.app.settings.font = value.clone();
-                                        this.app.font_dirty = true;
-                                        this.app.save_settings();
-                                    }
-                                    cx.notify();
-                                }))
-                        })
-                        .collect()
-                }),
+                cx.processor(
+                    move |this: &mut Root, range: std::ops::Range<usize>, _, cx| {
+                        apply_pane(&this.pane_style);
+                        range
+                            .filter_map(|i| rows.get(i).map(|row| (i, row)))
+                            .map(|(i, (value, label))| {
+                                let value = value.clone();
+                                let on = selected_font == value;
+                                div()
+                                    .id(("fontrow", i))
+                                    .h(z(32.0))
+                                    .px(z(8.0))
+                                    .rounded(z(6.0))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .when(on, |x| x.bg(SELECTED()))
+                                    .hover(|s| s.bg(if on { SELECTED() } else { HOVER() }))
+                                    .child(line(
+                                        label.clone(),
+                                        14.0,
+                                        if on { WHITE() } else { TEXT() },
+                                    ))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.app.settings.font != value {
+                                            this.app.settings.font = value.clone();
+                                            this.app.font_dirty = true;
+                                            this.app.save_settings();
+                                        }
+                                        cx.notify();
+                                    }))
+                            })
+                            .collect()
+                    },
+                ),
             )
             .h(z(height))
             .bg(RAIL())
@@ -1786,7 +1792,11 @@ impl Root {
                     action_button(
                         "enable_all_plugins",
                         IconName::Check,
-                        tr!("同梱をすべてオン", "Turn All Bundled On", "开启全部内置插件"),
+                        tr!(
+                            "同梱をすべてオン",
+                            "Turn All Bundled On",
+                            "开启全部内置插件"
+                        ),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app

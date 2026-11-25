@@ -431,6 +431,7 @@ pub struct Root {
     pane_h: f32,
     /// この区画の印（押したメンション・絵文字をどの区画で押したか見分ける）
     pub pane_id: u64,
+    pending_mentions: message::MentionQueue,
     /// 分割表示のときの区画の色・拡大率（一覧の行を作る前に戻す）。分割していなければ None
     pub pane_style: Option<PaneStyle>,
     /// チャンネルごとの書きかけ（本文・添付）。移ったらしまい、戻ったら出す
@@ -1284,6 +1285,7 @@ impl Root {
             split_vertical,
             pane_h: 0.0,
             pane_id: cx.entity_id().as_u64(),
+            pending_mentions: Default::default(),
             pane_style: None,
             drafts: HashMap::new(),
             draft_at: None,
@@ -1415,6 +1417,7 @@ impl Root {
             self.pane_style = None;
         }
         set_current_pane(self.pane_id);
+        message::register_mention_queue(self.pane_id, &self.pending_mentions);
         let split = self.other.is_some();
         let vertical = split && self.split_vertical.get();
         let width = f32::from(vp.width);
@@ -1493,8 +1496,13 @@ impl Root {
             window.activate_window();
         }
         // ClickableMentions: 押されたメンションの人のプロフィールを開く（この区画で押されたものだけ）
-        let mention = message::take_pending(&message::PENDING_MENTION, self.pane_id);
-        if let Some(uid) = mention {
+        let mentions: Vec<_> = self
+            .pending_mentions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for uid in mentions {
             let user = self
                 .app
                 .messages

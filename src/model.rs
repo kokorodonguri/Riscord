@@ -120,7 +120,6 @@ pub struct Member {
 }
 
 impl Member {
-
     pub fn display(&self) -> &str {
         self.nick
             .as_deref()
@@ -928,7 +927,9 @@ impl MessageEdit {
     /// MESSAGE_UPDATE の d から読む。どれも無ければ None
     pub fn from_update(d: &serde_json::Value) -> Option<Box<Self>> {
         fn get<T: serde::de::DeserializeOwned>(d: &serde_json::Value, k: &str) -> Option<T> {
-            d.get(k).filter(|v| !v.is_null()).and_then(|v| T::deserialize(v).ok())
+            d.get(k)
+                .filter(|v| !v.is_null())
+                .and_then(|v| T::deserialize(v).ok())
         }
         let e = Self {
             mentions: get(d, "mentions"),
@@ -1059,9 +1060,14 @@ mod edit_tests {
         MessageEdit::from_update(&d).unwrap().apply(&mut m);
         assert_eq!(m.mentions.len(), 1);
         assert!(m.attachments.is_empty());
-        assert_eq!(m.edited_timestamp.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        assert_eq!(
+            m.edited_timestamp.as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
         // 本文・ピンだけの更新では何も変えない
-        assert!(MessageEdit::from_update(&serde_json::json!({ "id": "1", "pinned": true })).is_none());
+        assert!(
+            MessageEdit::from_update(&serde_json::json!({ "id": "1", "pinned": true })).is_none()
+        );
     }
 }
 

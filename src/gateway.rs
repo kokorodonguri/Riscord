@@ -105,8 +105,12 @@ pub(crate) enum SessionEnd {
 const SEND_TIMEOUT: Duration = Duration::from_secs(20);
 /// スリープ明けなど、ハートビートの間が大きく空いたあとは、この時間で ACK が来なければ切れたとみなす
 const WAKE_ACK_TIMEOUT: Duration = Duration::from_secs(10);
-/// 切断中に溜めておくコマンドの上限（超えたら古いものから捨てる）
+/// 切断中の通常コマンドの上限。操作を失わないため重要なコマンドは超過を許す。
 const MAX_PENDING: usize = 500;
+
+fn important_command(command: &serde_json::Value) -> bool {
+    matches!(command["op"].as_u64(), Some(4 | 18..=22))
+}
 /// スリープ明けを確かめる間隔と、止まっていたとみなす実時計のずれ
 const WAKE_CHECK: Duration = Duration::from_secs(5);
 const WAKE_JUMP: Duration = Duration::from_secs(10);
@@ -197,11 +201,12 @@ pub(crate) async fn run_session(
                 if wall > mono + WAKE_JUMP && ack_deadline.is_none() {
                     acknowledged = false;
                     ack_deadline = Some(now.1 + WAKE_ACK_TIMEOUT);
+                    heartbeat.reset();
                     limit.record();
                     send_timed(&mut socket, Message::Text(serde_json::json!({"op":1,"d":session.seq}).to_string().into())).await?;
                 }
             }
-            _ = heartbeat.tick() => {
+            _ = heartbeat.tick(), if ack_deadline.is_none() => {
                 if !acknowledged { bail!("Gateway heartbeat timed out"); }
                 acknowledged = false;
                 limit.record();
@@ -239,6 +244,7 @@ pub(crate) async fn run_session(
                     Opcode::InvalidSession => return Ok(if frame.d.as_deref().is_some_and(|d| d.get().trim() == "true") { SessionEnd::Resume } else { SessionEnd::Reidentify }),
                     Opcode::HeartbeatAck => {
                         acknowledged = true;
+                        if ack_deadline.is_some() { heartbeat.reset(); }
                         ack_deadline = None;
                     }
                     _ => {}
@@ -400,7 +406,11 @@ impl GatewaySession {
             });
         }
         if self.pending.len() >= MAX_PENDING {
-            self.pending.pop_front();
+            if let Some(i) = self.pending.iter().position(|(_, c)| !important_command(c)) {
+                self.pending.remove(i);
+            } else if !important_command(&command) {
+                return;
+            }
         }
         self.pending
             .push_back((tokio::time::Instant::now(), command));
@@ -520,8 +530,16 @@ mod tests {
         assert_eq!(s.pending.len(), 1);
         s.queue(serde_json::json!({"op": 3, "d": {"status": "dnd"}}));
         s.keep_unsent(now, serde_json::json!({"op": 3, "d": {"status": "online"}}));
-        let statuses: Vec<_> = s.pending.iter().map(|(_, c)| c["d"]["status"].clone()).collect();
-        assert_eq!(statuses, ["dnd"], "新しい presence があれば古いものは戻さない");
+        let statuses: Vec<_> = s
+            .pending
+            .iter()
+            .map(|(_, c)| c["d"]["status"].clone())
+            .collect();
+        assert_eq!(
+            statuses,
+            ["dnd"],
+            "新しい presence があれば古いものは戻さない"
+        );
 
         let mut s = GatewaySession::default();
         s.queue(serde_json::json!({"op": 37, "d": {"subscriptions": {"a": {"n": 2}}}}));
@@ -531,7 +549,10 @@ mod tests {
         );
         assert_eq!(s.pending.len(), 2);
         let kept = &s.pending[0].1["d"]["subscriptions"];
-        assert!(kept.get("a").is_none(), "新しい購読があるサーバーは戻さない");
+        assert!(
+            kept.get("a").is_none(),
+            "新しい購読があるサーバーは戻さない"
+        );
         assert_eq!(kept["b"]["n"], 1);
     }
 
@@ -568,6 +589,19 @@ mod tests {
         assert_eq!(s.pending.len(), 4);
         s.reset_keeping_unsent();
         assert!(s.closing, "一からつなぎ直すときも閉じる合図は残す");
+    }
+
+    #[test]
+    fn queue_overflow_preserves_voice_and_stream_operations() {
+        let mut session = GatewaySession::default();
+        session.queue(serde_json::json!({"op":4,"d":{"channel_id":"1"}}));
+        session.queue(serde_json::json!({"op":18,"d":{}}));
+        for i in 0..MAX_PENDING + 20 {
+            session.queue(serde_json::json!({"op":8,"d":{"n":i}}));
+        }
+        assert_eq!(session.pending.len(), MAX_PENDING);
+        assert!(session.pending.iter().any(|(_, c)| c["op"] == 4));
+        assert!(session.pending.iter().any(|(_, c)| c["op"] == 18));
     }
 
     #[tokio::test(start_paused = true)]

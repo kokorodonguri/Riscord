@@ -307,6 +307,7 @@ pub fn unhold(uri: &str) {
 
 /// 画像を使っている App の数（テスト用）
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn holder_count(uri: &str) -> usize {
     holders().lock().unwrap().get(uri).copied().unwrap_or(0)
 }

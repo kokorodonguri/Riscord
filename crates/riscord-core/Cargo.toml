@@ -1,6 +1,6 @@
 [package]
 name = "riscord-core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [lib]
@@ -33,6 +33,7 @@ songbird = { version = "0.6", default-features = false, features = ["driver", "g
 cpal = "0.18.2"
 async-trait = "0.1.92"
 symphonia-core = "0.5"
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg"] }
 ndk-context = "0.1"
 # src/voice.rs のマイクの雑音抑制（本体の Cargo.toml と同じ版）
 nnnoiseless = { version = "0.5", default-features = false }
